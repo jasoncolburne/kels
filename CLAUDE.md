@@ -105,28 +105,28 @@ When events are submitted, the KEL merge produces one of:
 ### Services
 
 - **kels** — Core KEL service. REST API for event submission and KEL retrieval.
-- **kels-sadstore** — Replicated self-addressed data store. Content-addressed objects (MinIO) + authenticated chained records (PostgreSQL). See `docs/design/sadstore.md`.
-- **kels-gossip** — Gossip service. Syncs KELs and SAD data between peers (HyParView + PlumTree). See `docs/gossip.md`.
-- **kels-registry** — Registry service. Peer lifecycle via OpenRaft consensus. See `docs/registry.md`.
-- **identity** — Identity service. Manages the registry's own KEL and signing keys.
+- **sadstore** (`services/sadstore`) — Replicated self-addressed data store. Content-addressed objects (MinIO) + authenticated chained records (PostgreSQL). See `docs/design/sadstore.md`.
+- **gossip** (`services/gossip`) — Gossip service. Syncs KELs and SAD data between peers (HyParView + PlumTree). See `docs/gossip.md`.
+- **registry** (`services/registry`) — Registry service. Peer lifecycle via OpenRaft consensus. See `docs/registry.md`.
+- **identity** (`services/identity`) — Identity service. Manages the registry's own KEL and signing keys.
 
 ### Libraries
 
-- **kels** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **gossip** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
-- **kels-derive** (`lib/kels-derive`) — Derive macros (`SignedEvents`, etc.).
-- **kels-ffi** (`lib/kels-ffi`) — C FFI bindings for cross-language use.
-- **kels-mock-hsm** (`lib/kels-mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.
+- **kels-core** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
+- **kels-gossip-core** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
+- **kels-derive** (`lib/derive`) — Derive macros (`SignedEvents`, etc.).
+- **kels-ffi** (`lib/ffi`) — C FFI bindings for cross-language use.
+- **kels-mock-hsm** (`lib/mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.
 
 ### Clients
 
-- **kels-cli** — Command-line client for interacting with KELS.
-- **kels-bench** — Benchmarking tool.
+- **kels-cli** (`clients/cli`) — Command-line client for interacting with KELS.
+- **kels-bench** (`clients/bench`) — Benchmarking tool.
 - **kels-client** — Swift client (iOS/macOS).
 
 ### Event Transfer Helpers
 
-All multi-page event transfers use the `transfer_key_events` infrastructure in `lib/kels/src/types/verifier.rs`. Never use single-page `fetch_key_events` in loops or accumulate unbounded events in memory — use these helpers instead.
+All multi-page event transfers use the `transfer_key_events` infrastructure in `lib/kels/src/types/kel/sync.rs`. Never use single-page `fetch_key_events` in loops or accumulate unbounded events in memory — use these helpers instead.
 
 **Traits:**
 - **`PagedKelSource`** — paginated event source (e.g., HTTP endpoint, local DB).

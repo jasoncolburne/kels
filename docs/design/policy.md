@@ -219,7 +219,7 @@ Edge verification compacts the presented credential's policy and checks `compact
 ## Module Structure
 
 ```
-lib/kels-policy/
+lib/policy/
 ├── Cargo.toml
 ├── deny.toml
 └── src/

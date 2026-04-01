@@ -67,24 +67,24 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ```
 kels/
 ├── lib/
-│   ├── kels/           # Core library (libkels)
-│   ├── kels-derive/    # Derive macros for storage traits
-│   ├── kels-creds/     # Credential framework (issuance, disclosure, verification)
-│   ├── kels-policy/    # Policy framework (composable trust policies, DSL)
-│   ├── kels-ffi/       # FFI bindings (Swift/C interop)
-│   ├── gossip/         # Custom gossip protocol library
-│   └── kels-mock-hsm/  # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
+│   ├── kels/           # Core library (kels-core)
+│   ├── derive/         # Derive macros for storage traits
+│   ├── creds/          # Credential framework (issuance, disclosure, verification)
+│   ├── policy/         # Policy framework (composable trust policies, DSL)
+│   ├── ffi/            # FFI bindings (Swift/C interop)
+│   ├── gossip/         # Custom gossip protocol library (kels-gossip-core)
+│   └── mock-hsm/       # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
 ├── services/
 │   ├── kels/           # HTTP API server
-│   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
-│   ├── kels-registry/  # Node registration and discovery service
+│   ├── gossip/         # Gossip protocol for cross-deployment sync
+│   ├── registry/       # Node registration and discovery service
 │   ├── identity/       # Registry identity service (single replica)
 │   ├── postgres/       # PostgreSQL configuration
 │   └── redis/          # Redis configuration
 ├── clients/
-│   ├── kels-cli/       # Command-line interface
+│   ├── cli/            # Command-line interface
 │   ├── kels-client/    # Swift client (iOS/macOS)
-│   ├── kels-bench/     # Benchmarking tool
+│   ├── bench/          # Benchmarking tool
 │   └── test/           # Integration test scripts/container
 └── docs/               # Documentation
 ```
@@ -208,10 +208,10 @@ First, add the following entries to `/etc/hosts` to enable local hostname resolu
 127.0.0.1 kels.kels-node-d.kels
 127.0.0.1 kels.kels-node-e.kels
 127.0.0.1 kels.kels-node-f.kels
-127.0.0.1 kels-registry.kels-registry-a.kels
-127.0.0.1 kels-registry.kels-registry-b.kels
-127.0.0.1 kels-registry.kels-registry-c.kels
-127.0.0.1 kels-registry.kels-registry-d.kels
+127.0.0.1 registry.kels-registry-a.kels
+127.0.0.1 registry.kels-registry-b.kels
+127.0.0.1 registry.kels-registry-c.kels
+127.0.0.1 registry.kels-registry-d.kels
 ```
 
 This allows the CLI and iOS app to connect to the local KELS nodes and registries using their service names.
@@ -313,7 +313,7 @@ Namespaces
 
 Children per Namespace
 - identity
-- kels-registry
+- registry
 - postgres
 - redis
 
@@ -330,7 +330,7 @@ Namespaces
 Children per Namespace
 - identity
 - kels (2)
-- kels-gossip
+- gossip
 - postgres
 - redis
 

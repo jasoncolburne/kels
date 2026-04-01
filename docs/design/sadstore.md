@@ -1,6 +1,6 @@
 # SADStore: Replicated Self-Addressed Data Store
 
-A general-purpose replicated store for publicly discoverable, self-addressed data. Deployed as an independent service (`kels-sadstore`) alongside the KELS node services.
+A general-purpose replicated store for publicly discoverable, self-addressed data. Deployed as an independent service (`sadstore`) alongside the KELS node services.
 
 ## Architecture
 

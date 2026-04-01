@@ -58,19 +58,19 @@ All services use **compile-time trusted prefixes** for zero-trust security. The 
 
 ### Deployment Impact
 
-Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, gossip nodes and client binaries are rebuilt with the updated `TRUSTED_REGISTRY_PREFIXES`, and kels-registry is rebuilt with updated `TRUSTED_REGISTRY_MEMBERS`. The kels and identity services do not need recompilation — they don't use trusted registry prefixes. The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
+Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, gossip nodes and client binaries are rebuilt with the updated `TRUSTED_REGISTRY_PREFIXES`, and the registry service is rebuilt with updated `TRUSTED_REGISTRY_MEMBERS`. The kels and identity services do not need recompilation — they don't use trusted registry prefixes. The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
 
 ### Registry Configuration
 
 **Compile-time (via Dockerfile build args):**
 ```bash
 # Trusted registry members for federation - MUST be set at compile time
-# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by kels-registry
-# for Raft node identity (compile-time, kels-registry only).
+# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by the registry
+# service for Raft node identity (compile-time, registry only).
 TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":2,"prefix":"ERegistryBeta...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'
 
 # TRUSTED_REGISTRY_PREFIXES is used by gossip nodes and client binaries (via the
-# `federation` feature on libkels). Not needed by kels or identity services.
+# `federation` feature on kels-core). Not needed by kels or identity services.
 TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
 ```
 
@@ -109,7 +109,7 @@ The gossip service discovers the registry's prefix by fetching its KEL at startu
 
 ```bash
 # On any registry
-kels-registry-admin federation status
+registry-admin federation status
 
 # Output:
 Federation Status
@@ -149,7 +149,7 @@ Any federation member can propose a new peer:
 
 ```bash
 # From any registry in the federation
-kels-registry-admin peer propose \
+registry-admin peer propose \
   --peer-prefix Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
@@ -166,7 +166,7 @@ Other federation members vote to approve:
 
 ```bash
 # On another registry
-kels-registry-admin peer vote --proposal-id EProposal123... --approve
+registry-admin peer vote --proposal-id EProposal123... --approve
 
 # Output:
 # Vote recorded. Status: 2/2 approvals - APPROVED
@@ -177,10 +177,10 @@ kels-registry-admin peer vote --proposal-id EProposal123... --approve
 
 ```bash
 # List pending proposals
-kels-registry-admin peer proposals
+registry-admin peer proposals
 
 # Check specific proposal status
-kels-registry-admin peer proposal-status --proposal-id EProposal123...
+registry-admin peer proposal-status --proposal-id EProposal123...
 ```
 
 **Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
@@ -193,7 +193,7 @@ Peer removal follows the same multi-party approval process as additions.
 
 ```bash
 # From any registry in the federation
-kels-registry-admin peer propose-removal \
+registry-admin peer propose-removal \
   --peer-prefix Qm...
 
 # Output:
@@ -205,7 +205,7 @@ kels-registry-admin peer propose-removal \
 
 ```bash
 # On another registry
-kels-registry-admin peer vote --proposal-id EProposal456... --approve
+registry-admin peer vote --proposal-id EProposal456... --approve
 
 # Output:
 # Removal approved! Peer Qm... removed from peer set.
@@ -219,7 +219,7 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ### Federation Membership
 
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for kels-registry) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and client binaries via the `federation` feature on libkels)
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for the registry service) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and client binaries via the `federation` feature on kels-core)
 - Only known registry prefixes can participate in consensus
 - Cannot be changed at runtime - must be baked into the binary at build time
 
@@ -257,7 +257,7 @@ If a federation member is compromised:
    - Rogue is excluded from consensus
    - New leader elected from remaining members
 
-4. **Recovery**: If peer set was compromised, peers must be re-added via the standard proposal/vote process (`kels-registry-admin peer propose` followed by `kels-registry-admin peer vote` from the remaining honest registries). There is no direct `peer add` command.
+4. **Recovery**: If peer set was compromised, peers must be re-added via the standard proposal/vote process (`registry-admin peer propose` followed by `registry-admin peer vote` from the remaining honest registries). There is no direct `peer add` command.
 
 5. **Gossip nodes auto-heal**: Next allowlist refresh removes unauthorized peers
 
@@ -357,8 +357,8 @@ garden run vote-peer --env=registry-b --var proposal=EProposal...
 # Repeat for node-b and node-c
 
 # View federation status
-kubectl exec -n kels-registry-a deploy/kels-registry -- \
-  /app/kels-registry-admin federation status
+kubectl exec -n kels-registry-a deploy/registry -- \
+  /app/registry-admin federation status
 ```
 
 ### Registry Prefix Management

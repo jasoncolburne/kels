@@ -22,7 +22,7 @@ Notably, the benchmarks run without caching in standlone mode, and with caching 
 A standalone KELS node requires:
 
 - `kels` — KEL storage and retrieval API
-- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `sadstore` — replicated self-addressed data store (SAD objects + chained records)
 - `postgres` — event, signature, and SAD record storage
 - `minio` — S3-compatible object storage for SAD content blobs
 
@@ -33,8 +33,8 @@ It also provides the full SAD store API: object write, object read, record submi
 Both APIs support recovery/repair, and subsequent audit.
 
 Standalone mode does not include:
-- Gossip replication (no `kels-gossip`)
-- Federation consensus (no `kels-registry`)
+- Gossip replication (no gossip service)
+- Federation consensus (no registry service)
 - Peer authentication for the `/api/v1/kels/prefixes` endpoint (requires Redis for peer verification)
 - KEL caching (served directly from PostgreSQL on every request)
 
@@ -43,25 +43,25 @@ Multiple kels replicas can be deployed against the same PostgreSQL instance for 
 ## Federated Architecture
 
 Each **registry** runs:
-- `kels-registry` — federation consensus and peer management
+- `registry` — federation consensus and peer management
 - `identity` — the registry's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
 - `postgres` — database for federation state, peer records, and the registry's KEL
 - `redis` — node registration storage
 
 Each **gossip node** runs:
 - `kels` — KEL storage and retrieval API
-- `kels-sadstore` — replicated self-addressed data store (SAD objects + chained records)
-- `kels-gossip` — custom gossip protocol (HyParView + PlumTree) for KEL and SAD replication
+- `sadstore` — replicated self-addressed data store (SAD objects + chained records)
+- `gossip` — custom gossip protocol (HyParView + PlumTree) for KEL and SAD replication
 - `identity` — the node's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
 - `postgres` — KEL storage, SAD record storage, and gossip peer cache
 - `redis` — KEL caching, pub/sub invalidation, and SAD gossip announcements
 - `minio` — S3-compatible object storage for SAD content blobs
 
-The identity service ships with `libkels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
+The identity service ships with `kels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
 ## Federated Deployment Flow
 
-The federated deployment follows a specific order because of compile-time trust anchors. `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes) is baked into gossip nodes and CLI clients at compile time via the `federation` feature on libkels. `TRUSTED_REGISTRY_MEMBERS` (JSON) is baked into kels-registry. The kels and identity services do not require either — they can be built without knowing the registry prefixes, avoiding unnecessary recompilation during federation changes.
+The federated deployment follows a specific order because of compile-time trust anchors. `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes) is baked into gossip nodes and CLI clients at compile time via the `federation` feature on kels-core. `TRUSTED_REGISTRY_MEMBERS` (JSON) is baked into the registry service. The kels and identity services do not require either — they can be built without knowing the registry prefixes, avoiding unnecessary recompilation during federation changes.
 
 ### Phase 1: Deploy Registries in Standalone Mode
 
@@ -88,14 +88,14 @@ fetch prefix from registry-b → save
 fetch prefix from registry-c → save
 ```
 
-In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and CLI clients) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id`, `prefix`, and `active` for kels-registry Raft node IDs). The kels and identity services do not need these values and are not recompiled during this phase.
+In the test setup, these are saved to `.kels/federated-registries.json` (a JSON array with `id`, `name`, `prefix`, and `url` per registry) and extracted at build time into `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and CLI clients) and `TRUSTED_REGISTRY_MEMBERS` (JSON with explicit `id`, `prefix`, and `active` for registry Raft node IDs). The kels and identity services do not need these values and are not recompiled during this phase.
 
 ### Phase 3: Recompile and Redeploy Registries
 
 Rebuild all binaries with the collected prefixes baked in, then redeploy the registries. On this second deployment, the registries detect federation configuration and start the Raft consensus cluster.
 
 ```
-recompile kels-registry with TRUSTED_REGISTRY_MEMBERS
+recompile registry with TRUSTED_REGISTRY_MEMBERS
 recompile gossip nodes with TRUSTED_REGISTRY_PREFIXES=<prefix-a>,<prefix-b>,<prefix-c>
 redeploy registry-a (federation mode)
 redeploy registry-b (federation mode)
@@ -108,10 +108,10 @@ The registries now form a Raft cluster. Node 0 (the registry whose `id` is 0 in 
 
 Deploy gossip nodes. Each node needs to be authorized in the peer allowlist before it can join the gossip network.
 
-1. Deploy the node's infrastructure (kels, kels-gossip, identity, postgres, redis)
-2. Propose the node as a peer from any registry (`kels-registry-admin peer propose-add-peer`)
-3. Vote from enough registries to approve (`kels-registry-admin peer vote`)
-4. Restart kels-gossip so it picks up its authorization (this should happen after 5 minutes but why wait)
+1. Deploy the node's infrastructure (kels, gossip, identity, postgres, redis)
+2. Propose the node as a peer from any registry (`registry-admin peer propose-add-peer`)
+3. Vote from enough registries to approve (`registry-admin peer vote`)
+4. Restart the gossip service so it picks up its authorization (this should happen after 5 minutes but why wait)
 5. The node bootstraps: fetches KELs from existing peers, joins the gossip mesh
 
 ### Phase 5: Verify
@@ -123,15 +123,15 @@ Run integration tests or manually verify:
 
 ## Compile-Time Trust Anchor
 
-`TRUSTED_REGISTRY_PREFIXES` is the security foundation of the network. It's compiled into binaries that enable the `federation` feature on libkels:
+`TRUSTED_REGISTRY_PREFIXES` is the security foundation of the network. It's compiled into binaries that enable the `federation` feature on kels-core:
 
-- `kels-gossip` — peer allowlist verification, registry KEL verification
+- `gossip` — peer allowlist verification, registry KEL verification
 - Client binaries (`kels-cli`, `kels-bench`) — registry KEL verification during node discovery
 
 Services that do **not** need `TRUSTED_REGISTRY_PREFIXES`:
 - `kels` (service) — accepts any valid KEL; does not verify registry identity
 - `identity` — manages its own KEL; does not verify registry identity
-- `kels-registry` — uses `TRUSTED_REGISTRY_MEMBERS` (its own compile-time mechanism) instead
+- `registry` — uses `TRUSTED_REGISTRY_MEMBERS` (its own compile-time mechanism) instead
 
 When `TRUSTED_REGISTRY_PREFIXES` changes (registries added or removed), only gossip nodes and client binaries need recompilation. The kels and identity services are unaffected.
 
@@ -140,8 +140,8 @@ When `TRUSTED_REGISTRY_PREFIXES` changes (registries added or removed), only gos
 Each registry needs two categories of configuration:
 
 **Compile-time (security — who to trust):**
-- `TRUSTED_REGISTRY_PREFIXES` — comma-separated prefixes, baked into gossip nodes and client binaries (requires `federation` feature on libkels)
-- `TRUSTED_REGISTRY_MEMBERS` — JSON array of `{id, prefix, active}` objects, baked into kels-registry only (explicit Raft node IDs)
+- `TRUSTED_REGISTRY_PREFIXES` — comma-separated prefixes, baked into gossip nodes and client binaries (requires `federation` feature on kels-core)
+- `TRUSTED_REGISTRY_MEMBERS` — JSON array of `{id, prefix, active}` objects, baked into the registry service only (explicit Raft node IDs)
 
 **Runtime (operational — how to connect):**
 - `FEDERATION_SELF_PREFIX` — this registry's own prefix
@@ -183,7 +183,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KELS_HSM_DATA_DIR` | HSM key persistence directory |
 | `HSM_SLOT` | PKCS#11 slot number |
 | `HSM_PIN` | PKCS#11 PIN |
-| `KEY_HANDLE_PREFIX` | HSM key handle prefix (`kels-registry` or `kels-gossip`) |
+| `KEY_HANDLE_PREFIX` | HSM key handle prefix (`registry` or `gossip`) |
 | `KEL_FORWARD_URL` | URL of colocated service to forward KEL events to |
 | `KEL_FORWARD_PATH_PREFIX` | Path prefix for forwarding (`/api/v1/member-kels` for registry, `/api/v1/kels` for nodes) |
 | `NEXT_SIGNING_ALGORITHM` | Algorithm for next signing key on rotation (`ml-dsa-65` or `ml-dsa-87`, default: `ml-dsa-65`) |
@@ -209,12 +209,12 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints at `/api/test/*` that bypass timestamp validation, nonce deduplication, peer allowlist, and signature verification. A startup warning is logged when enabled. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
-### Gossip Service (`kels-gossip`)
+### Gossip Service (`gossip`)
 
 | Variable | Description |
 |----------|-------------|
 | `NODE_ID` | Unique node identifier |
-| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `kels-node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://kels-sadstore.{BASE_DOMAIN}` |
+| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `kels-node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://sadstore.{BASE_DOMAIN}` |
 | `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |
@@ -228,7 +228,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
 | `RUST_LOG` | Logging level |
 
-### SADStore Service (`kels-sadstore`)
+### SADStore Service (`sadstore`)
 
 | Variable | Description |
 |----------|-------------|
@@ -253,17 +253,17 @@ Peers require multi-party approval (minimum 3 votes from federation members):
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose \
+registry-admin peer propose \
   --peer-prefix <peer_prefix> \
   --node-id <node_id> \
   --base-domain <base_domain> \
   --gossip-addr <host:port>
 
 # Produces a proposal ID. Vote from each registry:
-kels-registry-admin peer vote --proposal-id <proposal_id> --approve
+registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is added to the allowlist.
-# Restart the node's kels-gossip to pick up authorization.
+# Restart the node's gossip service to pick up authorization.
 ```
 
 ### Removing a Peer
@@ -272,10 +272,10 @@ Peer removal also requires multi-party approval:
 
 ```bash
 # From any registry:
-kels-registry-admin peer propose-removal --peer-prefix <peer_prefix>
+registry-admin peer propose-removal --peer-prefix <peer_prefix>
 
 # Vote from each registry:
-kels-registry-admin peer vote --proposal-id <proposal_id> --approve
+registry-admin peer vote --proposal-id <proposal_id> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```
@@ -316,7 +316,7 @@ To expand the federation with a new registry after initial deployment:
 
 1. **Deploy the new registry standalone** (generates its cryptographic identity on first boot)
 2. **Fetch its prefix** using `federation-fetch.sh` — the script auto-assigns the next sequential `id` in `federated-registries.json`
-3. **Recompile affected binaries** — kels-registry (with updated `TRUSTED_REGISTRY_MEMBERS`), gossip nodes and client binaries (with updated `TRUSTED_REGISTRY_PREFIXES`). The kels and identity services do not need recompilation
+3. **Recompile affected binaries** — the registry service (with updated `TRUSTED_REGISTRY_MEMBERS`), gossip nodes and client binaries (with updated `TRUSTED_REGISTRY_PREFIXES`). The kels and identity services do not need recompilation
 4. **Deploy updated client software** (iOS, CLI, etc.) — clients verify registry KELs against the compiled-in trust anchor
 5. **Wait for acceptable client deployment coverage** before proceeding
 6. **Update `FEDERATION_URLS`** environment variables to include the new registry's `prefix=url` mapping

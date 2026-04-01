@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-gossip` service synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). The KEM algorithm is auto-negotiated: if any peer in the federation uses ML-DSA-87, all connections use ML-KEM-1024; otherwise ML-KEM-768. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
+The gossip service (`services/gossip`) synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). The KEM algorithm is auto-negotiated: if any peer in the federation uses ML-DSA-87, all connections use ML-KEM-1024; otherwise ML-KEM-768. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
@@ -15,8 +15,8 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 │   │  (HTTP)  │  prefix:said │pub/sub│               │    │
 │   └──────────┘              └───────┘               │    │
 │     ▲      ▲                                ┌───────┴───┐│
-│     │      │ HTTP POST (submit events)      │kels-gossip││
-│     │      └────────────────────────────────│ (gossip)  ││
+│     │      │ HTTP POST (submit events)      │  gossip   ││
+│     │      └────────────────────────────────│ (service) ││
 │     │      * HTTP GET omitted for clarity   └─────┬─────┘│
 │     │                                             │      │
 └─────│─────────────────────────────────────────────│──────┘
@@ -25,8 +25,8 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
       │                                             │
 ┌─────│─────────────────────────────────────────────│──────┐
 │     │                                       ┌─────┴─────┐│
-│     └───────────────────────────────────────│kels-gossip││
-│  HTTP GET (fetch events from remote KELS)   │ (gossip)  ││
+│     └───────────────────────────────────────│  gossip   ││
+│  HTTP GET (fetch events from remote KELS)   │ (service) ││
 │        ┌────────────────────────────────────│           ││
 │        │ HTTP POST (submit events)          └───────┬───┘│
 │        ▼                                            │    │
@@ -45,12 +45,12 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 
 1. Client submits events to KELS via HTTP
 2. KELS writes to DB, then publishes `{prefix}:{effective_said}` to Redis `kel_updates` channel, where `effective_said` is the prefix's effective SAID (tip event SAID for non-divergent KELs, synthetic hash for divergent/contested KELs). This ensures the gossip feedback loop cache key matches regardless of KEL state.
-3. `kels-gossip` receives notification via Redis SUBSCRIBE
+3. The gossip service receives notification via Redis SUBSCRIBE
 4. Broadcasts `KelAnnouncement { prefix, said }` via PlumTree to all peers
 
 ### Inbound (gossip network → local)
 
-1. `kels-gossip` receives `KelAnnouncement` via PlumTree broadcast
+1. The gossip service receives `KelAnnouncement` via PlumTree broadcast
 2. Compares announced SAID with local latest SAID for that prefix
 3. Checks if announced SAID already exists locally (we may be ahead of the announcer)
 4. If SAID is new:
@@ -72,7 +72,7 @@ The `kels-gossip` service synchronizes KELs between independent KELS deployments
 ### Service Structure
 
 ```
-services/kels-gossip/
+services/gossip/
 ├── Cargo.toml
 ├── Dockerfile
 ├── garden.yml
@@ -186,7 +186,7 @@ Gossip nodes use persistent HSM-backed identities:
 
 ### Registry-based discovery (not hardcoded bootstrap peers)
 
-- Nodes register with the `kels-registry` service on startup
+- Nodes register with the registry service on startup
 - New nodes query the registry for existing peers and bootstrap sync
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
 - No hardcoded peer addresses needed in configuration
@@ -201,7 +201,7 @@ Gossip nodes in different namespaces connect via the registry service. The regis
 ### Services
 
 Each namespace has:
-- `kels-gossip` - ClusterIP service for gossip TCP connections
+- `gossip` - ClusterIP service for gossip TCP connections
 
 **Cross-cluster note:** The test harness colocates all nodes in one Kubernetes cluster with cross-namespace routing via CoreDNS rewrites. In a production deployment where nodes are in separate clusters or networks, each node's gossip TCP port must be externally reachable — e.g., via a LoadBalancer service, NodePort, or Gateway API TCPRoute. The gossip advertise address (`GOSSIP_ADVERTISE_ADDR`) should be set to the externally routable hostname and port.
 
