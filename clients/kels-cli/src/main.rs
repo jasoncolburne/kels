@@ -254,7 +254,7 @@ enum SadCommands {
         prefix: String,
     },
 
-    /// Compute a SAD chain prefix from a KEL prefix and kind
+    /// Compute a SAD pointer prefix from a KEL prefix and kind
     Prefix {
         /// The KEL prefix
         kel_prefix: String,
