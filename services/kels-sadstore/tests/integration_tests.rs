@@ -475,7 +475,7 @@ async fn test_list_objects_empty() {
 
     let resp = harness
         .client()
-        .post(harness.url("/api/test/sad/objects"))
+        .post(harness.url("/api/test/sad/saids"))
         .json(&body)
         .send()
         .await
