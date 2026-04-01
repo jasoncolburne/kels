@@ -1,22 +1,13 @@
 //! PostgreSQL Repository for KELS SADStore
 
-use cesr::{Matter, Signature, VerificationKey};
+use cesr::VerificationKey;
 
 use kels::{SadChainRepair, SadChainRepairRecord, SadRecord, SadRecordSignature};
 use verifiable_storage::{
-    Chained, ChainedRepository, ColumnQuery, QueryExecutor, SelfAddressed, StorageError,
-    TransactionExecutor, UnchainedRepository, Value,
+    ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
+    UnchainedRepository, Value,
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
-
-#[derive(Default)]
-struct ChainState {
-    tip_said: Option<String>,
-    next_version: u64,
-    kel_prefix: Option<String>,
-    kind: Option<String>,
-    is_divergent: bool,
-}
 
 #[derive(Stored)]
 #[stored(item_type = SadRecord, table = "sad_records", chained = true)]
@@ -51,6 +42,21 @@ impl SadRecordRepository {
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix).await?;
 
+        // Quick divergence check before inserting — reject appends to frozen chains
+        let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("version")
+            .limit(1);
+        let counts: Vec<i64> = tx.fetch_grouped_count(divergence_query).await?;
+        if counts.first().is_some_and(|&c| c > 1) {
+            return Err(StorageError::StorageError(
+                "Chain is divergent — repair required".to_string(),
+            ));
+        }
+
         // Insert records, skipping duplicates via unique constraint
         let mut count = 0u32;
         for (record, signature) in records {
@@ -66,22 +72,27 @@ impl SadRecordRepository {
 
         // Verify the full chain (including new records) — catches structural
         // issues, signature failures, and DB tampering. Rolls back on failure.
-        Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        let verifier = Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+
+        // finish() ensures chain is non-empty (DB not wiped)
+        verifier.finish().map_err(|e| {
+            StorageError::StorageError(format!("Chain verification incomplete: {}", e))
+        })?;
 
         tx.commit().await?;
         Ok(count)
     }
 
-    /// Walk the full existing chain within a transaction, verifying structural
-    /// integrity (SAID, linkage, versions, prefix derivation) and signatures.
+    /// Walk the full chain within a transaction using `SadChainVerifier`.
+    /// Verifies structural integrity AND signatures. Returns the verifier
+    /// (caller can check `is_divergent()` or call `finish()`).
     async fn verify_chain<Tx: TransactionExecutor>(
         tx: &mut Tx,
         prefix: &str,
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
-    ) -> Result<ChainState, StorageError> {
+    ) -> Result<kels::SadChainVerifier, StorageError> {
         let page_size = kels::page_size() as u64;
-        let mut state = ChainState::default();
-        let mut last_said: Option<String> = None;
+        let mut verifier = kels::SadChainVerifier::new(prefix, establishment_keys.clone());
 
         let mut offset: u64 = 0;
         loop {
@@ -107,88 +118,36 @@ impl SadRecordRepository {
             let sig_map: std::collections::HashMap<&str, &SadRecordSignature> =
                 sigs.iter().map(|s| (s.record_said.as_str(), s)).collect();
 
-            for existing in &page {
-                // Divergence: duplicate version (same version as previous record)
-                if existing.version + 1 == state.next_version {
-                    state.is_divergent = true;
-                    continue;
-                }
-
-                if existing.version == 0 {
-                    if existing.verify_prefix().is_err() {
-                        return Err(StorageError::StorageError(
-                            "Existing v0 record has invalid prefix derivation — DB tampered"
-                                .to_string(),
-                        ));
-                    }
-                    state.kel_prefix = Some(existing.kel_prefix.clone());
-                    state.kind = Some(existing.kind.clone());
-                } else {
-                    if existing.previous.as_deref() != last_said.as_deref() {
-                        return Err(StorageError::StorageError(
-                            "Existing chain has broken linkage — DB tampered".to_string(),
-                        ));
-                    }
-                    if existing.version != state.next_version {
-                        return Err(StorageError::StorageError(
-                            "Existing chain has non-sequential versions — DB tampered".to_string(),
-                        ));
-                    }
-                    if state.kel_prefix.as_deref() != Some(&existing.kel_prefix) {
-                        return Err(StorageError::StorageError(
-                            "Existing chain has inconsistent kel_prefix — DB tampered".to_string(),
-                        ));
-                    }
-                    if state.kind.as_deref() != Some(&existing.kind) {
-                        return Err(StorageError::StorageError(
-                            "Existing chain has inconsistent kind — DB tampered".to_string(),
-                        ));
-                    }
-                }
-
-                if existing.verify_said().is_err() {
-                    return Err(StorageError::StorageError(
-                        "Existing record has invalid SAID — DB tampered".to_string(),
-                    ));
-                }
-
-                let sig_record = sig_map.get(existing.said.as_str()).ok_or_else(|| {
-                    StorageError::StorageError(format!(
-                        "Missing signature for existing record {} — DB tampered",
-                        existing.said
-                    ))
-                })?;
-                let public_key = establishment_keys
-                    .get(&sig_record.establishment_serial)
-                    .ok_or_else(|| {
+            // Build SignedSadRecords for the verifier
+            let signed_records: Vec<kels::SignedSadRecord> = page
+                .into_iter()
+                .map(|record| {
+                    let sig_record = sig_map.get(record.said.as_str()).ok_or_else(|| {
                         StorageError::StorageError(format!(
-                            "No establishment key for serial {} — DB tampered",
-                            sig_record.establishment_serial
+                            "Missing signature for record {} — DB tampered",
+                            record.said
                         ))
                     })?;
-                let sig = Signature::from_qb64(&sig_record.signature).map_err(|e| {
-                    StorageError::StorageError(format!("Invalid signature format: {}", e))
-                })?;
-                if public_key.verify(existing.said.as_bytes(), &sig).is_err() {
-                    return Err(StorageError::StorageError(format!(
-                        "Signature verification failed for existing record {} — DB tampered",
-                        existing.said
-                    )));
-                }
+                    Ok(kels::SignedSadRecord {
+                        record,
+                        signature: sig_record.signature.clone(),
+                        establishment_serial: sig_record.establishment_serial,
+                    })
+                })
+                .collect::<Result<Vec<_>, StorageError>>()?;
 
-                last_said = Some(existing.said.clone());
-                state.tip_said = Some(existing.said.clone());
-                state.next_version = existing.version + 1;
-            }
+            verifier.verify_page(&signed_records).map_err(|e| {
+                StorageError::StorageError(format!("Chain verification failed: {}", e))
+            })?;
 
-            let page_len = page.len() as u64;
+            let page_len = signed_records.len() as u64;
             offset += page_len;
             if page_len < page_size {
                 break;
             }
         }
 
-        Ok(state)
+        Ok(verifier)
     }
 
     const ARCHIVED_RECORDS_TABLE: &'static str = "sad_record_archives";

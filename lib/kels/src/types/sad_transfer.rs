@@ -174,40 +174,60 @@ impl PagedSadSink for HttpSadSink {
 /// the full chain in memory. Tracks evolving chain state (previous SAID, version,
 /// kel_prefix, kind) and collects establishment serials for later signature
 /// verification against the KEL.
-struct SadChainVerifier {
+/// Verifier for SAD record chains. Checks structural integrity AND signatures.
+///
+/// Verifies incrementally per page: SAID integrity, prefix derivation (v0),
+/// chain linkage, version monotonicity, kel_prefix/kind consistency, and
+/// signature verification against provided establishment keys.
+///
+/// Used by both the transfer infrastructure (pass 2) and the repository
+/// (DB chain walk). Divergence detection is tracked but not rejected —
+/// the caller decides how to handle it.
+pub struct SadChainVerifier {
     prefix: String,
     expected_version: u64,
     last_said: Option<String>,
     kel_prefix: Option<String>,
     kind: Option<String>,
-    establishment_serials: BTreeSet<u64>,
     tip: Option<SignedSadRecord>,
     saw_any_records: bool,
+    is_divergent: bool,
+    establishment_keys: HashMap<u64, VerificationKey>,
 }
 
 impl SadChainVerifier {
-    fn new(prefix: &str) -> Self {
+    pub fn new(prefix: &str, establishment_keys: HashMap<u64, VerificationKey>) -> Self {
         Self {
             prefix: prefix.to_string(),
             expected_version: 0,
             last_said: None,
             kel_prefix: None,
             kind: None,
-            establishment_serials: BTreeSet::new(),
             tip: None,
             saw_any_records: false,
+            is_divergent: false,
+            establishment_keys,
         }
     }
 
+    pub fn is_divergent(&self) -> bool {
+        self.is_divergent
+    }
+
     /// Verify a page of records incrementally. Carries forward state for the next page.
-    fn verify_page(&mut self, records: &[SignedSadRecord]) -> Result<(), KelsError> {
+    pub fn verify_page(&mut self, records: &[SignedSadRecord]) -> Result<(), KelsError> {
         for stored in records {
             self.saw_any_records = true;
             let record = &stored.record;
+
+            // Divergence: duplicate version (same version as previous record)
+            if record.version + 1 == self.expected_version {
+                self.is_divergent = true;
+                continue;
+            }
+
             record.verify_said()?;
 
-            // Verify prefix derivation on v0 — ensures the prefix was correctly
-            // computed from the inception record content, not fabricated.
             if self.expected_version == 0 {
                 record.verify_prefix()?;
             }
@@ -262,17 +282,31 @@ impl SadChainVerifier {
                 )));
             }
 
+            // Verify signature against establishment key
+            let public_key = self
+                .establishment_keys
+                .get(&stored.establishment_serial)
+                .ok_or_else(|| {
+                    KelsError::VerificationFailed(format!(
+                        "No establishment key for serial {} (record {})",
+                        stored.establishment_serial, record.said
+                    ))
+                })?;
+            let sig = Signature::from_qb64(&stored.signature)
+                .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
+            public_key
+                .verify(record.said.as_bytes(), &sig)
+                .map_err(|_| KelsError::SignatureVerificationFailed)?;
+
             self.last_said = Some(record.said.clone());
             self.expected_version += 1;
-            self.establishment_serials
-                .insert(stored.establishment_serial);
             self.tip = Some(stored.clone());
         }
 
         Ok(())
     }
 
-    fn finish(self) -> Result<(BTreeSet<u64>, SignedSadRecord, String), KelsError> {
+    pub fn finish(self) -> Result<(SignedSadRecord, String), KelsError> {
         if !self.saw_any_records {
             return Err(KelsError::VerificationFailed(
                 "Empty SAD record chain".into(),
@@ -286,23 +320,57 @@ impl SadChainVerifier {
             KelsError::VerificationFailed("No kel_prefix after verification".into())
         })?;
 
-        Ok((self.establishment_serials, tip, kel_prefix))
+        Ok((tip, kel_prefix))
     }
+}
+
+/// Collect establishment serials from a paged source without verification.
+/// Used as pass 1 to determine which KEL keys are needed before full verification.
+pub async fn collect_establishment_serials(
+    prefix: &str,
+    source: &(dyn PagedSadSource + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<(BTreeSet<u64>, String), KelsError> {
+    let mut serials = BTreeSet::new();
+    let mut kel_prefix: Option<String> = None;
+    let mut since: Option<String> = None;
+
+    for _ in 0..max_pages {
+        let (records, has_more) = source
+            .fetch_page(prefix, since.as_deref(), page_size)
+            .await?;
+
+        if records.is_empty() {
+            break;
+        }
+
+        for stored in &records {
+            serials.insert(stored.establishment_serial);
+            if kel_prefix.is_none() {
+                kel_prefix = Some(stored.record.kel_prefix.clone());
+            }
+        }
+
+        since = records.last().map(|r| r.record.said.clone());
+
+        if !has_more {
+            break;
+        }
+    }
+
+    let kel_prefix =
+        kel_prefix.ok_or_else(|| KelsError::VerificationFailed("Empty SAD record chain".into()))?;
+
+    Ok((serials, kel_prefix))
 }
 
 // ==================== Core Transfer Function ====================
 
-/// Page through a SAD chain from source to sink, optionally verifying structure.
+/// Page through a SAD chain from source to sink, optionally verifying.
 ///
-/// Mirrors `transfer_key_events`: takes an optional structural verifier that
-/// verifies incrementally per page. SAD chains are simpler than KELs — no fork
-/// reordering or held-back events. Divergence is detected and stored by the sink
-/// (SADStore service), not handled during transfer.
-///
-/// When `verifier` is Some, structural checks run inline (SAID, chain linkage,
-/// version monotonicity, consistency). Signature verification is NOT done here —
-/// it requires KEL keys from a separate source and happens in a second pass
-/// in `verify_sad_records`.
+/// When `verifier` is provided, full structural + signature checks run inline
+/// per page. The verifier must see the full chain (no `since` with verification).
 async fn transfer_sad_records(
     prefix: &str,
     source: &(dyn PagedSadSource + Sync),
@@ -348,40 +416,14 @@ async fn transfer_sad_records(
     )))
 }
 
-/// Verify signatures for a page of SAD records against pre-collected establishment keys.
-fn verify_page_signatures(
-    records: &[SignedSadRecord],
-    establishment_keys: &HashMap<u64, VerificationKey>,
-) -> Result<(), KelsError> {
-    for stored in records {
-        let public_key = establishment_keys
-            .get(&stored.establishment_serial)
-            .ok_or_else(|| {
-                KelsError::VerificationFailed(format!(
-                    "No establishment key for serial {} (record {})",
-                    stored.establishment_serial, stored.record.said
-                ))
-            })?;
-
-        let sig = Signature::from_qb64(&stored.signature)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
-
-        public_key
-            .verify(stored.record.said.as_bytes(), &sig)
-            .map_err(|_| KelsError::SignatureVerificationFailed)?;
-    }
-    Ok(())
-}
-
 // ==================== Public API ====================
 
 /// Verify a SAD record chain by paging through a source. Returns a verification token.
 ///
 /// Two-pass verification with O(page_size) memory:
-/// 1. Structure: `transfer_sad_records` with verifier + NoOp sink (SAID, chain linkage,
-///    version monotonicity, consistency) — collects establishment serials.
-/// 2. KEL verification with collected serials to obtain establishment keys.
-/// 3. Signatures: page through again, verify each record's signature against the keys.
+/// 1. Collect establishment serials by paging through the chain.
+/// 2. Verify KEL with collected serials to obtain establishment keys.
+/// 3. Full verification: page through again with `SadChainVerifier` (structure + signatures).
 pub async fn verify_sad_records(
     prefix: &str,
     source: &(dyn PagedSadSource + Sync),
@@ -389,24 +431,13 @@ pub async fn verify_sad_records(
     page_size: usize,
     max_pages: usize,
 ) -> Result<SadRecordVerification, KelsError> {
-    // Pass 1: structural verification via transfer_sad_records with verifier + NoOp sink
-    let mut verifier = SadChainVerifier::new(prefix);
-    transfer_sad_records(
-        prefix,
-        source,
-        &NoOpSadSink,
-        Some(&mut verifier),
-        page_size,
-        max_pages,
-        None,
-    )
-    .await?;
-
-    let (establishment_serials, tip, kel_prefix) = verifier.finish()?;
+    // Pass 1: collect establishment serials
+    let (establishment_serials, kel_prefix) =
+        collect_establishment_serials(prefix, source, page_size, max_pages).await?;
 
     // Between: verify KEL and collect establishment keys
     let kel_verifier = KelVerifier::new(&kel_prefix)
-        .with_establishment_key_collection(establishment_serials, crate::page_size())?;
+        .with_establishment_key_collection(establishment_serials, crate::max_collected_keys())?;
 
     let (kel_verification, establishment_keys) =
         crate::verify_key_events_collecting_establishment_keys(
@@ -422,25 +453,20 @@ pub async fn verify_sad_records(
         return Err(KelsError::Divergent);
     }
 
-    // Pass 2: signature verification — page through again with keys in hand
-    let mut since: Option<String> = None;
+    // Pass 2: full verification (structure + signatures) with keys
+    let mut verifier = SadChainVerifier::new(prefix, establishment_keys);
+    transfer_sad_records(
+        prefix,
+        source,
+        &NoOpSadSink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+        None,
+    )
+    .await?;
 
-    for _ in 0..max_pages {
-        let (records, has_more) = source
-            .fetch_page(prefix, since.as_deref(), page_size)
-            .await?;
-
-        if records.is_empty() {
-            break;
-        }
-
-        since = records.last().map(|r| r.record.said.clone());
-        verify_page_signatures(&records, &establishment_keys)?;
-
-        if !has_more {
-            break;
-        }
-    }
+    let (tip, _kel_prefix) = verifier.finish()?;
 
     Ok(SadRecordVerification::new(
         tip.record,
@@ -465,53 +491,69 @@ pub async fn forward_sad_records(
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use cesr::generate_secp256r1;
     use verifiable_storage::{Chained, SelfAddressed};
 
     use super::*;
     use crate::SadRecord;
 
-    fn stored(record: SadRecord) -> SignedSadRecord {
+    fn test_keys() -> (VerificationKey, cesr::SigningKey) {
+        generate_secp256r1().unwrap()
+    }
+
+    fn signed(record: &SadRecord, signing_key: &cesr::SigningKey) -> SignedSadRecord {
+        let sig = signing_key.sign(record.said.as_bytes()).unwrap();
         SignedSadRecord {
-            record,
-            signature: "test_sig".to_string(),
+            record: record.clone(),
+            signature: sig.qb64(),
             establishment_serial: 0,
         }
     }
 
+    fn keys_map(vk: &VerificationKey) -> HashMap<u64, VerificationKey> {
+        let mut m = HashMap::new();
+        m.insert(0, vk.clone());
+        m
+    }
+
     #[test]
     fn test_sad_chain_verifier_valid_chain() {
+        let (vk, sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-
         let mut v1 = v0.clone();
         v1.content_said = Some("Econtent1".to_string());
         v1.increment().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        assert!(verifier.verify_page(&[stored(v0), stored(v1)]).is_ok());
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        assert!(
+            verifier
+                .verify_page(&[signed(&v0, &sk), signed(&v1, &sk)])
+                .is_ok()
+        );
         assert!(verifier.finish().is_ok());
     }
 
     #[test]
     fn test_sad_chain_verifier_empty_fails() {
-        let verifier = SadChainVerifier::new("Etest");
-        let err = verifier.finish();
-        assert!(err.is_err());
+        let (vk, _) = test_keys();
+        let verifier = SadChainVerifier::new("Etest", keys_map(&vk));
+        assert!(verifier.finish().is_err());
     }
 
     #[test]
     fn test_sad_chain_verifier_broken_linkage_fails() {
+        let (vk, sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-
         let mut v1 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
@@ -522,8 +564,10 @@ mod tests {
         v1.previous = Some("Ewrong_said".to_string());
         v1.derive_said().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        let err = verifier.verify_page(&[stored(v0), stored(v1)]).unwrap_err();
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        let err = verifier
+            .verify_page(&[signed(&v0, &sk), signed(&v1, &sk)])
+            .unwrap_err();
         assert!(
             err.to_string().contains("previous doesn't match"),
             "Expected chain linkage error, got: {}",
@@ -533,19 +577,21 @@ mod tests {
 
     #[test]
     fn test_sad_chain_verifier_inconsistent_kind_fails() {
+        let (vk, sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-
         let mut v1 = v0.clone();
         v1.kind = "kels/v1/other-kind".to_string();
         v1.increment().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        let err = verifier.verify_page(&[stored(v0), stored(v1)]).unwrap_err();
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        let err = verifier
+            .verify_page(&[signed(&v0, &sk), signed(&v1, &sk)])
+            .unwrap_err();
         assert!(
             err.to_string().contains("kind"),
             "Expected kind mismatch error, got: {}",
@@ -555,21 +601,23 @@ mod tests {
 
     #[test]
     fn test_sad_chain_verifier_wrong_version_fails() {
+        let (vk, sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-
         let mut v1 = v0.clone();
         v1.content_said = Some("Econtent1".to_string());
         v1.increment().unwrap();
         v1.version = 5;
         v1.derive_said().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        let err = verifier.verify_page(&[stored(v0), stored(v1)]).unwrap_err();
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        let err = verifier
+            .verify_page(&[signed(&v0, &sk), signed(&v1, &sk)])
+            .unwrap_err();
         assert!(
             err.to_string().contains("has version 5 but expected 1"),
             "Expected version error, got: {}",
@@ -579,33 +627,37 @@ mod tests {
 
     #[test]
     fn test_sad_chain_verifier_multi_page() {
+        let (vk, sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
-
         let mut v1 = v0.clone();
         v1.content_said = Some("Econtent1".to_string());
         v1.increment().unwrap();
-
         let mut v2 = v1.clone();
         v2.content_said = Some("Econtent2".to_string());
         v2.increment().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        assert!(verifier.verify_page(&[stored(v0)]).is_ok());
-        assert!(verifier.verify_page(&[stored(v1), stored(v2)]).is_ok());
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        assert!(verifier.verify_page(&[signed(&v0, &sk)]).is_ok());
+        assert!(
+            verifier
+                .verify_page(&[signed(&v1, &sk), signed(&v2, &sk)])
+                .is_ok()
+        );
 
-        let (serials, tip, kel_prefix) = verifier.finish().unwrap();
-        assert!(serials.contains(&0));
+        let (tip, kel_prefix) = verifier.finish().unwrap();
         assert_eq!(tip.record.version, 2);
         assert_eq!(kel_prefix, "Ekel123");
     }
 
     #[test]
-    fn test_sad_chain_verifier_collects_establishment_serials() {
+    fn test_sad_chain_verifier_bad_signature_fails() {
+        let (vk, _) = test_keys();
+        let (_, other_sk) = test_keys();
         let v0 = SadRecord::create(
             "Ekel123".to_string(),
             "kels/v1/mlkem-pubkey".to_string(),
@@ -613,25 +665,33 @@ mod tests {
         )
         .unwrap();
 
-        let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
-        v1.increment().unwrap();
+        let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
+        let err = verifier.verify_page(&[signed(&v0, &other_sk)]).unwrap_err();
+        assert!(
+            err.to_string().contains("Signature verification failed")
+                || err.to_string().contains("signature"),
+            "Expected signature error, got: {}",
+            err
+        );
+    }
 
-        let records = vec![
-            stored(v0),
-            SignedSadRecord {
-                record: v1,
-                signature: "test_sig".to_string(),
-                establishment_serial: 3,
-            },
-        ];
+    #[test]
+    fn test_sad_chain_verifier_missing_key_fails() {
+        let (_, sk) = test_keys();
+        let v0 = SadRecord::create(
+            "Ekel123".to_string(),
+            "kels/v1/mlkem-pubkey".to_string(),
+            None,
+        )
+        .unwrap();
 
-        let mut verifier = SadChainVerifier::new(&records[0].record.prefix);
-        assert!(verifier.verify_page(&records).is_ok());
-
-        let (serials, _, _) = verifier.finish().unwrap();
-        assert!(serials.contains(&0));
-        assert!(serials.contains(&3));
-        assert_eq!(serials.len(), 2);
+        // Empty keys map — no key for serial 0
+        let mut verifier = SadChainVerifier::new(&v0.prefix, HashMap::new());
+        let err = verifier.verify_page(&[signed(&v0, &sk)]).unwrap_err();
+        assert!(
+            err.to_string().contains("No establishment key"),
+            "Expected missing key error, got: {}",
+            err
+        );
     }
 }
