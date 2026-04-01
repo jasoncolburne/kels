@@ -113,7 +113,7 @@ impl SadPointerRepository {
             let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
-            .r#in("record_said", page_saids);
+            .r#in("pointer_said", page_saids);
             let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
             let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
                 sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
@@ -214,7 +214,7 @@ impl SadPointerRepository {
             let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
-            .r#in("record_said", page_saids);
+            .r#in("pointer_said", page_saids);
             let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
 
             for record in &page {
@@ -291,7 +291,7 @@ impl SadPointerRepository {
         let serial_query = ColumnQuery::new(Self::SIGNATURES_TABLE_NAME, "establishment_serial")
             .distinct()
             .in_subquery(
-                "record_said",
+                "pointer_said",
                 ScalarSubquery::new(
                     Self::TABLE_NAME,
                     "said",
@@ -409,10 +409,10 @@ impl SadPointerRepository {
         let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
             Self::SIGNATURES_TABLE_NAME,
         )
-        .r#in("record_said", saids);
+        .r#in("pointer_said", saids);
         let sigs: Vec<kels::SadPointerSignature> = self.pool.fetch(query).await?;
 
-        // Index signatures by record_said for O(1) lookup
+        // Index signatures by pointer_said for O(1) lookup
         let sig_map: std::collections::HashMap<&str, &kels::SadPointerSignature> =
             sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
@@ -436,14 +436,14 @@ impl SadPointerRepository {
     /// Get the signature for a SAD record by its SAID.
     pub async fn get_signature(
         &self,
-        record_said: &str,
+        pointer_said: &str,
     ) -> Result<Option<kels::SadPointerSignature>, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let query = verifiable_storage_postgres::Query::<kels::SadPointerSignature>::for_table(
             Self::SIGNATURES_TABLE_NAME,
         )
-        .eq("record_said", record_said)
+        .eq("pointer_said", pointer_said)
         .limit(1);
         self.pool.fetch_optional(query).await
     }
@@ -524,23 +524,23 @@ impl SadPointerRepository {
         }
 
         // Collect record SAIDs
-        let record_saids: Vec<String> = links.iter().map(|l| l.pointer_said.clone()).collect();
+        let pointer_saids: Vec<String> = links.iter().map(|l| l.pointer_said.clone()).collect();
 
         // Batch-fetch archived records
         let records_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
             Self::ARCHIVED_RECORDS_TABLE,
         )
-        .r#in("said", record_saids.clone());
+        .r#in("said", pointer_saids.clone());
         let records: Vec<SadPointer> = self.pool.fetch(records_query).await?;
 
         // Batch-fetch archived signatures
         let sigs_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
             Self::ARCHIVED_SIGNATURES_TABLE,
         )
-        .r#in("record_said", record_saids);
+        .r#in("pointer_said", pointer_saids);
         let sigs: Vec<SadPointerSignature> = self.pool.fetch(sigs_query).await?;
 
-        // Index signatures by record_said
+        // Index signatures by pointer_said
         let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
             sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
 
