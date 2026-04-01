@@ -682,23 +682,17 @@ struct SettingsTab: View {
 
                                     Spacer()
 
-                                    statusBadge(for: node.status)
-
-                                    if let latency = node.latencyMs {
-                                        Text("\(latency)ms")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    } else if node.status == .ready {
-                                        Text("-")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
+                                    Text("READY")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.green.opacity(0.2))
+                                        .foregroundColor(.green)
+                                        .cornerRadius(4)
                                 }
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .disabled(node.status != .ready)
-                            .opacity(node.status == .ready ? 1.0 : 0.5)
                         }
                     }
                 }
@@ -816,35 +810,6 @@ struct SettingsTab: View {
         }
     }
 
-    @ViewBuilder
-    private func statusBadge(for status: RegistryNodeStatus) -> some View {
-        switch status {
-        case .ready:
-            Text("READY")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.green.opacity(0.2))
-                .foregroundColor(.green)
-                .cornerRadius(4)
-        case .bootstrapping:
-            Text("SYNC")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.yellow.opacity(0.2))
-                .foregroundColor(.orange)
-                .cornerRadius(4)
-        case .unhealthy:
-            Text("DOWN")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.red.opacity(0.2))
-                .foregroundColor(.red)
-                .cornerRadius(4)
-        }
-    }
 }
 
 // MARK: - Developer Tab

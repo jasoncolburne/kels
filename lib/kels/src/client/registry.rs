@@ -3,13 +3,7 @@
 //! Shared client used by gossip nodes, CLI, and other clients to interact
 //! with the kels-registry service.
 
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    future::Future,
-    iter,
-    time::Duration,
-};
+use std::{cmp::Ordering, collections::HashSet, future::Future, iter, time::Duration};
 use tracing::{debug, info, warn};
 
 use futures::future::join_all;
@@ -17,11 +11,12 @@ use rand::seq::SliceRandom;
 use verifiable_storage::StorageDatetime;
 
 use crate::{
+    client::NodeStatus,
     error::KelsError,
     types::{
-        CompletedProposalsResponse, ErrorResponse, FederationStatus, KelVerification, NodeInfo,
-        NodeStatus, Peer, PeersResponse, Proposal, ProposalHistory, ProposalStatus,
-        ProposalWithVotesMethods, SignedRequest, Vote,
+        CompletedProposalsResponse, ErrorResponse, FederationStatus, KelVerification, Peer,
+        PeersResponse, Proposal, ProposalHistory, ProposalStatus, ProposalWithVotesMethods,
+        SignedRequest, Vote,
     },
 };
 
@@ -117,33 +112,20 @@ impl KelsRegistryClient {
         })
     }
 
-    /// List all active peers as NodeInfo (for client discovery with latency testing).
-    pub async fn list_nodes_info(&self) -> Result<Vec<NodeInfo>, KelsError> {
-        let (peers_response, ready_map) = self.fetch_peers().await?;
-        let nodes: Vec<NodeInfo> = peers_response
+    /// List all active peers from the registry.
+    pub async fn list_active_peers(&self) -> Result<Vec<Peer>, KelsError> {
+        let peers_response = self.fetch_peers().await?;
+        Ok(peers_response
             .peers
             .into_iter()
             .filter_map(|history| {
-                history.records.into_iter().last().and_then(|peer| {
-                    let status = ready_map
-                        .get(&peer.prefix)
-                        .unwrap_or(&NodeStatus::Bootstrapping);
-
-                    if peer.active {
-                        Some(NodeInfo {
-                            node_id: peer.node_id,
-                            base_domain: peer.base_domain,
-                            gossip_addr: peer.gossip_addr,
-                            status: *status,
-                            latency_ms: None,
-                        })
-                    } else {
-                        None
-                    }
-                })
+                history
+                    .records
+                    .into_iter()
+                    .last()
+                    .filter(|peer| peer.active)
             })
-            .collect();
-        Ok(nodes)
+            .collect())
     }
 
     /// Check if the registry is healthy.
@@ -162,9 +144,7 @@ impl KelsRegistryClient {
     /// Returns peer histories containing all versions of each peer record.
     /// This is an unauthenticated endpoint - nodes can check the peer list
     /// before they are authorized.
-    pub async fn fetch_peers(
-        &self,
-    ) -> Result<(PeersResponse, HashMap<String, NodeStatus>), KelsError> {
+    pub async fn fetch_peers(&self) -> Result<PeersResponse, KelsError> {
         let response = self
             .client
             .get(format!("{}/api/v1/peers", self.base_url))
@@ -172,17 +152,7 @@ impl KelsRegistryClient {
             .await?;
 
         if response.status().is_success() {
-            let result: PeersResponse = response.json().await?;
-
-            let peer_slice: Vec<_> = result
-                .peers
-                .iter()
-                .filter_map(|p| p.records.last())
-                .by_ref()
-                .collect();
-            let ready_map = self.check_nodes_ready_status(&peer_slice).await?;
-
-            Ok((result, ready_map))
+            Ok(response.json().await?)
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))
@@ -195,7 +165,7 @@ impl KelsRegistryClient {
         trusted_prefixes: &HashSet<&'static str>,
         kel_verifications: &[&KelVerification],
     ) -> Result<bool, KelsError> {
-        let (peers_response, _) = self.fetch_peers().await?;
+        let peers_response = self.fetch_peers().await?;
         if !peers_response.peers.iter().any(|history| {
             history
                 .records
@@ -217,74 +187,30 @@ impl KelsRegistryClient {
     }
 
     pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
-        let (nodes, ready_map) = self.fetch_peers().await?;
+        let peers_response = self.fetch_peers().await?;
 
-        for history in nodes.peers {
-            let last_record = history.records.last();
-            if let Some(record) = last_record
-                && record.active
+        for history in peers_response.peers {
+            let Some(record) = history.records.last() else {
+                continue;
+            };
+            if !record.active {
+                continue;
+            }
+            if let Some(node_id) = exclude_node_id
+                && node_id == record.node_id
             {
-                if let Some(node_id) = exclude_node_id
-                    && node_id == record.node_id
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                if ready_map.get(&history.prefix) == Some(&NodeStatus::Ready) {
-                    return Ok(true);
-                }
+            let kels_url = format!("http://kels.{}", record.base_domain);
+            if let Ok(client) = crate::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
+                && client.check_ready_status().await == NodeStatus::Ready
+            {
+                return Ok(true);
             }
         }
 
         Ok(false)
-    }
-
-    async fn check_node_ready_status(&self, base_domain: &str) -> NodeStatus {
-        let kels_url = format!("http://kels.{}", base_domain);
-        let ready_url = format!("{}/ready", kels_url.trim_end_matches('/'));
-
-        let quick_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap_or_else(|_| self.client.clone());
-
-        match quick_client.get(&ready_url).send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    // Parse the JSON response to check if ready=true
-                    if let Ok(body) = response.json::<serde_json::Value>().await
-                        && body.get("ready") == Some(&serde_json::Value::Bool(true))
-                    {
-                        return NodeStatus::Ready;
-                    }
-                    NodeStatus::Bootstrapping
-                } else if response.status().as_u16() == 503 {
-                    // SERVICE_UNAVAILABLE means bootstrapping
-                    NodeStatus::Bootstrapping
-                } else {
-                    NodeStatus::Unhealthy
-                }
-            }
-            Err(_) => NodeStatus::Unhealthy,
-        }
-    }
-
-    async fn check_nodes_ready_status(
-        &self,
-        peers: &[&Peer],
-    ) -> Result<HashMap<String, NodeStatus>, KelsError> {
-        let mut map: HashMap<String, NodeStatus> = HashMap::with_capacity(peers.len());
-
-        let futures = peers
-            .iter()
-            .map(|peer| self.check_node_ready_status(&peer.base_domain));
-        let statuses = join_all(futures).await;
-
-        for (peer, status) in peers.iter().zip(statuses.into_iter()) {
-            map.insert(peer.prefix.clone(), status);
-        }
-
-        Ok(map)
     }
 
     /// Fetch the registry's own prefix from federation status.
@@ -889,15 +815,16 @@ async fn verify_proposal_dag_standalone<'a>(
     true
 }
 
-/// Discover nodes from registries, verify, sort by latency.
+/// Discover verified, ready peers from registries, sorted by latency.
 ///
 /// Used by CLI and FFI. Performs full verification: structural integrity,
 /// peer anchoring, and vote verification against the local store.
+/// Returns only active, verified, ready peers sorted by measured latency.
 pub async fn nodes_sorted_by_latency(
     urls: &[String],
     timeout: Duration,
     store: &(dyn crate::KelStore + Sync),
-) -> Result<Vec<NodeInfo>, KelsError> {
+) -> Result<Vec<Peer>, KelsError> {
     let trusted = trusted_prefixes();
 
     // Fetch and verify registry member KELs to the local store
@@ -920,7 +847,7 @@ pub async fn nodes_sorted_by_latency(
     }
 
     // Fetch peers with failover
-    let (peers_response, ready_map) =
+    let peers_response: PeersResponse =
         with_failover(urls, timeout, |c| async move { c.fetch_peers().await }).await?;
 
     // Fetch proposals with failover
@@ -930,7 +857,7 @@ pub async fn nodes_sorted_by_latency(
     .await
     .ok();
 
-    let mut nodes = Vec::new();
+    let mut verified_peers = Vec::new();
     for history in &peers_response.peers {
         let Some(peer) = history.records.last() else {
             continue;
@@ -965,31 +892,27 @@ pub async fn nodes_sorted_by_latency(
             continue;
         }
 
-        let status = ready_map
-            .get(&peer.prefix)
-            .unwrap_or(&NodeStatus::Bootstrapping);
-        nodes.push(NodeInfo {
-            node_id: peer.node_id.clone(),
-            base_domain: peer.base_domain.clone(),
-            gossip_addr: peer.gossip_addr.clone(),
-            status: *status,
-            latency_ms: None,
-        });
+        // Check readiness and measure latency
+        let kels_url = format!("http://kels.{}", peer.base_domain);
+        let Ok(client) = crate::KelsClient::with_timeout(&kels_url, timeout) else {
+            continue;
+        };
+
+        if client.check_ready_status().await != NodeStatus::Ready {
+            continue;
+        }
+
+        verified_peers.push((peer.clone(), client));
     }
 
-    // Test latency to Ready nodes
-    let latency_futures: Vec<_> = nodes
+    // Measure latency to all ready peers in parallel
+    let latency_futures: Vec<_> = verified_peers
         .iter()
         .enumerate()
-        .filter(|(_, n)| n.status == NodeStatus::Ready)
-        .map(|(i, n)| {
-            let kels_url = format!("http://kels.{}", n.base_domain);
-            let node_id = n.node_id.clone();
+        .map(|(i, (peer, client))| {
+            let node_id = peer.node_id.clone();
+            let client = client.clone();
             async move {
-                let client = match crate::KelsClient::with_timeout(&kels_url, timeout) {
-                    Ok(c) => c,
-                    Err(_) => return (i, None),
-                };
                 let latency = client.test_latency().await.ok();
                 if let Some(ref lat) = latency {
                     info!("Node {} latency: {}ms", node_id, lat.as_millis());
@@ -1001,26 +924,28 @@ pub async fn nodes_sorted_by_latency(
         })
         .collect();
 
-    let results = join_all(latency_futures).await;
-    for (i, latency) in results {
-        if let Some(lat) = latency {
-            nodes[i].latency_ms = Some(lat.as_millis() as u64);
-        }
+    let mut latencies: Vec<Option<Duration>> = vec![None; verified_peers.len()];
+    for (i, latency) in join_all(latency_futures).await {
+        latencies[i] = latency;
     }
 
-    nodes.sort_by(|a, b| match (&a.status, &b.status) {
-        (NodeStatus::Ready, NodeStatus::Ready) => match (&a.latency_ms, &b.latency_ms) {
-            (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        },
-        (NodeStatus::Ready, _) => Ordering::Less,
-        (_, NodeStatus::Ready) => Ordering::Greater,
-        _ => Ordering::Equal,
+    // Sort by latency (nodes with latency first, then those without)
+    let mut indexed: Vec<(usize, &Peer)> = verified_peers
+        .iter()
+        .enumerate()
+        .map(|(i, (p, _))| (i, p))
+        .collect();
+    indexed.sort_by(|a, b| match (&latencies[a.0], &latencies[b.0]) {
+        (Some(a_lat), Some(b_lat)) => a_lat.cmp(b_lat),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     });
 
-    Ok(nodes)
+    Ok(indexed
+        .into_iter()
+        .map(|(i, _)| verified_peers[i].0.clone())
+        .collect())
 }
 
 #[cfg(test)]
@@ -1039,7 +964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_nodes_info() {
+    async fn test_list_active_peers() {
         let mock_server = MockServer::start().await;
 
         let peer = Peer {
@@ -1070,13 +995,11 @@ mod tests {
             .await;
 
         let client = KelsRegistryClient::new(&mock_server.uri()).unwrap();
-        let result = client.list_nodes_info().await;
+        let peers = client.list_active_peers().await.unwrap();
 
-        assert!(result.is_ok());
-        let nodes = result.unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].node_id, "node-1");
-        assert_eq!(nodes[0].base_domain, "node-1.kels");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "node-1");
+        assert_eq!(peers[0].base_domain, "node-1.kels");
     }
 
     // ==================== Peers Tests ====================
@@ -1119,7 +1042,7 @@ mod tests {
         let result = client.fetch_peers().await;
 
         assert!(result.is_ok());
-        let (peers, _status_map) = result.unwrap();
+        let peers = result.unwrap();
         assert_eq!(peers.peers.len(), 1);
     }
 

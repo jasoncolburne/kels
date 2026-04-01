@@ -12,8 +12,7 @@ use colored::Colorize;
 use kels::{EventKind, KelStore};
 use kels::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    KeyProvider, NodeStatus, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig,
-    VerificationKeyCode,
+    KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig, VerificationKeyCode,
 };
 
 const DEFAULT_BASE_DOMAIN: &str = "kels-node-a.kels";
@@ -319,7 +318,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         }
 
         let store = create_kel_store(cli, "registry-discovery")?;
-        let nodes = kels::nodes_sorted_by_latency(
+        let peers = kels::nodes_sorted_by_latency(
             &registry_urls,
             std::time::Duration::from_secs(2),
             &store,
@@ -327,24 +326,15 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         .await
         .context("Failed to discover nodes from registry")?;
 
-        println!("{}", "Node Latencies:".cyan());
-        for node in &nodes {
-            let status_str = match node.status {
-                NodeStatus::Ready => "READY".green(),
-                NodeStatus::Bootstrapping => "BOOTSTRAPPING".yellow(),
-                NodeStatus::Unhealthy => "UNHEALTHY".red(),
-            };
-            let latency_str = node
-                .latency_ms
-                .map(|ms| format!("{}ms", ms))
-                .unwrap_or_else(|| "timeout".to_string());
-            println!("  {} [{}] - {}", node.node_id, status_str, latency_str);
+        println!("{}", "Ready Peers:".cyan());
+        for peer in &peers {
+            println!("  {} - {}", peer.node_id, peer.base_domain);
         }
         println!();
 
-        let url = match nodes.first() {
-            Some(n) => format!("http://kels.{}", n.base_domain),
-            None => return Err(anyhow!("Failed to find kels url of fastest node")),
+        let url = match peers.first() {
+            Some(p) => format!("http://kels.{}", p.base_domain),
+            None => return Err(anyhow!("No ready peers found")),
         };
         Ok(KelsClient::new(&url)?)
     } else {
@@ -385,33 +375,38 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     );
 
     let store = create_kel_store(cli, "registry-discovery")?;
-    let nodes =
+    let peers =
         kels::nodes_sorted_by_latency(&registry_urls, std::time::Duration::from_secs(2), &store)
             .await?;
 
-    if nodes.is_empty() {
-        println!("{}", "No nodes registered.".yellow());
+    if peers.is_empty() {
+        println!("{}", "No ready peers found.".yellow());
         return Ok(());
     }
 
     println!();
-    println!("{}", "Registered Nodes:".cyan().bold());
+    println!("{}", "Ready Peers (sorted by latency):".cyan().bold());
 
-    for node in &nodes {
-        let status_str = match node.status {
-            NodeStatus::Ready => "READY".green(),
-            NodeStatus::Bootstrapping => "BOOTSTRAPPING".yellow(),
-            NodeStatus::Unhealthy => "UNHEALTHY".red(),
+    for peer in &peers {
+        let kels_url = format!("http://kels.{}", peer.base_domain);
+        let latency_str = if let Ok(client) =
+            KelsClient::with_timeout(&kels_url, std::time::Duration::from_secs(2))
+        {
+            client
+                .test_latency()
+                .await
+                .map(|d| format!("{}ms", d.as_millis()))
+                .unwrap_or_else(|_| "-".to_string())
+        } else {
+            "-".to_string()
         };
-
-        let latency_str = node
-            .latency_ms
-            .map(|ms| format!("{}ms", ms))
-            .unwrap_or_else(|| "-".to_string());
 
         println!(
             "  {} [{}] - {} (latency: {})",
-            node.node_id, status_str, node.base_domain, latency_str
+            peer.node_id,
+            "READY".green(),
+            peer.base_domain,
+            latency_str
         );
     }
 

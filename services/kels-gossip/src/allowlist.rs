@@ -62,12 +62,11 @@ pub async fn refresh_allowlist(
     // Fetch peers from any available registry
     let t0 = std::time::Instant::now();
     debug!("Fetching peers from registries");
-    let (response, _) =
-        kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
-            c.fetch_peers().await
-        })
-        .await
-        .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
+    let response = kels::with_failover(registry_urls, Duration::from_secs(10), |c| async move {
+        c.fetch_peers().await
+    })
+    .await
+    .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
     debug!("fetch_peers completed in {:?}", t0.elapsed());
 
     // Fetch completed proposals for peer vote verification

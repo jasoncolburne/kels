@@ -180,7 +180,7 @@ async fn refresh_verified_peers(
         return Ok(());
     }
 
-    let (peers_response, _) = kels::with_failover(
+    let peers_response = kels::with_failover(
         registry_urls,
         std::time::Duration::from_secs(10),
         |c| async move { c.fetch_peers().await },

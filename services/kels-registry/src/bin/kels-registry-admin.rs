@@ -577,7 +577,7 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
 }
 
 async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
-    let (response, _) = ctx
+    let response = ctx
         .registry_client
         .fetch_peers()
         .await

@@ -96,19 +96,12 @@ public enum KelsClientError: Error, LocalizedError, Sendable {
 
 // MARK: - Node Discovery
 
-/// Node status from registry
-public enum RegistryNodeStatus: String, Codable, Sendable {
-    case bootstrapping
-    case ready
-    case unhealthy
-}
-
-/// Information about a registered KELS node
+/// Information about a discovered KELS peer (verified and ready)
 public struct RegistryNode: Codable, Identifiable, Sendable {
     public let nodeId: String
     public let baseDomain: String
-    public let status: RegistryNodeStatus
-    public var latencyMs: UInt64?
+    public let gossipAddr: String
+    public let peerPrefix: String
 
     public var id: String { nodeId }
 
@@ -117,22 +110,14 @@ public struct RegistryNode: Codable, Identifiable, Sendable {
     public var kelsUrl: String { "http://kels.\(baseDomain)" }
 
     public var sadstoreUrl: String { "http://kels-sadstore.\(baseDomain)" }
-
-    public var statusColor: String {
-        switch status {
-        case .ready: return "green"
-        case .bootstrapping: return "yellow"
-        case .unhealthy: return "red"
-        }
-    }
 }
 
-/// FFI response node (matches FFI's NodeInfoJson with camelCase)
-private struct FFINode: Codable {
+/// FFI response peer (matches FFI's PeerInfoJson with camelCase)
+private struct FFIPeer: Codable {
     let nodeId: String
     let baseDomain: String
-    let status: String
-    let latencyMs: UInt64?
+    let gossipAddr: String
+    let peerPrefix: String
 }
 
 /// Node discovery from registry using FFI
@@ -185,17 +170,15 @@ public struct NodeDiscovery {
                 return []
             }
 
-            let ffiNodes = try JSONDecoder().decode([FFINode].self, from: data)
+            let ffiPeers = try JSONDecoder().decode([FFIPeer].self, from: data)
 
-            // Convert to RegistryNode
-            return ffiNodes.map { ffi in
-                var node = RegistryNode(
+            return ffiPeers.map { ffi in
+                RegistryNode(
                     nodeId: ffi.nodeId,
                     baseDomain: ffi.baseDomain,
-                    status: RegistryNodeStatus(rawValue: ffi.status) ?? .unhealthy
+                    gossipAddr: ffi.gossipAddr,
+                    peerPrefix: ffi.peerPrefix
                 )
-                node.latencyMs = ffi.latencyMs
-                return node
             }
         }.value
     }
@@ -207,6 +190,6 @@ public struct NodeDiscovery {
     /// - Returns: The fastest ready node, or nil if none available
     public static func fastestNode(registryUrl: String, registryPrefix: String? = nil) async throws -> RegistryNode? {
         let nodes = try await discoverNodes(registryUrl: registryUrl, registryPrefix: registryPrefix)
-        return nodes.first { $0.status == .ready && $0.latencyMs != nil }
+        return nodes.first
     }
 }

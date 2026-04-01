@@ -28,7 +28,7 @@ use kels::HardwareKeyProvider;
 use kels::SoftwareKeyProvider;
 use kels::{
     FileKelStore, FileKeyStateStore, KelStore, KelsClient, KelsError, KeyEventBuilder, KeyProvider,
-    NodeStatus, VerificationKeyCode,
+    VerificationKeyCode,
 };
 
 // ==================== Error Handling ====================
@@ -1921,16 +1921,6 @@ pub enum KelsNodeStatus {
     Unhealthy = 2,
 }
 
-impl From<NodeStatus> for KelsNodeStatus {
-    fn from(status: NodeStatus) -> Self {
-        match status {
-            NodeStatus::Bootstrapping => KelsNodeStatus::Bootstrapping,
-            NodeStatus::Ready => KelsNodeStatus::Ready,
-            NodeStatus::Unhealthy => KelsNodeStatus::Unhealthy,
-        }
-    }
-}
-
 /// Result from discover nodes operation
 #[repr(C)]
 pub struct KelsNodesResult {
@@ -1954,14 +1944,14 @@ impl Default for KelsNodesResult {
     }
 }
 
-/// Node info for JSON serialization
+/// Peer info for JSON serialization in FFI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NodeInfoJson {
+struct PeerInfoJson {
     node_id: String,
     base_domain: String,
-    status: String,
-    latency_ms: Option<u64>,
+    gossip_addr: String,
+    peer_prefix: String,
 }
 
 /// Discover nodes from the registry and test latency
@@ -2035,25 +2025,20 @@ pub unsafe extern "C" fn kels_discover_nodes(
         let _ = std::fs::remove_dir_all(&store_dir);
         let store = FileKelStore::new(&store_dir)?;
 
-        let nodes =
+        let peers =
             kels::nodes_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store).await?;
 
-        // Filter to verified nodes and convert to JSON format
-        let node_infos: Vec<NodeInfoJson> = nodes
+        let peer_infos: Vec<PeerInfoJson> = peers
             .into_iter()
-            .map(|node| NodeInfoJson {
-                node_id: node.node_id,
-                base_domain: node.base_domain,
-                status: match node.status {
-                    NodeStatus::Bootstrapping => "bootstrapping".to_string(),
-                    NodeStatus::Ready => "ready".to_string(),
-                    NodeStatus::Unhealthy => "unhealthy".to_string(),
-                },
-                latency_ms: node.latency_ms,
+            .map(|peer| PeerInfoJson {
+                node_id: peer.node_id,
+                base_domain: peer.base_domain,
+                gossip_addr: peer.gossip_addr,
+                peer_prefix: peer.peer_prefix,
             })
             .collect();
 
-        Ok(node_infos)
+        Ok(peer_infos)
     });
 
     match discover_result {
@@ -2246,22 +2231,6 @@ mod tests {
         assert_eq!(KelsNodeStatus::Bootstrapping as i32, 0);
         assert_eq!(KelsNodeStatus::Ready as i32, 1);
         assert_eq!(KelsNodeStatus::Unhealthy as i32, 2);
-    }
-
-    #[test]
-    fn test_kels_node_status_from_node_status() {
-        assert_eq!(
-            KelsNodeStatus::from(NodeStatus::Ready),
-            KelsNodeStatus::Ready
-        );
-        assert_eq!(
-            KelsNodeStatus::from(NodeStatus::Bootstrapping),
-            KelsNodeStatus::Bootstrapping
-        );
-        assert_eq!(
-            KelsNodeStatus::from(NodeStatus::Unhealthy),
-            KelsNodeStatus::Unhealthy
-        );
     }
 
     // ==================== Default Implementations Tests ====================

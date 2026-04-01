@@ -329,7 +329,7 @@ impl BootstrapSync {
         for url in &self.urls {
             let client = KelsRegistryClient::new(url)?;
             match client.fetch_peers().await {
-                Ok((peers_response, _)) => {
+                Ok(peers_response) => {
                     return Ok(peers_response.peers.iter().any(|history| {
                         history
                             .records
