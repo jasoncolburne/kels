@@ -1,8 +1,8 @@
 -- KELS SADStore initial schema for PostgreSQL
 BEGIN;
 
--- SAD chain records table
-CREATE TABLE IF NOT EXISTS sad_records (
+-- SAD chain pointers table
+CREATE TABLE IF NOT EXISTS sad_pointers (
     said TEXT PRIMARY KEY,
     prefix TEXT NOT NULL,
     previous TEXT,
@@ -12,18 +12,18 @@ CREATE TABLE IF NOT EXISTS sad_records (
     content_said TEXT
 );
 
-CREATE INDEX IF NOT EXISTS sad_records_prefix_idx ON sad_records(prefix);
-CREATE INDEX IF NOT EXISTS sad_records_prefix_version_idx ON sad_records(prefix, version);
+CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);
+CREATE INDEX IF NOT EXISTS sad_pointers_prefix_version_idx ON sad_pointers(prefix, version);
 
--- SAD record signatures (1:1 with sad_records, separate to keep SAID table clean)
-CREATE TABLE IF NOT EXISTS sad_record_signatures (
+-- SAD pointer signatures (1:1 with sad_pointers, separate to keep SAID table clean)
+CREATE TABLE IF NOT EXISTS sad_pointer_signatures (
     said TEXT PRIMARY KEY,
-    record_said TEXT NOT NULL REFERENCES sad_records(said) ON DELETE CASCADE,
+    pointer_said TEXT NOT NULL REFERENCES sad_pointers(said) ON DELETE CASCADE,
     signature TEXT NOT NULL,
     establishment_serial BIGINT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS sad_record_signatures_record_said_idx ON sad_record_signatures(record_said);
+CREATE UNIQUE INDEX IF NOT EXISTS sad_pointer_signatures_pointer_said_idx ON sad_pointer_signatures(pointer_said);
 
 -- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (
@@ -33,30 +33,30 @@ CREATE TABLE IF NOT EXISTS sad_objects (
 
 CREATE UNIQUE INDEX IF NOT EXISTS sad_objects_sad_said_idx ON sad_objects(sad_said);
 
--- Archive tables: pure copies of records/signatures for repaired chains
-CREATE TABLE IF NOT EXISTS sad_record_archives (LIKE sad_records INCLUDING ALL);
-CREATE TABLE IF NOT EXISTS sad_record_archive_signatures (LIKE sad_record_signatures INCLUDING ALL);
-ALTER TABLE sad_record_archive_signatures
-    ADD CONSTRAINT fk_archived_sigs_record FOREIGN KEY (record_said)
-    REFERENCES sad_record_archives(said) ON DELETE CASCADE;
+-- Archive tables: pure copies of pointers/signatures for repaired chains
+CREATE TABLE IF NOT EXISTS sad_pointer_archives (LIKE sad_pointers INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS sad_pointer_archive_signatures (LIKE sad_pointer_signatures INCLUDING ALL);
+ALTER TABLE sad_pointer_archive_signatures
+    ADD CONSTRAINT fk_archived_sigs_pointer FOREIGN KEY (pointer_said)
+    REFERENCES sad_pointer_archives(said) ON DELETE CASCADE;
 
 -- Chain repair tracking: each repair is a first-class entity
-CREATE TABLE IF NOT EXISTS sad_chain_repairs (
+CREATE TABLE IF NOT EXISTS sad_pointer_repairs (
     said TEXT PRIMARY KEY,
-    record_prefix TEXT NOT NULL,
+    pointer_prefix TEXT NOT NULL,
     diverged_at_version BIGINT NOT NULL,
     repaired_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS sad_chain_repairs_prefix_idx ON sad_chain_repairs(record_prefix);
+CREATE INDEX IF NOT EXISTS sad_pointer_repairs_prefix_idx ON sad_pointer_repairs(pointer_prefix);
 
--- Links a repair to the archived records it displaced
-CREATE TABLE IF NOT EXISTS sad_chain_repair_records (
+-- Links a repair to the archived pointers it displaced
+CREATE TABLE IF NOT EXISTS sad_pointer_repair_records (
     said TEXT PRIMARY KEY,
-    repair_said TEXT NOT NULL REFERENCES sad_chain_repairs(said) ON DELETE CASCADE,
-    record_said TEXT NOT NULL REFERENCES sad_record_archives(said) ON DELETE CASCADE
+    repair_said TEXT NOT NULL REFERENCES sad_pointer_repairs(said) ON DELETE CASCADE,
+    pointer_said TEXT NOT NULL REFERENCES sad_pointer_archives(said) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS sad_chain_repair_records_repair_idx ON sad_chain_repair_records(repair_said);
+CREATE INDEX IF NOT EXISTS sad_pointer_repair_records_repair_idx ON sad_pointer_repair_records(repair_said);
 
 COMMIT;

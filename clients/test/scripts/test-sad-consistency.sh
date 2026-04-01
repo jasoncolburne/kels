@@ -5,7 +5,7 @@
 # For each node with test endpoints, fetches all chain prefixes, then for each
 # prefix fetches the full chain. Verifies:
 #   1. All nodes have the same set of chain prefixes
-#   2. All chains have the same number of records on each node
+#   2. All chains have the same number of pointers on each node
 #   3. A SHA-256 digest of each chain matches across all nodes
 #   4. SAD objects referenced by chains exist on all nodes
 #
@@ -267,7 +267,7 @@ fi
 
 echo
 
-# --- Step 3: For each prefix, compare record counts and chain digests ---
+# --- Step 3: For each prefix, compare pointer counts and chain digests ---
 echo -e "${YELLOW}Comparing SAD chains across nodes...${NC}"
 
 cat "$TEMP_DIR"/sad_prefixes_*.txt | sort -u > "$TEMP_DIR/all_sad_prefixes.txt"
@@ -277,11 +277,11 @@ chain_mismatches=0
 count_mismatches=0
 divergent_consistent=0
 
-# Fetch all records for a SAD chain, paginating through all pages.
-fetch_all_sad_records() {
+# Fetch all pointers for a SAD chain, paginating through all pages.
+fetch_all_sad_pointers() {
     local url="$1"
     local prefix="$2"
-    local all_records="[]"
+    local all_pointers="[]"
     local since=""
 
     while true; do
@@ -293,24 +293,24 @@ fetch_all_sad_records() {
         local resp
         resp=$(curl -s -f "$query_url" 2>/dev/null) || break
 
-        local records has_more
-        records=$(echo "$resp" | jq '.records')
+        local pointers has_more
+        pointers=$(echo "$resp" | jq '.pointers')
         has_more=$(echo "$resp" | jq '.hasMore')
 
-        if [ "$(echo "$records" | jq 'length')" -eq 0 ]; then
+        if [ "$(echo "$pointers" | jq 'length')" -eq 0 ]; then
             break
         fi
 
-        all_records=$(printf '%s\n%s' "$all_records" "$records" | jq -s '.[0] + .[1]')
+        all_pointers=$(printf '%s\n%s' "$all_pointers" "$pointers" | jq -s '.[0] + .[1]')
 
         if [ "$has_more" != "true" ]; then
             break
         fi
 
-        since=$(echo "$records" | jq -r '.[-1].record.said')
+        since=$(echo "$pointers" | jq -r '.[-1].pointer.said')
     done
 
-    echo "$all_records"
+    echo "$all_pointers"
 }
 
 while IFS= read -r prefix; do
@@ -326,8 +326,8 @@ while IFS= read -r prefix; do
         name="${ALL_REACHABLE_NAMES[$i]}"
         url="${ALL_REACHABLE_URLS[$i]}"
 
-        all_records=$(fetch_all_sad_records "${url}" "${prefix}")
-        if [ "$(echo "$all_records" | jq 'length')" -eq 0 ]; then
+        all_pointers=$(fetch_all_sad_pointers "${url}" "${prefix}")
+        if [ "$(echo "$all_pointers" | jq 'length')" -eq 0 ]; then
             digests+=("MISSING")
             counts+=("0")
             states+=("missing")
@@ -335,16 +335,16 @@ while IFS= read -r prefix; do
             continue
         fi
 
-        record_count=$(echo "$all_records" | jq 'length' 2>/dev/null)
-        digest=$(echo "$all_records" | jq -cS '.' | sha256sum | awk '{print $1}')
+        pointer_count=$(echo "$all_pointers" | jq 'length' 2>/dev/null)
+        digest=$(echo "$all_pointers" | jq -cS '.' | sha256sum | awk '{print $1}')
 
-        # Check if divergent (multiple records at the same version)
-        state=$(echo "$all_records" | jq -r '
-            [.[].record.version] | group_by(.) | if any(length > 1) then "divergent" else "normal" end
+        # Check if divergent (multiple pointers at the same version)
+        state=$(echo "$all_pointers" | jq -r '
+            [.[].pointer.version] | group_by(.) | if any(length > 1) then "divergent" else "normal" end
         ' 2>/dev/null)
 
         digests+=("$digest")
-        counts+=("$record_count")
+        counts+=("$pointer_count")
         states+=("${state:-unknown}")
         digest_names+=("$name")
     done
@@ -366,7 +366,7 @@ while IFS= read -r prefix; do
             echo
             echo -e "  ${RED}RECORD COUNT MISMATCH for ${prefix}:${NC}"
             for j in "${!digest_names[@]}"; do
-                echo -e "    node-${digest_names[$j]}: ${counts[$j]} records"
+                echo -e "    node-${digest_names[$j]}: ${counts[$j]} pointers"
             done
             ((count_mismatches++))
             ((FAILURES++))
@@ -412,9 +412,9 @@ done < "$TEMP_DIR/all_sad_prefixes.txt"
 echo
 echo -e "  Checked ${total_prefixes} chain prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
 if [ "$count_mismatches" -eq 0 ] && [ "$chain_mismatches" -eq 0 ]; then
-    echo -e "  ${GREEN}All record counts and chain digests match${NC}"
+    echo -e "  ${GREEN}All pointer counts and chain digests match${NC}"
 else
-    [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} record count mismatches${NC}"
+    [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} pointer count mismatches${NC}"
     [ "$chain_mismatches" -gt 0 ] && echo -e "  ${RED}${chain_mismatches} chain digest mismatches${NC}"
     [ "$divergent_consistent" -gt 0 ] && echo -e "  ${YELLOW}${divergent_consistent} mismatched chain(s) with consistent divergent state${NC}"
 fi

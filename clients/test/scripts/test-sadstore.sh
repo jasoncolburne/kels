@@ -66,7 +66,7 @@ compute_said() {
     cesr_blake3 "$with_placeholder"
 }
 
-# Compute prefix for a v0 inception record (blanks both said AND prefix).
+# Compute prefix for a v0 inception pointer (blanks both said AND prefix).
 compute_prefix() {
     local json="$1"
     local with_placeholders
@@ -89,7 +89,7 @@ sad_chain_exists() {
 get_chain_tip_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq -r '.records[-1].record.said // empty'
+    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq -r '.pointers[-1].pointer.said // empty'
 }
 
 get_effective_said() {
@@ -101,7 +101,7 @@ get_effective_said() {
 get_chain_length() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq '.records | length'
+    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq '.pointers | length'
 }
 
 wait_for_sad_object_propagation() {
@@ -171,9 +171,9 @@ run_test "GET non-existent chain returns 404" \
 run_test "Effective SAID non-existent returns 404" \
     bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________/effective-said') = '404' ]"
 
-# Submit record with tampered SAID
+# Submit pointer with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"record\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
 
 echo ""
 
@@ -220,7 +220,7 @@ echo ""
 # Scenario 5: Chain Record Submission via CLI
 # ========================================
 echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
-echo "Create a KEL, build chain records, sign + submit via CLI, fetch via CLI"
+echo "Create a KEL, build chain pointers, sign + submit via CLI, fetch via CLI"
 echo ""
 
 SAD_KIND="kels/v1/test-data"
@@ -241,7 +241,7 @@ else
     run_test "Chain does not exist yet" \
         bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/${CHAIN_PREFIX}') = '404' ]"
 
-    # --- Build v0 inception record ---
+    # --- Build v0 inception pointer ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
         '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
     V0_PREFIX=$(compute_prefix "$V0_JSON")
@@ -258,7 +258,7 @@ else
 
     # Build the submission JSON and write to file
     echo "[$(jq -nc --argjson r "$V0_JSON" --arg sig "$V0_SIG" \
-        '{record: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v0-submit.json"
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v0-submit.json"
 
     # Submit via kels-cli sad submit
     run_test "v0 submitted via CLI (sad submit)" \
@@ -266,14 +266,14 @@ else
 
     # Fetch the chain via kels-cli sad pointer
     CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
-    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
-    run_test "Chain fetched via CLI (sad pointer) with 1 record" [ "$CHAIN_LEN" = "1" ]
+    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.pointers | length' 2>/dev/null)
+    run_test "Chain fetched via CLI (sad pointer) with 1 pointer" [ "$CHAIN_LEN" = "1" ]
 
-    # Verify the fetched record's SAID matches
-    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.records[0].record.said' 2>/dev/null)
-    run_test "Fetched record SAID matches v0" [ "$FETCHED_SAID" = "$V0_SAID" ]
+    # Verify the fetched pointer's SAID matches
+    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.pointers[0].pointer.said' 2>/dev/null)
+    run_test "Fetched pointer SAID matches v0" [ "$FETCHED_SAID" = "$V0_SAID" ]
 
-    # --- Build v1 record ---
+    # --- Build v1 pointer ---
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
         --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k}')
@@ -284,15 +284,15 @@ else
     run_test "v1 signed via CLI" [ -n "$V1_SIG" ]
 
     echo "[$(jq -nc --argjson r "$V1_JSON" --arg sig "$V1_SIG" \
-        '{record: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v1-submit.json"
+        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v1-submit.json"
 
     run_test "v1 submitted via CLI (sad submit)" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v1-submit.json"
 
-    # Verify chain now has 2 records
+    # Verify chain now has 2 pointers
     CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
-    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.records | length' 2>/dev/null)
-    run_test "Chain has 2 records after v1 submit" [ "$CHAIN_LEN" = "2" ]
+    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.pointers | length' 2>/dev/null)
+    run_test "Chain has 2 pointers after v1 submit" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
     sleep "$PROPAGATION_DELAY"
@@ -345,13 +345,13 @@ echo ""
 # Scenario 7: Divergence Detection
 # ========================================
 echo -e "${CYAN}=== Scenario 7: Divergence Detection ===${NC}"
-echo "When two nodes receive different records at the same version,"
-echo "both records are stored and the chain is frozen until repaired."
+echo "When two nodes receive different pointers at the same version,"
+echo "both pointers are stored and the chain is frozen until repaired."
 echo ""
 
-# This scenario requires submitting conflicting records to different nodes.
-# Since we need KEL signatures for chain records, and we can't easily forge
-# two different valid records for the same version in a test script,
+# This scenario requires submitting conflicting pointers to different nodes.
+# Since we need KEL signatures for chain pointers, and we can't easily forge
+# two different valid pointers for the same version in a test script,
 # we verify the mechanism exists by checking:
 # 1. The effective-said endpoint returns consistent results
 # 2. Divergent chains would return a synthetic effective SAID
@@ -361,7 +361,7 @@ run_test "Effective SAID endpoint consistent" \
 
 echo ""
 echo "Note: Full divergence detection and repair testing requires programmatic"
-echo "chain record submission with valid KEL signatures. This is covered by the"
+echo "chain pointer submission with valid KEL signatures. This is covered by the"
 echo "Rust integration tests in services/kels-sadstore/tests/."
 echo ""
 

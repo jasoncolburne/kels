@@ -97,7 +97,7 @@ impl PagedSadSource for HttpSadSource {
 
         if resp.status().is_success() {
             let page: crate::SadPointerPage = resp.json().await?;
-            Ok((page.records, page.has_more))
+            Ok((page.pointers, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
         } else {

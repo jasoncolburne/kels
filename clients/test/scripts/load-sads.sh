@@ -144,7 +144,7 @@ create_group() {
 
     local records_json="[]"
     records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" --arg sig "$v0_sig" \
-        '. + [{record: $r, signature: $sig, establishmentSerial: 0}]')
+        '. + [{pointer: $r, signature: $sig, establishmentSerial: 0}]')
 
     local prev_said="$v0_said"
 
@@ -166,7 +166,7 @@ create_group() {
         fi
 
         records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" --arg sig "$vi_sig" \
-            '. + [{record: $r, signature: $sig, establishmentSerial: 0}]')
+            '. + [{pointer: $r, signature: $sig, establishmentSerial: 0}]')
 
         prev_said="$vi_said"
     done

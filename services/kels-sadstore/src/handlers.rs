@@ -731,10 +731,13 @@ pub async fn get_sad_chain(
         Ok(records) if records.is_empty() => {
             (StatusCode::NOT_FOUND, "Chain not found").into_response()
         }
-        Ok(records) => {
-            let has_more = records.len() as u64 > limit;
-            let records: Vec<_> = records.into_iter().take(limit as usize).collect();
-            let page = kels::SadPointerPage { has_more, records };
+        Ok(pointers) => {
+            let has_more = pointers.len() as u64 > limit;
+            let records: Vec<_> = pointers.into_iter().take(limit as usize).collect();
+            let page = kels::SadPointerPage {
+                has_more,
+                pointers: records,
+            };
             (StatusCode::OK, Json(page)).into_response()
         }
         Err(e) => {
@@ -917,7 +920,10 @@ pub(crate) async fn get_repair_records(
     {
         Ok((records, has_more)) => (
             StatusCode::OK,
-            Json(kels::SadPointerPage { records, has_more }),
+            Json(kels::SadPointerPage {
+                pointers: records,
+                has_more,
+            }),
         )
             .into_response(),
         Err(e) => {

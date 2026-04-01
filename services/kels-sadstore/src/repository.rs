@@ -10,14 +10,14 @@ use verifiable_storage::{
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
 #[derive(Stored)]
-#[stored(item_type = SadPointer, table = "sad_records", chained = true)]
+#[stored(item_type = SadPointer, table = "sad_pointers", chained = true)]
 pub struct SadPointerRepository {
     pub pool: PgPool,
 }
 
 impl SadPointerRepository {
     /// The signatures table name.
-    pub const SIGNATURES_TABLE_NAME: &'static str = "sad_record_signatures";
+    pub const SIGNATURES_TABLE_NAME: &'static str = "sad_pointer_signatures";
 
     /// Store a batch of records with their signatures, with advisory lock and full
     /// chain verification including signature verification against provided keys.
@@ -150,10 +150,10 @@ impl SadPointerRepository {
         Ok(verifier)
     }
 
-    const ARCHIVED_RECORDS_TABLE: &'static str = "sad_record_archives";
-    const ARCHIVED_SIGNATURES_TABLE: &'static str = "sad_record_archive_signatures";
-    const REPAIRS_TABLE: &'static str = "sad_chain_repairs";
-    const REPAIR_RECORDS_TABLE: &'static str = "sad_chain_repair_records";
+    const ARCHIVED_RECORDS_TABLE: &'static str = "sad_pointer_archives";
+    const ARCHIVED_SIGNATURES_TABLE: &'static str = "sad_pointer_archive_signatures";
+    const REPAIRS_TABLE: &'static str = "sad_pointer_repairs";
+    const REPAIR_RECORDS_TABLE: &'static str = "sad_pointer_repair_records";
 
     /// Truncate records at and after the first replacement's version and insert replacements.
     ///
@@ -524,7 +524,7 @@ impl SadPointerRepository {
         }
 
         // Collect record SAIDs
-        let record_saids: Vec<String> = links.iter().map(|l| l.record_said.clone()).collect();
+        let record_saids: Vec<String> = links.iter().map(|l| l.pointer_said.clone()).collect();
 
         // Batch-fetch archived records
         let records_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(

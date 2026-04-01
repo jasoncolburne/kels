@@ -181,7 +181,7 @@ pub struct SadObjectEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerPage {
-    pub records: Vec<SignedSadPointer>,
+    pub pointers: Vec<SignedSadPointer>,
     pub has_more: bool,
 }
 
@@ -233,7 +233,7 @@ pub struct SadPointerRepairRecord {
     /// The repair this pointer belongs to.
     pub repair_said: String,
     /// The SAID of the archived pointer.
-    pub record_said: String,
+    pub pointer_said: String,
 }
 
 #[cfg(test)]
