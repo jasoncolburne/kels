@@ -578,7 +578,10 @@ pub async fn submit_sad_records(
             }
         };
 
-        if verification_key.verify(r.record.said.as_bytes(), &sig).is_err() {
+        if verification_key
+            .verify(r.record.said.as_bytes(), &sig)
+            .is_err()
+        {
             return (
                 StatusCode::FORBIDDEN,
                 format!(
@@ -629,7 +632,7 @@ pub async fn submit_sad_records(
         if let Err(e) = state
             .repo
             .sad_records
-            .truncate_and_replace(from_version, &pairs)
+            .truncate_and_replace(from_version, &pairs, &establishment_keys)
             .await
         {
             warn!("Failed to repair chain: {}", e);
