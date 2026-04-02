@@ -1919,15 +1919,6 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
 
 // ==================== Registry Operations ====================
 
-/// Node status for FFI
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KelsNodeStatus {
-    Bootstrapping = 0,
-    Ready = 1,
-    Unhealthy = 2,
-}
-
 /// Result from discover nodes operation
 #[repr(C)]
 pub struct KelsNodesResult {
@@ -1961,10 +1952,10 @@ struct PeerInfoJson {
     peer_prefix: String,
 }
 
-/// Discover nodes from the registry and test latency
+/// Discover verified, ready peers from the registry, sorted by latency.
 ///
-/// Returns a JSON array of node objects with status and latency info.
-/// Nodes are sorted by latency (fastest first), with Ready nodes prioritized.
+/// Returns a JSON array of peer objects (nodeId, baseDomain, gossipAddr, peerPrefix).
+/// All returned peers are verified (anchored + voted) and ready. Sorted fastest first.
 ///
 /// This function performs cryptographic verification:
 /// 1. Fetches the registry's KEL and verifies its integrity
@@ -2230,15 +2221,6 @@ mod tests {
         assert_eq!(KelsRecoveryOutcome::Recovered as i32, 0);
         assert_eq!(KelsRecoveryOutcome::Contested as i32, 1);
         assert_eq!(KelsRecoveryOutcome::Failed as i32, 2);
-    }
-
-    // ==================== KelsNodeStatus Tests ====================
-
-    #[test]
-    fn test_kels_node_status_values() {
-        assert_eq!(KelsNodeStatus::Bootstrapping as i32, 0);
-        assert_eq!(KelsNodeStatus::Ready as i32, 1);
-        assert_eq!(KelsNodeStatus::Unhealthy as i32, 2);
     }
 
     // ==================== Default Implementations Tests ====================

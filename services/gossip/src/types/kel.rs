@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// The `origin` field identifies the peer that stored the event, so receivers
 /// know where to fetch the event data from (looked up via allowlist).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KelAnnouncement {
+pub(crate) struct KelAnnouncement {
     /// The KEL prefix that was updated
     pub prefix: String,
     /// The SAID of the latest event

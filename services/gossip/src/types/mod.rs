@@ -2,6 +2,6 @@ mod channel;
 mod kel;
 mod sad;
 
-pub use channel::*;
-pub use kel::*;
-pub use sad::*;
+pub(crate) use channel::*;
+pub(crate) use kel::*;
+pub(crate) use sad::*;

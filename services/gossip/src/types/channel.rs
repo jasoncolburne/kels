@@ -5,7 +5,7 @@ use super::sad::SadAnnouncement;
 
 /// Events emitted by the gossip layer to the sync layer
 #[derive(Debug)]
-pub enum GossipEvent {
+pub(crate) enum GossipEvent {
     /// Received a KEL announcement from a peer
     KelAnnouncementReceived { announcement: KelAnnouncement },
     /// Received a SAD announcement from a peer
@@ -18,7 +18,7 @@ pub enum GossipEvent {
 
 /// Commands sent from sync layer to gossip layer
 #[derive(Debug)]
-pub enum GossipCommand {
+pub(crate) enum GossipCommand {
     /// Broadcast a KEL announcement to the network
     AnnounceKel(KelAnnouncement),
     /// Broadcast a SAD announcement to the network

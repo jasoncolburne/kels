@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// raw SAD object announcements and chain update announcements on a single topic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum SadAnnouncement {
+pub(crate) enum SadAnnouncement {
     /// A new SAD object was stored (content-addressed blob in MinIO).
     Object {
         /// The SAID of the stored object.

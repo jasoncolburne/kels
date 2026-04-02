@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::{
     error::KelsError,
@@ -108,12 +109,13 @@ impl KelsClient {
     pub async fn check_ready_status(&self) -> NodeStatus {
         let ready_url = format!("{}/ready", self.base_url.trim_end_matches('/'));
 
-        let quick_client = reqwest::Client::builder()
+        match self
+            .client
+            .get(&ready_url)
             .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap_or_else(|_| self.client.clone());
-
-        match quick_client.get(&ready_url).send().await {
+            .send()
+            .await
+        {
             Ok(response) => {
                 if response.status().is_success() {
                     if let Ok(body) = response.json::<serde_json::Value>().await
@@ -123,6 +125,7 @@ impl KelsClient {
                     }
                     NodeStatus::Bootstrapping
                 } else if response.status().as_u16() == 503 {
+                    debug!(url = %self.base_url, "503 from /ready — treating as Bootstrapping");
                     NodeStatus::Bootstrapping
                 } else {
                     NodeStatus::Unhealthy

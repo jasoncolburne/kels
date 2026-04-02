@@ -37,7 +37,7 @@ mod hsm_signer;
 mod repository;
 mod server;
 mod sync;
-pub mod types;
+pub(crate) mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -463,6 +463,25 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             "Initial allowlist refresh failed: {} - starting with empty allowlist",
             e
         ),
+    }
+
+    // Probe peer KELS readiness before discovery. This gives peer services
+    // time to finish starting — without it, gossip nodes race ahead and try
+    // to dial peers before they're listening. Fire-and-forget parallel checks
+    // with a 2s per-request timeout.
+    {
+        let peers: Vec<_> = allowlist.read().await.values().cloned().collect();
+        let readiness_futures = peers.iter().filter(|p| p.active).map(|peer| {
+            let kels_url = format!("http://kels.{}", peer.base_domain);
+            async move {
+                if let Ok(client) =
+                    kels_core::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
+                {
+                    let _ = client.check_ready_status().await;
+                }
+            }
+        });
+        futures::future::join_all(readiness_futures).await;
     }
 
     // Step 4: Now authorized - discover peers from allowlist and build peer addresses
