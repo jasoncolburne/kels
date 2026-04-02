@@ -152,7 +152,29 @@ impl KelsRegistryClient {
             .await?;
 
         if response.status().is_success() {
-            Ok(response.json().await?)
+            let result: PeersResponse = response.json().await?;
+
+            // Check readiness of each peer's KELS service (parallel, 2s timeout).
+            // Gives peer services time to finish starting before callers proceed
+            // to dial or verify them.
+            let peers: Vec<_> = result
+                .peers
+                .iter()
+                .filter_map(|h| h.records.last())
+                .collect();
+            let futures = peers.iter().map(|peer| {
+                let kels_url = format!("http://kels.{}", peer.base_domain);
+                async move {
+                    if let Ok(client) =
+                        crate::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
+                    {
+                        let _ = client.check_ready_status().await;
+                    }
+                }
+            });
+            futures::future::join_all(futures).await;
+
+            Ok(result)
         } else {
             let err: ErrorResponse = response.json().await?;
             Err(KelsError::ServerError(err.error, err.code))

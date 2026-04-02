@@ -145,6 +145,8 @@ pub async fn run_sad_redis_subscriber(
             }
         };
 
+        debug!(channel = %channel, payload = %payload, "SAD Redis message received");
+
         // Feedback loop prevention — key format must match what the gossip
         // handlers insert before storing locally.
         {
@@ -160,7 +162,7 @@ pub async fn run_sad_redis_subscriber(
                 format!("sad-record:{}", core)
             };
             if guard.contains_key(&cache_key) {
-                debug!("Skipping SAD Redis message (recently stored from gossip)");
+                debug!(cache_key = %cache_key, "Skipping SAD Redis message (recently stored from gossip)");
                 continue;
             }
         }
@@ -187,12 +189,15 @@ pub async fn run_sad_redis_subscriber(
                     repair,
                 }
             } else {
+                warn!(channel = %channel, payload = %payload, "Failed to parse SAD chain update");
                 continue;
             }
         } else {
+            warn!(channel = %channel, "Unexpected SAD Redis channel");
             continue;
         };
 
+        debug!("Broadcasting SAD announcement via gossip");
         if command_tx
             .send(GossipCommand::AnnounceSad(gossip_message))
             .await

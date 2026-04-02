@@ -70,34 +70,6 @@ pub async fn refresh_allowlist(
         .map_err(|e| AllowlistRefreshError::KelVerificationFailed(e.to_string()))?;
     debug!("fetch_peers completed in {:?}", t0.elapsed());
 
-    // Check readiness of each peer's KELS service (parallel, 2s timeout).
-    // Provides early visibility into which nodes are up and ensures we don't
-    // race ahead of peers that are still starting their KELS service.
-    {
-        let peers: Vec<_> = response
-            .peers
-            .iter()
-            .filter_map(|h| h.records.last())
-            .collect();
-        let readiness_futures = peers.iter().map(|peer| {
-            let kels_url = format!("http://kels.{}", peer.base_domain);
-            async move {
-                if let Ok(client) =
-                    kels_core::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
-                {
-                    let status = client.check_ready_status().await;
-                    debug!(
-                        peer_prefix = %peer.peer_prefix,
-                        node_id = %peer.node_id,
-                        ?status,
-                        "Peer KELS readiness"
-                    );
-                }
-            }
-        });
-        futures::future::join_all(readiness_futures).await;
-    }
-
     // Fetch completed proposals for peer vote verification
     let proposals_response =
         kels_core::with_failover(registry_urls, Duration::from_secs(10), |c| async move {

@@ -137,6 +137,27 @@ wait_for_chain_propagation() {
     return 1
 }
 
+wait_for_divergence_convergence() {
+    local prefix="$1"
+    local timeout="$2"
+    local url_a="$3"
+    local url_b="$4"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local a_div b_div a_eff b_eff
+        a_div=$(curl -sf "${url_a}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.divergent // false')
+        b_div=$(curl -sf "${url_b}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.divergent // false')
+        a_eff=$(get_effective_said "$url_a" "$prefix")
+        b_eff=$(get_effective_said "$url_b" "$prefix")
+        if [ "$a_div" = "true" ] && [ "$b_div" = "true" ] && [ "$a_eff" = "$b_eff" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout waiting for divergence convergence on $prefix"
+    return 1
+}
+
 # ========================================
 # Scenario 1: SAD Object CRUD
 # ========================================
@@ -295,7 +316,6 @@ else
     run_test "Chain has 2 pointers after v1 submit" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
-    sleep "$PROPAGATION_DELAY"
     run_test "Chain propagated to node-b" \
         wait_for_chain_propagation "$CHAIN_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 fi
@@ -378,7 +398,6 @@ else
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v0.json"
 
     # Wait for v0 to propagate to node-b
-    sleep "$PROPAGATION_DELAY"
     run_test "Divergence: v0 propagated to node-b" \
         wait_for_chain_propagation "$DIV_PREFIX" "$D_V0_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 
@@ -414,25 +433,16 @@ else
     run_test "Divergence: v1-b submitted to node-b" \
         kels-cli --sadstore-url "$NODE_B_SAD_URL" sad submit "$TEMP_DIR/div-v1b.json"
 
-    # Wait for gossip to propagate conflicting pointers
-    sleep "$PROPAGATION_DELAY"
+    # Wait for both nodes to detect divergence and agree on effective SAID
+    run_test "Divergence: both nodes converge on divergent state" \
+        wait_for_divergence_convergence "$DIV_PREFIX" "$CONVERGENCE_TIMEOUT" "$NODE_A_SAD_URL" "$NODE_B_SAD_URL"
 
-    # Both nodes should now have both v1 records (gossip replicates them)
-    # and the chain should be divergent on at least one node
     A_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     B_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
-
-    # Check if at least one node reports divergence (synthetic effective SAID)
     A_DIVERGENT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
     B_DIVERGENT=$(curl -sf "${NODE_B_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
-
     echo "Node-a effective: $A_EFFECTIVE (divergent: $A_DIVERGENT)"
     echo "Node-b effective: $B_EFFECTIVE (divergent: $B_DIVERGENT)"
-
-    # After gossip, both nodes should have both conflicting records → divergent
-    run_test "Divergence: node-a detects divergence" [ "$A_DIVERGENT" = "true" ]
-    run_test "Divergence: node-b detects divergence" [ "$B_DIVERGENT" = "true" ]
-    run_test "Divergence: both nodes agree on effective SAID" [ "$A_EFFECTIVE" = "$B_EFFECTIVE" ]
 
     # --- Repair: submit replacement v1 with --repair ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
@@ -459,11 +469,8 @@ else
     run_test "Repair: audit record created" [ "$REPAIR_COUNT" -ge 1 ]
 
     # Wait for repair to propagate to node-b via gossip
-    sleep "$PROPAGATION_DELAY"
-
-    B_POST_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
     run_test "Repair: propagated to node-b" \
-        bash -c "[ '$B_POST_EFFECTIVE' = '$D_REPAIR_SAID' ] || sleep $CONVERGENCE_TIMEOUT && [ \$(curl -sf '${NODE_B_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said' | jq -r '.said') = '$D_REPAIR_SAID' ]"
+        wait_for_chain_propagation "$DIV_PREFIX" "$D_REPAIR_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 fi
 
 echo ""
