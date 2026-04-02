@@ -12,7 +12,7 @@ RUN apt-get update && \
 
 # Copy source code
 COPY lib/gossip /app/lib/gossip
-COPY lib/kels-derive /app/lib/kels-derive
+COPY lib/derive /app/lib/derive
 COPY lib/kels /app/lib/kels
 COPY services/gossip /app/services/gossip
 

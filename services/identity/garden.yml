@@ -9,8 +9,8 @@ source:
 
 include:
   - lib/kels/**/*
-  - lib/kels-derive/**/*
-  - lib/kels-mock-hsm/**/*
+  - lib/derive/**/*
+  - lib/mock-hsm/**/*
   - services/identity/**/*
   - project.garden.yml
 

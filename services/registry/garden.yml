@@ -12,7 +12,7 @@ source:
 
 include:
   - lib/kels/**/*
-  - lib/kels-derive/**/*
+  - lib/derive/**/*
   - services/registry/**/*
   - project.garden.yml
   - .kels/federated-registries.json

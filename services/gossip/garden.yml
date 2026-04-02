@@ -14,7 +14,7 @@ source:
 include:
   - lib/gossip/**/*
   - lib/kels/**/*
-  - lib/kels-derive/**/*
+  - lib/derive/**/*
   - services/gossip/**/*
   - project.garden.yml
   - .kels/federated-registries.json

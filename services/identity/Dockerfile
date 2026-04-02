@@ -14,18 +14,18 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy all source code
-COPY lib/kels-derive /app/lib/kels-derive
+COPY lib/derive /app/lib/derive
 COPY lib/kels /app/lib/kels
-COPY lib/kels-mock-hsm /app/lib/kels-mock-hsm
+COPY lib/mock-hsm /app/lib/mock-hsm
 COPY services/identity /app/services/identity
 
 # Build mock HSM shared library
-WORKDIR /app/lib/kels-mock-hsm
+WORKDIR /app/lib/mock-hsm
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=mock-hsm-target,target=/app/lib/kels-mock-hsm/target \
+    --mount=type=cache,id=mock-hsm-target,target=/app/lib/mock-hsm/target \
     cargo build --release && \
-    cp /app/lib/kels-mock-hsm/target/release/libkels_mock_hsm.so /app/libkels_mock_hsm.so 2>/dev/null || \
-    cp /app/lib/kels-mock-hsm/target/release/libkels_mock_hsm.dylib /app/libkels_mock_hsm.so 2>/dev/null || true
+    cp /app/lib/mock-hsm/target/release/libkels_mock_hsm.so /app/libkels_mock_hsm.so 2>/dev/null || \
+    cp /app/lib/mock-hsm/target/release/libkels_mock_hsm.dylib /app/libkels_mock_hsm.so 2>/dev/null || true
 
 # Build identity service
 WORKDIR /app/services/identity

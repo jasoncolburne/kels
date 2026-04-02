@@ -14,7 +14,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy all source code
-COPY lib/kels-derive /app/lib/kels-derive
+COPY lib/derive /app/lib/derive
 COPY lib/kels /app/lib/kels
 COPY services/kels /app/services/kels
 

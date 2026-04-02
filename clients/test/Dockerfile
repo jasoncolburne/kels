@@ -9,7 +9,7 @@ WORKDIR /app
 # Copy all source code
 COPY clients/test/Cargo.toml /app/
 COPY lib/kels /app/lib/kels
-COPY lib/kels-derive /app/lib/kels-derive
+COPY lib/derive /app/lib/derive
 COPY clients/bench /app/clients/bench
 COPY clients/cli /app/clients/cli
 

@@ -10,7 +10,7 @@ source:
 
 include:
   - lib/kels/**/*
-  - lib/kels-derive/**/*
+  - lib/derive/**/*
   - services/sadstore/**/*
   - project.garden.yml
 
