@@ -47,6 +47,20 @@ impl EventKind {
         }
     }
 
+    /// Short event kind name (e.g. "ixn", "rot") as used by CLI tools and responses.
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            Self::Icp => "icp",
+            Self::Dip => "dip",
+            Self::Rot => "rot",
+            Self::Ixn => "ixn",
+            Self::Rec => "rec",
+            Self::Ror => "ror",
+            Self::Dec => "dec",
+            Self::Cnt => "cnt",
+        }
+    }
+
     /// Parse a short event kind name (e.g. "ixn", "rot") as used by CLI tools.
     /// The version is implied — always creates the current version.
     pub fn from_short_name(s: &str) -> Result<Self, KelsError> {
@@ -609,8 +623,14 @@ impl PartialEq for SignedKeyEvent {
 impl Hash for SignedKeyEvent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.event.said.hash(state);
-        for signature in self.signatures.clone() {
-            signature.signature.hash(state);
+        let mut sigs: Vec<&str> = self
+            .signatures
+            .iter()
+            .map(|s| s.signature.as_str())
+            .collect();
+        sigs.sort_unstable();
+        for sig in sigs {
+            sig.hash(state);
         }
     }
 }

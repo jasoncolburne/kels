@@ -63,13 +63,30 @@ impl SadChainVerifier {
             self.saw_any_records = true;
             let record = &stored.pointer;
 
+            // Always verify SAID and signature, even for divergent records,
+            // so the is_divergent flag is only set by cryptographically valid records.
+            record.verify_said()?;
+
+            let public_key = self
+                .establishment_keys
+                .get(&stored.establishment_serial)
+                .ok_or_else(|| {
+                    KelsError::VerificationFailed(format!(
+                        "No establishment key for serial {} (record {})",
+                        stored.establishment_serial, record.said
+                    ))
+                })?;
+            let sig = Signature::from_qb64(&stored.signature)
+                .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
+            public_key
+                .verify(record.said.as_bytes(), &sig)
+                .map_err(|_| KelsError::SignatureVerificationFailed)?;
+
             // Divergence: duplicate version (same version as previous record)
             if record.version + 1 == self.expected_version {
                 self.is_divergent = true;
                 continue;
             }
-
-            record.verify_said()?;
 
             if self.expected_version == 0 {
                 record.verify_prefix()?;
@@ -124,22 +141,6 @@ impl SadChainVerifier {
                     record.said, record.version, self.expected_version
                 )));
             }
-
-            // Verify signature against establishment key
-            let public_key = self
-                .establishment_keys
-                .get(&stored.establishment_serial)
-                .ok_or_else(|| {
-                    KelsError::VerificationFailed(format!(
-                        "No establishment key for serial {} (record {})",
-                        stored.establishment_serial, record.said
-                    ))
-                })?;
-            let sig = Signature::from_qb64(&stored.signature)
-                .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
-            public_key
-                .verify(record.said.as_bytes(), &sig)
-                .map_err(|_| KelsError::SignatureVerificationFailed)?;
 
             self.last_said = Some(record.said.clone());
             self.expected_version += 1;

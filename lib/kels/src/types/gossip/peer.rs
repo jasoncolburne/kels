@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed, StorageDatetime};
 
-use super::super::kel::KelVerification;
-use crate::KelsError;
+use crate::{KelVerification, KelsError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "peer")]
@@ -75,7 +74,7 @@ impl PeerHistory {
             peer_record.verify()?;
 
             if let Some(said) = last_said {
-                if let Some(previous) = peer_record.previous.clone() {
+                if let Some(previous) = peer_record.previous.as_deref() {
                     if previous != said {
                         return Err(KelsError::RegistryFailure(format!(
                             "Peer record {} previous doesn't match {}",

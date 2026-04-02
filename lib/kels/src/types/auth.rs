@@ -1,6 +1,7 @@
 //! Authentication & request signing
 
 use cesr::{Matter, Signature, VerificationKey};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use super::kel::KelVerification;
@@ -12,7 +13,7 @@ use crate::KelsError;
 /// but the full `max_age_secs` into the past. This prevents attackers from
 /// pre-signing requests with far-future timestamps for delayed replay.
 pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     let max_future_skew = 5;
     timestamp <= now + max_future_skew && timestamp >= now - max_age_secs
 }
