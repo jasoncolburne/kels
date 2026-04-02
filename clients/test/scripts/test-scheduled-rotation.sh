@@ -8,12 +8,12 @@
 # Usage: test-scheduled-rotation.sh
 #
 # Environment variables:
-#   IDENTITY_NS - Identity service namespace (default: kels-registry-a)
+#   IDENTITY_NS - Identity service namespace (default: registry-a)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
-IDENTITY_NS="${IDENTITY_NS:-kels-registry-a}"
+IDENTITY_NS="${IDENTITY_NS:-registry-a}"
 IDENTITY_URL="http://identity.${IDENTITY_NS}.kels"
 
 echo "========================================="

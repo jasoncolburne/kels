@@ -397,7 +397,8 @@ impl SyncHandler {
 
         // Compare effective SAIDs
         let local_said = match local_client.fetch_sad_effective_said(chain_prefix).await {
-            Ok(said) => said,
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
             Err(e) => {
                 warn!(
                     "Failed to get local effective SAID for {}: {}",
@@ -406,6 +407,15 @@ impl SyncHandler {
                 None
             }
         };
+
+        debug!(
+            chain_prefix = %chain_prefix,
+            remote_said = %remote_said,
+            local_said = ?local_said,
+            repair = repair,
+            origin = %origin,
+            "SAD chain announcement received"
+        );
 
         if local_said.as_deref() == Some(remote_said) {
             debug!("SAD chain {} already in sync", chain_prefix);
@@ -430,7 +440,11 @@ impl SyncHandler {
         };
 
         // For repair: fetch full chain and submit with ?repair=true.
-        // For normal: delta fetch from local tip.
+        // The SADStore deduplicates leading records that already exist locally,
+        // so sending the full chain is safe — only the divergent tail is replaced.
+        // For normal: delta fetch from local tip — but if the remote's effective
+        // SAID is not a real pointer (e.g., synthetic divergent hash), delta fetch
+        // from our local tip may miss branches. Use full fetch in that case.
         let sink = match if repair {
             local_client.as_sad_repair_sink()
         } else {
@@ -442,7 +456,15 @@ impl SyncHandler {
                 return;
             }
         };
-        let since = if repair { None } else { local_said.as_deref() };
+        let remote_is_real_pointer = local_client
+            .pointer_exists(remote_said)
+            .await
+            .unwrap_or(false);
+        let since = if repair || !remote_is_real_pointer {
+            None
+        } else {
+            local_said.as_deref()
+        };
 
         let source = match remote_client.as_sad_source() {
             Ok(s) => s,
@@ -452,7 +474,14 @@ impl SyncHandler {
             }
         };
 
-        if let Err(e) = kels_core::forward_sad_records(
+        debug!(
+            chain_prefix = %chain_prefix,
+            since = ?since,
+            repair = repair,
+            "Fetching SAD chain from peer"
+        );
+
+        match kels_core::forward_sad_records(
             chain_prefix,
             &source,
             &sink,
@@ -462,11 +491,19 @@ impl SyncHandler {
         )
         .await
         {
-            self.recently_stored.write().await.remove(&cache_key);
-            warn!(
-                "Failed to replicate SAD chain {} from {}: {}",
-                chain_prefix, origin, e
-            );
+            Ok(()) => {
+                debug!(
+                    chain_prefix = %chain_prefix,
+                    "SAD chain replicated successfully"
+                );
+            }
+            Err(e) => {
+                self.recently_stored.write().await.remove(&cache_key);
+                warn!(
+                    "Failed to replicate SAD chain {} from {}: {}",
+                    chain_prefix, origin, e
+                );
+            }
         }
     }
 
@@ -1379,40 +1416,104 @@ pub async fn run_sad_anti_entropy_loop(
                 let source = entry.source.clone();
                 let retries = entry.retries;
                 tasks.push(async move {
-                    let local_said = local.fetch_sad_effective_said(&prefix).await.ok().flatten();
+                    let (local_said, local_divergent) =
+                        match local.fetch_sad_effective_said(&prefix).await {
+                            Ok(Some((said, div))) => (Some(said), div),
+                            _ => (None, false),
+                        };
 
                     for (_, sadstore_url) in &ordered_peers {
                         let remote = match kels_core::SadStoreClient::new(sadstore_url) {
                             Ok(c) => c,
                             Err(_) => continue,
                         };
-                        let remote_said = remote
-                            .fetch_sad_effective_said(&prefix)
-                            .await
-                            .ok()
-                            .flatten();
+                        let (remote_said, remote_divergent) =
+                            match remote.fetch_sad_effective_said(&prefix).await {
+                                Ok(Some((said, div))) => (Some(said), div),
+                                _ => (None, false),
+                            };
 
                         if remote_said == local_said {
                             continue;
                         }
 
-                        let (Ok(remote_source), Ok(local_sink)) =
-                            (remote.as_sad_source(), local.as_sad_sink())
-                        else {
-                            continue;
+                        // Determine sync direction: check if the remote's SAID
+                        // exists in our local chain. If yes, we're ahead → push.
+                        // If no, remote is ahead → pull.
+                        let remote_said_ref = match &remote_said {
+                            Some(s) => s.as_str(),
+                            None => continue,
                         };
-                        if kels_core::forward_sad_records(
-                            &prefix,
-                            &remote_source,
-                            &local_sink,
-                            kels_core::page_size(),
-                            kels_core::max_pages(),
-                            local_said.as_deref(),
-                        )
-                        .await
-                        .is_ok()
-                        {
-                            return (prefix, source, retries, true);
+                        let we_have_remote =
+                            local.pointer_exists(remote_said_ref).await.unwrap_or(false);
+
+                        if we_have_remote {
+                            // We're ahead — push to remote
+                            let use_repair = remote_divergent && !local_divergent;
+                            let Ok(local_source) = local.as_sad_source() else {
+                                continue;
+                            };
+                            let sink_result = if use_repair {
+                                remote.as_sad_repair_sink()
+                            } else {
+                                remote.as_sad_sink()
+                            };
+                            let Ok(remote_sink) = sink_result else {
+                                continue;
+                            };
+                            // Full fetch when repairing or when local is divergent
+                            // (delta from remote's SAID may miss branches that sort
+                            // before the cursor in a divergent chain).
+                            let since = if use_repair || local_divergent {
+                                None
+                            } else {
+                                remote_said.as_deref()
+                            };
+                            if kels_core::forward_sad_records(
+                                &prefix,
+                                &local_source,
+                                &remote_sink,
+                                kels_core::page_size(),
+                                kels_core::max_pages(),
+                                since,
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                return (prefix, source, retries, true);
+                            }
+                        } else {
+                            // Remote is ahead — pull from remote
+                            let use_repair = local_divergent && !remote_divergent;
+                            let Ok(remote_source) = remote.as_sad_source() else {
+                                continue;
+                            };
+                            let sink_result = if use_repair {
+                                local.as_sad_repair_sink()
+                            } else {
+                                local.as_sad_sink()
+                            };
+                            let Ok(local_sink) = sink_result else {
+                                continue;
+                            };
+                            let since = if use_repair {
+                                None
+                            } else {
+                                local_said.as_deref()
+                            };
+                            if kels_core::forward_sad_records(
+                                &prefix,
+                                &remote_source,
+                                &local_sink,
+                                kels_core::page_size(),
+                                kels_core::max_pages(),
+                                since,
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                return (prefix, source, retries, true);
+                            }
                         }
                     }
                     (prefix, source, retries, false)
@@ -1491,77 +1592,131 @@ pub async fn run_sad_anti_entropy_loop(
 
         info!("SAD anti-entropy: random sample mismatch detected, reconciling");
 
-        // Pull: remote prefixes that are missing or different locally
-        let mut pull_tasks = Vec::new();
-        for state in &remote_page.prefixes {
-            if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+        // Reconcile: for each prefix that differs, determine direction and sync
+        let all_prefixes: std::collections::HashSet<&str> = remote_page
+            .prefixes
+            .iter()
+            .chain(local_page.prefixes.iter())
+            .map(|s| s.prefix.as_str())
+            .collect();
+
+        type SadSyncFuture = std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = (
+                            String,
+                            String,
+                            &'static str,
+                            Result<(), kels_core::KelsError>,
+                        ),
+                    > + Send,
+            >,
+        >;
+        let mut sync_tasks: Vec<SadSyncFuture> = Vec::new();
+        for prefix in all_prefixes {
+            let local_said_str = local_map.get(prefix).copied();
+            let remote_said_str = remote_map.get(prefix).copied();
+
+            if local_said_str == remote_said_str {
                 continue;
             }
-            let local_said = local_client
-                .fetch_sad_effective_said(&state.prefix)
-                .await
-                .ok()
-                .flatten();
 
-            let (remote, local) = match (remote_client.as_sad_source(), local_client.as_sad_sink())
-            {
-                (Ok(r), Ok(l)) => (r, l),
-                _ => continue,
+            // Determine direction: check if remote's SAID exists locally
+            let we_have_remote = if let Some(said) = remote_said_str {
+                local_client.pointer_exists(said).await.unwrap_or(false)
+            } else {
+                // Remote doesn't have it at all — we're ahead
+                true
             };
-            let prefix = state.prefix.clone();
-            let peer = peer_prefix.clone();
-            pull_tasks.push(async move {
-                let result = kels_core::forward_sad_records(
-                    &prefix,
-                    &remote,
-                    &local,
-                    kels_core::page_size(),
-                    kels_core::max_pages(),
-                    local_said.as_deref(),
-                )
-                .await;
-                (prefix, peer, result)
-            });
+
+            let (local_said, local_divergent) =
+                match local_client.fetch_sad_effective_said(prefix).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
+            let (remote_said, remote_divergent) =
+                match remote_client.fetch_sad_effective_said(prefix).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
+
+            if we_have_remote {
+                // We're ahead — push to remote
+                let use_repair = remote_divergent && !local_divergent;
+                let Ok(local_source) = local_client.as_sad_source() else {
+                    continue;
+                };
+                let sink_result = if use_repair {
+                    remote_client.as_sad_repair_sink()
+                } else {
+                    remote_client.as_sad_sink()
+                };
+                let Ok(remote_sink) = sink_result else {
+                    continue;
+                };
+                let since = if use_repair {
+                    None
+                } else {
+                    remote_said.as_deref().map(str::to_string)
+                };
+                let prefix = prefix.to_string();
+                let peer = peer_prefix.clone();
+                sync_tasks.push(Box::pin(async move {
+                    let result = kels_core::forward_sad_records(
+                        &prefix,
+                        &local_source,
+                        &remote_sink,
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
+                        since.as_deref(),
+                    )
+                    .await;
+                    (prefix, peer, "pushed", result)
+                }));
+            } else {
+                // Remote is ahead — pull from remote
+                let use_repair = local_divergent && !remote_divergent;
+                let Ok(remote_source) = remote_client.as_sad_source() else {
+                    continue;
+                };
+                let sink_result = if use_repair {
+                    local_client.as_sad_repair_sink()
+                } else {
+                    local_client.as_sad_sink()
+                };
+                let Ok(local_sink) = sink_result else {
+                    continue;
+                };
+                let since = if use_repair {
+                    None
+                } else {
+                    local_said.as_deref().map(str::to_string)
+                };
+                let prefix = prefix.to_string();
+                let peer = peer_prefix.clone();
+                sync_tasks.push(Box::pin(async move {
+                    let result = kels_core::forward_sad_records(
+                        &prefix,
+                        &remote_source,
+                        &local_sink,
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
+                        since.as_deref(),
+                    )
+                    .await;
+                    (prefix, peer, "pulled", result)
+                }));
+            }
         }
 
-        for (prefix, peer, result) in join_all(pull_tasks).await {
+        for (prefix, peer, direction, result) in join_all(sync_tasks).await {
             match result {
                 Ok(()) => {
-                    info!("SAD anti-entropy: pulled {} from remote", prefix);
+                    info!("SAD anti-entropy: {} {} from/to remote", direction, prefix);
                 }
                 Err(_) => {
                     record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
                 }
-            }
-        }
-
-        // Push: local prefixes that are missing or different on remote
-        for state in &local_page.prefixes {
-            if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
-                continue;
-            }
-            let remote_said = remote_client
-                .fetch_sad_effective_said(&state.prefix)
-                .await
-                .ok()
-                .flatten();
-
-            let (Ok(local_source), Ok(remote_sink)) =
-                (local_client.as_sad_source(), remote_client.as_sad_sink())
-            else {
-                continue;
-            };
-            if let Ok(()) = kels_core::forward_sad_records(
-                &state.prefix,
-                &local_source,
-                &remote_sink,
-                kels_core::page_size(),
-                kels_core::max_pages(),
-                remote_said.as_deref(),
-            )
-            .await
-            {
-                info!("SAD anti-entropy: pushed {} to remote", state.prefix);
             }
         }
 

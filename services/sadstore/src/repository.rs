@@ -57,14 +57,27 @@ impl SadPointerRepository {
             ));
         }
 
-        // Insert records, skipping duplicates via unique constraint
+        // Insert records, skipping duplicates by checking existence first.
+        // We cannot rely on catching unique constraint violations because in
+        // Postgres a constraint violation aborts the transaction.
+        let existing_saids: std::collections::HashSet<String> = {
+            let saids: Vec<String> = records.iter().map(|(r, _)| r.said.clone()).collect();
+            let query =
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    .r#in("said", saids);
+            tx.fetch(query)
+                .await?
+                .into_iter()
+                .map(|r: SadPointer| r.said)
+                .collect()
+        };
+
         let mut count = 0u32;
         for (record, signature) in records {
-            match self.insert_in(&mut tx, record.clone()).await {
-                Ok(_) => {}
-                Err(StorageError::DuplicateRecord(_)) => continue,
-                Err(e) => return Err(e),
+            if existing_saids.contains(&record.said) {
+                continue;
             }
+            self.insert_in(&mut tx, record.clone()).await?;
             tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
                 .await?;
             count += 1;
@@ -170,12 +183,41 @@ impl SadPointerRepository {
         }
 
         let prefix = &records[0].0.prefix;
-        let from_version = records[0].0.version;
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix).await?;
 
         // Verify full chain integrity before modifying — DB cannot be trusted
         Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+
+        // Skip leading records that already exist locally (by SAID). The gossip
+        // repair path sends the full chain but only the divergent tail needs
+        // truncation. Deduplicating here avoids unnecessary archival of records
+        // that are identical on both sides.
+        let (new_records, from_version) = {
+            let saids: Vec<String> = records.iter().map(|r| r.0.said.clone()).collect();
+            let existing_query =
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    .r#in("said", saids);
+            let existing: std::collections::HashSet<String> = tx
+                .fetch(existing_query)
+                .await?
+                .into_iter()
+                .map(|r: SadPointer| r.said)
+                .collect();
+            let deduped: Vec<_> = records
+                .iter()
+                .skip_while(|(r, _)| existing.contains(&r.said))
+                .collect();
+            if deduped.is_empty() {
+                // All replacement records match existing — truncate from the
+                // version after the last replacement record (removes the tail).
+                let last_version = records.last().map(|(r, _)| r.version).unwrap_or(0);
+                (deduped, last_version + 1)
+            } else {
+                let version = deduped[0].0.version;
+                (deduped, version)
+            }
+        };
 
         // Archive records and signatures page-at-a-time before deleting
         let page_size = kels_core::page_size();
@@ -243,7 +285,7 @@ impl SadPointerRepository {
         tx.delete(delete_records).await?;
 
         // Insert replacements
-        for (record, signature) in records {
+        for (record, signature) in new_records {
             self.insert_in(&mut tx, record.clone()).await?;
             tx.insert_with_table(signature, Self::SIGNATURES_TABLE_NAME)
                 .await?;
@@ -274,6 +316,16 @@ impl SadPointerRepository {
             .limit(1);
         let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
         Ok(counts.first().is_some_and(|&c| c > 1))
+    }
+
+    /// Check if a pointer with the given SAID exists.
+    pub async fn pointer_exists(&self, said: &str) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+            .eq("said", said)
+            .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
     }
 
     /// Fetch unique establishment serials from existing signatures for a chain.

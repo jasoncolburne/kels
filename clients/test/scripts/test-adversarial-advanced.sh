@@ -12,18 +12,18 @@
 #
 # Environment variables:
 #   GOSSIP_PROPAGATION_DELAY - Time to wait for gossip propagation (default: 5s)
-#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
-#   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.kels-node-e.kels)
-#   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.kels-node-f.kels)
+#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.node-d.kels)
+#   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.node-e.kels)
+#   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.node-f.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
-NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
-NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
-NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
+NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.node-d.kels}"
+NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.node-e.kels}"
+NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.node-f.kels}"
 NODE_D_URL="http://${NODE_D_KELS_HOST}"
 NODE_E_URL="http://${NODE_E_KELS_HOST}"
 NODE_F_URL="http://${NODE_F_KELS_HOST}"

@@ -52,10 +52,10 @@ class KelsViewModel: ObservableObject {
 
     // Available registries with their URLs (hardcoded for UI selector)
     static let registryUrls = [
-        ("registry-a", "http://registry.kels-registry-a.kels"),
-        ("registry-b", "http://registry.kels-registry-b.kels"),
-        ("registry-c", "http://registry.kels-registry-c.kels"),
-        ("registry-d", "http://registry.kels-registry-d.kels")
+        ("registry-a", "http://registry.registry-a.kels"),
+        ("registry-b", "http://registry.registry-b.kels"),
+        ("registry-c", "http://registry.registry-c.kels"),
+        ("registry-d", "http://registry.registry-d.kels")
     ]
 
     @Published var selectedRegistry: String = "registry-a" {
@@ -79,7 +79,7 @@ class KelsViewModel: ObservableObject {
     private var defaultRegistryUrl: String {
         Self.registryUrls.first(where: { $0.0 == selectedRegistry })?.1 ?? Self.registryUrls[0].1
     }
-    private let defaultNodeUrl = "http://kels.kels-node-a.kels"
+    private let defaultNodeUrl = "http://kels.node-a.kels"
 
     // Developer tools logging
     #if DEV_TOOLS

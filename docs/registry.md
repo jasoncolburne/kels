@@ -195,7 +195,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 
 - Registry is shared infrastructure across all node deployments
 - Deployed once in `kels-registry` namespace
-- Nodes in `kels-node-a`, `kels-node-b` etc. connect to shared registry
+- Nodes in `node-a`, `node-b` etc. connect to shared registry
 - Avoids circular dependencies during node bootstrap
 
 ### Bootstrap sync via KELS API (not direct DB)
@@ -214,13 +214,13 @@ kels-registry/     # Shared registry service + Redis
   └── registry (Deployment)
   └── redis (Deployment)
 
-kels-node-a/       # Node A deployment
+node-a/       # Node A deployment
   └── postgres (databases: kels, kels_gossip)
   └── redis
   └── kels
   └── gossip
 
-kels-node-b/       # Node B deployment
+node-b/       # Node B deployment
   └── postgres (databases: kels, kels_gossip)
   └── redis
   └── kels
@@ -234,9 +234,9 @@ environments:
   - name: registry
     defaultNamespace: kels-registry
   - name: node-a
-    defaultNamespace: kels-node-a
+    defaultNamespace: node-a
   - name: node-b
-    defaultNamespace: kels-node-b
+    defaultNamespace: node-b
 ```
 
 ### Deployment order
@@ -334,14 +334,14 @@ garden deploy --env=registry
 garden deploy --env=node-a
 
 # Create KELs on node-a
-kels-cli -u http://kels.kels-node-a.kels incept
-kels-cli -u http://kels.kels-node-a.kels incept
+kels-cli -u http://kels.node-a.kels incept
+kels-cli -u http://kels.node-a.kels incept
 
 # Deploy second node (bootstrap syncs from node-a)
 garden deploy --env=node-b
 
 # Verify node-b has the KELs
-kels-cli -u http://kels.kels-node-b.kels list
+kels-cli -u http://kels.node-b.kels list
 
 # Test client discovery
 kels-cli --registry http://registry.kels-registry.kels list-nodes

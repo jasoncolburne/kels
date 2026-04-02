@@ -8,26 +8,19 @@
 # Usage: test-gossip.sh
 #
 # Environment variables:
-#   GOSSIP_PROPAGATION_DELAY - Time to wait for gossip propagation (default: 5s)
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
-#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
+#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.node-b.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
-GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
-NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 
 init_temp_dir
-
-wait_for_propagation() {
-    echo "Waiting ${GOSSIP_PROPAGATION_DELAY}s for gossip propagation..."
-    sleep "$GOSSIP_PROPAGATION_DELAY"
-}
 
 wait_for_kel_on_both_nodes() {
     wait_for_propagation "$1" "$CONVERGENCE_TIMEOUT" "$NODE_A_URL" "$NODE_B_URL"
@@ -81,7 +74,6 @@ echo "KELS Gossip Protocol Test Suite"
 echo "========================================="
 echo "Node-A URL:       $NODE_A_URL"
 echo "Node-B URL:       $NODE_B_URL"
-echo "Propagation wait: ${GOSSIP_PROPAGATION_DELAY}s"
 echo "Config:           $KELS_CLI_HOME"
 echo "========================================="
 echo ""

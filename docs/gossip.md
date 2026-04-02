@@ -207,7 +207,7 @@ Each namespace has:
 
 ### CoreDNS Configuration for `.kels` Domains
 
-Nodes advertise URLs using `.kels` domains (e.g., `http://kels.kels-node-a.kels`) so that the same URLs work for both:
+Nodes advertise URLs using `.kels` domains (e.g., `http://kels.node-a.kels`) so that the same URLs work for both:
 - **External clients** (iOS, CLI) - resolved via `/etc/hosts` or local DNS
 - **Internal services** - resolved via CoreDNS inside the cluster
 
@@ -220,8 +220,8 @@ scripts/coredns.sh apply
 This applies rewrite rules that translate `.kels` domains to `.svc.cluster.kels`:
 
 ```
-rewrite name regex (.*)\.kels-registry-(.)\.kels {1}.kels-registry-{2}.svc.cluster.kels
-rewrite name regex (.*)\.kels-node-(.)\.kels {1}.kels-node-{2}.svc.cluster.kels
+rewrite name regex (.*)\.registry-(.)\.kels {1}.registry-{2}.svc.cluster.kels
+rewrite name regex (.*)\.node-(.)\.kels {1}.node-{2}.svc.cluster.kels
 ```
 
 **Platform-specific notes:**
@@ -234,7 +234,7 @@ rewrite name regex (.*)\.kels-node-(.)\.kels {1}.kels-node-{2}.svc.cluster.kels
 | EKS/GKE/AKS | Use cluster-specific DNS customization (e.g., CoreDNS ConfigMap or NodeLocal DNSCache) |
 | k3s | Uses CoreDNS by default; same ConfigMap approach works |
 
-If your Kubernetes distribution uses a different DNS provider or configuration method, adapt the rewrite rules accordingly. The key requirement is that `*.kels-node-X.kels` resolves to `*.kels-node-X.svc.cluster.kels` inside the cluster.
+If your Kubernetes distribution uses a different DNS provider or configuration method, adapt the rewrite rules accordingly. The key requirement is that `*.node-X.kels` resolves to `*.node-X.svc.cluster.kels` inside the cluster.
 
 ## Anti-Entropy Repair
 

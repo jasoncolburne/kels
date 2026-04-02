@@ -58,7 +58,7 @@ base64 = "0.22"
 # CESR encoding for public keys and signatures
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 
-# CLI framework for kels-registry-admin
+# CLI framework for registry-admin
 clap = { version = "4", features = ["derive"] }
 
 # Async traits

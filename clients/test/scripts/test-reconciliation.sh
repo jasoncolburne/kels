@@ -8,20 +8,18 @@
 # Usage: test-reconciliation.sh
 #
 # Environment variables:
-#   GOSSIP_PROPAGATION_DELAY - Time to wait for gossip propagation (default: 3s)
 #   CONVERGENCE_TIMEOUT      - Timeout for convergence checks (default: 30s)
-#   NODE_D_KELS_HOST         - node-d KELS hostname (default: kels.kels-node-d.kels)
-#   NODE_E_KELS_HOST         - node-e KELS hostname (default: kels.kels-node-e.kels)
-#   NODE_F_KELS_HOST         - node-f KELS hostname (default: kels.kels-node-f.kels)
+#   NODE_D_KELS_HOST         - node-d KELS hostname (default: kels.node-d.kels)
+#   NODE_E_KELS_HOST         - node-e KELS hostname (default: kels.node-e.kels)
+#   NODE_F_KELS_HOST         - node-f KELS hostname (default: kels.node-f.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
-GOSSIP_PROPAGATION_DELAY="${GOSSIP_PROPAGATION_DELAY:-3}"
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
-NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
-NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
-NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
+NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.node-d.kels}"
+NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.node-e.kels}"
+NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.node-f.kels}"
 NODE_D_URL="http://${NODE_D_KELS_HOST}"
 NODE_E_URL="http://${NODE_E_KELS_HOST}"
 NODE_F_URL="http://${NODE_F_KELS_HOST}"
@@ -49,9 +47,22 @@ cleanup_adversary_backup() {
     rm -rf "$KELS_CLI_HOME.owner"
 }
 
-wait_for_gossip() {
-    echo "Waiting ${GOSSIP_PROPAGATION_DELAY}s for gossip propagation..."
-    sleep "$GOSSIP_PROPAGATION_DELAY"
+wait_for_event_count() {
+    local url="$1"
+    local prefix="$2"
+    local expected="$3"
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    echo "Waiting for $expected events on $url (timeout: ${CONVERGENCE_TIMEOUT}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local count
+        count=$(get_event_count "$url" "$prefix")
+        if [ "$count" -ge "$expected" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: expected $expected events, got $(get_event_count "$url" "$prefix")"
+    return 1
 }
 
 get_archived_count() {
@@ -172,7 +183,6 @@ echo "========================================="
 echo "Node-D URL:       $NODE_D_URL"
 echo "Node-E URL:       $NODE_E_URL"
 echo "Node-F URL:       $NODE_F_URL"
-echo "Propagation wait: ${GOSSIP_PROPAGATION_DELAY}s"
 echo "Config:           $KELS_CLI_HOME"
 echo "========================================="
 echo ""
@@ -206,7 +216,7 @@ save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX1" --events ixn
 echo "Adversary ixn injected on node-e"
 
-wait_for_gossip
+run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX1" 2
 run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX1"
 run_test "All nodes converge after recovery" wait_for_convergence "$PREFIX1"
 run_test "Archived adversary ixn on all nodes" wait_for_archived_convergence "$PREFIX1" 1
@@ -227,8 +237,8 @@ run_test "KEL propagated" wait_for_propagation "$PREFIX2" "$CONVERGENCE_TIMEOUT"
 
 save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX2" --events ixn
-wait_for_gossip
 
+run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX2" 2
 run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX2"
 
 # Add post-recovery event
@@ -254,8 +264,8 @@ run_test "KEL propagated" wait_for_propagation "$PREFIX3" "$CONVERGENCE_TIMEOUT"
 save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX3" --events rot,ixn,ixn
 echo "Adversary rot,ixn,ixn injected on node-e"
-wait_for_gossip
 
+run_test "Adversary events propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX3" 4
 run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX3"
 run_test "Owner anchors after recovery" kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX3" --said KPostRotChainRecoveryAnchor_________________
 run_test "All nodes converge" wait_for_convergence "$PREFIX3"
@@ -279,8 +289,8 @@ run_test "KEL propagated" wait_for_propagation "$PREFIX4" "$CONVERGENCE_TIMEOUT"
 save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX4" --events ror,ixn
 echo "Adversary ror,ixn injected on node-e (reveals recovery)"
-wait_for_gossip
 
+run_test "Adversary events propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX4" 3
 run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" contest --prefix "$PREFIX4"
 run_test "All nodes have cnt" wait_for_all_contested "$PREFIX4"
 
@@ -303,8 +313,8 @@ run_test "KEL propagated" wait_for_propagation "$PREFIX5" "$CONVERGENCE_TIMEOUT"
 save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX5" --events ror
 echo "Adversary ror injected on node-e (reveals recovery, shorter chain)"
-wait_for_gossip
 
+run_test "Adversary ror propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX5" 3
 run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" contest --prefix "$PREFIX5"
 run_test "All nodes have cnt" wait_for_all_contested "$PREFIX5"
 
@@ -353,8 +363,8 @@ run_test "KEL propagated" wait_for_propagation "$PREFIX7" "$CONVERGENCE_TIMEOUT"
 
 save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX7" --events ixn
-wait_for_gossip
 
+run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX7" 2
 run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX7"
 
 # Adversary tries another rec — should fail with ContestRequired

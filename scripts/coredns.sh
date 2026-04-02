@@ -21,7 +21,7 @@ TTL="${DNS_CACHE_TTL:-30}"
 # Idempotency check for reset
 case "$MODE" in
   reset)
-    if ! kubectl get configmap coredns -n kube-system -o json | jq .data.Corefile | jq -r . | grep -q "kels-registry"; then
+    if ! kubectl get configmap coredns -n kube-system -o json | jq .data.Corefile | jq -r . | grep -q "registry-"; then
       echo "CoreDNS does not have .kels rewrite rules"
       exit 0
     fi
@@ -38,13 +38,13 @@ esac
 # Build rewrite rules
 REWRITE_RULES=""
 if [ "$MODE" != "reset" ]; then
-  REWRITE_RULES="        rewrite name regex (.*)\.kels-registry-(.)\.kels {1}.kels-registry-{2}.svc.cluster.local answer auto
+  REWRITE_RULES="        rewrite name regex (.*)\.registry-(.)\.kels {1}.kels-registry-{2}.svc.cluster.local answer auto
 "
   if [ "$MODE" = "break-node-b" ]; then
-    REWRITE_RULES="${REWRITE_RULES}        rewrite name regex (.*)\.kels-node-(b)\.kels {1}.kels-node-broken.svc.cluster.local answer auto
+    REWRITE_RULES="${REWRITE_RULES}        rewrite name regex (.*)\.node-(b)\.kels {1}.kels-node-broken.svc.cluster.local answer auto
 "
   fi
-  REWRITE_RULES="${REWRITE_RULES}        rewrite name regex (.*)\.kels-node-(.)\.kels {1}.kels-node-{2}.svc.cluster.local answer auto
+  REWRITE_RULES="${REWRITE_RULES}        rewrite name regex (.*)\.node-(.)\.kels {1}.kels-node-{2}.svc.cluster.local answer auto
 "
 fi
 

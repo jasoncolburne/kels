@@ -131,7 +131,7 @@ spec:
     - bash
     - scripts/vote-peer.sh
     - ${var.proposal}
-    - ${environment.namespace}
+    - ${environment.name}
     - "true"
 
 ---
@@ -155,7 +155,7 @@ spec:
     - bash
     - scripts/vote-peer.sh
     - ${var.proposal}
-    - ${environment.namespace}
+    - ${environment.name}
     - "false"
 
 ---
@@ -179,7 +179,7 @@ spec:
     - bash
     - scripts/proposal-status.sh
     - ${var.proposal}
-    - ${environment.namespace}
+    - ${environment.name}
 
 ---
 
@@ -202,5 +202,5 @@ spec:
     - bash
     - scripts/withdraw-peer.sh
     - ${var.proposal}
-    - ${environment.namespace}
+    - ${environment.name}
 

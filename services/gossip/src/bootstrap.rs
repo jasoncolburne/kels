@@ -276,7 +276,8 @@ impl BootstrapSync {
                         .fetch_sad_effective_said(&state.prefix)
                         .await
                         .ok()
-                        .flatten();
+                        .flatten()
+                        .map(|(s, _)| s);
 
                     if local_said.as_deref() == Some(&state.said) {
                         continue;

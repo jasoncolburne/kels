@@ -27,7 +27,7 @@ pub struct Peer {
     pub node_id: String,
     pub authorizing_kel: String,
     pub active: bool,
-    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// Base domain for service discovery (e.g., "node-a.kels").
     /// Derive service URLs: http://kels.{base_domain}, http://sadstore.{base_domain}
     pub base_domain: String,
     /// Gossip address (host:port)

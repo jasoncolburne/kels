@@ -98,7 +98,7 @@ struct Peer {
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
-    base_domain: String,      // Base domain for service discovery (e.g., "kels-node-a.kels")
+    base_domain: String,      // Base domain for service discovery (e.g., "node-a.kels")
     gossip_addr: String,     // Gossip address (host:port)
 }
 ```
@@ -198,8 +198,8 @@ The `registry-admin` CLI manages the peer allowlist:
 ```bash
 # Add a peer to allowlist
 registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
-  --kels-url http://kels.kels-node-a.kels \
-  --gossip-addr gossip.kels-node-a.kels:4001
+  --kels-url http://kels.node-a.kels \
+  --gossip-addr gossip.node-a.kels:4001
 
 # Remove a peer (creates deactivated version)
 registry-admin peer remove --peer-id 12D3KooWAbc...
@@ -219,7 +219,7 @@ Before a node can be added to the allowlist, you need its PeerPrefix. Options:
 
 ```bash
 # Check gossip service logs
-kubectl logs -n kels-node-a deploy/gossip | grep PeerPrefix
+kubectl logs -n node-a deploy/gossip | grep PeerPrefix
 # Output: Local PeerPrefix: 12D3KooWXyz...
 ```
 
@@ -316,7 +316,7 @@ kels-registry/
 ### Node Namespace
 
 ```
-kels-node-x/
+node-x/
 ├── identity (manages node's KELS identity; loads PKCS#11 .so for HSM)
 ├── postgres (kels + kels_gossip DBs)
 ├── redis (KEL cache + pubsub)
@@ -336,7 +336,7 @@ kels-node-x/
 2. Verify PeerPrefix matches:
    ```bash
    # Get PeerPrefix from node logs
-   kubectl logs -n kels-node-x deploy/gossip | grep PeerPrefix
+   kubectl logs -n node-x deploy/gossip | grep PeerPrefix
    ```
 
 3. Check registry logs for verification errors:

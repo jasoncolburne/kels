@@ -202,8 +202,10 @@ impl KelsRegistryClient {
             .filter_map(|record| {
                 let kels_url = format!("http://kels.{}", record.base_domain);
                 crate::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
-                    .ok()
-                    .map(|client| async move { client.check_ready_status().await == NodeStatus::Ready })
+                        .ok()
+                        .map(|client| async move {
+                            client.check_ready_status().await == NodeStatus::Ready
+                        })
             })
             .collect();
 

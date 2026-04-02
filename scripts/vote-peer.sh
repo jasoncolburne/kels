@@ -14,7 +14,7 @@ if [ -z "$PROPOSAL_ID" ]; then
 fi
 
 # Find all available registries
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
+REGISTRIES=(registry-a registry-b registry-c registry-d)
 
 if [ -z "$REGISTRY_NS" ]; then
     # Find the leader, then pick a follower to vote from
@@ -46,7 +46,7 @@ if [ "$APPROVE" = "true" ]; then
     APPROVE_FLAG="--approve"
 fi
 
-VOTE_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+VOTE_OUTPUT=$(kubectl exec -n "kels-$REGISTRY_NS" deploy/registry -c registry -- \
     /app/registry-admin peer vote \
     --proposal-id "$PROPOSAL_ID" \
     $APPROVE_FLAG 2>&1)

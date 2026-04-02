@@ -125,7 +125,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: sadstore.${environment.namespace}.kels
+    - host: sadstore.${environment.name}.kels
       http:
         paths:
           - path: /

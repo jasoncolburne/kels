@@ -161,10 +161,10 @@ test-voting:
 	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1a: unauthenticated GET to federation proposals endpoint should succeed (read-only)
-	kubectl exec -n kels-node-a test-client -- curl -sf http://registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	kubectl exec -n kels-node-a test-client -- curl -sf http://registry.registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1b: POST to federation proposals endpoint should fail (method not allowed)
-	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://registry.registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1c: proposal-status via admin CLI should succeed
 	garden run proposal-status --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -276,8 +276,16 @@ test-grow-federation:
 	garden deploy --env=registry-b
 	garden deploy --env=registry-c
 	garden deploy --env=registry-d
-	# Wait for Raft init + sync_membership
-	sleep 15
+	# Wait for Raft init + leader election
+	@kubectl exec -n kels-node-a test-client -- sh -c '\
+		for i in $$(seq 1 60); do \
+			for r in a b c d; do \
+				leader=$$(curl -sf "http://registry.registry-$$r.kels/api/v1/federation/status" 2>/dev/null | jq -r ".isLeader // false"); \
+				if [ "$$leader" = "true" ]; then echo "Leader elected after $${i}s"; exit 0; fi; \
+			done; \
+			sleep 1; \
+		done; \
+		echo "Timeout waiting for leader election"; exit 1'
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
@@ -290,8 +298,16 @@ test-shrink-federation:
 	garden deploy --env=registry-a
 	garden deploy --env=registry-c
 	garden deploy --env=registry-d
-	# Wait for Raft init + sync_membership
-	sleep 15
+	# Wait for Raft init + leader election (3-member cluster)
+	@kubectl exec -n kels-node-a test-client -- sh -c '\
+		for i in $$(seq 1 60); do \
+			for r in a c d; do \
+				leader=$$(curl -sf "http://registry.registry-$$r.kels/api/v1/federation/status" 2>/dev/null | jq -r ".isLeader // false"); \
+				if [ "$$leader" = "true" ]; then echo "Leader elected after $${i}s"; exit 0; fi; \
+			done; \
+			sleep 1; \
+		done; \
+		echo "Timeout waiting for leader election"; exit 1'
 	# Redeploy nodes so they pick up the new federation config
 	$(MAKE) deploy-nodes
 	$(MAKE) wait-for-gossip
@@ -311,7 +327,7 @@ wait-for-gossip:
 		while [ $$elapsed -lt 120 ]; do \
 			all_ready=true; \
 			for node in a b c d e f; do \
-				status=$$(curl -s -o /dev/null -w "%{http_code}" http://gossip.kels-node-$$node.kels/ready 2>/dev/null); \
+				status=$$(curl -s -o /dev/null -w "%{http_code}" http://gossip.node-$$node.kels/ready 2>/dev/null); \
 				if [ "$$status" != "200" ]; then \
 					all_ready=false; \
 					break; \
@@ -333,13 +349,10 @@ test-rotation:
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
-	# Wait for sync loop to pick up rotations
-	sleep 30
-	# Verify KEL event types from test-client
-	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=kels-registry-a ./test-scheduled-rotation.sh'
-	# Rotate on node-a identity and let gossip propagate
+	# Verify KEL event types from test-client (identity-admin is synchronous, no wait needed)
+	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=registry-a ./test-scheduled-rotation.sh'
+	# Rotate on node-a identity — test-gossip.sh has its own convergence polling
 	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
-	sleep 10
 	# Verify cross-node ops still work after rotation (no restarts)
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 

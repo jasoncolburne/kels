@@ -80,7 +80,7 @@ fn registry_kel_store(
 pub struct Config {
     /// Unique node identifier (e.g., "node-a")
     pub node_id: String,
-    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// Base domain for service discovery (e.g., "node-a.kels").
     /// KELS URL = http://kels.{base_domain}, SADStore URL = http://sadstore.{base_domain}
     pub base_domain: String,
     /// PostgreSQL database URL for local registry KEL store
@@ -95,7 +95,7 @@ pub struct Config {
     pub federation_registry_urls: Vec<String>,
     /// Gossip listen address (e.g., 0.0.0.0:4001)
     pub listen_addr: SocketAddr,
-    /// Advertised gossip address for registry (e.g., gossip.kels-node-a.kels:4001)
+    /// Advertised gossip address for registry (e.g., gossip.node-a.kels:4001)
     pub advertise_addr: String,
     /// Gossip topic name
     pub topic: String,

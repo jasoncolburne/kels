@@ -63,7 +63,7 @@ providers:
     namespace:
       name: ${environment.namespace}
     setupIngressController: traefik
-    defaultHostname: ${environment.namespace}.kels
+    defaultHostname: ${environment.name}.kels
     buildMode: local-docker
 
 variables:

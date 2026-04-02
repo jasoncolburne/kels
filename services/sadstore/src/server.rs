@@ -35,6 +35,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
         .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
         // Chain records (Layer 2 — Postgres)
+        .route(
+            "/api/v1/sad/pointers/exists/:said",
+            get(handlers::sad_pointer_exists),
+        )
         .route("/api/v1/sad/pointers", post(handlers::submit_sad_records))
         .route("/api/v1/sad/pointers/:prefix", get(handlers::get_sad_chain))
         .route(

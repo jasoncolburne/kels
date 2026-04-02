@@ -214,7 +214,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | Variable | Description |
 |----------|-------------|
 | `NODE_ID` | Unique node identifier |
-| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `kels-node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://sadstore.{BASE_DOMAIN}` |
+| `BASE_DOMAIN` | Base domain for service URL derivation (e.g., `node-a.kels`). Derives `KELS_URL` = `http://kels.{BASE_DOMAIN}` and `SADSTORE_URL` = `http://sadstore.{BASE_DOMAIN}` |
 | `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | All registry URLs (comma-separated, for peer discovery) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (e.g., `0.0.0.0:4001`) |

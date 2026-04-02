@@ -144,6 +144,8 @@ fn build_chain(
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
+/// `content_tag` differentiates replacement chains so they produce unique SAIDs.
+#[allow(clippy::too_many_arguments)]
 fn build_replacement(
     previous_said: &str,
     prefix: &str,
@@ -151,6 +153,7 @@ fn build_replacement(
     kind: &str,
     from_version: u64,
     count: usize,
+    content_tag: &str,
     sk: &SigningKey,
 ) -> Vec<(SadPointer, SadPointerSignature)> {
     let mut pairs = Vec::with_capacity(count);
@@ -162,13 +165,13 @@ fn build_replacement(
         version: from_version,
         kel_prefix: kel_prefix.to_string(),
         kind: kind.to_string(),
-        content_said: Some(format!("Ereplacement_{}", from_version)),
+        content_said: Some(format!("K{}_{}", content_tag, from_version)),
     };
     pointer.derive_said().unwrap();
     pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
 
     for i in 1..count {
-        pointer.content_said = Some(format!("Ereplacement_{}", from_version + i as u64));
+        pointer.content_said = Some(format!("K{}_{}", content_tag, from_version + i as u64));
         pointer.increment().unwrap();
         pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
     }
@@ -230,7 +233,16 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Build replacement from v3 (replacing v3 and v4 with 2 new records)
     let previous_said = &chain[2].0.said; // v2 is the last kept record
-    let replacement = build_replacement(previous_said, &prefix, kel_prefix, kind, 3, 2, &sk);
+    let replacement = build_replacement(
+        previous_said,
+        &prefix,
+        kel_prefix,
+        kind,
+        3,
+        2,
+        "replacement",
+        &sk,
+    );
 
     repo.sad_records
         .truncate_and_replace(&replacement, &keys)
@@ -319,8 +331,16 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
     let prefix = chain[0].0.prefix.clone();
 
     // Build replacement signed with the wrong key
-    let replacement =
-        build_replacement(&chain[1].0.said, &prefix, kel_prefix, kind, 2, 1, &wrong_sk);
+    let replacement = build_replacement(
+        &chain[1].0.said,
+        &prefix,
+        kel_prefix,
+        kind,
+        2,
+        1,
+        "bad_sig",
+        &wrong_sk,
+    );
 
     // Should fail — signature won't verify
     let result = repo
@@ -365,14 +385,32 @@ async fn test_get_repairs_pagination() {
     let prefix = chain[0].0.prefix.clone();
 
     // First repair: replace from v4
-    let r1 = build_replacement(&chain[3].0.said, &prefix, kel_prefix, kind, 4, 1, &sk);
+    let r1 = build_replacement(
+        &chain[3].0.said,
+        &prefix,
+        kel_prefix,
+        kind,
+        4,
+        1,
+        "repair_a",
+        &sk,
+    );
     repo.sad_records
         .truncate_and_replace(&r1, &keys)
         .await
         .unwrap();
 
     // Second repair: replace from v4 again (replacing the first replacement)
-    let r2 = build_replacement(&chain[3].0.said, &prefix, kel_prefix, kind, 4, 1, &sk);
+    let r2 = build_replacement(
+        &chain[3].0.said,
+        &prefix,
+        kel_prefix,
+        kind,
+        4,
+        1,
+        "repair_b",
+        &sk,
+    );
     repo.sad_records
         .truncate_and_replace(&r2, &keys)
         .await
@@ -411,7 +449,16 @@ async fn test_get_repair_records_pagination() {
         .unwrap();
 
     let prefix = chain[0].0.prefix.clone();
-    let replacement = build_replacement(&chain[0].0.said, &prefix, kel_prefix, kind, 1, 3, &sk);
+    let replacement = build_replacement(
+        &chain[0].0.said,
+        &prefix,
+        kel_prefix,
+        kind,
+        1,
+        3,
+        "replacement",
+        &sk,
+    );
     repo.sad_records
         .truncate_and_replace(&replacement, &keys)
         .await
@@ -497,15 +544,16 @@ async fn test_truncate_and_replace_from_v0() {
     assert_eq!(stored[0].pointer.said, new_chain[0].0.said);
     assert_eq!(stored[1].pointer.said, new_chain[1].0.said);
 
-    // Repair should show 3 archived records
+    // Repair should show 1 archived record (v2) — v0 and v1 are identical
+    // and deduped, so only the tail beyond the replacement chain gets archived.
     let (repairs, _) = repo.sad_records.get_repairs(&prefix, 10, 0).await.unwrap();
     assert_eq!(repairs.len(), 1);
-    assert_eq!(repairs[0].diverged_at_version, 0);
+    assert_eq!(repairs[0].diverged_at_version, 2);
 
     let (archived, _) = repo
         .sad_records
         .get_repair_records(&repairs[0].said, 10, 0)
         .await
         .unwrap();
-    assert_eq!(archived.len(), 3);
+    assert_eq!(archived.len(), 1);
 }

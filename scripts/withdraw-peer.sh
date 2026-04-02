@@ -12,7 +12,7 @@ if [ -z "$PROPOSAL_ID" ]; then
 fi
 
 # Find all available registries
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
+REGISTRIES=(registry-a registry-b registry-c registry-d)
 
 if [ -z "$REGISTRY_NS" ]; then
     # Find the leader registry (proposals are submitted to leader)
@@ -28,7 +28,7 @@ fi
 echo "Withdrawing proposal $PROPOSAL_ID from $REGISTRY_NS..." >&2
 
 # Withdraw the proposal
-WITHDRAW_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+WITHDRAW_OUTPUT=$(kubectl exec -n "kels-$REGISTRY_NS" deploy/registry -c registry -- \
     /app/registry-admin peer withdraw \
     --proposal-id "$PROPOSAL_ID" 2>&1)
 

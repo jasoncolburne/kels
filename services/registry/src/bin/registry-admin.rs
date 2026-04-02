@@ -59,7 +59,7 @@ enum PeerAction {
         /// Human-readable node name
         #[arg(long)]
         node_id: String,
-        /// Base domain for service discovery (e.g., "kels-node-a.kels")
+        /// Base domain for service discovery (e.g., "node-a.kels")
         #[arg(long)]
         base_domain: String,
         /// Gossip address (host:port)

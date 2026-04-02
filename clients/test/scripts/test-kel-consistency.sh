@@ -14,21 +14,21 @@
 #
 # Environment variables:
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
-#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
-#   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.kels-node-c.kels)
-#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
-#   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.kels-node-e.kels)
-#   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.kels-node-f.kels)
+#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.node-b.kels)
+#   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.node-c.kels)
+#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.node-d.kels)
+#   NODE_E_KELS_HOST - node-e KELS hostname (default: kels.node-e.kels)
+#   NODE_F_KELS_HOST - node-f KELS hostname (default: kels.node-f.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
-NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
-NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.kels-node-c.kels}"
-NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
-NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
-NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
+NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.node-c.kels}"
+NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.node-d.kels}"
+NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.node-e.kels}"
+NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.node-f.kels}"
 
 declare -a NODE_NAMES=(a b c d e f)
 declare -a NODE_URLS=(

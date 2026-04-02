@@ -4,7 +4,7 @@ set -e
 # Find the Raft federation leader by querying registry status endpoints
 # from inside the cluster via the test-client pod.
 
-REGISTRIES=(kels-registry-a kels-registry-b kels-registry-c kels-registry-d)
+REGISTRIES=(registry-a registry-b registry-c registry-d)
 
 for ns in "${REGISTRIES[@]}"; do
     LEADER_INFO=$(kubectl exec -n kels-node-a test-client -- \

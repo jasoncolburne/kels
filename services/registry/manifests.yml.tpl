@@ -105,7 +105,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: registry.${environment.namespace}.kels
+    - host: registry.${environment.name}.kels
       http:
         paths:
           - path: /

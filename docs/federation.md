@@ -357,7 +357,7 @@ garden run vote-peer --env=registry-b --var proposal=EProposal...
 # Repeat for node-b and node-c
 
 # View federation status
-kubectl exec -n kels-registry-a deploy/registry -- \
+kubectl exec -n registry-a deploy/registry -- \
   /app/registry-admin federation status
 ```
 

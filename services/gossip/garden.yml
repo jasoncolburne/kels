@@ -46,7 +46,7 @@ variables:
   gossipDatabaseUrl: ${var.postgres.url}/kels_gossip
   redisUrl: "${var.redis.gossipUrl}"
   federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
-  gossipAdvertiseAddress: "gossip.kels-${environment.name}.kels:${var.gossip.port}"
+  gossipAdvertiseAddress: "gossip.${environment.name}.kels:${var.gossip.port}"
   gossipAntiEntropyIntervalSecs: "${var.gossip.antiEntropyIntervalSecs}"
   identityUrl: ${var.identity.url}
 

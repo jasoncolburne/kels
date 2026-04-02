@@ -15,13 +15,13 @@ use kels_core::{
     KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig, VerificationKeyCode,
 };
 
-const DEFAULT_BASE_DOMAIN: &str = "kels-node-a.kels";
-const DEFAULT_REGISTRY_URL: &str = "http://registry.kels-registry-a.kels";
+const DEFAULT_BASE_DOMAIN: &str = "node-a.kels";
+const DEFAULT_REGISTRY_URL: &str = "http://registry.registry-a.kels";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Base domain for service discovery (e.g., "kels-node-a.kels").
+    /// Base domain for service discovery (e.g., "node-a.kels").
     /// KELS URL = http://kels.{domain}, SADStore URL = http://sadstore.{domain}
     #[arg(short = 'd', long, env = "BASE_DOMAIN", default_value = DEFAULT_BASE_DOMAIN)]
     base_domain: String,

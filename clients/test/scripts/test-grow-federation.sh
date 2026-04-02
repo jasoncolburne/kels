@@ -16,10 +16,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Registry URLs
 REGISTRY_URLS=(
-    "http://registry.kels-registry-a.kels"
-    "http://registry.kels-registry-b.kels"
-    "http://registry.kels-registry-c.kels"
-    "http://registry.kels-registry-d.kels"
+    "http://registry.registry-a.kels"
+    "http://registry.registry-b.kels"
+    "http://registry.registry-c.kels"
+    "http://registry.registry-d.kels"
 )
 REGISTRY_NAMES=(a b c d)
 

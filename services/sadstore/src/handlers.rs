@@ -418,6 +418,20 @@ pub async fn sad_object_exists(
     }
 }
 
+pub async fn sad_pointer_exists(
+    Path(said): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.repo.sad_records.pointer_exists(&said).await {
+        Ok(true) => StatusCode::OK.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            warn!("Failed to check pointer existence: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 // === Layer 2: Chain Records (Postgres) ===
 
 /// Query parameters for record submission.
@@ -624,7 +638,7 @@ pub async fn submit_sad_records(
     let is_repair = query.repair.unwrap_or(false);
 
     let new_record_count;
-    let gossip_said: Option<String>;
+    let should_publish;
 
     if is_repair {
         // Repair mode: truncate from the first record's version and replace
@@ -638,7 +652,7 @@ pub async fn submit_sad_records(
             return (StatusCode::CONFLICT, format!("{}", e)).into_response();
         }
         new_record_count = pairs.len() as u32;
-        gossip_said = pairs.last().map(|(r, _)| r.said.clone());
+        should_publish = true; // repairs always store (records validated non-empty above)
     } else {
         // Normal mode: store batch with full chain verification and advisory lock
         match state
@@ -649,11 +663,7 @@ pub async fn submit_sad_records(
         {
             Ok(count) => {
                 new_record_count = count;
-                if count > 0 {
-                    gossip_said = pairs.last().map(|(r, _)| r.said.clone());
-                } else {
-                    gossip_said = None;
-                }
+                should_publish = count > 0;
             }
             Err(e) => {
                 warn!("Failed to store records: {}", e);
@@ -670,7 +680,7 @@ pub async fn submit_sad_records(
     // for both divergent and non-divergent chains.
     // Repair updates include a ":repair" suffix so the gossip subscriber
     // can propagate the repair flag to other nodes.
-    let effective_said = if gossip_said.is_some() {
+    let effective_said = if should_publish {
         match state.repo.sad_records.effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,

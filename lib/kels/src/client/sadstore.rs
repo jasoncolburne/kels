@@ -190,11 +190,12 @@ impl SadStoreClient {
         }
     }
 
-    /// Get the effective SAID (tip) for a chain prefix. Used for sync comparison.
+    /// Get the effective SAID and divergence status for a chain prefix.
+    /// Returns `(said, is_divergent)`. Used for sync comparison.
     pub async fn fetch_sad_effective_said(
         &self,
         prefix: &str,
-    ) -> Result<Option<String>, KelsError> {
+    ) -> Result<Option<(String, bool)>, KelsError> {
         let url = format!(
             "{}/api/v1/sad/pointers/{}/effective-said",
             self.base_url, prefix
@@ -203,13 +204,20 @@ impl SadStoreClient {
 
         if resp.status().is_success() {
             let body: EffectiveSaidResponse = resp.json().await?;
-            Ok(Some(body.said))
+            Ok(Some((body.said, body.divergent)))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
+    }
+
+    /// Check if a pointer with the given SAID exists on this SADStore.
+    pub async fn pointer_exists(&self, said: &str) -> Result<bool, KelsError> {
+        let url = format!("{}/api/v1/sad/pointers/exists/{}", self.base_url, said);
+        let resp = self.client.get(&url).send().await?;
+        Ok(resp.status().is_success())
     }
 
     /// List SAD object SAIDs (paginated, authenticated). Used for bootstrap and anti-entropy.

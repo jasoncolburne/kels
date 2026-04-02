@@ -9,7 +9,7 @@
 #
 # Environment variables:
 #   NODE_A_SADSTORE_HOST - node-a SADStore hostname (default: sadstore)
-#   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.kels-node-b.kels)
+#   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
 #   NODE_A_KELS_HOST     - node-a KELS hostname (default: kels)
 #   PROPAGATION_DELAY    - Time to wait for gossip propagation (default: 5s)
 
@@ -19,7 +19,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 PROPAGATION_DELAY="${PROPAGATION_DELAY:-5}"
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
-NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.kels-node-b.kels}"
+NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
 NODE_A_SAD_URL="http://${NODE_A_SADSTORE_HOST}"
 NODE_B_SAD_URL="http://${NODE_B_SADSTORE_HOST}"

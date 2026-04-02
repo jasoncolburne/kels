@@ -12,12 +12,12 @@ if [ -z "$PROPOSAL_ID" ]; then
 fi
 
 if [ -z "$REGISTRY_NS" ]; then
-    REGISTRY_NS="kels-registry-a"
+    REGISTRY_NS="registry-a"
 fi
 
 echo "Querying proposal $PROPOSAL_ID from $REGISTRY_NS..." >&2
 
-STATUS_OUTPUT=$(kubectl exec -n "$REGISTRY_NS" deploy/registry -c registry -- \
+STATUS_OUTPUT=$(kubectl exec -n "kels-$REGISTRY_NS" deploy/registry -c registry -- \
     /app/registry-admin peer proposal-status \
     --proposal-id "$PROPOSAL_ID" 2>&1)
 

@@ -96,7 +96,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: kels.${environment.namespace}.kels
+    - host: kels.${environment.name}.kels
       http:
         paths:
           - path: /
