@@ -842,7 +842,7 @@ async fn verify_proposal_dag_standalone<'a>(
 /// Used by CLI and FFI. Performs full verification: structural integrity,
 /// peer anchoring, and vote verification against the local store.
 /// Returns only active, verified, ready peers sorted by measured latency.
-pub async fn nodes_sorted_by_latency(
+pub async fn peers_sorted_by_latency(
     urls: &[String],
     timeout: Duration,
     store: &(dyn crate::KelStore + Sync),

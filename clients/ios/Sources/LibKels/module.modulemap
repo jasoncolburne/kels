@@ -1,0 +1,5 @@
+module LibKels {
+    header "../../../../lib/ffi/include/libkels.h"
+    link "kels_ffi"
+    export *
+}

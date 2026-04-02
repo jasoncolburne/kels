@@ -31,7 +31,7 @@ build-ffi:
 ifeq ($(DEV_TOOLS),1)
 	@echo "  DEV_TOOLS enabled"
 endif
-	cd ../.. && cargo build -p libkels-ffi --release --features $(CARGO_FEATURES) --target aarch64-apple-ios-sim
+	cd ../.. && cargo build -p kels-ffi --release --features $(CARGO_FEATURES) --target aarch64-apple-ios-sim
 
 # Build the iOS app
 build: build-ffi

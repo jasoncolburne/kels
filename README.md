@@ -83,7 +83,7 @@ kels/
 │   └── redis/          # Redis configuration
 ├── clients/
 │   ├── cli/            # Command-line interface
-│   ├── kels-client/    # Swift client (iOS/macOS)
+│   ├── ios/            # Swift client (iOS/macOS)
 │   ├── bench/          # Benchmarking tool
 │   └── test/           # Integration test scripts/container
 └── docs/               # Documentation

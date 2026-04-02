@@ -52,10 +52,10 @@ class KelsViewModel: ObservableObject {
 
     // Available registries with their URLs (hardcoded for UI selector)
     static let registryUrls = [
-        ("registry-a", "http://kels-registry.kels-registry-a.kels"),
-        ("registry-b", "http://kels-registry.kels-registry-b.kels"),
-        ("registry-c", "http://kels-registry.kels-registry-c.kels"),
-        ("registry-d", "http://kels-registry.kels-registry-d.kels")
+        ("registry-a", "http://registry.kels-registry-a.kels"),
+        ("registry-b", "http://registry.kels-registry-b.kels"),
+        ("registry-c", "http://registry.kels-registry-c.kels"),
+        ("registry-d", "http://registry.kels-registry-d.kels")
     ]
 
     @Published var selectedRegistry: String = "registry-a" {
@@ -196,22 +196,17 @@ class KelsViewModel: ObservableObject {
             saveCachedNodes(discoveredNodes)
 
             for node in discoveredNodes {
-                let latencyStr = node.latencyMs.map { "\($0)ms" } ?? "-"
-                log("  \(node.nodeId) [\(node.status)] - \(latencyStr)")
+                log("  \(node.nodeId) - \(node.baseDomain)")
             }
 
-            // Preserve selection if the node is still ready, otherwise auto-select fastest
+            // Preserve selection if the node is still present, otherwise auto-select first
             if let previous = previousSelection,
-               let stillReady = discoveredNodes.first(where: { $0.nodeId == previous.nodeId && $0.status == .ready }) {
-                // Update the selection with fresh latency data but don't switch nodes
-                selectedDiscoveredNode = stillReady
-                log("Preserved selection: \(stillReady.displayName)")
-            } else {
-                // No previous selection or node not visible, auto-select fastest
-                if let fastestNode = discoveredNodes.first(where: { $0.status == .ready && $0.latencyMs != nil }) {
-                    selectNode(fastestNode)
-                    log("Auto-selected \(fastestNode.displayName) (\(fastestNode.latencyMs ?? 0)ms)")
-                }
+               let stillPresent = discoveredNodes.first(where: { $0.nodeId == previous.nodeId }) {
+                selectedDiscoveredNode = stillPresent
+                log("Preserved selection: \(stillPresent.displayName)")
+            } else if let firstNode = discoveredNodes.first {
+                selectNode(firstNode)
+                log("Auto-selected \(firstNode.displayName)")
             }
         } catch {
             log("ERROR: Node discovery failed: \(error.localizedDescription)")

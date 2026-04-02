@@ -66,7 +66,7 @@ pub use cesr::VerificationKeyCode;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, NodeStatus, PeerSigner, RotateMode,
-    SadStoreClient, SignResponse, SignResult, nodes_sorted_by_latency, sign_request,
+    SadStoreClient, SignResponse, SignResult, peers_sorted_by_latency, sign_request,
     sync_member_kel, trusted_prefixes, verify_peer_anchoring, verify_peer_votes, with_failover,
 };
 pub use crypto::{

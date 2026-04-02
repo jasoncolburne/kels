@@ -23,7 +23,7 @@
 		B1000001000000000000000G /* KelsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KelsTypes.swift; sourceTree = "<group>"; };
 		B1000001000000000000000F /* libkels_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libkels_ffi.a; path = "../../target/aarch64-apple-ios-sim/release/libkels_ffi.a"; sourceTree = "<group>"; };
 		B10000010000000000000010 /* module.modulemap */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.module-map"; path = module.modulemap; sourceTree = "<group>"; };
-		B10000010000000000000011 /* libkels.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = libkels.h; path = "../../lib/kels-ffi/include/libkels.h"; sourceTree = "<group>"; };
+		B10000010000000000000011 /* libkels.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = libkels.h; path = "../../lib/ffi/include/libkels.h"; sourceTree = "<group>"; };
 		B10000010000000000000001 /* KelsClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KelsClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -184,7 +184,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				HEADER_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/../../lib/kels-ffi/include",
+					"$(PROJECT_DIR)/../../lib/ffi/include",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -217,7 +217,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				HEADER_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/../../lib/kels-ffi/include",
+					"$(PROJECT_DIR)/../../lib/ffi/include",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

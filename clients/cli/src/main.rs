@@ -318,7 +318,7 @@ async fn create_client(cli: &Cli) -> Result<KelsClient> {
         }
 
         let store = create_kel_store(cli, "registry-discovery")?;
-        let peers = kels_core::nodes_sorted_by_latency(
+        let peers = kels_core::peers_sorted_by_latency(
             &registry_urls,
             std::time::Duration::from_secs(2),
             &store,
@@ -375,7 +375,7 @@ async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     );
 
     let store = create_kel_store(cli, "registry-discovery")?;
-    let peers = kels_core::nodes_sorted_by_latency(
+    let peers = kels_core::peers_sorted_by_latency(
         &registry_urls,
         std::time::Duration::from_secs(2),
         &store,

@@ -122,7 +122,7 @@ When events are submitted, the KEL merge produces one of:
 
 - **kels-cli** (`clients/cli`) — Command-line client for interacting with KELS.
 - **kels-bench** (`clients/bench`) — Benchmarking tool.
-- **kels-client** — Swift client (iOS/macOS).
+- **kels-client** (`clients/ios`) — Swift client (iOS/macOS).
 
 ### Event Transfer Helpers
 

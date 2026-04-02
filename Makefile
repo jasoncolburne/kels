@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -33,7 +33,7 @@ clean:
 	@echo "Cleaning workspace..."
 	cargo clean
 	find . -type d -name "target" -exec rm -rf {} +
-	make -C clients/kels-client clean
+	make -C clients/ios clean
 
 clean-registries:
 	garden cleanup namespace --env=registry-a
@@ -121,8 +121,8 @@ coverage:
 	@echo ""
 	@echo "Full report: target/llvm-cov/html/index.html"
 
-kels-client-simulator:
-	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
+ios-simulator:
+	$(MAKE) -C clients/ios simulator DEV_TOOLS=1
 
 configure-dns:
 	scripts/coredns.sh apply
