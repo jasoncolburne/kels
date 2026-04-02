@@ -155,19 +155,17 @@ make clippy       # Run clippy lints
 make test         # Run tests
 make deny         # Check dependencies (requires cargo-deny)
 make clean        # Clean build artifacts
+make clean-garden # Delete all garden managed k8s namespaces
+make clean-docker # Clean docker caches
 
 # Comprehensive integration tests (requires Garden + Kubernetes)
 make deploy-fresh-node       # Deploy standalone node (~2.5 min)
 make deploy-fresh-federation # Deploy full federation (~10 min)
 make test-node               # Deploy standalone node and run tests (~5 min)
 make test-federation         # Deploy all services and run full test suite (~35 min)
-```
 
-`make test-federation` leaves a working stack running in Kubernetes. You can play with it, or
-bring it down entirely with:
-
-```bash
-make clean-garden
+# iOS Client (macOS)
+make ios-simulator # Run a demo app (configure your /etc/hosts file first)
 ```
 
 ### Deploying with Garden
@@ -208,6 +206,12 @@ First, add the following entries to `/etc/hosts` to enable local hostname resolu
 127.0.0.1 kels.kels-node-d.kels
 127.0.0.1 kels.kels-node-e.kels
 127.0.0.1 kels.kels-node-f.kels
+127.0.0.1 sadstore.kels-node-a.kels
+127.0.0.1 sadstore.kels-node-b.kels
+127.0.0.1 sadstore.kels-node-c.kels
+127.0.0.1 sadstore.kels-node-d.kels
+127.0.0.1 sadstore.kels-node-e.kels
+127.0.0.1 sadstore.kels-node-f.kels
 127.0.0.1 registry.kels-registry-a.kels
 127.0.0.1 registry.kels-registry-b.kels
 127.0.0.1 registry.kels-registry-c.kels

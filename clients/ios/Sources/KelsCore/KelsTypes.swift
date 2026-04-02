@@ -109,7 +109,7 @@ public struct RegistryNode: Codable, Identifiable, Sendable {
 
     public var kelsUrl: String { "http://kels.\(baseDomain)" }
 
-    public var sadstoreUrl: String { "http://kels-sadstore.\(baseDomain)" }
+    public var sadstoreUrl: String { "http://sadstore.\(baseDomain)" }
 }
 
 /// FFI response peer (matches FFI's PeerInfoJson with camelCase)

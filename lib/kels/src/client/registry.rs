@@ -189,28 +189,25 @@ impl KelsRegistryClient {
     pub async fn has_ready_peers(&self, exclude_node_id: Option<&str>) -> Result<bool, KelsError> {
         let peers_response = self.fetch_peers().await?;
 
-        for history in peers_response.peers {
-            let Some(record) = history.records.last() else {
-                continue;
-            };
-            if !record.active {
-                continue;
-            }
-            if let Some(node_id) = exclude_node_id
-                && node_id == record.node_id
-            {
-                continue;
-            }
+        let futures: Vec<_> = peers_response
+            .peers
+            .iter()
+            .filter_map(|history| history.records.last())
+            .filter(|record| record.active)
+            .filter(|record| {
+                exclude_node_id
+                    .map(|id| id != record.node_id)
+                    .unwrap_or(true)
+            })
+            .filter_map(|record| {
+                let kels_url = format!("http://kels.{}", record.base_domain);
+                crate::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
+                    .ok()
+                    .map(|client| async move { client.check_ready_status().await == NodeStatus::Ready })
+            })
+            .collect();
 
-            let kels_url = format!("http://kels.{}", record.base_domain);
-            if let Ok(client) = crate::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
-                && client.check_ready_status().await == NodeStatus::Ready
-            {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        Ok(join_all(futures).await.into_iter().any(|ready| ready))
     }
 
     /// Fetch the registry's own prefix from federation status.
