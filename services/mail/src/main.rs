@@ -24,8 +24,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/mail".to_string());
     let redis_url = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty());
     let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels:80".to_string());
-    let node_prefix = std::env::var("NODE_PREFIX")
-        .map_err(|_| "NODE_PREFIX must be set (this node's KEL prefix)".to_string())?;
+    let identity_url =
+        std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity:80".to_string());
+
+    info!(
+        "Fetching node prefix from identity service at {}",
+        identity_url
+    );
+    let identity_client = kels_core::IdentityClient::new(&identity_url)?;
+    let node_prefix = identity_client
+        .get_prefix()
+        .await
+        .map_err(|e| format!("Failed to fetch node prefix from identity service: {}", e))?;
+    info!("Node prefix: {}", node_prefix);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;

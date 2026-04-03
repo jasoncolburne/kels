@@ -1,0 +1,45 @@
+kind: Build
+name: mail
+type: container
+
+# Mail service is not needed in the registry environment
+disabled: ${var.envType == "registry"}
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/derive/**/*
+  - lib/exchange/**/*
+  - services/mail/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/mail/Dockerfile
+
+---
+
+kind: Deploy
+name: mail
+type: kubernetes
+
+# Mail service is not needed in the registry environment
+disabled: ${var.envType == "registry"}
+
+dependencies:
+  - build.mail
+  - deploy.postgres
+  - deploy.minio
+  - deploy.kels
+  - deploy.identity
+
+variables:
+  mailDatabaseUrl: ${var.postgres.url}/mail
+  redisUrl: "${var.envType != 'standalone' ? var.redis.mailUrl : ''}"
+  kelsUrl: ${var.kels.url}
+  identityUrl: ${var.identity.url}
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

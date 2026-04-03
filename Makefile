@@ -1,6 +1,6 @@
-LIBS_PACKAGES := kels-core kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
+LIBS_PACKAGES := kels-core kels-derive kels-creds kels-policy kels-exchange kels-ffi kels-mock-hsm
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels derive creds policy ffi mock-hsm
+LIBS_SUBDIRS := kels derive creds policy exchange ffi mock-hsm
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
@@ -75,7 +75,7 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in identity kels gossip registry sadstore; do \
+	@for service in identity kels gossip registry sadstore mail; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done

@@ -86,6 +86,9 @@ variables:
     sadstoreUrl: "redis://sadstore:${var.redis.sadstorePassword}@${var.redis.host}:${var.redis.port}"
     sadstorePassword: "sadstore-redis-pass"
     sadstorePasswordHash: "6a3c9e0faf19ebda997ac4ce6c3f5e8c41f2a37166fa24dd6a7691750a1d216f"
+    mailUrl: "redis://mail:${var.redis.mailPassword}@${var.redis.host}:${var.redis.port}"
+    mailPassword: "mail-redis-pass"
+    mailPasswordHash: "3554586698768bb04c774c633051ff9bf8f73201eb32d09d792ca288e03c313c"
   kels:
     replicas: 2
     host: kels
@@ -124,6 +127,14 @@ variables:
     maxWritesPerIpPerSecond: "100"
     ipRateLimitBurst: "500"
     maxObjectSize: "1048576"
+  mail:
+    replicas: 1
+    port: "80"
+    bucket: "kels-mail"
+    maxMessagesPerSenderPerDay: "100"
+    maxInboxSize: "10000"
+    maxStoragePerRecipientMb: "100"
+    messageTtlDays: "30"
   identity:
     port: "80"
     host: identity
