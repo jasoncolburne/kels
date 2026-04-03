@@ -2,8 +2,8 @@ kind: Build
 name: mail
 type: container
 
-# Mail service is not needed in the registry environment
-disabled: ${var.envType == "registry"}
+# Mail service requires federation (gossip for announcements, identity for node prefix)
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -24,8 +24,8 @@ kind: Deploy
 name: mail
 type: kubernetes
 
-# Mail service is not needed in the registry environment
-disabled: ${var.envType == "registry"}
+# Mail service requires federation (gossip for announcements, identity for node prefix)
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
   - build.mail
@@ -33,10 +33,11 @@ dependencies:
   - deploy.minio
   - deploy.kels
   - deploy.identity
+  - deploy.redis
 
 variables:
   mailDatabaseUrl: ${var.postgres.url}/mail
-  redisUrl: "${var.envType != 'standalone' ? var.redis.mailUrl : ''}"
+  redisUrl: ${var.redis.mailUrl}
   kelsUrl: ${var.kels.url}
   identityUrl: ${var.identity.url}
 

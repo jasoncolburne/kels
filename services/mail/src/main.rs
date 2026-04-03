@@ -26,7 +26,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kels_url = std::env::var("KELS_URL").unwrap_or_else(|_| "http://kels:80".to_string());
     let identity_url =
         std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://identity:80".to_string());
-
     info!(
         "Fetching node prefix from identity service at {}",
         identity_url
