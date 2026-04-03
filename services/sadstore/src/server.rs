@@ -34,37 +34,43 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad", post(handlers::post_sad_object))
         .route("/api/v1/sad/:said", get(handlers::get_sad_object))
         .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
+        .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
         // Chain records (Layer 2 — Postgres)
         .route(
             "/api/v1/sad/pointers/exists/:said",
             get(handlers::sad_pointer_exists),
         )
-        .route("/api/v1/sad/pointers", post(handlers::submit_sad_records))
-        .route("/api/v1/sad/pointers/:prefix", get(handlers::get_sad_chain))
+        .route("/api/v1/sad/pointers", post(handlers::submit_sad_pointer))
+        .route(
+            "/api/v1/sad/pointers/:prefix",
+            get(handlers::get_sad_pointer),
+        )
         .route(
             "/api/v1/sad/pointers/:prefix/effective-said",
-            get(handlers::get_sad_effective_said),
+            get(handlers::get_sad_pointer_effective_said),
         )
         // Chain repair history
         .route(
             "/api/v1/sad/pointers/:prefix/repairs",
-            get(handlers::get_sad_repairs),
+            get(handlers::get_sad_pointer_repairs),
         )
         .route(
             "/api/v1/sad/pointers/:prefix/repairs/:said/records",
-            get(handlers::get_repair_records),
+            get(handlers::get_sad_pointer_repair_records),
         )
         // Listing (authenticated — federation peers only)
-        .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
-        .route("/api/v1/sad/prefixes", post(handlers::list_sad_prefixes));
+        .route(
+            "/api/v1/sad/pointers/prefixes",
+            post(handlers::list_sad_pointer_prefixes),
+        );
 
     if *TEST_ENDPOINTS_ENABLED {
         tracing::warn!("KELS_TEST_ENDPOINTS enabled — unauthenticated test endpoints active");
         router = router
             .route("/api/test/sad/saids", post(handlers::test_list_sad_objects))
             .route(
-                "/api/test/sad/prefixes",
-                post(handlers::test_list_sad_prefixes),
+                "/api/test/sad/pointers/prefixes",
+                post(handlers::test_list_sad_pointer_prefixes),
             );
     }
 

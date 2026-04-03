@@ -148,13 +148,13 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | GET | `/api/v1/sad/pointers/:prefix/repairs` | None | Get paginated repair records for a chain; `?limit=N&offset=N`; returns `SadChainRepairPage {repairs, hasMore}` |
 | GET | `/api/v1/sad/pointers/:prefix/repairs/:said/records` | None | Get paginated archived records for a specific repair; `?limit=N&offset=N`; returns `SadPointerPage` |
 | GET | `/api/v1/sad/saids` | Peer | List SAD object SAIDs (paginated: `?cursor=&limit=`, max 100) |
-| GET | `/api/v1/sad/prefixes` | Peer | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`, max 100) |
+| GET | `/api/v1/sad/pointers/prefixes` | Peer | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`, max 100) |
 
 **Notes:**
 - `POST sad`: SAID derived from body. HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Object size limited (default 1 MiB via `SADSTORE_MAX_OBJECT_SIZE`). Publishes to Redis `sad_updates` for gossip. Per-IP rate limited.
 - `POST sad/pointers`: Verifies pointer SAID, verifies signature against owner's KEL, stores pointer + signature atomically with advisory lock and full chain verification. Supports `?repair=true` for repairing divergent chains. Per-chain-prefix daily rate limited (default 16/day). Per-IP rate limited.
 - `GET sad/pointers/:prefix`: Returns `SadPointerPage { records: Vec<SignedSadPointer>, hasMore }` — records include signatures and establishment serials. Supports `?since=N` for delta fetch (records with version >= N).
-- `GET sad/saids`, `GET sad/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
+- `GET sad/saids`, `GET sad/pointers/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
 - `GET sad/pointers/:prefix/repairs`: Returns paginated `SadChainRepairPage {repairs, hasMore}` — the repair audit trail for a chain. Use `?limit=N&offset=N` for pagination.
 - `GET sad/pointers/:prefix/repairs/:said/records`: Returns paginated `SadPointerPage` of archived records for a specific repair. Use `?limit=N&offset=N` for pagination.
 - Chain pointers reference content in MinIO via `content_said`. Client workflow: POST content first, then POST chain pointer.

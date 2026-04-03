@@ -115,7 +115,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/sad/saids` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
-| `GET` | `/api/v1/sad/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
+| `GET` | `/api/v1/sad/pointers/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
 
 ### Client Workflow
 

@@ -78,7 +78,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
             body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},peerPrefix:"test",signature:"test"}')
         fi
 
-        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/prefixes" 2>/dev/null)
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/pointers/prefixes" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo -e "  node-${name}: ${RED}unreachable${NC}"
             reachable=false

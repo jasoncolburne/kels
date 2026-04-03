@@ -444,7 +444,7 @@ async fn test_list_prefixes_empty() {
 
     let resp = harness
         .client()
-        .post(harness.url("/api/test/sad/prefixes"))
+        .post(harness.url("/api/test/sad/pointers/prefixes"))
         .json(&body)
         .send()
         .await

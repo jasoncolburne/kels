@@ -256,7 +256,7 @@ impl BootstrapSync {
             let mut cursor: Option<String> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_prefixes(
+                    .fetch_sad_pointer_prefixes(
                         self.signer.as_ref(),
                         cursor.as_deref(),
                         self.config.page_size,
@@ -273,7 +273,7 @@ impl BootstrapSync {
                 for state in &page.prefixes {
                     // Check if we already have this chain at the same state
                     let local_said = local_client
-                        .fetch_sad_effective_said(&state.prefix)
+                        .fetch_sad_pointer_effective_said(&state.prefix)
                         .await
                         .ok()
                         .flatten()
@@ -284,7 +284,7 @@ impl BootstrapSync {
                     }
 
                     // Forward the full chain (paginated) from remote to local
-                    if let Err(e) = kels_core::forward_sad_records(
+                    if let Err(e) = kels_core::forward_sad_pointer(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,

@@ -422,7 +422,7 @@ pub async fn sad_pointer_exists(
     Path(said): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    match state.repo.sad_records.pointer_exists(&said).await {
+    match state.repo.sad_records.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -450,7 +450,7 @@ pub struct RecordSubmitQuery {
 ///
 /// With `?repair=true`, truncates all records at version >= the first record's version
 /// before inserting. This is the repair mechanism for divergent chains.
-pub async fn submit_sad_records(
+pub async fn submit_sad_pointer(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
@@ -725,7 +725,7 @@ pub struct ChainQuery {
     pub limit: Option<u64>,
 }
 
-pub async fn get_sad_chain(
+pub async fn get_sad_pointer(
     Path(prefix): Path<String>,
     Query(query): Query<ChainQuery>,
     State(state): State<Arc<AppState>>,
@@ -735,7 +735,7 @@ pub async fn get_sad_chain(
     match state
         .repo
         .sad_records
-        .get_stored_chain(&prefix, query.since.as_deref(), Some(limit + 1))
+        .get_stored(&prefix, query.since.as_deref(), Some(limit + 1))
         .await
     {
         Ok(records) if records.is_empty() => {
@@ -757,7 +757,7 @@ pub async fn get_sad_chain(
     }
 }
 
-pub async fn get_sad_effective_said(
+pub async fn get_sad_pointer_effective_said(
     Path(prefix): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -848,7 +848,7 @@ pub async fn list_sad_objects(
 }
 
 /// Authenticated SAD chain prefix listing. Federation peers only.
-pub async fn list_sad_prefixes(
+pub async fn list_sad_pointer_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
@@ -885,7 +885,7 @@ pub struct PaginationQuery {
     pub offset: Option<u64>,
 }
 
-pub(crate) async fn get_sad_repairs(
+pub(crate) async fn get_sad_pointer_repairs(
     State(state): State<Arc<AppState>>,
     Path(prefix): Path<String>,
     Query(params): Query<PaginationQuery>,
@@ -912,7 +912,7 @@ pub(crate) async fn get_sad_repairs(
     }
 }
 
-pub(crate) async fn get_repair_records(
+pub(crate) async fn get_sad_pointer_repair_records(
     State(state): State<Arc<AppState>>,
     Path((prefix, repair_said)): Path<(String, String)>,
     Query(params): Query<PaginationQuery>,
@@ -965,7 +965,7 @@ pub async fn test_list_sad_objects(
 
 /// Unauthenticated test endpoint for listing SAD chain prefixes.
 /// Only available when `KELS_TEST_ENDPOINTS=true`.
-pub async fn test_list_sad_prefixes(
+pub async fn test_list_sad_pointer_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,

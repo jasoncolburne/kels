@@ -1170,12 +1170,12 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     if repair {
         client
-            .repair_sad_chain(&records)
+            .repair_sad_pointer(&records)
             .await
             .context("Failed to submit SAD repair")?;
     } else {
         client
-            .submit_sad_records(&records)
+            .submit_sad_pointer(&records)
             .await
             .context("Failed to submit SAD records")?;
     }
@@ -1191,7 +1191,7 @@ async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
 async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = client
-        .fetch_sad_chain(prefix, None)
+        .fetch_sad_pointer(prefix, None)
         .await
         .context("Failed to fetch SAD chain")?;
 

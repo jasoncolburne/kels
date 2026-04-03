@@ -396,7 +396,10 @@ impl SyncHandler {
         let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
-        let local_said = match local_client.fetch_sad_effective_said(chain_prefix).await {
+        let local_said = match local_client
+            .fetch_sad_pointer_effective_said(chain_prefix)
+            .await
+        {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
@@ -457,7 +460,7 @@ impl SyncHandler {
             }
         };
         let remote_is_real_pointer = local_client
-            .pointer_exists(remote_said)
+            .sad_pointer_exists(remote_said)
             .await
             .unwrap_or(false);
         let since = if repair || !remote_is_real_pointer {
@@ -481,7 +484,7 @@ impl SyncHandler {
             "Fetching SAD chain from peer"
         );
 
-        match kels_core::forward_sad_records(
+        match kels_core::forward_sad_pointer(
             chain_prefix,
             &source,
             &sink,
@@ -1417,7 +1420,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let retries = entry.retries;
                 tasks.push(async move {
                     let (local_said, local_divergent) =
-                        match local.fetch_sad_effective_said(&prefix).await {
+                        match local.fetch_sad_pointer_effective_said(&prefix).await {
                             Ok(Some((said, div))) => (Some(said), div),
                             _ => (None, false),
                         };
@@ -1428,7 +1431,7 @@ pub async fn run_sad_anti_entropy_loop(
                             Err(_) => continue,
                         };
                         let (remote_said, remote_divergent) =
-                            match remote.fetch_sad_effective_said(&prefix).await {
+                            match remote.fetch_sad_pointer_effective_said(&prefix).await {
                                 Ok(Some((said, div))) => (Some(said), div),
                                 _ => (None, false),
                             };
@@ -1444,8 +1447,10 @@ pub async fn run_sad_anti_entropy_loop(
                             Some(s) => s.as_str(),
                             None => continue,
                         };
-                        let we_have_remote =
-                            local.pointer_exists(remote_said_ref).await.unwrap_or(false);
+                        let we_have_remote = local
+                            .sad_pointer_exists(remote_said_ref)
+                            .await
+                            .unwrap_or(false);
 
                         if we_have_remote {
                             // We're ahead — push to remote
@@ -1469,7 +1474,7 @@ pub async fn run_sad_anti_entropy_loop(
                             } else {
                                 remote_said.as_deref()
                             };
-                            if kels_core::forward_sad_records(
+                            if kels_core::forward_sad_pointer(
                                 &prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1501,7 +1506,7 @@ pub async fn run_sad_anti_entropy_loop(
                             } else {
                                 local_said.as_deref()
                             };
-                            if kels_core::forward_sad_records(
+                            if kels_core::forward_sad_pointer(
                                 &prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1563,10 +1568,10 @@ pub async fn run_sad_anti_entropy_loop(
 
         let random_cursor = kels_core::generate_nonce();
         let local_page = local_client
-            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .fetch_sad_pointer_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
         let remote_page = remote_client
-            .fetch_sad_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .fetch_sad_pointer_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
 
         let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
@@ -1623,19 +1628,19 @@ pub async fn run_sad_anti_entropy_loop(
 
             // Determine direction: check if remote's SAID exists locally
             let we_have_remote = if let Some(said) = remote_said_str {
-                local_client.pointer_exists(said).await.unwrap_or(false)
+                local_client.sad_pointer_exists(said).await.unwrap_or(false)
             } else {
                 // Remote doesn't have it at all — we're ahead
                 true
             };
 
             let (local_said, local_divergent) =
-                match local_client.fetch_sad_effective_said(prefix).await {
+                match local_client.fetch_sad_pointer_effective_said(prefix).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
             let (remote_said, remote_divergent) =
-                match remote_client.fetch_sad_effective_said(prefix).await {
+                match remote_client.fetch_sad_pointer_effective_said(prefix).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
@@ -1662,7 +1667,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix = prefix.to_string();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_records(
+                    let result = kels_core::forward_sad_pointer(
                         &prefix,
                         &local_source,
                         &remote_sink,
@@ -1695,7 +1700,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix = prefix.to_string();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_records(
+                    let result = kels_core::forward_sad_pointer(
                         &prefix,
                         &remote_source,
                         &local_sink,

@@ -227,13 +227,13 @@ PREFIX_LISTING_BODY_LIMIT='{"payload":{"timestamp":0,"nonce":"test2","cursor":nu
 OBJECT_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test3","cursor":null,"limit":null},"peerPrefix":"test","signature":"test"}'
 
 run_test "List chain prefixes" \
-    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
 
 run_test "List SAD objects" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/saids' -H 'Content-Type: application/json' -d '${OBJECT_LISTING_BODY}' | jq -e '.saids != null'"
 
 run_test "List with pagination limit" \
-    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
 
 echo ""
 

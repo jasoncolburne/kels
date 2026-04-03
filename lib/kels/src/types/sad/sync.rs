@@ -1,18 +1,18 @@
 //! Paginated transfer infrastructure for SAD record chains
 //!
 //! Mirrors the KEL `transfer_key_events` pattern: `PagedSadSource` / `PagedSadSink`
-//! traits abstract data movement, and `transfer_sad_records` is the core private
+//! traits abstract data movement, and `transfer_sad_pointer` is the core private
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_records` — two-pass verify, returns `SadPointerVerification`
-//! - `forward_sad_records` — forward without verification, supports delta via `since`
+//! - `verify_sad_pointer` — two-pass verify, returns `SadPointerVerification`
+//! - `forward_sad_pointer` — forward without verification, supports delta via `since`
 //!
 //! Verification uses a two-pass approach to stay O(page_size) in memory:
-//! - Pass 1: `transfer_sad_records` with structural verifier + NoOp sink (collects serials)
+//! - Pass 1: `transfer_sad_pointer` with structural verifier + NoOp sink (collects serials)
 //! - Between: verify KEL, collect establishment keys for those serials
-//! - Pass 2: `transfer_sad_records` without verifier + NoOp sink (signature checks)
+//! - Pass 2: `transfer_sad_pointer` without verifier + NoOp sink (signature checks)
 
 use async_trait::async_trait;
 
@@ -23,9 +23,9 @@ use crate::{KelVerifier, KelsError, SadPointerVerification};
 
 // ==================== Source / Sink Traits ====================
 
-/// Source of paginated signed SAD records (e.g., HTTP client).
+/// Source of paginated signed SAD pointers (e.g., HTTP client).
 ///
-/// Implementations must return records in `version ASC, said ASC` order.
+/// Implementations must return pointers in `version ASC, said ASC` order.
 /// The `bool` return value indicates whether more pages are available (`has_more`).
 #[async_trait]
 pub trait PagedSadSource: Send + Sync {
@@ -37,27 +37,27 @@ pub trait PagedSadSource: Send + Sync {
     ) -> Result<(Vec<SignedSadPointer>, bool), KelsError>;
 }
 
-/// Destination for signed SAD records (e.g., local SADStore).
+/// Destination for signed SAD pointers (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
-    async fn store_page(&self, records: &[SignedSadPointer]) -> Result<(), KelsError>;
+    async fn store_page(&self, pointers: &[SignedSadPointer]) -> Result<(), KelsError>;
 }
 
 // ==================== Sink Implementations ====================
 
-/// No-op sink that discards records. Used for verify-only flows.
+/// No-op sink that discards pointers. Used for verify-only flows.
 struct NoOpSadSink;
 
 #[async_trait]
 impl PagedSadSink for NoOpSadSink {
-    async fn store_page(&self, _records: &[SignedSadPointer]) -> Result<(), KelsError> {
+    async fn store_page(&self, _pointers: &[SignedSadPointer]) -> Result<(), KelsError> {
         Ok(())
     }
 }
 
 // ==================== HTTP Source / Sink ====================
 
-/// HTTP-based source of paginated signed SAD records.
+/// HTTP-based source of paginated signed SAD pointers.
 pub struct HttpSadSource {
     base_url: String,
     client: reqwest::Client,
@@ -106,7 +106,7 @@ impl PagedSadSource for HttpSadSource {
     }
 }
 
-/// HTTP-based sink that submits SAD records to a SADStore service.
+/// HTTP-based sink that submits SAD pointers to a SADStore service.
 pub struct HttpSadSink {
     base_url: String,
     repair: bool,
@@ -138,8 +138,8 @@ impl HttpSadSink {
 
 #[async_trait]
 impl PagedSadSink for HttpSadSink {
-    async fn store_page(&self, records: &[SignedSadPointer]) -> Result<(), KelsError> {
-        if records.is_empty() {
+    async fn store_page(&self, pointers: &[SignedSadPointer]) -> Result<(), KelsError> {
+        if pointers.is_empty() {
             return Ok(());
         }
 
@@ -148,7 +148,7 @@ impl PagedSadSink for HttpSadSink {
         } else {
             format!("{}/api/v1/sad/pointers", self.base_url)
         };
-        let resp = self.client.post(&url).json(records).send().await?;
+        let resp = self.client.post(&url).json(pointers).send().await?;
 
         if resp.status().is_success() {
             Ok(())
@@ -165,7 +165,7 @@ impl PagedSadSink for HttpSadSink {
 ///
 /// When `verifier` is provided, full structural + signature checks run inline
 /// per page. The verifier must see the full chain (no `since` with verification).
-async fn transfer_sad_records(
+async fn transfer_sad_pointer(
     prefix: &str,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
@@ -183,21 +183,21 @@ async fn transfer_sad_records(
     let mut since: Option<String> = since.map(String::from);
 
     for _ in 0..max_pages {
-        let (records, has_more) = source
+        let (pointers, has_more) = source
             .fetch_page(prefix, since.as_deref(), page_size)
             .await?;
 
-        if records.is_empty() {
+        if pointers.is_empty() {
             return Ok(());
         }
 
-        since = records.last().map(|r| r.pointer.said.clone());
+        since = pointers.last().map(|r| r.pointer.said.clone());
 
         if let Some(ref mut v) = verifier {
-            v.verify_page(&records)?;
+            v.verify_page(&pointers)?;
         }
 
-        sink.store_page(&records).await?;
+        sink.store_page(&pointers).await?;
 
         if !has_more {
             return Ok(());
@@ -218,7 +218,7 @@ async fn transfer_sad_records(
 /// 1. Collect establishment serials by paging through the chain.
 /// 2. Verify KEL with collected serials to obtain establishment keys.
 /// 3. Full verification: page through again with `SadChainVerifier` (structure + signatures).
-pub async fn verify_sad_records(
+pub async fn verify_sad_pointer(
     prefix: &str,
     source: &(dyn PagedSadSource + Sync),
     kels_source: &(dyn crate::PagedKelSource + Sync),
@@ -251,7 +251,7 @@ pub async fn verify_sad_records(
 
     // Pass 2: full verification (structure + signatures) with keys
     let mut verifier = SadChainVerifier::new(prefix, establishment_keys);
-    transfer_sad_records(
+    transfer_sad_pointer(
         prefix,
         source,
         &NoOpSadSink,
@@ -270,10 +270,10 @@ pub async fn verify_sad_records(
     ))
 }
 
-/// Forward SAD records from source to sink without verification. Supports delta via `since`.
+/// Forward SAD pointers from source to sink without verification. Supports delta via `since`.
 ///
 /// Used by gossip sync to replicate chains between nodes.
-pub async fn forward_sad_records(
+pub async fn forward_sad_pointer(
     prefix: &str,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
@@ -281,5 +281,5 @@ pub async fn forward_sad_records(
     max_pages: usize,
     since: Option<&str>,
 ) -> Result<(), KelsError> {
-    transfer_sad_records(prefix, source, sink, None, page_size, max_pages, since).await
+    transfer_sad_pointer(prefix, source, sink, None, page_size, max_pages, since).await
 }

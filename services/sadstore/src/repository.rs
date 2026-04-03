@@ -319,7 +319,7 @@ impl SadPointerRepository {
     }
 
     /// Check if a pointer with the given SAID exists.
-    pub async fn pointer_exists(&self, said: &str) -> Result<bool, StorageError> {
+    pub async fn exists(&self, said: &str) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -375,7 +375,7 @@ impl SadPointerRepository {
     ///
     /// Ordering: `version ASC, said ASC` — deterministic across nodes even when
     /// divergent records exist at the same version.
-    pub async fn get_stored_chain(
+    pub async fn get_stored(
         &self,
         prefix: &str,
         since_said: Option<&str>,
@@ -546,7 +546,7 @@ impl SadPointerRepository {
 
     /// Get archived records for a specific repair, paginated.
     ///
-    /// Fetches `SadChainRepairRecord` links for the repair SAID, then batch-fetches
+    /// Fetches `SadPointerRepairRecord` links for the repair SAID, then batch-fetches
     /// the archived records and their signatures. Returns `SignedSadPointer`s.
     pub async fn get_repair_records(
         &self,

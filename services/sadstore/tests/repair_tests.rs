@@ -262,7 +262,7 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
     let stored = repo
         .sad_records
-        .get_stored_chain(&prefix, None, None)
+        .get_stored(&prefix, None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 5);
@@ -352,7 +352,7 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
     // Original chain should be intact (transaction rolled back)
     let stored = repo
         .sad_records
-        .get_stored_chain(&prefix, None, None)
+        .get_stored(&prefix, None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 3);
@@ -537,7 +537,7 @@ async fn test_truncate_and_replace_from_v0() {
     // Chain should now be 2 records
     let stored = repo
         .sad_records
-        .get_stored_chain(&prefix, None, None)
+        .get_stored(&prefix, None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 2);
