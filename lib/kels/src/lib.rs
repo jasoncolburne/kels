@@ -71,7 +71,7 @@ pub use client::{
 };
 pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig,
+    SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key,
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};

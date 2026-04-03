@@ -3,12 +3,8 @@
 use cesr::{Digest, Matter};
 use serde::{Deserialize, Serialize};
 
-/// Generate a cryptographic nonce: 32 random bytes hashed with BLAKE3-256, CESR-encoded.
-pub fn generate_nonce() -> String {
-    let mut entropy = [0u8; 32];
-    getrandom::getrandom(&mut entropy).unwrap_or_else(|e| unreachable!("getrandom failed: {}", e));
-    Digest::blake3_256(&entropy).qb64()
-}
+// Re-export for backwards compatibility — canonical location is crate::crypto::generate_nonce
+pub use crate::crypto::generate_nonce;
 
 /// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
 ///

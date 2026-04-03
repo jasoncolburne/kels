@@ -41,8 +41,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Verifiable storage traits and derive macros
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
-# SAID computation
+# SAID computation and key derivation
 blake3 = "1.5"
+
+# Authenticated encryption
+aes-gcm = "0.10"
 
 # Cryptographic randomness
 getrandom = "0.2"
