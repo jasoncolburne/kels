@@ -19,9 +19,14 @@ federation = ["kels_core/federation"]
 
 [dependencies]
 kels_core = { package = "kels-core", path = "../kels", default-features = false }
+kels_exchange = { package = "kels-exchange", path = "../exchange" }
+kels_creds = { package = "kels-creds", path = "../creds" }
+kels_policy = { package = "kels-policy", path = "../policy" }
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+base64 = "0.22"
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 [dev-dependencies]
