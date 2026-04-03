@@ -21,6 +21,12 @@ fn main() {
         .write_to_file(output_dir.join("libkels.h"));
 
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/kel.rs");
+    println!("cargo:rerun-if-changed=src/exchange.rs");
+    println!("cargo:rerun-if-changed=src/credential.rs");
+    println!("cargo:rerun-if-changed=src/sad.rs");
+    println!("cargo:rerun-if-changed=src/registry.rs");
+    println!("cargo:rerun-if-changed=src/dev.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
     // Rerun if the header doesn't exist (e.g., after git clean or deletion)
     println!("cargo:rerun-if-changed=include/libkels.h");
