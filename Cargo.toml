@@ -14,6 +14,7 @@ members = [
     "services/gossip",
     "services/registry",
     "services/sadstore",
+    "services/mail",
     "services/identity",
     "clients/bench",
     "clients/cli",
