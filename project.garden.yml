@@ -1,7 +1,7 @@
 apiVersion: garden.io/v2
 kind: Project
 name: kels
-defaultEnvironment: registry-a
+defaultEnvironment: standalone
 
 environments:
   - name: registry-a
