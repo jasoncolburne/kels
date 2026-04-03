@@ -49,7 +49,7 @@ pub struct SadPointer {
 /// Anyone can call this offline — no server needed. The prefix is derived from
 /// the v0 inception pointer content (with said+prefix as placeholders), which
 /// contains only deterministic fields.
-pub fn compute_sad_prefix(kel_prefix: &str, kind: &str) -> Result<String, StorageError> {
+pub fn compute_sad_pointer_prefix(kel_prefix: &str, kind: &str) -> Result<String, StorageError> {
     let pointer = SadPointer::create(kel_prefix.to_string(), kind.to_string(), None)?;
     Ok(pointer.prefix)
 }
@@ -150,19 +150,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_compute_sad_prefix_deterministic() {
-        let prefix1 = compute_sad_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
-        let prefix2 = compute_sad_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
+    fn test_compute_sad_pointer_prefix_deterministic() {
+        let prefix1 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
+        let prefix2 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
         assert_eq!(prefix1, prefix2);
     }
 
     #[test]
-    fn test_compute_sad_prefix_different_inputs() {
-        let prefix1 = compute_sad_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
-        let prefix2 = compute_sad_prefix("Ekel456", "kels/v1/mlkem-pubkey").unwrap();
+    fn test_compute_sad_pointer_prefix_different_inputs() {
+        let prefix1 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
+        let prefix2 = compute_sad_pointer_prefix("Ekel456", "kels/v1/mlkem-pubkey").unwrap();
         assert_ne!(prefix1, prefix2);
 
-        let prefix3 = compute_sad_prefix("Ekel123", "kels/v1/other-kind").unwrap();
+        let prefix3 = compute_sad_pointer_prefix("Ekel123", "kels/v1/other-kind").unwrap();
         assert_ne!(prefix1, prefix3);
     }
 

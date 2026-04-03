@@ -31,7 +31,7 @@ Fields:
 Anyone can compute a chain prefix offline:
 
 ```rust
-let prefix = compute_sad_prefix(kel_prefix, kind)?;
+let prefix = compute_sad_pointer_prefix(kel_prefix, kind)?;
 ```
 
 This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.

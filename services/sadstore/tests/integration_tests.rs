@@ -10,7 +10,7 @@ use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels_core::{SadPointer, compute_sad_prefix};
+use kels_core::{SadPointer, compute_sad_pointer_prefix};
 use reqwest::Client;
 use testcontainers::{
     ContainerAsync, GenericImage, Image,
@@ -342,17 +342,17 @@ async fn test_post_sad_object_invalid_json_rejected() {
 // ==================== Prefix Computation Tests ====================
 
 #[tokio::test]
-async fn test_compute_sad_prefix_deterministic() {
-    let p1 = compute_sad_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
+async fn test_compute_sad_pointer_prefix_deterministic() {
+    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
+    let p2 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
     assert_eq!(p1, p2);
 }
 
 #[tokio::test]
-async fn test_compute_sad_prefix_different_inputs() {
-    let p1 = compute_sad_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_prefix("Ekel_prefix_b", "kels/v1/mlkem-pubkey").unwrap();
-    let p3 = compute_sad_prefix("Ekel_prefix_a", "kels/v1/other-kind").unwrap();
+async fn test_compute_sad_pointer_prefix_different_inputs() {
+    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
+    let p2 = compute_sad_pointer_prefix("Ekel_prefix_b", "kels/v1/mlkem-pubkey").unwrap();
+    let p3 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p1, p3);
 }

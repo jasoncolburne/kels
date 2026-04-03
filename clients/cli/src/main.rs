@@ -1200,8 +1200,8 @@ async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
-    let prefix =
-        kels_core::compute_sad_prefix(kel_prefix, kind).context("Failed to compute SAD prefix")?;
+    let prefix = kels_core::compute_sad_pointer_prefix(kel_prefix, kind)
+        .context("Failed to compute SAD prefix")?;
     println!("{}", prefix);
     Ok(())
 }
