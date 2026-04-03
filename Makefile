@@ -196,7 +196,7 @@ test-voting:
 	kubectl rollout restart deployment/gossip -n kels-node-a && kubectl rollout status deployment/gossip -n kels-node-a
 
 	# Remove
-	garden run propose-remove-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
+	garden run propose-remove-peer --var node=node-a --env registry-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
 	# Vote from all registries
 	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-a
 	garden run vote-peer --var proposal=$$(cat /tmp/removal-a.txt) --env=registry-b
