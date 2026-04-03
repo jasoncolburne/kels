@@ -7,6 +7,7 @@ members = [
     "lib/derive",
     "lib/creds",
     "lib/policy",
+    "lib/exchange",
     "lib/ffi",
     "lib/mock-hsm",
     "services/kels",

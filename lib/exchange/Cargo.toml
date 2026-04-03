@@ -1,0 +1,50 @@
+[package]
+name = "kels-exchange"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS exchange protocol - ESSR authenticated encryption and credential exchange"
+
+[lib]
+name = "kels_exchange"
+path = "src/lib.rs"
+
+[dependencies]
+# Core KELS library
+kels_core = { package = "kels-core", path = "../kels" }
+
+# Local CESR library for cryptographic operations
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# Verifiable storage traits and derive macros
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Error handling
+thiserror = "1"
+
+# Async traits
+async-trait = "0.1"
+
+# Cryptographic randomness
+getrandom = "0.2"
+
+# Base64 encoding
+base64 = "0.22"
+
+# Time with microsecond precision
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
