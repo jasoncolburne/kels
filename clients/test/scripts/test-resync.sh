@@ -166,14 +166,14 @@ if [ "$MODE" = "setup" ]; then
     echo ""
 
     # Wait for DNS caches to expire so .kels lookups for node-b actually fail.
-    echo "Waiting for DNS caches to expire (kels.kels-node-b.kels must fail)..."
+    echo "Waiting for DNS caches to expire (kels.node-b.kels must fail)..."
     for i in {1..60}; do
-        if ! nslookup kels.kels-node-b.kels > /dev/null 2>&1; then
+        if ! nslookup kels.node-b.kels > /dev/null 2>&1; then
             echo "  DNS broken after ${i}s"
             break
         fi
         if [ $i -eq 60 ]; then
-            echo -e "${RED}DNS for kels.kels-node-b.kels still resolves after 60s${NC}"
+            echo -e "${RED}DNS for kels.node-b.kels still resolves after 60s${NC}"
             exit 1
         fi
         sleep 1
@@ -224,9 +224,21 @@ if [ "$MODE" = "setup" ]; then
     NODE_B_SAID=$(get_latest_said "$NODE_B_FQDN_URL" "$PREFIX")
     echo "Node-B latest SAID: $NODE_B_SAID"
 
-    # Wait for gossip announcement + fetch attempt for the test event
-    echo "Waiting for gossip announcement + fetch failure..."
-    sleep 5
+    # Wait for gossip to process the test event (either fetched or recorded as stale)
+    echo "Waiting for gossip to process test event announcement..."
+    for i in {1..30}; do
+        NODE_A_COUNT=$(get_event_count "$NODE_A_URL" "$PREFIX")
+        if [ "$NODE_A_COUNT" = "3" ]; then
+            echo "  Test event fetched directly after ${i}s"
+            break
+        fi
+        ENTRIES=$(stale_entries 2>/dev/null)
+        if echo "$ENTRIES" | grep -qF "$PREFIX"; then
+            echo "  Test event recorded as stale after ${i}s"
+            break
+        fi
+        sleep 1
+    done
 
     # Log stale prefix state (informational — may be empty if anti-entropy loop is mid-cycle)
     COUNT=$(stale_count)

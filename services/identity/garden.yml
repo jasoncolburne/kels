@@ -9,8 +9,8 @@ source:
 
 include:
   - lib/kels/**/*
-  - lib/kels-derive/**/*
-  - lib/kels-mock-hsm/**/*
+  - lib/derive/**/*
+  - lib/mock-hsm/**/*
   - services/identity/**/*
   - project.garden.yml
 
@@ -31,8 +31,8 @@ dependencies:
 
 variables:
   identityDatabaseUrl: ${var.postgres.url}/identity
-  identityKeyHandlePrefix: "${var.envType == 'registry' ? 'kels-registry' : 'kels-gossip'}"
-  kelForwardUrl: "${var.envType == 'registry' ? 'http://kels-registry:' + var.registry.port : var.kels.url}"
+  identityKeyHandlePrefix: "${var.envType == 'registry' ? 'registry' : 'gossip'}"
+  kelForwardUrl: "${var.envType == 'registry' ? 'http://registry:' + var.registry.port : var.kels.url}"
   kelForwardPathPrefix: "${var.envType == 'registry' ? '/api/v1/member-kels' : '/api/v1/kels'}"
 
 spec:

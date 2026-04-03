@@ -1,6 +1,6 @@
 # SADStore: Replicated Self-Addressed Data Store
 
-A general-purpose replicated store for publicly discoverable, self-addressed data. Deployed as an independent service (`kels-sadstore`) alongside the KELS node services.
+A general-purpose replicated store for publicly discoverable, self-addressed data. Deployed as an independent service (`sadstore`) alongside the KELS node services.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Fields:
 Anyone can compute a chain prefix offline:
 
 ```rust
-let prefix = compute_sad_prefix(kel_prefix, kind)?;
+let prefix = compute_sad_pointer_prefix(kel_prefix, kind)?;
 ```
 
 This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
@@ -115,7 +115,7 @@ Accessors: `current_record()`, `current_content_said()`, `establishment_serial()
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/sad/saids` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
-| `GET` | `/api/v1/sad/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
+| `GET` | `/api/v1/sad/pointers/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
 
 ### Client Workflow
 

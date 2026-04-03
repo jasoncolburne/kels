@@ -518,7 +518,7 @@ The disclosure DSL is a plain `const char*` — no structured types cross the FF
 ## Module Structure
 
 ```
-lib/kels-creds/
+lib/creds/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # public API re-exports
@@ -536,4 +536,4 @@ lib/kels-creds/
 
 Dependencies: `kels` (core types, `KelVerification`, `KelVerifier`, `KelsError`), `kels-policy` (policy types, `evaluate_policy`, `PolicyVerification`, `PolicyResolver`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compute_said_from_value`), `serde`, `serde_json` (with `preserve_order` for deterministic serialization), `tokio` (sync primitives), `async-trait`, `thiserror`.
 
-FFI bindings added to existing `lib/kels-ffi/src/lib.rs` — no separate FFI crate.
+FFI bindings added to existing `lib/ffi/src/lib.rs` — no separate FFI crate.

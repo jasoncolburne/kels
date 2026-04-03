@@ -1,0 +1,90 @@
+[package]
+name = "kels-registry"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Node Registry - Service discovery for KELS gossip nodes"
+
+[[bin]]
+name = "registry"
+path = "src/main.rs"
+
+[[bin]]
+name = "registry-admin"
+path = "src/bin/registry-admin.rs"
+
+[lib]
+name = "kels_registry"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "sync"] }
+
+# Web framework
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# PostgreSQL for peer allowlist
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"] }
+
+# Shared types and verifiable storage
+kels-core = { path = "../../lib/kels", default-features = false, features = ["native", "server"] }
+kels-derive = { path = "../../lib/derive" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# HTTP client for HSM
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Base64 encoding for request data
+base64 = "0.22"
+
+# CESR encoding for public keys and signatures
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# CLI framework for registry-admin
+clap = { version = "4", features = ["derive"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Futures for Stream support
+futures = "0.3"
+
+
+# OpenRaft for federation consensus (0.10 alpha has simpler trait API)
+openraft = { git = "https://github.com/datafuselabs/openraft", tag = "v0.10.0-alpha.13", features = ["serde"] }
+
+# Byte order for node IDs
+byteorder = "1"
+
+# UUID generation for proposal IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Rate limiting
+dashmap = "6"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

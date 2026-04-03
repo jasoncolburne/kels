@@ -26,5 +26,5 @@ Thumbs.db
 .kels/federated-registries.json
 
 # Swift/iOS
-clients/kels-client/.build/
-lib/kels-ffi/include/libkels.h
+clients/ios/.build/
+lib/ffi/include/libkels.h

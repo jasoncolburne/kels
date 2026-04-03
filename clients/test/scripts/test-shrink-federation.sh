@@ -17,21 +17,21 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Active registry URLs (b is decommissioned)
 ACTIVE_REGISTRY_URLS=(
-    "http://kels-registry.kels-registry-a.kels"
-    "http://kels-registry.kels-registry-c.kels"
-    "http://kels-registry.kels-registry-d.kels"
+    "http://registry.registry-a.kels"
+    "http://registry.registry-c.kels"
+    "http://registry.registry-d.kels"
 )
 ACTIVE_REGISTRY_NAMES=(a c d)
 
-DECOMMISSIONED_URL="http://kels-registry.kels-registry-b.kels"
+DECOMMISSIONED_URL="http://registry.registry-b.kels"
 
 NODE_URLS=(
-    "http://kels.kels-node-a.kels"
-    "http://kels.kels-node-b.kels"
-    "http://kels.kels-node-c.kels"
-    "http://kels.kels-node-d.kels"
-    "http://kels.kels-node-e.kels"
-    "http://kels.kels-node-f.kels"
+    "http://kels.node-a.kels"
+    "http://kels.node-b.kels"
+    "http://kels.node-c.kels"
+    "http://kels.node-d.kels"
+    "http://kels.node-e.kels"
+    "http://kels.node-f.kels"
 )
 NODE_NAMES=(a b c d e f)
 NODE_A_URL="${NODE_URLS[0]}"

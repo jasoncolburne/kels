@@ -9,7 +9,7 @@
 use cesr::{Digest, Matter};
 use chrono::Utc;
 use ctor::dtor;
-use kels::{
+use kels_core::{
     KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider, SubmitEventsResponse,
     VerificationKeyCode,
 };
@@ -382,10 +382,10 @@ async fn test_list_prefixes() {
         .unwrap();
 
     // List prefixes via signed POST
-    let request = kels::SignedRequest {
-        payload: kels::PaginatedSelfAddressedRequest {
+    let request = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },
@@ -403,7 +403,7 @@ async fn test_list_prefixes() {
 
     assert_eq!(response.status(), 200);
 
-    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    let result: kels_core::PrefixListResponse = response.json().await.unwrap();
     assert!(!result.prefixes.is_empty());
 }
 
@@ -501,7 +501,7 @@ async fn test_get_kel_with_audit() {
         .expect("Failed to get audit records");
 
     assert_eq!(response.status(), 200);
-    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
+    let page: kels_core::RecoveryRecordPage = response.json().await.unwrap();
     // No recovery records for a simple KEL
     assert!(page.records.is_empty());
     assert!(!page.has_more);
@@ -526,10 +526,10 @@ async fn test_list_prefixes_with_limit() {
     }
 
     // List with limit=2 via signed POST
-    let request = kels::SignedRequest {
-        payload: kels::PaginatedSelfAddressedRequest {
+    let request = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: Some(2),
         },
@@ -546,7 +546,7 @@ async fn test_list_prefixes_with_limit() {
         .expect("Failed to list prefixes");
 
     assert_eq!(response.status(), 200);
-    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    let result: kels_core::PrefixListResponse = response.json().await.unwrap();
     assert!(result.prefixes.len() <= 2);
 }
 
@@ -590,7 +590,7 @@ async fn test_submit_event_invalid_signature_format() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 400);
-    let error: kels::ErrorResponse = response.json().await.unwrap();
+    let error: kels_core::ErrorResponse = response.json().await.unwrap();
     assert!(error.error.contains("Invalid signature format"));
 }
 
@@ -662,10 +662,10 @@ async fn test_list_prefixes_pagination_with_cursor() {
     }
 
     // Get first page with limit=1 via signed POST
-    let request = kels::SignedRequest {
-        payload: kels::PaginatedSelfAddressedRequest {
+    let request = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels::generate_nonce(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: Some(1),
         },
@@ -682,15 +682,15 @@ async fn test_list_prefixes_pagination_with_cursor() {
         .expect("Failed to list prefixes");
 
     assert_eq!(response.status(), 200);
-    let result: kels::PrefixListResponse = response.json().await.unwrap();
+    let result: kels_core::PrefixListResponse = response.json().await.unwrap();
     assert_eq!(result.prefixes.len(), 1);
 
     // Use cursor to get next page if available
     if let Some(cursor) = &result.next_cursor {
-        let request = kels::SignedRequest {
-            payload: kels::PaginatedSelfAddressedRequest {
+        let request = kels_core::SignedRequest {
+            payload: kels_core::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
-                nonce: kels::generate_nonce(),
+                nonce: kels_core::generate_nonce(),
                 cursor: Some(cursor.clone()),
                 limit: Some(1),
             },
@@ -707,7 +707,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
             .expect("Failed to list prefixes with cursor");
 
         assert_eq!(response.status(), 200);
-        let next_result: kels::PrefixListResponse = response.json().await.unwrap();
+        let next_result: kels_core::PrefixListResponse = response.json().await.unwrap();
         // Second page should have different prefix(es) than first page
         if !next_result.prefixes.is_empty() {
             assert_ne!(result.prefixes[0].prefix, next_result.prefixes[0].prefix);
@@ -820,7 +820,7 @@ async fn test_submit_recovery_event_requires_dual_signature() {
         .expect("Failed to submit recovery");
 
     assert_eq!(response.status(), 400);
-    let error: kels::ErrorResponse = response.json().await.unwrap();
+    let error: kels_core::ErrorResponse = response.json().await.unwrap();
     assert!(error.error.contains("Dual signatures required"));
 }
 
@@ -1005,7 +1005,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let page: kels::RecoveryRecordPage = response.json().await.unwrap();
+    let page: kels_core::RecoveryRecordPage = response.json().await.unwrap();
     assert_eq!(page.records.len(), 1);
     let record = &page.records[0];
     assert_eq!(record.diverged_at, 3);
@@ -1023,7 +1023,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let archived: kels::SignedKeyEventPage = response.json().await.unwrap();
+    let archived: kels_core::SignedKeyEventPage = response.json().await.unwrap();
     assert!(!archived.events.is_empty());
 }
 

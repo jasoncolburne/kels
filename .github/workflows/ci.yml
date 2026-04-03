@@ -37,14 +37,14 @@ jobs:
         run: |
           for dir in \
             lib/kels \
-            lib/kels-derive \
-            lib/kels-ffi \
+            lib/derive \
+            lib/ffi \
             services/identity \
             services/kels \
-            services/kels-gossip \
-            services/kels-registry \
-            clients/kels-cli \
-            clients/kels-bench
+            services/gossip \
+            services/registry \
+            clients/cli \
+            clients/bench
           do
             echo "Checking $dir..."
             (cd "$dir" && cargo deny check -A no-license-field) || exit 1
@@ -101,7 +101,7 @@ jobs:
           # - FFI code (kels-ffi) - C bindings
           # - Server setup (server.rs in services) - integration code
           # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
-          COV_EXCLUDES="--ignore-filename-regex (main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)"
+          COV_EXCLUDES="--ignore-filename-regex (main\.rs|admin\.rs|lib/ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)"
           printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
           echo ""
           cargo llvm-cov --workspace $COV_EXCLUDES 2>&1 | awk '

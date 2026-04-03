@@ -1,0 +1,86 @@
+[package]
+name = "kels-gossip"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Gossip Protocol - Synchronizes KELs between KELS deployments"
+
+[[bin]]
+name = "gossip"
+path = "src/main.rs"
+
+[lib]
+name = "kels_gossip"
+path = "src/lib.rs"
+
+[dependencies]
+# Custom gossip protocol (HyParView + PlumTree over TCP with ML-KEM + AES-GCM-256)
+kels_gossip_core = { package = "kels-gossip-core", path = "../../lib/gossip" }
+
+# Bytes for gossip API message content
+bytes = "1"
+
+# Blake3 for topic ID derivation
+blake3 = "1"
+
+# CESR for decoding identity service responses and ML-DSA-65 verification
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
+
+# KELS library for types and server utilities (shutdown_signal)
+kels-core = { path = "../../lib/kels", features = ["server", "federation"] }
+
+# Verifiable storage for Chained trait and PostgreSQL backend
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# Derive macros for SignedEvents
+kels-derive = { path = "../../lib/derive" }
+
+# Redis for pub/sub
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async utilities
+futures = "0.3"
+
+# HTTP client for KELS API
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# HTTP server for ready endpoint
+axum = "0.7"
+
+# Error handling
+thiserror = "1"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Random selection
+rand = "0.8"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio-test = "0.4"
+serial_test = "3"
+wiremock = "0.6"
+tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

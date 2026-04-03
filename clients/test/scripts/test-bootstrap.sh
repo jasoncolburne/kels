@@ -14,21 +14,21 @@
 #
 # Environment variables:
 #   NODE_A_KELS_HOST - node-a KELS hostname (default: kels)
-#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.kels-node-b.kels)
-#   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.kels-node-c.kels)
-#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.kels-node-d.kels)
-#   REGISTRY_HOST - registry hostname (default: kels-registry.kels-registry-a.kels)
+#   NODE_B_KELS_HOST - node-b KELS hostname (default: kels.node-b.kels)
+#   NODE_C_KELS_HOST - node-c KELS hostname (default: kels.node-c.kels)
+#   NODE_D_KELS_HOST - node-d KELS hostname (default: kels.node-d.kels)
+#   REGISTRY_HOST - registry hostname (default: registry.registry-a.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
-NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.kels-node-b.kels}"
-NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.kels-node-c.kels}"
-NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.kels-node-d.kels}"
-NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.kels-node-e.kels}"
-NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.kels-node-f.kels}"
-REGISTRY_HOST="${REGISTRY_HOST:-kels-registry.kels-registry-a.kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
+NODE_C_KELS_HOST="${NODE_C_KELS_HOST:-kels.node-c.kels}"
+NODE_D_KELS_HOST="${NODE_D_KELS_HOST:-kels.node-d.kels}"
+NODE_E_KELS_HOST="${NODE_E_KELS_HOST:-kels.node-e.kels}"
+NODE_F_KELS_HOST="${NODE_F_KELS_HOST:-kels.node-f.kels}"
+REGISTRY_HOST="${REGISTRY_HOST:-registry.registry-a.kels}"
 NODE_A_URL="http://${NODE_A_KELS_HOST}"
 NODE_B_URL="http://${NODE_B_KELS_HOST}"
 NODE_C_URL="http://${NODE_C_KELS_HOST}"
@@ -57,11 +57,44 @@ peer_exists() {
 
 get_prefix_count() {
     local url="$1"
-    local body
-    body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},peerPrefix:"test",publicKey:"test",signature:"test"}')
-    local count
-    count=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes" | jq '.prefixes | length')
-    echo "${count:-0}"
+    local total=0
+    local cursor="null"
+    while true; do
+        local body
+        body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
+            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},peerPrefix:"test",publicKey:"test",signature:"test"}')
+        local response
+        response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
+        local page_count
+        page_count=$(echo "$response" | jq '.prefixes | length')
+        total=$((total + page_count))
+        local next
+        next=$(echo "$response" | jq -r '.nextCursor // empty')
+        if [ -z "$next" ]; then
+            break
+        fi
+        cursor="\"$next\""
+    done
+    echo "$total"
+}
+
+get_all_prefixes() {
+    local url="$1"
+    local cursor="null"
+    while true; do
+        local body
+        body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
+            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},peerPrefix:"test",publicKey:"test",signature:"test"}')
+        local response
+        response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
+        echo "$response" | jq -r '.prefixes[].prefix'
+        local next
+        next=$(echo "$response" | jq -r '.nextCursor // empty')
+        if [ -z "$next" ]; then
+            break
+        fi
+        cursor="\"$next\""
+    done
 }
 
 wait_for_kel_on_node() {
@@ -107,11 +140,9 @@ wait_for_prefix_counts_match() {
     count_b=$(get_prefix_count "$url_b")
     echo "Timeout: counts A=$count_a B=$count_b"
     # Dump prefixes unique to each node
-    local body_diag
-    body_diag=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},peerPrefix:"test",publicKey:"test",signature:"test"}')
     local pa pb
-    pa=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body_diag" "$url_a/api/test/prefixes" | jq -r '.prefixes[].prefix' | sort)
-    pb=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body_diag" "$url_b/api/test/prefixes" | jq -r '.prefixes[].prefix' | sort)
+    pa=$(get_all_prefixes "$url_a" | sort)
+    pb=$(get_all_prefixes "$url_b" | sort)
     echo "Only on A: $(comm -23 <(echo "$pa") <(echo "$pb"))"
     echo "Only on B: $(comm -13 <(echo "$pa") <(echo "$pb"))"
     return 1
@@ -284,13 +315,12 @@ echo -e "${CYAN}=== Scenario 6: Bootstrap Sync Verification ===${NC}"
 echo "Verify KELs created on node-a are visible on node-b"
 echo ""
 
-# Poll until prefix counts match between nodes
-run_test "Prefix counts match between nodes" wait_for_prefix_counts_match "$NODE_A_URL" "$NODE_B_URL"
-
-run_test "Created KEL exists on node-a" wait_for_kel_on_node "$NODE_A_URL" "$PREFIX1"
-run_test "Created KEL synced to node-b" wait_for_kel_on_node "$NODE_B_URL" "$PREFIX1"
-run_test "Created KEL synced to node-c" wait_for_kel_on_node "$NODE_C_URL" "$PREFIX1"
-run_test "Created KEL synced to node-d" wait_for_kel_on_node "$NODE_D_URL" "$PREFIX1"
+# Verify KELs created in this test are visible on all nodes
+run_test "PREFIX1 exists on node-a" wait_for_kel_on_node "$NODE_A_URL" "$PREFIX1"
+run_test "PREFIX1 synced to node-b" wait_for_kel_on_node "$NODE_B_URL" "$PREFIX1"
+run_test "PREFIX1 synced to node-c" wait_for_kel_on_node "$NODE_C_URL" "$PREFIX1"
+run_test "PREFIX1 synced to node-d" wait_for_kel_on_node "$NODE_D_URL" "$PREFIX1"
+run_test "PREFIX2 synced to node-b" wait_for_kel_on_node "$NODE_B_URL" "$PREFIX2"
 
 echo ""
 

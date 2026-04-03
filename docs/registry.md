@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `kels-registry` service provides peer discovery for KELS gossip deployments. When new nodes come online, they query the registry for peers, bootstrap sync missing KELs, then begin normal gossip operation. Clients discover nodes via the registry and test latency to select optimal nodes.
+The registry service (`services/registry`) provides peer discovery for KELS gossip deployments. When new nodes come online, they query the registry for peers, bootstrap sync missing KELs, then begin normal gossip operation. Clients discover nodes via the registry and test latency to select optimal nodes.
 
 For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](./federation.md) for details.
 
@@ -12,7 +12,7 @@ For multi-cloud/multi-region deployments, multiple registries can be federated u
 
 ```
                     ┌─────────────────────┐
-                    │   kels-registry     │  (shared across all deployments)
+                    │     registry        │  (shared across all deployments)
                     │   (Standalone)      │
                     └──────────┬──────────┘
                                │
@@ -21,7 +21,7 @@ For multi-cloud/multi-region deployments, multiple registries can be federated u
            ▼                   ▼                   ▼
     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
     │  node-a     │     │  node-b     │     │  node-c...  │
-    │ kels-gossip │◄───►│ kels-gossip │◄───►│ kels-gossip │
+    │   gossip    │◄───►│   gossip    │◄───►│   gossip    │
     └─────────────┘     └─────────────┘     └─────────────┘
            │                   │                   │
            ▼                   ▼                   ▼
@@ -77,7 +77,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 ### Service Structure
 
 ```
-services/kels-registry/
+services/registry/
 ├── Cargo.toml
 ├── Dockerfile
 ├── garden.yml
@@ -99,7 +99,7 @@ services/kels-registry/
     │   ├── sync.rs       # Background sync loops (KEL sync, leader DB sync)
     │   └── types.rs      # Federation message types
     └── bin/
-        └── kels-registry-admin.rs # Admin CLI for peer management
+        └── registry-admin.rs # Admin CLI for peer management
 ```
 
 ### API Endpoints
@@ -177,7 +177,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 | `REDIS_URL` | Redis connection URL | `redis://redis:6379` |
 | `DATABASE_URL` | PostgreSQL connection URL | `postgres://postgres:postgres@postgres:5432/kels` |
 | `IDENTITY_URL` | Identity service URL | `http://identity:80` |
-| `RUST_LOG` | Log level | `kels_registry=debug` |
+| `RUST_LOG` | Log level | `registry=debug` |
 
 ### Gossip Service
 
@@ -195,7 +195,7 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 
 - Registry is shared infrastructure across all node deployments
 - Deployed once in `kels-registry` namespace
-- Nodes in `kels-node-a`, `kels-node-b` etc. connect to shared registry
+- Nodes in `node-a`, `node-b` etc. connect to shared registry
 - Avoids circular dependencies during node bootstrap
 
 ### Bootstrap sync via KELS API (not direct DB)
@@ -211,20 +211,20 @@ During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine 
 
 ```
 kels-registry/     # Shared registry service + Redis
-  └── kels-registry (Deployment)
+  └── registry (Deployment)
   └── redis (Deployment)
 
-kels-node-a/       # Node A deployment
+node-a/       # Node A deployment
   └── postgres (databases: kels, kels_gossip)
   └── redis
   └── kels
-  └── kels-gossip
+  └── gossip
 
-kels-node-b/       # Node B deployment
+node-b/       # Node B deployment
   └── postgres (databases: kels, kels_gossip)
   └── redis
   └── kels
-  └── kels-gossip
+  └── gossip
 ```
 
 ### Garden environments
@@ -234,9 +234,9 @@ environments:
   - name: registry
     defaultNamespace: kels-registry
   - name: node-a
-    defaultNamespace: kels-node-a
+    defaultNamespace: node-a
   - name: node-b
-    defaultNamespace: kels-node-b
+    defaultNamespace: node-b
 ```
 
 ### Deployment order
@@ -282,13 +282,13 @@ garden deploy --env=node-b      # Bootstrap syncs from node-a
 
 ## Client Discovery
 
-### Rust Client (libkels)
+### Rust Client (kels-core)
 
 ```rust
-use kels::{KelsClient, NodeInfo};
+use kels_core::{KelsClient, Peer};
 
 // Discover all nodes from registry, sorted by latency
-let nodes: Vec<NodeInfo> = KelsClient::discover_nodes(registry_url).await?;
+let peers: Vec<Peer> = KelsClient::discover_nodes(registry_url).await?;
 
 // Test latency to current node
 let latency: Duration = client.test_latency().await?;
@@ -334,17 +334,17 @@ garden deploy --env=registry
 garden deploy --env=node-a
 
 # Create KELs on node-a
-kels-cli -u http://kels.kels-node-a.kels incept
-kels-cli -u http://kels.kels-node-a.kels incept
+kels-cli -u http://kels.node-a.kels incept
+kels-cli -u http://kels.node-a.kels incept
 
 # Deploy second node (bootstrap syncs from node-a)
 garden deploy --env=node-b
 
 # Verify node-b has the KELs
-kels-cli -u http://kels.kels-node-b.kels list
+kels-cli -u http://kels.node-b.kels list
 
 # Test client discovery
-kels-cli --registry http://kels-registry.kels-registry.kels list-nodes
+kels-cli --registry http://registry.kels-registry.kels list-nodes
 ```
 
 ### Integration tests

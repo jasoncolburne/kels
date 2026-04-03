@@ -21,7 +21,7 @@ if [ -z "$PREFIX" ]; then
 fi
 
 REGISTRIES_FILE="$REPO_ROOT/.kels/federated-registries.json"
-URL="http://kels-registry.${ENV_NAMESPACE}.kels"
+URL="http://registry.${ENV_NAME}.kels"
 
 if [ -f "$REGISTRIES_FILE" ]; then
     # Auto-assign next id

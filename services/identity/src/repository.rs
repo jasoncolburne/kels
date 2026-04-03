@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 
-use kels::KeyEvent;
-use libkels_derive::SignedEvents;
+use kels_core::KeyEvent;
+use kels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
@@ -146,8 +146,8 @@ impl LockedKelTransaction {
         &mut self,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), StorageError> {
-        kels::load_signed_history(
+    ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), StorageError> {
+        kels_core::load_signed_history(
             &mut self.tx,
             KeyEventRepository::TABLE_NAME,
             KeyEventRepository::SIGNATURES_TABLE_NAME,
@@ -165,16 +165,16 @@ impl LockedKelTransaction {
 }
 
 #[async_trait]
-impl kels::PageLoader for LockedKelTransaction {
+impl kels_core::PageLoader for LockedKelTransaction {
     async fn load_page(
         &mut self,
         _prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels::SignedKeyEvent>, bool), kels::KelsError> {
+    ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
         self.load(limit, offset)
             .await
-            .map_err(|e| kels::KelsError::StorageError(e.to_string()))
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
     }
 }
 

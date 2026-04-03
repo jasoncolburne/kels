@@ -1,7 +1,7 @@
 apiVersion: garden.io/v2
 kind: Project
 name: kels
-defaultEnvironment: registry-a
+defaultEnvironment: standalone
 
 environments:
   - name: registry-a
@@ -63,7 +63,7 @@ providers:
     namespace:
       name: ${environment.namespace}
     setupIngressController: traefik
-    defaultHostname: ${environment.namespace}.kels
+    defaultHostname: ${environment.name}.kels
     buildMode: local-docker
 
 variables:

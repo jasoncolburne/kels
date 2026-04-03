@@ -1,0 +1,206 @@
+kind: Build
+name: registry
+type: container
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - run.federation-read-members
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/derive/**/*
+  - services/registry/**/*
+  - project.garden.yml
+  - .kels/federated-registries.json
+
+spec:
+  dockerfile: services/registry/Dockerfile
+  buildArgs:
+    TRUSTED_REGISTRY_MEMBERS: ${actions.run.federation-read-members.outputs.log}
+
+---
+
+kind: Deploy
+name: registry
+type: kubernetes
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - build.registry
+  - deploy.postgres
+  - deploy.identity
+  - run.federation-read-prefix
+  - run.federation-read-member-urls
+
+variables:
+  kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
+  identityUrl: ${var.identity.url}
+  federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
+  federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl
+
+---
+
+kind: Run
+name: federation-fetch
+type: exec
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.identity
+
+spec:
+  command:
+    - bash
+    - ../../scripts/federation-fetch.sh
+    - ${environment.name}
+    - ${environment.namespace}
+    - ../..
+
+---
+
+# Propose peer addition (pass node name via --var node=<name>)
+
+kind: Run
+name: propose-add-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-add-peer.sh
+    - ${var.node}
+
+---
+
+# Propose peer removal (pass node name via --var node=<name>)
+
+kind: Run
+name: propose-remove-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/propose-remove-peer.sh
+    - ${var.node}
+
+---
+
+# Vote to approve a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: vote-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.name}
+    - "true"
+
+---
+
+# Vote to reject a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: reject-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/vote-peer.sh
+    - ${var.proposal}
+    - ${environment.name}
+    - "false"
+
+---
+
+# Get status of a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: proposal-status
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/proposal-status.sh
+    - ${var.proposal}
+    - ${environment.name}
+
+---
+
+# Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
+
+kind: Run
+name: withdraw-peer
+type: exec
+
+source:
+  path: ../..
+
+disabled: ${var.envType != "registry"}
+
+dependencies:
+  - deploy.registry
+
+spec:
+  command:
+    - bash
+    - scripts/withdraw-peer.sh
+    - ${var.proposal}
+    - ${environment.name}
+

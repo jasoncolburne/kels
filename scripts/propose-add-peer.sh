@@ -11,8 +11,8 @@ if [ -z "$NODE_NAME" ]; then
 fi
 
 # Construct base domain and gossip address for the node
-BASE_DOMAIN="kels-${NODE_NAME}.kels"
-GOSSIP_ADDR="kels-gossip.kels-${NODE_NAME}.kels:4001"
+BASE_DOMAIN="${NODE_NAME}.kels"
+GOSSIP_ADDR="gossip.${NODE_NAME}.kels:4001"
 
 # Fetch the peer prefix from the node's gossip service
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,8 +34,8 @@ echo "Found leader: $LEADER_NS" >&2
 echo "Creating proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 
 # Create proposal on leader
-PROPOSE_OUTPUT=$(kubectl exec -n "$LEADER_NS" deploy/kels-registry -c kels-registry -- \
-    /app/kels-registry-admin peer propose \
+PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -- \
+    /app/registry-admin peer propose \
     --peer-prefix "$PEER_PREFIX" \
     --node-id "$NODE_NAME" \
     --base-domain "$BASE_DOMAIN" \

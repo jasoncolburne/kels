@@ -12,22 +12,22 @@
 # Usage: test-sad-consistency.sh
 #
 # Environment variables:
-#   NODE_A_SADSTORE_HOST - node-a SADStore hostname (default: kels-sadstore)
-#   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: kels-sadstore.kels-node-b.kels)
-#   NODE_C_SADSTORE_HOST - node-c SADStore hostname (default: kels-sadstore.kels-node-c.kels)
-#   NODE_D_SADSTORE_HOST - node-d SADStore hostname (default: kels-sadstore.kels-node-d.kels)
-#   NODE_E_SADSTORE_HOST - node-e SADStore hostname (default: kels-sadstore.kels-node-e.kels)
-#   NODE_F_SADSTORE_HOST - node-f SADStore hostname (default: kels-sadstore.kels-node-f.kels)
+#   NODE_A_SADSTORE_HOST - node-a SADStore hostname (default: sadstore)
+#   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
+#   NODE_C_SADSTORE_HOST - node-c SADStore hostname (default: sadstore.node-c.kels)
+#   NODE_D_SADSTORE_HOST - node-d SADStore hostname (default: sadstore.node-d.kels)
+#   NODE_E_SADSTORE_HOST - node-e SADStore hostname (default: sadstore.node-e.kels)
+#   NODE_F_SADSTORE_HOST - node-f SADStore hostname (default: sadstore.node-f.kels)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
-NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-kels-sadstore}"
-NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-kels-sadstore.kels-node-b.kels}"
-NODE_C_SADSTORE_HOST="${NODE_C_SADSTORE_HOST:-kels-sadstore.kels-node-c.kels}"
-NODE_D_SADSTORE_HOST="${NODE_D_SADSTORE_HOST:-kels-sadstore.kels-node-d.kels}"
-NODE_E_SADSTORE_HOST="${NODE_E_SADSTORE_HOST:-kels-sadstore.kels-node-e.kels}"
-NODE_F_SADSTORE_HOST="${NODE_F_SADSTORE_HOST:-kels-sadstore.kels-node-f.kels}"
+NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
+NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
+NODE_C_SADSTORE_HOST="${NODE_C_SADSTORE_HOST:-sadstore.node-c.kels}"
+NODE_D_SADSTORE_HOST="${NODE_D_SADSTORE_HOST:-sadstore.node-d.kels}"
+NODE_E_SADSTORE_HOST="${NODE_E_SADSTORE_HOST:-sadstore.node-e.kels}"
+NODE_F_SADSTORE_HOST="${NODE_F_SADSTORE_HOST:-sadstore.node-f.kels}"
 
 declare -a NODE_NAMES=(a b c d e f)
 declare -a NODE_URLS=(
@@ -78,7 +78,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
             body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},peerPrefix:"test",signature:"test"}')
         fi
 
-        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/prefixes" 2>/dev/null)
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/pointers/prefixes" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo -e "  node-${name}: ${RED}unreachable${NC}"
             reachable=false

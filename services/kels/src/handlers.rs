@@ -16,7 +16,7 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
 
-use kels::{
+use kels_core::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
     PrefixListResponse, RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
     SubmitEventsResponse,
@@ -35,19 +35,19 @@ pub(crate) fn test_endpoints_enabled() -> bool {
 }
 
 fn max_events_per_prefix_per_day() -> u32 {
-    kels::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 256) as u32
+    kels_core::env_usize("KELS_MAX_EVENTS_PER_PREFIX_PER_DAY", 256) as u32
 }
 
 fn max_writes_per_ip_per_second() -> u32 {
-    kels::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
 }
 
 fn ip_rate_limit_burst() -> u32 {
-    kels::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
 }
 
 fn nonce_window_secs() -> u64 {
-    kels::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+    kels_core::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
 }
 
 const SECS_PER_DAY: u64 = 86_400;
@@ -82,7 +82,7 @@ pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 /// Does NOT update the counter — call `accrue_prefix_rate_limit` after merge
 /// with the actual number of new events inserted.
 ///
-/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+/// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -106,7 +106,7 @@ fn check_prefix_rate_limit(
 
 /// Accrue the actual number of new events after merge completes.
 ///
-/// Duplicated in `kels-registry/src/handlers.rs`. Keep in sync.
+/// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(
     limits: &DashMap<String, (u32, Instant)>,
     prefix: &str,
@@ -126,7 +126,7 @@ fn accrue_prefix_rate_limit(
 
 pub(crate) struct AppState {
     pub(crate) repo: Arc<KelsRepository>,
-    pub(crate) kel_store: Arc<dyn kels::KelStore>,
+    pub(crate) kel_store: Arc<dyn kels_core::KelStore>,
     pub(crate) kel_cache: Option<ServerKelCache>,
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
@@ -378,10 +378,10 @@ pub(crate) async fn submit_events(
         }));
     }
 
-    if events.len() > kels::page_size() {
+    if events.len() > kels_core::page_size() {
         return Err(ApiError::bad_request(format!(
             "Batch exceeds maximum of {} events",
-            kels::page_size()
+            kels_core::page_size()
         )));
     }
 
@@ -458,7 +458,7 @@ pub(crate) async fn submit_events(
         match state
             .repo
             .key_events
-            .get_signed_history(&prefix, kels::page_size() as u64, 0)
+            .get_signed_history(&prefix, kels_core::page_size() as u64, 0)
             .await
         {
             Ok((events, has_more)) => {
@@ -511,12 +511,12 @@ pub(crate) async fn get_kel(
 ) -> Result<Response, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(kels::page_size())
-        .clamp(1, kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .clamp(1, kels_core::page_size()) as u64;
 
     // Delta fetch path — canonical since-resolution
     if params.since.is_some() {
-        let page = kels::serve_kel_page(
+        let page = kels_core::serve_kel_page(
             &state.repo.key_events,
             &prefix,
             params.since.as_deref(),
@@ -527,7 +527,7 @@ pub(crate) async fn get_kel(
     }
 
     // Full fetch path — try cache for default limit
-    if limit as usize == kels::page_size()
+    if limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
         match kel_cache.get_full_serialized(&prefix).await {
@@ -548,7 +548,7 @@ pub(crate) async fn get_kel(
     }
 
     // Cache miss or non-default limit — canonical full fetch
-    let page = kels::serve_kel_page(&state.repo.key_events, &prefix, None, limit).await?;
+    let page = kels_core::serve_kel_page(&state.repo.key_events, &prefix, None, limit).await?;
 
     // Store in cache (skips if too large per cache logic)
     if !page.has_more
@@ -572,8 +572,8 @@ pub(crate) async fn get_kel_audit(
 ) -> Result<Json<RecoveryRecordPage>, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(kels::page_size())
-        .clamp(1, kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
     let (records, has_more) = state
@@ -595,8 +595,8 @@ pub(crate) async fn get_recovery_events(
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(kels::page_size())
-        .clamp(1, kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
     let (events, has_more) = state
@@ -626,8 +626,8 @@ pub(crate) async fn get_kel_archived(
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = params
         .limit
-        .unwrap_or(kels::page_size())
-        .clamp(1, kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
     let (events, has_more) = state
@@ -698,11 +698,11 @@ async fn query_prefixes(
 pub(crate) async fn list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
-    if !kels::validate_timestamp(signed_request.payload.timestamp, 60) {
+    if !kels_core::validate_timestamp(signed_request.payload.timestamp, 60) {
         return Err(ApiError::forbidden("Request timestamp expired"));
     }
 
@@ -739,12 +739,12 @@ pub(crate) async fn list_prefixes(
     };
 
     // Consuming: verify peer's KEL (paginated) to extract trusted public key
-    let mut loader = kels::StorePageLoader::new(state.kel_store.as_ref());
-    let kel_verification = kels::completed_verification(
+    let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
+    let kel_verification = kels_core::completed_verification(
         &mut loader,
         &signed_request.peer_prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         std::iter::empty::<String>(),
     )
     .await
@@ -767,7 +767,7 @@ pub(crate) async fn list_prefixes(
 pub(crate) async fn test_list_prefixes(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    Json(signed_request): Json<kels::SignedRequest<kels::PaginatedSelfAddressedRequest>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     query_prefixes(
@@ -782,7 +782,7 @@ pub(crate) async fn test_list_prefixes(
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
     peer_prefix: &str,
-) -> Result<Option<kels::Peer>, ApiError> {
+) -> Result<Option<kels_core::Peer>, ApiError> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
         .get(format!("kels:verified-peer:{}", peer_prefix))
@@ -790,7 +790,7 @@ async fn get_verified_peer(
         .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
     match json {
         Some(j) => {
-            let peer: kels::Peer = serde_json::from_str(&j)
+            let peer: kels_core::Peer = serde_json::from_str(&j)
                 .map_err(|e| ApiError::internal_error(format!("Deserialization failed: {}", e)))?;
             Ok(Some(peer))
         }
@@ -808,7 +808,7 @@ async fn refresh_verified_peers(
         return Ok(());
     }
 
-    let (peers_response, _) = kels::with_failover(
+    let peers_response = kels_core::with_failover(
         registry_urls,
         std::time::Duration::from_secs(10),
         |c| async move { c.fetch_peers().await },
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn test_max_events_per_submission_constant() {
-        assert_eq!(kels::page_size(), kels::MINIMUM_PAGE_SIZE);
+        assert_eq!(kels_core::page_size(), kels_core::MINIMUM_PAGE_SIZE);
     }
 
     // ==================== health Tests ====================

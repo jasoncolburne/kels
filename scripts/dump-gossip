@@ -8,7 +8,7 @@ mkdir -p "$DEBUG_DIR"
 
 for node in "${NODES[@]}"; do
   echo "Dumping gossip logs for node-$node..."
-  kubectl logs -l app=kels-gossip --tail 10000 -n "kels-node-$node" > "$DEBUG_DIR/gossip-$node.log" 2>&1 &
+  kubectl logs -l app=gossip --tail 10000 -n "kels-node-$node" > "$DEBUG_DIR/gossip-$node.log" 2>&1 &
 done
 
 wait

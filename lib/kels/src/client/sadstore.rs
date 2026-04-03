@@ -126,92 +126,6 @@ impl SadStoreClient {
         }
     }
 
-    // === Layer 2: Chain Records ===
-
-    /// Submit signed SAD records.
-    pub async fn submit_sad_records(
-        &self,
-        records: &[crate::SignedSadPointer],
-    ) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/pointers", self.base_url);
-        let resp = self.client.post(&url).json(records).send().await?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let text = resp.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
-        }
-    }
-
-    /// Submit signed SAD records as a repair operation.
-    ///
-    /// Truncates all records at version >= the first record's version, then inserts
-    /// the batch. Used to resolve divergent chains.
-    pub async fn repair_sad_chain(
-        &self,
-        records: &[crate::SignedSadPointer],
-    ) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/pointers?repair=true", self.base_url);
-        let resp = self.client.post(&url).json(records).send().await?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let text = resp.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
-        }
-    }
-
-    /// Fetch a page of chain records by prefix.
-    ///
-    /// `since` is an effective SAID cursor — returns records after this SAID's
-    /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
-    /// server returns the full chain.
-    pub async fn fetch_sad_chain(
-        &self,
-        prefix: &str,
-        since: Option<&str>,
-    ) -> Result<SadPointerPage, KelsError> {
-        let mut url = format!("{}/api/v1/sad/pointers/{}", self.base_url, prefix);
-        if let Some(since_said) = since {
-            url.push_str(&format!("?since={}", since_said));
-        }
-
-        let resp = self.client.get(&url).send().await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(KelsError::NotFound(prefix.to_string()))
-        } else {
-            let text = resp.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
-        }
-    }
-
-    /// Get the effective SAID (tip) for a chain prefix. Used for sync comparison.
-    pub async fn fetch_sad_effective_said(
-        &self,
-        prefix: &str,
-    ) -> Result<Option<String>, KelsError> {
-        let url = format!(
-            "{}/api/v1/sad/pointers/{}/effective-said",
-            self.base_url, prefix
-        );
-        let resp = self.client.get(&url).send().await?;
-
-        if resp.status().is_success() {
-            let body: EffectiveSaidResponse = resp.json().await?;
-            Ok(Some(body.said))
-        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            let text = resp.text().await.unwrap_or_default();
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
-        }
-    }
-
     /// List SAD object SAIDs (paginated, authenticated). Used for bootstrap and anti-entropy.
     pub async fn fetch_sad_objects(
         &self,
@@ -241,8 +155,102 @@ impl SadStoreClient {
         }
     }
 
+    // === Layer 2: Chain Records ===
+
+    /// Submit signed SAD records.
+    pub async fn submit_sad_pointer(
+        &self,
+        records: &[crate::SignedSadPointer],
+    ) -> Result<(), KelsError> {
+        let url = format!("{}/api/v1/sad/pointers", self.base_url);
+        let resp = self.client.post(&url).json(records).send().await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Submit signed SAD records as a repair operation.
+    ///
+    /// Truncates all records at version >= the first record's version, then inserts
+    /// the batch. Used to resolve divergent chains.
+    pub async fn repair_sad_pointer(
+        &self,
+        records: &[crate::SignedSadPointer],
+    ) -> Result<(), KelsError> {
+        let url = format!("{}/api/v1/sad/pointers?repair=true", self.base_url);
+        let resp = self.client.post(&url).json(records).send().await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch a page of chain records by prefix.
+    ///
+    /// `since` is an effective SAID cursor — returns records after this SAID's
+    /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
+    /// server returns the full chain.
+    pub async fn fetch_sad_pointer(
+        &self,
+        prefix: &str,
+        since: Option<&str>,
+    ) -> Result<SadPointerPage, KelsError> {
+        let mut url = format!("{}/api/v1/sad/pointers/{}", self.base_url, prefix);
+        if let Some(since_said) = since {
+            url.push_str(&format!("?since={}", since_said));
+        }
+
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(prefix.to_string()))
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Get the effective SAID and divergence status for a chain prefix.
+    /// Returns `(said, is_divergent)`. Used for sync comparison.
+    pub async fn fetch_sad_pointer_effective_said(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<(String, bool)>, KelsError> {
+        let url = format!(
+            "{}/api/v1/sad/pointers/{}/effective-said",
+            self.base_url, prefix
+        );
+        let resp = self.client.get(&url).send().await?;
+
+        if resp.status().is_success() {
+            let body: EffectiveSaidResponse = resp.json().await?;
+            Ok(Some((body.said, body.divergent)))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Check if a pointer with the given SAID exists on this SADStore.
+    pub async fn sad_pointer_exists(&self, said: &str) -> Result<bool, KelsError> {
+        let url = format!("{}/api/v1/sad/pointers/exists/{}", self.base_url, said);
+        let resp = self.client.get(&url).send().await?;
+        Ok(resp.status().is_success())
+    }
+
     /// List SAD chain prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
-    pub async fn fetch_sad_prefixes(
+    pub async fn fetch_sad_pointer_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
         cursor: Option<&str>,
@@ -257,7 +265,7 @@ impl SadStoreClient {
         let signed = crate::sign_request(signer, &request).await?;
         let resp = self
             .client
-            .post(format!("{}/api/v1/sad/prefixes", self.base_url))
+            .post(format!("{}/api/v1/sad/pointers/prefixes", self.base_url))
             .json(&signed)
             .send()
             .await?;
@@ -271,7 +279,7 @@ impl SadStoreClient {
     }
 
     /// Fetch repairs for a chain prefix, paginated.
-    pub async fn fetch_repairs(
+    pub async fn fetch_sad_pointer_repairs(
         &self,
         prefix: &str,
         limit: u64,
@@ -294,7 +302,7 @@ impl SadStoreClient {
     }
 
     /// Fetch archived records for a specific repair, paginated.
-    pub async fn fetch_repair_records(
+    pub async fn fetch_sad_pointer_repair_records(
         &self,
         prefix: &str,
         repair_said: &str,
@@ -325,12 +333,12 @@ impl SadStoreClient {
     ///
     /// The `kels_client` is used to fetch and verify the owner's KEL for
     /// signature verification.
-    pub async fn verify_sad_records(
+    pub async fn verify_sad_pointer(
         &self,
         prefix: &str,
         kels_client: &crate::KelsClient,
     ) -> Result<SadPointerVerification, KelsError> {
-        crate::verify_sad_records(
+        crate::verify_sad_pointer(
             prefix,
             &self.as_sad_source()?,
             &kels_client.as_kel_source()?,

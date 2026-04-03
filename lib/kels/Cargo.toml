@@ -1,5 +1,5 @@
 [package]
-name = "libkels"
+name = "kels-core"
 version = "0.1.0"
 edition = "2024"
 authors = ["Jason Colburne"]
@@ -7,7 +7,7 @@ license = "MIT"
 description = "KELS client library - Key Event Log Storage"
 
 [lib]
-name = "kels"
+name = "kels_core"
 path = "src/lib.rs"
 
 [features]

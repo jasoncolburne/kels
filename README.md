@@ -67,24 +67,24 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ```
 kels/
 ├── lib/
-│   ├── kels/           # Core library (libkels)
-│   ├── kels-derive/    # Derive macros for storage traits
-│   ├── kels-creds/     # Credential framework (issuance, disclosure, verification)
-│   ├── kels-policy/    # Policy framework (composable trust policies, DSL)
-│   ├── kels-ffi/       # FFI bindings (Swift/C interop)
-│   ├── gossip/         # Custom gossip protocol library
-│   └── kels-mock-hsm/  # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
+│   ├── kels/           # Core library (kels-core)
+│   ├── derive/         # Derive macros for storage traits
+│   ├── creds/          # Credential framework (issuance, disclosure, verification)
+│   ├── policy/         # Policy framework (composable trust policies, DSL)
+│   ├── ffi/            # FFI bindings (Swift/C interop)
+│   ├── gossip/         # Custom gossip protocol library (kels-gossip-core)
+│   └── mock-hsm/       # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
 ├── services/
 │   ├── kels/           # HTTP API server
-│   ├── kels-gossip/    # Gossip protocol for cross-deployment sync
-│   ├── kels-registry/  # Node registration and discovery service
+│   ├── gossip/         # Gossip protocol for cross-deployment sync
+│   ├── registry/       # Node registration and discovery service
 │   ├── identity/       # Registry identity service (single replica)
 │   ├── postgres/       # PostgreSQL configuration
 │   └── redis/          # Redis configuration
 ├── clients/
-│   ├── kels-cli/       # Command-line interface
-│   ├── kels-client/    # Swift client (iOS/macOS)
-│   ├── kels-bench/     # Benchmarking tool
+│   ├── cli/            # Command-line interface
+│   ├── ios/            # Swift client (iOS/macOS)
+│   ├── bench/          # Benchmarking tool
 │   └── test/           # Integration test scripts/container
 └── docs/               # Documentation
 ```
@@ -155,19 +155,17 @@ make clippy       # Run clippy lints
 make test         # Run tests
 make deny         # Check dependencies (requires cargo-deny)
 make clean        # Clean build artifacts
+make clean-garden # Delete all garden managed k8s namespaces
+make clean-docker # Clean docker caches
 
 # Comprehensive integration tests (requires Garden + Kubernetes)
 make deploy-fresh-node       # Deploy standalone node (~2.5 min)
 make deploy-fresh-federation # Deploy full federation (~10 min)
 make test-node               # Deploy standalone node and run tests (~5 min)
 make test-federation         # Deploy all services and run full test suite (~35 min)
-```
 
-`make test-federation` leaves a working stack running in Kubernetes. You can play with it, or
-bring it down entirely with:
-
-```bash
-make clean-garden
+# iOS Client (macOS)
+make ios-simulator # Run a demo app (configure your /etc/hosts file first)
 ```
 
 ### Deploying with Garden
@@ -202,16 +200,22 @@ To use the command line tools or iOS application, you'll need to modify your /et
 First, add the following entries to `/etc/hosts` to enable local hostname resolution:
 
 ```text
-127.0.0.1 kels.kels-node-a.kels
-127.0.0.1 kels.kels-node-b.kels
-127.0.0.1 kels.kels-node-c.kels
-127.0.0.1 kels.kels-node-d.kels
-127.0.0.1 kels.kels-node-e.kels
-127.0.0.1 kels.kels-node-f.kels
-127.0.0.1 kels-registry.kels-registry-a.kels
-127.0.0.1 kels-registry.kels-registry-b.kels
-127.0.0.1 kels-registry.kels-registry-c.kels
-127.0.0.1 kels-registry.kels-registry-d.kels
+127.0.0.1 kels.node-a.kels
+127.0.0.1 kels.node-b.kels
+127.0.0.1 kels.node-c.kels
+127.0.0.1 kels.node-d.kels
+127.0.0.1 kels.node-e.kels
+127.0.0.1 kels.node-f.kels
+127.0.0.1 sadstore.node-a.kels
+127.0.0.1 sadstore.node-b.kels
+127.0.0.1 sadstore.node-c.kels
+127.0.0.1 sadstore.node-d.kels
+127.0.0.1 sadstore.node-e.kels
+127.0.0.1 sadstore.node-f.kels
+127.0.0.1 registry.registry-a.kels
+127.0.0.1 registry.registry-b.kels
+127.0.0.1 registry.registry-c.kels
+127.0.0.1 registry.registry-d.kels
 ```
 
 This allows the CLI and iOS app to connect to the local KELS nodes and registries using their service names.
@@ -307,30 +311,30 @@ Comprehensive tests take a while to run (~20m on my laptop), but they are an eas
 #### Registries (Federation Members)
 
 Namespaces
-- kels-registry-a,
-- kels-registry-c,
-- kels-registry-d
+- registry-a,
+- registry-c,
+- registry-d
 
 Children per Namespace
 - identity
-- kels-registry
+- registry
 - postgres
 - redis
 
 #### Gossip Nodes
 
 Namespaces
-- kels-node-a
-- kels-node-b
-- kels-node-c
-- kels-node-d
-- kels-node-e
-- kels-node-f
+- node-a
+- node-b
+- node-c
+- node-d
+- node-e
+- node-f
 
 Children per Namespace
 - identity
 - kels (2)
-- kels-gossip
+- gossip
 - postgres
 - redis
 
@@ -343,7 +347,7 @@ Nodes with test endpoints enabled:
 - `node-b`
 - `node-d`
 
-- The `test-client` pod is only available in the `node-a` namespace (`kels-node-a`).
+- The `test-client` pod is only available in the `node-a` namespace (`node-a`).
 
 This pod is used for running various scripts and curl commands during integration/regression tests.
 
@@ -380,14 +384,14 @@ make && make test-federation
 
 # Stress test (repeats adversarial, gossip, and bootstrap tests)
 for i in {1..10}; do echo && echo "run $i" && echo &&
-    kubectl exec -n kels-node-a -it test-client -- ./test-adversarial.sh &&
-    kubectl exec -n kels-node-a -it test-client -- ./test-adversarial-advanced.sh &&
-    kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh &&
-    kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || break
+    kubectl exec -n node-a -it test-client -- ./test-adversarial.sh &&
+    kubectl exec -n node-a -it test-client -- ./test-adversarial-advanced.sh &&
+    kubectl exec -n node-a -it test-client -- ./test-gossip.sh &&
+    kubectl exec -n node-a -it test-client -- ./test-bootstrap.sh || break
 done
 
 # Cross-node consistency check (run separately after stress tests)
-kubectl exec -n kels-node-a -it test-client -- ./test-consistency.sh
+kubectl exec -n node-a -it test-client -- ./test-consistency.sh
 ```
 
 ### Dev Tools

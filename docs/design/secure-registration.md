@@ -8,13 +8,13 @@ The secure authorization system ensures that only authorized nodes can:
 - Participate in the gossip network
 - Access authenticated endpoints (e.g., prefix listing)
 
-Each node has a persistent ML-DSA-65 or ML-DSA-87 identity stored in an HSM (the example implementation uses `kels-mock-hsm`, a PKCS#11 cdylib — don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
+Each node has a persistent ML-DSA-65 or ML-DSA-87 identity stored in an HSM (the example implementation uses kels-mock-hsm, a PKCS#11 cdylib — don't use this in production), and the registry verifies signatures against an allowlist of authorized PeerPrefixes stored in PostgreSQL.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                            kels-registry namespace                           │
+│                             registry namespace                               │
 │                                                                              │
 │  ┌────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
 │  │  identity  │───>│  Peer Allowlist │───>│  Request Verification        │   │
@@ -36,7 +36,7 @@ Each node has a persistent ML-DSA-65 or ML-DSA-87 identity stored in an HSM (the
 ┌───────────────┐           ┌───────────────┐           ┌───────────────┐
 │   node-a      │           │   node-b      │           │   node-c      │
 │ ┌───────────┐ │           │ ┌───────────┐ │           │ ┌───────────┐ │
-│ │kels-gossip│◄├───────────┤►│kels-gossip│◄├───────────┤►│kels-gossip│ │
+│ │  gossip   │◄├───────────┤►│  gossip   │◄├───────────┤►│  gossip   │ │
 │ └─────┬─────┘ │           │ └─────┬─────┘ │           │ └─────┬─────┘ │
 │       │       │           │       │       │           │       │       │
 │       ▼       │           │       ▼       │           │       ▼       │
@@ -71,9 +71,9 @@ Each node's identity service loads a PKCS#11 .so directly via cryptoki:
 - Key generation (idempotent - returns existing key if present)
 - Signing operations
 
-The development deployment uses `kels-mock-hsm` (`libkels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
+The development deployment uses `kels-mock-hsm` (`kels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
 
-**Key label convention:** `kels-gossip-{node_id}` (e.g., `kels-gossip-node-a`)
+**Key label convention:** `gossip-{node_id}` (e.g., `gossip-node-a`)
 
 ### PeerPrefix Derivation
 
@@ -98,7 +98,7 @@ struct Peer {
     node_id: String,          // Human-readable name (e.g., "node-a")
     authorizing_kel: String,  // Prefix of the KEL that authorized this peer
     active: bool,             // Current authorization status
-    base_domain: String,      // Base domain for service discovery (e.g., "kels-node-a.kels")
+    base_domain: String,      // Base domain for service discovery (e.g., "node-a.kels")
     gossip_addr: String,     // Gossip address (host:port)
 }
 ```
@@ -173,14 +173,14 @@ When a service receives a signed request:
 
 ## Request Signing Flow (Client Side)
 
-kels-gossip signs requests using `IdentitySigner`:
+The gossip service signs requests using `IdentitySigner`:
 
 1. **Create signer** on startup with identity service URL and peer_prefix
 2. **Sign requests** by calling the identity service sign endpoint (returns signature)
 3. **Wrap payload** in SignedRequest with signature and peer_prefix
 
 ```rust
-// In kels-gossip startup
+// In gossip service startup
 let registry_signer = IdentitySigner::new(identity_url, &peer_prefix);
 
 // Sign a request payload and submit it
@@ -193,19 +193,19 @@ The public key is not included in the request. During verification, the service 
 
 ### Admin CLI
 
-The `kels-registry-admin` CLI manages the peer allowlist:
+The `registry-admin` CLI manages the peer allowlist:
 
 ```bash
 # Add a peer to allowlist
-kels-registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
-  --kels-url http://kels.kels-node-a.kels \
-  --gossip-addr kels-gossip.kels-node-a.kels:4001
+registry-admin peer add --peer-id 12D3KooWAbc... --node-id node-a \
+  --kels-url http://kels.node-a.kels \
+  --gossip-addr gossip.node-a.kels:4001
 
 # Remove a peer (creates deactivated version)
-kels-registry-admin peer remove --peer-id 12D3KooWAbc...
+registry-admin peer remove --peer-id 12D3KooWAbc...
 
 # List all authorized peers
-kels-registry-admin peer list
+registry-admin peer list
 ```
 
 See [Multi-Registry Federation](./federation.md) for details on the multi-party approval process.
@@ -214,12 +214,12 @@ See [Multi-Registry Federation](./federation.md) for details on the multi-party 
 
 Before a node can be added to the allowlist, you need its PeerPrefix. Options:
 
-1. **From logs:** Deploy the node, check kels-gossip logs for "Local PeerPrefix: ..."
+1. **From logs:** Deploy the node, check gossip service logs for "Local PeerPrefix: ..."
 2. **From HSM:** Query HSM public key and derive PeerPrefix programmatically
 
 ```bash
-# Check kels-gossip logs
-kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
+# Check gossip service logs
+kubectl logs -n node-a deploy/gossip | grep PeerPrefix
 # Output: Local PeerPrefix: 12D3KooWXyz...
 ```
 
@@ -228,7 +228,7 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 ### Phase 1: Deploy Node (Unauthorized)
 
 1. Deploy new node namespace with identity service (loads PKCS#11 HSM)
-2. Deploy kels-gossip - it generates/loads HSM key and logs PeerPrefix
+2. Deploy gossip service - it generates/loads HSM key and logs PeerPrefix
 3. Node attempts to connect to gossip peers - **rejected** (not in allowlist)
 4. Node can still fetch KELS data via HTTP (read-only, no auth required)
 
@@ -237,8 +237,8 @@ kubectl logs -n kels-node-a deploy/kels-gossip | grep PeerPrefix
 1. Get PeerPrefix from node logs
 2. Add peer via admin CLI:
    ```bash
-   kubectl exec -n kels-registry deploy/kels-registry -- \
-     kels-registry-admin peer add --peer-id 12D3KooWXyz... --node-id node-x
+   kubectl exec -n kels-registry deploy/registry -- \
+     registry-admin peer add --peer-id 12D3KooWXyz... --node-id node-x
    ```
 
 ### Phase 3: Node Becomes Operational
@@ -310,18 +310,18 @@ kels-registry/
 ├── identity (manages registry's KELS identity, 1 replica; loads PKCS#11 .so for HSM)
 ├── postgres (peer allowlist + identity KEL)
 ├── redis
-└── kels-registry
+└── registry
 ```
 
 ### Node Namespace
 
 ```
-kels-node-x/
+node-x/
 ├── identity (manages node's KELS identity; loads PKCS#11 .so for HSM)
 ├── postgres (kels + kels_gossip DBs)
 ├── redis (KEL cache + pubsub)
 ├── kels
-└── kels-gossip
+└── gossip
 ```
 
 ## Troubleshooting
@@ -330,24 +330,24 @@ kels-node-x/
 
 1. Check if peer is in allowlist:
    ```bash
-   kubectl exec -n kels-registry deploy/kels-registry -- kels-registry-admin peer list
+   kubectl exec -n kels-registry deploy/registry -- registry-admin peer list
    ```
 
 2. Verify PeerPrefix matches:
    ```bash
    # Get PeerPrefix from node logs
-   kubectl logs -n kels-node-x deploy/kels-gossip | grep PeerPrefix
+   kubectl logs -n node-x deploy/gossip | grep PeerPrefix
    ```
 
 3. Check registry logs for verification errors:
    ```bash
-   kubectl logs -n kels-registry deploy/kels-registry
+   kubectl logs -n kels-registry deploy/registry
    ```
 
 ### Signature Verification Failed
 
 - Ensure HSM is healthy and responding
-- Check that the key label matches: `kels-gossip-{node_id}`
+- Check that the key label matches: `gossip-{node_id}`
 - Verify JSON serialization is deterministic (using `preserve_order`)
 
 ### Peer Not Connecting via Gossip

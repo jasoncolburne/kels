@@ -9,7 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use kels::{
+use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
     ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
 };
@@ -107,12 +107,12 @@ pub async fn get_identity(
 
 pub async fn get_status(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<kels::IdentityStatus>, ApiError> {
+) -> Result<Json<kels_core::IdentityStatus>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = match builder.prefix() {
         Some(p) => p.to_string(),
         None => {
-            return Ok(Json(kels::IdentityStatus {
+            return Ok(Json(kels_core::IdentityStatus {
                 initialized: false,
                 prefix: None,
                 last_said: None,
@@ -137,7 +137,7 @@ pub async fn get_status(
 
     let last_said = authority.map(|a| a.last_said);
 
-    Ok(Json(kels::IdentityStatus {
+    Ok(Json(kels_core::IdentityStatus {
         initialized: true,
         prefix: Some(prefix),
         last_said,
@@ -157,10 +157,10 @@ pub async fn get_key_events(
 
     let limit = query
         .limit
-        .unwrap_or(kels::page_size())
-        .min(kels::page_size()) as u64;
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size()) as u64;
 
-    let page = kels::serve_kel_page(
+    let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
         prefix,
         query.since.as_deref(),
@@ -179,7 +179,7 @@ pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
     };
 
     let kel_store = RepositoryKelStore::new(state.kel_repo.clone());
-    let source = kels::StoreKelSource::new(&kel_store);
+    let source = kels_core::StoreKelSource::new(&kel_store);
     let client = match KelsClient::with_path_prefix(forward_url, &state.forward_path_prefix) {
         Ok(c) => c,
         Err(e) => {
@@ -195,12 +195,12 @@ pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
         }
     };
 
-    match kels::forward_key_events(
+    match kels_core::forward_key_events(
         prefix,
         &source,
         &sink,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         None,
     )
     .await
@@ -259,7 +259,7 @@ pub async fn sign(
     Json(request): Json<SignRequest>,
 ) -> Result<Json<SignResponse>, ApiError> {
     use cesr::Matter;
-    use kels::KeyProvider;
+    use kels_core::KeyProvider;
 
     let builder = state.builder.read().await;
     let key_provider = builder.key_provider();
@@ -276,7 +276,7 @@ pub async fn sign(
 
 pub async fn manage_kel(
     State(state): State<Arc<AppState>>,
-    Json(signed): Json<kels::SignedRequest<ManageKelRequest>>,
+    Json(signed): Json<kels_core::SignedRequest<ManageKelRequest>>,
 ) -> Result<Json<ManageKelResponse>, ApiError> {
     let prefix = {
         let builder = state.builder.read().await;
@@ -300,11 +300,11 @@ pub async fn manage_kel(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to lock prefix: {}", e)))?;
 
-    let kel_verification = kels::completed_verification(
+    let kel_verification = kels_core::completed_verification(
         &mut tx,
         &prefix,
-        kels::page_size(),
-        kels::max_pages(),
+        kels_core::page_size(),
+        kels_core::max_pages(),
         iter::empty(),
     )
     .await

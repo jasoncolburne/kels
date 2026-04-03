@@ -14,8 +14,8 @@ mkdir -p "$DEBUG_DIR"
 
 for node in "${NODES[@]}"; do
   echo "Fetching node-$node..."
-  curl -s "http://kels.kels-node-$node.kels/api/v1/kels/kel/$PREFIX" | jq . > "$DEBUG_DIR/node-$node.kel" &
-  kubectl logs -l app=kels-gossip --tail 10000 -n "kels-node-$node" | grep -A2 -B2 "$PREFIX" > "$DEBUG_DIR/node-$node.gossip" 2>&1 &
+  curl -s "http://kels.node-$node.kels/api/v1/kels/kel/$PREFIX" | jq . > "$DEBUG_DIR/node-$node.kel" &
+  kubectl logs -l app=gossip --tail 10000 -n "kels-node-$node" | grep -A2 -B2 "$PREFIX" > "$DEBUG_DIR/node-$node.gossip" 2>&1 &
 done
 
 wait

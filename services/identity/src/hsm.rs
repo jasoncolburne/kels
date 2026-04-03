@@ -13,7 +13,7 @@ use cryptoki::{
     types::AuthPin,
 };
 
-use kels::{KelsError, KeyProvider, compute_rotation_hash};
+use kels_core::{KelsError, KeyProvider, compute_rotation_hash};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyHandle(String);
@@ -555,7 +555,7 @@ impl KeyProvider for HsmKeyProvider {
 
     async fn save_state(
         &self,
-        _store: &dyn kels::KeyStateStore,
+        _store: &dyn kels_core::KeyStateStore,
         _prefix: &str,
     ) -> Result<(), KelsError> {
         // HSM keys persist in the hardware module; state is managed externally
@@ -564,7 +564,7 @@ impl KeyProvider for HsmKeyProvider {
 
     async fn restore_state(
         &mut self,
-        _store: &dyn kels::KeyStateStore,
+        _store: &dyn kels_core::KeyStateStore,
         _prefix: &str,
     ) -> Result<bool, KelsError> {
         // HSM keys persist in the hardware module; state is managed externally

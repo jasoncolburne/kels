@@ -1,11 +1,11 @@
-LIBS_PACKAGES := libkels libkels-derive kels-creds kels-policy libkels-ffi kels-mock-hsm
+LIBS_PACKAGES := kels-core kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
 LIBS_DIR := lib
-LIBS_SUBDIRS := kels kels-derive kels-creds kels-policy kels-ffi kels-mock-hsm
+LIBS_SUBDIRS := kels derive creds policy ffi mock-hsm
 
 SERVICE_PACKAGES := kels
 SERVICES_DIR := services
 
-CLIENT_PACKAGES := kels-bench
+CLIENT_PACKAGES := bench
 CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test kels-client-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite wait-for-gossip
+.PHONY: all build clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -33,7 +33,7 @@ clean:
 	@echo "Cleaning workspace..."
 	cargo clean
 	find . -type d -name "target" -exec rm -rf {} +
-	make -C clients/kels-client clean
+	make -C clients/ios clean
 
 clean-registries:
 	garden cleanup namespace --env=registry-a
@@ -75,11 +75,11 @@ deny:
 		echo "Checking lib/$$lib..."; \
 		(cd $(LIBS_DIR)/$$lib && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for service in identity kels kels-gossip kels-registry kels-sadstore; do \
+	@for service in identity kels gossip registry sadstore; do \
 		echo "Checking services/$$service..."; \
 		(cd $(SERVICES_DIR)/$$service && cargo deny check -A no-license-field) || exit 1; \
 	done
-	@for client in kels-cli kels-bench; do \
+	@for client in cli bench; do \
 		echo "Checking clients/$$client..."; \
 		(cd $(CLIENTS_DIR)/$$client && cargo deny check -A no-license-field) || exit 1; \
 	done
@@ -100,7 +100,7 @@ test:
 # - FFI code (kels-ffi) - C bindings
 # - Server setup (server.rs in services) - integration code
 # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
-COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|kels-ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
+COV_EXCLUDES := --ignore-filename-regex '(main\.rs|admin\.rs|lib/ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)'
 
 coverage:
 	@if ! command -v cargo-llvm-cov &> /dev/null; then \
@@ -121,8 +121,8 @@ coverage:
 	@echo ""
 	@echo "Full report: target/llvm-cov/html/index.html"
 
-kels-client-simulator:
-	$(MAKE) -C clients/kels-client simulator DEV_TOOLS=1
+ios-simulator:
+	$(MAKE) -C clients/ios simulator DEV_TOOLS=1
 
 configure-dns:
 	scripts/coredns.sh apply
@@ -161,10 +161,10 @@ test-voting:
 	garden run propose-add-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/proposal-a.txt
 
 	# Test 1a: unauthenticated GET to federation proposals endpoint should succeed (read-only)
-	kubectl exec -n kels-node-a test-client -- curl -sf http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	kubectl exec -n kels-node-a test-client -- curl -sf http://registry.registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1b: POST to federation proposals endpoint should fail (method not allowed)
-	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://kels-registry.kels-registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
+	! kubectl exec -n kels-node-a test-client -- curl -sf -X POST -H 'Content-Type: application/json' -d '{}' http://registry.registry-a.kels/api/v1/federation/proposals/$$(cat /tmp/proposal-a.txt)
 
 	# Test 1c: proposal-status via admin CLI should succeed
 	garden run proposal-status --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-a
@@ -193,7 +193,7 @@ test-voting:
 	# Continue voting to approve
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-b
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-a.txt) --env=registry-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-a && kubectl rollout status deployment/kels-gossip -n kels-node-a
+	kubectl rollout restart deployment/gossip -n kels-node-a && kubectl rollout status deployment/gossip -n kels-node-a
 
 	# Remove
 	garden run propose-remove-peer --var node=node-a 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "roposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1 > /tmp/removal-a.txt
@@ -245,18 +245,18 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
 restart-gossip-services:
-	kubectl rollout restart deployment/kels-gossip -n kels-node-a
-	kubectl rollout restart deployment/kels-gossip -n kels-node-b
-	kubectl rollout restart deployment/kels-gossip -n kels-node-c
-	kubectl rollout restart deployment/kels-gossip -n kels-node-d
-	kubectl rollout restart deployment/kels-gossip -n kels-node-e
-	kubectl rollout restart deployment/kels-gossip -n kels-node-f
-	kubectl rollout status deployment/kels-gossip -n kels-node-a
-	kubectl rollout status deployment/kels-gossip -n kels-node-b
-	kubectl rollout status deployment/kels-gossip -n kels-node-c
-	kubectl rollout status deployment/kels-gossip -n kels-node-d
-	kubectl rollout status deployment/kels-gossip -n kels-node-e
-	kubectl rollout status deployment/kels-gossip -n kels-node-f
+	kubectl rollout restart deployment/gossip -n kels-node-a
+	kubectl rollout restart deployment/gossip -n kels-node-b
+	kubectl rollout restart deployment/gossip -n kels-node-c
+	kubectl rollout restart deployment/gossip -n kels-node-d
+	kubectl rollout restart deployment/gossip -n kels-node-e
+	kubectl rollout restart deployment/gossip -n kels-node-f
+	kubectl rollout status deployment/gossip -n kels-node-a
+	kubectl rollout status deployment/gossip -n kels-node-b
+	kubectl rollout status deployment/gossip -n kels-node-c
+	kubectl rollout status deployment/gossip -n kels-node-d
+	kubectl rollout status deployment/gossip -n kels-node-e
+	kubectl rollout status deployment/gossip -n kels-node-f
 
 test-resync:
 	scripts/coredns.sh apply
@@ -276,8 +276,16 @@ test-grow-federation:
 	garden deploy --env=registry-b
 	garden deploy --env=registry-c
 	garden deploy --env=registry-d
-	# Wait for Raft init + sync_membership
-	sleep 15
+	# Wait for Raft init + leader election
+	@kubectl exec -n kels-node-a test-client -- sh -c '\
+		for i in $$(seq 1 60); do \
+			for r in a b c d; do \
+				leader=$$(curl -sf "http://registry.registry-$$r.kels/api/v1/federation/status" 2>/dev/null | jq -r ".isLeader // false"); \
+				if [ "$$leader" = "true" ]; then echo "Leader elected after $${i}s"; exit 0; fi; \
+			done; \
+			sleep 1; \
+		done; \
+		echo "Timeout waiting for leader election"; exit 1'
 	# Verify 4-member federation from test-client pod
 	kubectl exec -n kels-node-a -it test-client -- ./test-grow-federation.sh
 
@@ -290,8 +298,16 @@ test-shrink-federation:
 	garden deploy --env=registry-a
 	garden deploy --env=registry-c
 	garden deploy --env=registry-d
-	# Wait for Raft init + sync_membership
-	sleep 15
+	# Wait for Raft init + leader election (3-member cluster)
+	@kubectl exec -n kels-node-a test-client -- sh -c '\
+		for i in $$(seq 1 60); do \
+			for r in a c d; do \
+				leader=$$(curl -sf "http://registry.registry-$$r.kels/api/v1/federation/status" 2>/dev/null | jq -r ".isLeader // false"); \
+				if [ "$$leader" = "true" ]; then echo "Leader elected after $${i}s"; exit 0; fi; \
+			done; \
+			sleep 1; \
+		done; \
+		echo "Timeout waiting for leader election"; exit 1'
 	# Redeploy nodes so they pick up the new federation config
 	$(MAKE) deploy-nodes
 	$(MAKE) wait-for-gossip
@@ -311,7 +327,7 @@ wait-for-gossip:
 		while [ $$elapsed -lt 120 ]; do \
 			all_ready=true; \
 			for node in a b c d e f; do \
-				status=$$(curl -s -o /dev/null -w "%{http_code}" http://kels-gossip.kels-node-$$node.kels/ready 2>/dev/null); \
+				status=$$(curl -s -o /dev/null -w "%{http_code}" http://gossip.node-$$node.kels/ready 2>/dev/null); \
 				if [ "$$status" != "200" ]; then \
 					all_ready=false; \
 					break; \
@@ -333,13 +349,10 @@ test-rotation:
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
 	kubectl exec -n kels-registry-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
-	# Wait for sync loop to pick up rotations
-	sleep 30
-	# Verify KEL event types from test-client
-	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=kels-registry-a ./test-scheduled-rotation.sh'
-	# Rotate on node-a identity and let gossip propagate
+	# Verify KEL event types from test-client (identity-admin is synchronous, no wait needed)
+	kubectl exec -n kels-node-a -it test-client -- bash -c 'IDENTITY_NS=registry-a ./test-scheduled-rotation.sh'
+	# Rotate on node-a identity — test-gossip.sh has its own convergence polling
 	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json scheduled-rotate
-	sleep 10
 	# Verify cross-node ops still work after rotation (no restarts)
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 

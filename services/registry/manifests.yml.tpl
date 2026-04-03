@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  replicas: ${var.registry.replicas}
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "Waiting for postgres...";
+                sleep 2;
+              done;
+              echo "Postgres is ready!";
+        - name: wait-for-identity
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z ${var.identity.host} ${var.identity.port}; do
+                echo "Waiting for identity service...";
+                sleep 2;
+              done;
+              echo "Identity service is ready!";
+      containers:
+        - name: registry
+          image: ${actions.build.registry.outputs.deployment-image-id}
+          ports:
+            - containerPort: 80
+              name: http
+          env:
+            - name: RUST_LOG
+              value: "${var.rustLogLevel}"
+            - name: DATABASE_URL
+              value: "${var.kelsRegistryDatabaseUrl}"
+            - name: IDENTITY_URL
+              value: "${var.identityUrl}"
+            - name: HEARTBEAT_TIMEOUT_SECS
+              value: "${var.registry.heartbeatTimeoutSecs}"
+            - name: FEDERATION_SELF_PREFIX
+              value: "${var.federationSelfPrefix}"
+            - name: FEDERATION_URLS
+              value: "${var.federationUrls}"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  type: ClusterIP
+  ports:
+    - port: ${var.registry.port}
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: registry
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: registry.${environment.name}.kels
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: registry
+                port:
+                  number: ${var.registry.port}

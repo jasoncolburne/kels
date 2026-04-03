@@ -5,6 +5,9 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
 use crate::{
     error::KelsError,
     types::{
@@ -12,6 +15,14 @@ use crate::{
         SubmitEventsResponse,
     },
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    Bootstrapping,
+    Ready,
+    Unhealthy,
+}
 
 /// KELS API Client - fetches/submits key events via HTTP.
 /// No client-side caching — server-side Redis cache handles that.
@@ -92,6 +103,36 @@ impl KelsClient {
         let start = Instant::now();
         self.health().await?;
         Ok(start.elapsed())
+    }
+
+    /// Check if this node is ready by querying its /ready endpoint.
+    pub async fn check_ready_status(&self) -> NodeStatus {
+        let ready_url = format!("{}/ready", self.base_url.trim_end_matches('/'));
+
+        match self
+            .client
+            .get(&ready_url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                if response.status().is_success() {
+                    if let Ok(body) = response.json::<serde_json::Value>().await
+                        && body.get("ready") == Some(&serde_json::Value::Bool(true))
+                    {
+                        return NodeStatus::Ready;
+                    }
+                    NodeStatus::Bootstrapping
+                } else if response.status().as_u16() == 503 {
+                    debug!(url = %self.base_url, "503 from /ready — treating as Bootstrapping");
+                    NodeStatus::Bootstrapping
+                } else {
+                    NodeStatus::Unhealthy
+                }
+            }
+            Err(_) => NodeStatus::Unhealthy,
+        }
     }
 
     /// Submit events in chunks, respecting the server's max event count limit.
