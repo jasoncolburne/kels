@@ -207,7 +207,7 @@ test_alice_send_to_bob() {
         --topic "kels/v1/test" \
         --payload "$TEMP_DIR/payload.json" 2>&1)
     echo "$OUTPUT"
-    echo "$OUTPUT" | grep -q "Message sent" || echo "$OUTPUT" | grep -q "Envelope SAID" || return 1
+    echo "$OUTPUT" | grep -q "Message sent" || return 1
 }
 
 run_test "Alice sends ESSR message to Bob" test_alice_send_to_bob

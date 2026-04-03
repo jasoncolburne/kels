@@ -1,6 +1,6 @@
 //! PostgreSQL repository for mail message metadata.
 
-use verifiable_storage::{ColumnQuery, Delete, StorageError, UnchainedRepository};
+use verifiable_storage::{ColumnQuery, Delete, StorageDatetime, StorageError, UnchainedRepository};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
 use kels_exchange::MailMessage;
@@ -54,7 +54,7 @@ impl MailMessageRepository {
     /// Delete expired messages in batches, returning the SAIDs of deleted messages.
     pub async fn delete_expired(&self) -> Result<Vec<String>, StorageError> {
         const BATCH_SIZE: u64 = 100;
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = StorageDatetime::now();
         let mut all_saids = Vec::new();
 
         loop {
