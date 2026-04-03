@@ -10,6 +10,7 @@ WORKDIR /app
 COPY clients/test/Cargo.toml /app/
 COPY lib/kels /app/lib/kels
 COPY lib/derive /app/lib/derive
+COPY lib/exchange /app/lib/exchange
 COPY clients/bench /app/clients/bench
 COPY clients/cli /app/clients/cli
 

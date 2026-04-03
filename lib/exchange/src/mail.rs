@@ -45,6 +45,54 @@ pub fn compute_blob_digest(blob: &[u8]) -> String {
     Digest::blake3_256(blob).qb64()
 }
 
+// ==================== Mail API Request/Response Types ====================
+
+/// Request payload for sending mail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub recipient_kel_prefix: String,
+    /// Base64-encoded ESSR envelope blob.
+    pub blob: String,
+}
+
+/// Request payload for checking inbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+/// Response for inbox listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxResponse {
+    pub messages: Vec<MailMessage>,
+}
+
+/// Request payload for fetching a mail blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub mail_said: String,
+}
+
+/// Request payload for acknowledging (deleting) messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AckRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub saids: Vec<String>,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

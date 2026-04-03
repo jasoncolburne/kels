@@ -14,11 +14,13 @@ use axum::{
 };
 use dashmap::DashMap;
 use redis::AsyncCommands;
-use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use verifiable_storage::SelfAddressed;
 
-use kels_exchange::{MailAnnouncement, MailMessage, compute_blob_digest};
+use kels_exchange::{
+    AckRequest, FetchRequest, InboxRequest, InboxResponse, MailAnnouncement, MailMessage,
+    SendRequest, compute_blob_digest,
+};
 
 use crate::{blob_store::BlobStore, repository::MailRepository};
 
@@ -201,15 +203,6 @@ pub async fn health() -> impl IntoResponse {
 
 // ==================== Send ====================
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendRequest {
-    pub timestamp: i64,
-    pub nonce: String,
-    pub recipient_kel_prefix: String,
-    pub blob: String, // base64-encoded ESSR envelope
-}
-
 pub async fn send_mail(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
@@ -322,21 +315,6 @@ pub async fn send_mail(
 
 // ==================== Inbox ====================
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InboxRequest {
-    pub timestamp: i64,
-    pub nonce: String,
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InboxResponse {
-    pub messages: Vec<MailMessage>,
-}
-
 pub async fn inbox(
     State(state): State<Arc<AppState>>,
     Json(signed): Json<kels_core::SignedRequest<InboxRequest>>,
@@ -365,14 +343,6 @@ pub async fn inbox(
 }
 
 // ==================== Fetch ====================
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FetchRequest {
-    pub timestamp: i64,
-    pub nonce: String,
-    pub mail_said: String,
-}
 
 pub async fn fetch(
     State(state): State<Arc<AppState>>,
@@ -428,14 +398,6 @@ pub async fn fetch(
 }
 
 // ==================== Ack ====================
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AckRequest {
-    pub timestamp: i64,
-    pub nonce: String,
-    pub saids: Vec<String>,
-}
 
 pub async fn ack(
     State(state): State<Arc<AppState>>,

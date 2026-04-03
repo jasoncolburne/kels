@@ -1400,11 +1400,9 @@ async fn cmd_exchange_publish_key(cli: &Cli, prefix: &str, algorithm: Option<&st
     v1.content_said = Some(publication.said.clone());
     v1.increment().context("Failed to increment pointer")?;
 
-    // Sign both records
-    let v0_json = serde_json::to_vec(&v0)?;
-    let v0_sig = provider.sign(&v0_json).await?;
-    let v1_json = serde_json::to_vec(&v1)?;
-    let v1_sig = provider.sign(&v1_json).await?;
+    // Sign both records (signature is over the SAID string, not serialized JSON)
+    let v0_sig = provider.sign(v0.said.as_bytes()).await?;
+    let v1_sig = provider.sign(v1.said.as_bytes()).await?;
 
     let signed_records = vec![
         kels_core::SignedSadPointer {
@@ -1492,8 +1490,7 @@ async fn cmd_exchange_rotate_key(cli: &Cli, prefix: &str, algorithm: Option<&str
     next.content_said = Some(publication.said.clone());
     next.increment().context("Failed to increment pointer")?;
 
-    let next_json = serde_json::to_vec(&next)?;
-    let sig = provider.sign(&next_json).await?;
+    let sig = provider.sign(next.said.as_bytes()).await?;
 
     let signed = vec![kels_core::SignedSadPointer {
         pointer: next,
@@ -1618,21 +1615,21 @@ async fn cmd_exchange_send(
     let timestamp = chrono::Utc::now().timestamp();
     let nonce = kels_core::crypto::generate_nonce();
 
-    let send_request = serde_json::json!({
-        "timestamp": timestamp,
-        "nonce": nonce,
-        "recipientKelPrefix": recipient,
-        "blob": base64::engine::general_purpose::STANDARD.encode(&envelope_bytes),
-    });
+    let send_request = kels_exchange::SendRequest {
+        timestamp,
+        nonce,
+        recipient_kel_prefix: recipient.to_string(),
+        blob: base64::engine::general_purpose::STANDARD.encode(&envelope_bytes),
+    };
 
     let request_json = serde_json::to_vec(&send_request)?;
     let signature = provider.sign(&request_json).await?;
 
-    let signed_request = serde_json::json!({
-        "peerPrefix": prefix,
-        "payload": send_request,
-        "signature": signature.qb64(),
-    });
+    let signed_request = kels_core::SignedRequest {
+        payload: send_request,
+        peer_prefix: prefix.to_string(),
+        signature: signature.qb64(),
+    };
 
     let client = reqwest::Client::new();
     let response = client
@@ -1660,19 +1657,21 @@ async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
     let timestamp = chrono::Utc::now().timestamp();
     let nonce = kels_core::crypto::generate_nonce();
 
-    let inbox_request = serde_json::json!({
-        "timestamp": timestamp,
-        "nonce": nonce,
-    });
+    let inbox_request = kels_exchange::InboxRequest {
+        timestamp,
+        nonce,
+        limit: None,
+        offset: None,
+    };
 
     let request_json = serde_json::to_vec(&inbox_request)?;
     let signature = provider.sign(&request_json).await?;
 
-    let signed_request = serde_json::json!({
-        "peerPrefix": prefix,
-        "payload": inbox_request,
-        "signature": signature.qb64(),
-    });
+    let signed_request = kels_core::SignedRequest {
+        payload: inbox_request,
+        peer_prefix: prefix.to_string(),
+        signature: signature.qb64(),
+    };
 
     let client = reqwest::Client::new();
     let response = client

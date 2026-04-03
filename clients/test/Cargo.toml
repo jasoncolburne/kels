@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "lib/kels",
     "lib/derive",
+    "lib/exchange",
     "clients/bench",
     "clients/cli",
 ]
