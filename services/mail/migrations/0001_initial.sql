@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     source_node_prefix TEXT NOT NULL,
     recipient_kel_prefix TEXT NOT NULL,
     blob_digest TEXT NOT NULL,
+    blob_size BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
 );

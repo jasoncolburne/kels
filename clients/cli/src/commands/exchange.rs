@@ -4,10 +4,12 @@ use std::path::PathBuf;
 
 use base64::Engine;
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{KeyProvider, ProviderConfig, VerificationKeyCode};
+use kels_core::{KelVerifier, KeyProvider, ProviderConfig, VerificationKeyCode};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::Cli;
@@ -30,7 +32,7 @@ pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey
     std::fs::write(path, encoded).context("Failed to write decapsulation key")
 }
 
-pub(crate) fn _load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
+pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
     let data = std::fs::read_to_string(path).context("Failed to read decapsulation key")?;
     let (algo, b64) = data
         .split_once(':')
@@ -308,6 +310,21 @@ pub(crate) async fn cmd_exchange_send(
     let payload = std::fs::read(payload_path)
         .with_context(|| format!("Failed to read payload: {}", payload_path.display()))?;
 
+    // Get sender's latest establishment event serial from local KEL
+    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_verification = kels_core::completed_verification(
+        &mut kels_core::StorePageLoader::new(&kel_store),
+        prefix,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        std::iter::empty(),
+    )
+    .await?;
+    let sender_serial = kel_verification
+        .last_establishment_event()
+        .map(|e| e.event.serial)
+        .ok_or_else(|| anyhow!("No local KEL found for sender — incept first"))?;
+
     // Get current signing key for ESSR
     let signing_key_qb64 = {
         let key_dir = config_dir(cli)?.join("keys").join(prefix);
@@ -323,7 +340,8 @@ pub(crate) async fn cmd_exchange_send(
         payload,
     };
 
-    let signed_envelope = kels_exchange::seal(&inner, 0, recipient, &encap_key, &signing_key)?;
+    let signed_envelope =
+        kels_exchange::seal(&inner, sender_serial, recipient, &encap_key, &signing_key)?;
 
     // Serialize and send to mail service
     let envelope_bytes = serde_json::to_vec(&signed_envelope)?;
@@ -436,6 +454,111 @@ pub(crate) async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&body)?);
         }
     }
+
+    Ok(())
+}
+
+pub(crate) async fn cmd_exchange_fetch(
+    cli: &Cli,
+    prefix: &str,
+    mail_said: &str,
+    source_domain: &str,
+) -> Result<()> {
+    println!("{}", "Fetching and decrypting message...".green());
+
+    let provider = provider_config(cli, prefix)?.load_provider().await?;
+
+    // Authenticate to source node's mail service and fetch the blob
+    let source_mail_url = format!("http://mail.{}", source_domain);
+    let timestamp = chrono::Utc::now().timestamp();
+    let nonce = kels_core::crypto::generate_nonce();
+
+    let fetch_request = kels_exchange::FetchRequest {
+        timestamp,
+        nonce,
+        mail_said: mail_said.to_string(),
+    };
+
+    let request_json = serde_json::to_vec(&fetch_request)?;
+    let signature = provider.sign(&request_json).await?;
+
+    let signed_request = kels_core::SignedRequest {
+        payload: fetch_request,
+        peer_prefix: prefix.to_string(),
+        signature: signature.qb64(),
+    };
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/api/v1/mail/fetch", source_mail_url))
+        .json(&signed_request)
+        .send()
+        .await
+        .context("Failed to fetch mail")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("Mail fetch failed ({}): {}", status, body));
+    }
+
+    let blob = response.bytes().await.context("Failed to read response")?;
+
+    // Verify blob digest
+    let digest = kels_exchange::compute_blob_digest(&blob);
+    println!("  Blob digest: {}", digest);
+    println!("  Blob size:   {} bytes", blob.len());
+
+    // Parse as SignedEssrEnvelope
+    let signed_envelope: kels_exchange::SignedEssrEnvelope =
+        serde_json::from_slice(&blob).context("Failed to parse ESSR envelope")?;
+
+    let sender_prefix = &signed_envelope.envelope.sender;
+    let sender_serial = signed_envelope.envelope.sender_serial;
+    println!("  Sender:      {}", sender_prefix);
+    println!("  Serial:      {}", sender_serial);
+
+    // Verify sender's KEL and collect the verification key at sender_serial
+    let kels_client = create_client(cli).await?;
+    let source =
+        kels_core::HttpKelSource::new(kels_client.base_url(), "/api/v1/kels/kel/{prefix}")?;
+    let verifier = KelVerifier::new(sender_prefix).with_establishment_key_collection(
+        BTreeSet::from([sender_serial]),
+        kels_core::max_collected_keys(),
+    )?;
+
+    let (_verification, keys) = kels_core::verify_key_events_collecting_establishment_keys(
+        sender_prefix,
+        &source,
+        verifier,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+    )
+    .await
+    .map_err(|e| anyhow!("Sender KEL verification failed: {}", e))?;
+
+    let sender_vk = keys.get(&sender_serial).ok_or_else(|| {
+        anyhow!(
+            "Sender's verification key at serial {} not found",
+            sender_serial
+        )
+    })?;
+
+    // Load local decapsulation key
+    let kem_path = kem_key_path(cli, prefix)?;
+    let decap_key = load_decap_key(&kem_path)
+        .context("Failed to load decapsulation key — have you published a key?")?;
+
+    // ESSR open
+    let inner = kels_exchange::open(&signed_envelope, &decap_key, sender_vk)
+        .map_err(|e| anyhow!("ESSR open failed: {}", e))?;
+
+    println!("  Topic:       {}", inner.topic);
+    println!("  Payload:     {} bytes", inner.payload.len());
+    println!();
+
+    // Write payload to stdout
+    std::io::Write::write_all(&mut std::io::stdout(), &inner.payload)?;
 
     Ok(())
 }

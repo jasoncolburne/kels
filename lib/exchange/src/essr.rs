@@ -5,6 +5,7 @@
 //! - **RUF-PTXT**: Receiver can't forge sender attribution (sender inside ciphertext)
 //! - **RUF-CTXT**: Attacker can't strip/replace signature (recipient in signed plaintext)
 
+use base64::Engine;
 use cesr::{DecapsulationKey, EncapsulationKey, Matter, Signature, SigningKey, VerificationKey};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
@@ -47,7 +48,7 @@ pub struct EssrEnvelope {
     pub kem_ciphertext: String,
     /// Base64-encoded AES-GCM-256 ciphertext.
     pub encrypted_payload: String,
-    /// CESR-encoded AES-GCM nonce.
+    /// Base64-encoded AES-GCM nonce (12 bytes).
     pub nonce: String,
     #[created_at]
     pub created_at: StorageDatetime,
@@ -191,12 +192,10 @@ pub fn open(
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| e.to_string())

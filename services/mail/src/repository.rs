@@ -1,6 +1,6 @@
 //! PostgreSQL repository for mail message metadata.
 
-use verifiable_storage::{Delete, StorageError, UnchainedRepository};
+use verifiable_storage::{ColumnQuery, Delete, StorageError, UnchainedRepository};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
 use kels_exchange::MailMessage;
@@ -51,18 +51,41 @@ impl MailMessageRepository {
         Ok(count > 0)
     }
 
-    /// Delete expired messages, returning the SAIDs of deleted messages.
+    /// Delete expired messages in batches, returning the SAIDs of deleted messages.
     pub async fn delete_expired(&self) -> Result<Vec<String>, StorageError> {
+        const BATCH_SIZE: u64 = 100;
         let now = chrono::Utc::now().to_rfc3339();
-        let query = Query::<MailMessage>::for_table(Self::TABLE_NAME).lt("expires_at", &now);
-        let expired: Vec<MailMessage> = self.pool.fetch(query).await?;
-        let saids: Vec<String> = expired.iter().map(|m| m.said.clone()).collect();
+        let mut all_saids = Vec::new();
 
-        for said in &saids {
-            let _ = self.delete(said).await;
+        loop {
+            let query = Query::<MailMessage>::for_table(Self::TABLE_NAME)
+                .lt("expires_at", &now)
+                .limit(BATCH_SIZE);
+            let batch: Vec<MailMessage> = self.pool.fetch(query).await?;
+            if batch.is_empty() {
+                break;
+            }
+
+            for msg in &batch {
+                if self.delete(&msg.said).await.unwrap_or(false) {
+                    all_saids.push(msg.said.clone());
+                }
+            }
         }
 
-        Ok(saids)
+        Ok(all_saids)
+    }
+
+    /// Sum blob sizes for a recipient on a specific node (for local storage cap enforcement).
+    pub async fn local_storage_for_recipient(
+        &self,
+        source_node_prefix: &str,
+        recipient_kel_prefix: &str,
+    ) -> Result<i64, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "blob_size")
+            .eq("source_node_prefix", source_node_prefix)
+            .eq("recipient_kel_prefix", recipient_kel_prefix);
+        self.pool.sum(query).await
     }
 
     /// Count messages for a recipient (for inbox cap enforcement).
@@ -72,8 +95,8 @@ impl MailMessageRepository {
     ) -> Result<usize, StorageError> {
         let query = Query::<MailMessage>::for_table(Self::TABLE_NAME)
             .eq("recipient_kel_prefix", recipient_kel_prefix);
-        let messages: Vec<MailMessage> = self.pool.fetch(query).await?;
-        Ok(messages.len())
+        let count = self.pool.count(query).await?;
+        Ok(count as usize)
     }
 }
 

@@ -17,6 +17,8 @@ pub struct MailMessage {
     pub recipient_kel_prefix: String,
     /// qb64 Blake3 digest of the ESSR envelope blob (content-addressable MinIO key).
     pub blob_digest: String,
+    /// Size of the ESSR envelope blob in bytes.
+    pub blob_size: i64,
     #[created_at]
     pub created_at: StorageDatetime,
     /// When this message expires and should be garbage collected.
@@ -107,6 +109,7 @@ mod tests {
             source_node_prefix: "node-prefix".to_string(),
             recipient_kel_prefix: "recipient-prefix".to_string(),
             blob_digest: "blob-digest-abc".to_string(),
+            blob_size: 1024,
             created_at: StorageDatetime::now(),
             expires_at: StorageDatetime::now(),
         };
@@ -121,6 +124,7 @@ mod tests {
             source_node_prefix: "node".to_string(),
             recipient_kel_prefix: "recipient".to_string(),
             blob_digest: "digest".to_string(),
+            blob_size: 512,
             created_at: StorageDatetime::now(),
             expires_at: StorageDatetime::now(),
         };

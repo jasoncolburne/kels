@@ -248,10 +248,29 @@ pub async fn send_mail(
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid blob: {}", e)).into_response(),
     };
 
-    // Check storage cap
-    let max_bytes = max_storage_per_recipient_mb() * 1024 * 1024;
-    if blob.len() > max_bytes {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "Blob exceeds size limit").into_response();
+    // Check cumulative local storage cap for this recipient
+    let max_bytes = (max_storage_per_recipient_mb() * 1024 * 1024) as i64;
+    match state
+        .repo
+        .messages
+        .local_storage_for_recipient(&state.node_prefix, &payload.recipient_kel_prefix)
+        .await
+    {
+        Ok(current) if current + blob.len() as i64 > max_bytes => {
+            return (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Recipient storage cap exceeded",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response();
+        }
+        _ => {}
     }
 
     let blob_digest = compute_blob_digest(&blob);
@@ -267,6 +286,7 @@ pub async fn send_mail(
         source_node_prefix: state.node_prefix.clone(),
         recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
         blob_digest: blob_digest.clone(),
+        blob_size: blob.len() as i64,
         created_at: now,
         expires_at,
     };
@@ -279,20 +299,17 @@ pub async fn send_mail(
             .into_response();
     }
 
-    // Store blob + metadata in parallel
-    let blob_future = state.blob_store.put(&blob_digest, &blob);
-    let meta_future = state.repo.messages.store(&mail_message);
-
-    let (blob_result, meta_result) = tokio::join!(blob_future, meta_future);
-
-    if let Err(e) = blob_result {
+    // Store blob first, then metadata. On metadata failure, clean up the blob.
+    if let Err(e) = state.blob_store.put(&blob_digest, &blob).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Blob storage failed: {}", e),
         )
             .into_response();
     }
-    if let Err(e) = meta_result {
+
+    if let Err(e) = state.repo.messages.store(&mail_message).await {
+        let _ = state.blob_store.delete(&blob_digest).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Metadata storage failed: {}", e),

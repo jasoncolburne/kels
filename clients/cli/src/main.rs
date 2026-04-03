@@ -524,12 +524,7 @@ async fn main() -> Result<()> {
                 prefix,
                 said,
                 source_domain,
-            } => {
-                // TODO: Implement fetch + ESSR open
-                println!("Fetch not yet implemented: {} from {}", said, source_domain);
-                let _ = (prefix, said, source_domain);
-                Ok(())
-            }
+            } => commands::exchange::cmd_exchange_fetch(&cli, prefix, said, source_domain).await,
         },
 
         Commands::Cred(cred_cmd) => match cred_cmd {
