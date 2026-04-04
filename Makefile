@@ -277,6 +277,10 @@ test-restart-gossip-services:
 	kubectl rollout restart deployment/gossip -n kels-node-f
 	kubectl rollout status deployment/gossip -n kels-node-f
 
+	# collect logs
+	sleep 10
+	scripts/dump-gossip
+
 test-resync:
 	scripts/coredns.sh apply
 	kubectl exec -n kels-node-a -it test-client -- ./test-resync.sh seed
@@ -392,7 +396,7 @@ test-kels-suite:
 	kubectl exec -n kels-node-a -it test-client -- ./test-reconciliation.sh
 	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
 	$(MAKE) test-rotation
-	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh || { scripts/dump-gossip; false; }
+	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
 	$(MAKE) test-kem-upgrade
 	scripts/coredns.sh apply
