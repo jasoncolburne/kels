@@ -111,7 +111,7 @@ The mail service fetches its node prefix from the co-located identity service at
 
 ## Future: Access Control
 
-The mail service can be extended with an access credential requirement. When configured with a schema SAID and policy SAID, `POST /api/v1/mail/send` would require the caller to present a valid, non-expired access credential. This enables paywalling: payment issues an access credential with `expires_at`, presented when sending mail. The existing credential system provides authentication, authorization, expiration, and revocation (via poisoning).
+The mail service can be extended with an access credential requirement. When configured with a schema SAID and policy SAID, `POST /api/v1/mail/send` would require the caller to present a valid, non-expired access credential (granted through some sign up process) to prevent abuse. The existing credential system provides authentication, authorization, expiration, and revocation (via poisoning).
 
 ## Future: Push Notifications
 
