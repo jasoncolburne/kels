@@ -85,10 +85,10 @@ pub fn spawn_reaper(state: Arc<AppState>) {
 
             // GC expired messages
             match gc_state.repo.messages.delete_expired().await {
-                Ok(saids) => {
-                    for said in &saids {
+                Ok(deleted) => {
+                    for (said, blob_digest) in &deleted {
                         // Delete blob if local
-                        let _ = gc_state.blob_store.delete(said).await;
+                        let _ = gc_state.blob_store.delete(blob_digest).await;
                         // Gossip removal
                         if let Some(ref redis) = gc_state.redis_conn {
                             let announcement = MailAnnouncement::Removal { said: said.clone() };
@@ -98,8 +98,8 @@ pub fn spawn_reaper(state: Arc<AppState>) {
                             }
                         }
                     }
-                    if !saids.is_empty() {
-                        info!("GC: removed {} expired messages", saids.len());
+                    if !deleted.is_empty() {
+                        info!("GC: removed {} expired messages", deleted.len());
                     }
                 }
                 Err(e) => warn!("GC: failed to delete expired messages: {}", e),

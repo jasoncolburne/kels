@@ -1,5 +1,6 @@
 //! PostgreSQL repository for mail message metadata.
 
+use tracing::warn;
 use verifiable_storage::{ColumnQuery, Delete, StorageDatetime, StorageError, UnchainedRepository};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -51,11 +52,11 @@ impl MailMessageRepository {
         Ok(count > 0)
     }
 
-    /// Delete expired messages in batches, returning the SAIDs of deleted messages.
-    pub async fn delete_expired(&self) -> Result<Vec<String>, StorageError> {
+    /// Delete expired messages in batches, returning (said, blob_digest) pairs.
+    pub async fn delete_expired(&self) -> Result<Vec<(String, String)>, StorageError> {
         const BATCH_SIZE: u64 = 100;
         let now = StorageDatetime::now();
-        let mut all_saids = Vec::new();
+        let mut deleted = Vec::new();
 
         loop {
             let query = Query::<MailMessage>::for_table(Self::TABLE_NAME)
@@ -67,13 +68,15 @@ impl MailMessageRepository {
             }
 
             for msg in &batch {
-                if self.delete(&msg.said).await.unwrap_or(false) {
-                    all_saids.push(msg.said.clone());
+                match self.delete(&msg.said).await {
+                    Ok(true) => deleted.push((msg.said.clone(), msg.blob_digest.clone())),
+                    Ok(false) => {}
+                    Err(e) => warn!("Failed to delete expired message {}: {}", msg.said, e),
                 }
             }
         }
 
-        Ok(all_saids)
+        Ok(deleted)
     }
 
     /// Sum blob sizes for a recipient on a specific node (for local storage cap enforcement).

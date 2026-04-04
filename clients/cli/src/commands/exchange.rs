@@ -293,11 +293,12 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     println!("  Algorithm:   {}", publication.algorithm);
     println!("  Key SAID:    {}", publication.said);
     println!("  Chain Prefix: {}", chain_prefix);
-    println!(
-        "  Encap Key:   {}...{}",
-        &publication.encapsulation_key[..20],
-        &publication.encapsulation_key[publication.encapsulation_key.len() - 10..]
-    );
+    let key = &publication.encapsulation_key;
+    if key.len() > 30 {
+        println!("  Encap Key:   {}...{}", &key[..20], &key[key.len() - 10..]);
+    } else {
+        println!("  Encap Key:   {}", key);
+    }
 
     Ok(())
 }
