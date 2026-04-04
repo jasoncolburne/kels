@@ -196,10 +196,10 @@ echo "Adversary events injected on node-e and node-f"
 # Owner's ror propagates to frozen nodes as Recoverable (they accept it into the fork)
 run_test "Owner rotates recovery key on node-d" kels-cli --kels-url "$NODE_D_URL" rotate-recovery --prefix "$PREFIX4"
 
-# Wait for ror to propagate — rec chains off ror, so all nodes must have it.
-# The ror may protect against divergence on nodes that receive it first, so we
-# cannot assume all nodes will be DIVERGENT.
-run_test "ROR propagated to all nodes" wait_for_event_kind "$PREFIX4" "kels/v1/ror" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
+# Wait for all nodes to be ready for recovery. Depending on event arrival order,
+# each node will either be DIVERGENT (got adversary events first) or have the
+# ror (which protected against divergence). Either state allows recovery.
+run_test "All nodes divergent or have ROR" wait_for_divergence_or_ror "$PREFIX4" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
 run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX4"
 
 # Poll until all nodes converge to the same recovered state [icp, ror, rec]

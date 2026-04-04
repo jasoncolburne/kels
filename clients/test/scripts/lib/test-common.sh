@@ -289,6 +289,46 @@ wait_for_event_kind() {
     return 1
 }
 
+# Check if a node is either DIVERGENT or has the ror event (for scenario 4-style tests
+# where the ror may protect against divergence depending on event arrival order).
+# Usage: node_is_divergent_or_has_ror URL PREFIX
+node_is_divergent_or_has_ror() {
+    local url="$1"
+    local prefix="$2"
+    local status
+    status=$(get_kel_status "$url" "$prefix")
+    if [ "$status" = "DIVERGENT" ]; then
+        return 0
+    fi
+    kel_has_event_kind "$url" "$prefix" "kels/v1/ror"
+}
+
+# Poll until all nodes are either DIVERGENT or have a ror event (or timeout).
+# Usage: wait_for_divergence_or_ror PREFIX TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_divergence_or_ror() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for KEL $prefix to be DIVERGENT or have ROR on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local all_ready=true
+        for url in "${urls[@]}"; do
+            if ! node_is_divergent_or_has_ror "$url" "$prefix"; then
+                all_ready=false
+                break
+            fi
+        done
+        if $all_ready; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: not all nodes are DIVERGENT or have ROR"
+    return 1
+}
+
 # Get KEL status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
 # Usage: get_kel_status URL PREFIX
 get_kel_status() {
