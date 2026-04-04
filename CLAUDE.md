@@ -2,7 +2,7 @@
 
 ## Build & Verify
 
-- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands. Skip `make` for documentation-only changes (`.md` files).
+- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands. Only run `make` when Rust source files (`.rs`), `Cargo.toml`, or `deny.toml` were modified — skip it for documentation, shell scripts, garden configs, and manifest templates.
 - Make targets exist for all cargo commands (`make fmt`, `make clippy`, `make test`, etc.).
 - `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
 - `make coverage` produces per-file coverage with `cargo-llvm-cov`.
