@@ -213,7 +213,7 @@ pub async fn run_sad_redis_subscriber(
 }
 
 fn max_fetches_per_peer_per_minute() -> u32 {
-    kels_core::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 8192) as u32
+    kels_core::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 1024) as u32
 }
 
 /// Redis hash key for anti-entropy stale prefix tracking.

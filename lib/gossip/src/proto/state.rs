@@ -319,7 +319,7 @@ fn handle_out_event<PI: PeerPrefixEntity>(
                     list.remove(&topic);
                     list.is_empty()
                 })
-                .unwrap_or(false);
+                .unwrap_or(true);
             if empty {
                 conns.remove(&peer);
                 outbox.push(OutEvent::DisconnectPeer(peer));
