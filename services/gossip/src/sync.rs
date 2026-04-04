@@ -1719,8 +1719,16 @@ pub async fn run_sad_anti_entropy_loop(
                 Ok(()) => {
                     info!("SAD anti-entropy: {} {} from/to remote", direction, prefix);
                 }
-                Err(_) => {
+                Err(_) if direction == "pulled" => {
+                    // Only record stale when we failed to pull (we're behind).
+                    // Failed pushes don't need retrying — gossip will deliver.
                     record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                }
+                Err(_) => {
+                    debug!(
+                        "SAD anti-entropy: push failed for {}, gossip will deliver",
+                        prefix
+                    );
                 }
             }
         }
