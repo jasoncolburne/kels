@@ -134,6 +134,7 @@ variables:
     maxMessagesPerSenderPerDay: "100"
     maxInboxSize: "10000"
     maxStoragePerRecipientMb: "100"
+    maxBlobSizeBytes: "1048576"
     messageTtlDays: "30"
   identity:
     port: "80"

@@ -48,19 +48,13 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 ## Roadmap
 
 1. Address GitHub issues
-2. ~~Post-quantum signature support~~ Done: infrastructure uses ML-DSA-65 or ML-DSA-87 (FIPS 204, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`); gossip uses ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated from peer signing algorithms) + ML-DSA-65/ML-DSA-87; core service accepts both P-256 and ML-DSA-65/ML-DSA-87 KELs
-3. ~~Add kels-policy crate~~ Done: composable trust policies with DSL (`endorse`, `delegate`, `threshold`, `weighted`, `policy`), three modes (default, `immune`, `poisonable`), poison expression for admin-controlled poisoning, policy compaction for edge matching. See [design](docs/design/policy.md).
-4. ~~Add kels-policy to kels-creds~~ Done: credentials use `policy` (SAID) instead of `issuer` (prefix), edges use compacted policy matching instead of issuer constraints, poisoning replaces revocation
-5. Credential exchange protocol (kels-exchange)
-6. Add credentials/policy/exchange to cli
-7. Add credentials/policy/exchange to FFI
-8. Add Android SDK
-9. Exhaustive proof of divergence reconciliation in distributed environments
-10. Cleanup & self-audit
-11. Build example applications
-12. Third-party audit
-13. Standards proposal (IETF Internet-Draft or equivalent)
-14. DID method specification
+2. Build example applications
+3. Add Android SDK
+4. Re-visit exhaustive proof of divergence reconciliation in distributed environments
+5. Cleanup & self-audit
+6. Third-party audit
+7. Standards proposal (IETF Internet-Draft or equivalent)
+8. DID method specification
 
 ## Project Structure
 
@@ -278,20 +272,6 @@ KELS uses post-quantum cryptographic algorithms throughout the infrastructure ti
 - **Key provider:** Supports mixed algorithms (e.g., P-256 signing + ML-DSA-65 recovery) and algorithm upgrade via rotation.
 
 Pre-rotation commitment is inherently post-quantum secure — the BLAKE3 rotation hash (128-bit effective security under Grover's algorithm) reveals nothing about the next key until rotation occurs, so a quantum adversary cannot derive future keys from the current KEL.
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `GET` | `/ready` | Readiness check (gossip sync status) |
-| `POST` | `/api/v1/kels/events` | Submit signed events |
-| `GET` | `/api/v1/kels/kel/:prefix` | Fetch paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32) |
-| `GET` | `/api/v1/kels/kel/:prefix/audit` | Fetch audit records (recovery/contest archives) |
-| `GET` | `/api/v1/kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison (resolving only) |
-| `GET` | `/api/v1/kels/events/:said/exists` | Check if event exists by SAID |
-| `POST` | `/api/v1/kels/kels` | Batch fetch multiple KELs (max 64 prefixes) |
-| `POST` | `/api/v1/kels/prefixes` | List prefixes (authenticated, for bootstrap sync) |
 
 ## Deploying Locally
 

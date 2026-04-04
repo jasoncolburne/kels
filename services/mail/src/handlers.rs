@@ -44,6 +44,10 @@ fn max_storage_per_recipient_mb() -> usize {
     kels_core::env_usize("MAIL_MAX_STORAGE_PER_RECIPIENT_MB", 100)
 }
 
+fn max_blob_size_bytes() -> usize {
+    kels_core::env_usize("MAIL_MAX_BLOB_SIZE_BYTES", 1_048_576)
+}
+
 fn message_ttl_days() -> i64 {
     kels_core::env_usize("MAIL_MESSAGE_TTL_DAYS", 30) as i64
 }
@@ -248,6 +252,15 @@ pub async fn send_mail(
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid blob: {}", e)).into_response(),
     };
+
+    let max_blob = max_blob_size_bytes();
+    if blob.len() > max_blob {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("Blob exceeds maximum size ({} bytes)", max_blob),
+        )
+            .into_response();
+    }
 
     // Check cumulative local storage cap for this recipient
     let max_bytes = (max_storage_per_recipient_mb() * 1024 * 1024) as i64;

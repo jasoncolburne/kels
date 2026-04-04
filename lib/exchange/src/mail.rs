@@ -1,5 +1,6 @@
 //! Mail service types — message metadata and gossip announcements.
 
+use cesr::{Digest, Matter};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -43,7 +44,6 @@ pub const MAIL_GOSSIP_TOPIC: &str = "kels/mail/v1";
 
 /// Compute the Blake3 digest of a blob, returned as a qb64 CESR-encoded string.
 pub fn compute_blob_digest(blob: &[u8]) -> String {
-    use cesr::{Digest, Matter};
     Digest::blake3_256(blob).qb64()
 }
 

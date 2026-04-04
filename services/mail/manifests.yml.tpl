@@ -83,6 +83,8 @@ spec:
               value: "${var.mail.maxInboxSize}"
             - name: MAIL_MAX_STORAGE_PER_RECIPIENT_MB
               value: "${var.mail.maxStoragePerRecipientMb}"
+            - name: MAIL_MAX_BLOB_SIZE_BYTES
+              value: "${var.mail.maxBlobSizeBytes}"
             - name: MAIL_MESSAGE_TTL_DAYS
               value: "${var.mail.messageTtlDays}"
           livenessProbe:
