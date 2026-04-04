@@ -245,17 +245,22 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
 restart-gossip-services:
+	# restart node a first, and let the others sync from it
 	kubectl rollout restart deployment/gossip -n kels-node-a
+	kubectl rollout status deployment/gossip -n kels-node-a
+
 	kubectl rollout restart deployment/gossip -n kels-node-b
 	kubectl rollout restart deployment/gossip -n kels-node-c
 	kubectl rollout restart deployment/gossip -n kels-node-d
 	kubectl rollout restart deployment/gossip -n kels-node-e
-	kubectl rollout restart deployment/gossip -n kels-node-f
-	kubectl rollout status deployment/gossip -n kels-node-a
 	kubectl rollout status deployment/gossip -n kels-node-b
 	kubectl rollout status deployment/gossip -n kels-node-c
 	kubectl rollout status deployment/gossip -n kels-node-d
 	kubectl rollout status deployment/gossip -n kels-node-e
+
+	# node f last, we can check its logs for errors
+	sleep 30
+	kubectl rollout restart deployment/gossip -n kels-node-f
 	kubectl rollout status deployment/gossip -n kels-node-f
 
 test-resync:
