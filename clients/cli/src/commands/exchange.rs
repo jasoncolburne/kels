@@ -1,10 +1,8 @@
 //! Exchange protocol command handlers.
 
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use base64::Engine;
-
-use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
@@ -29,7 +27,16 @@ pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey
         algo,
         base64::engine::general_purpose::STANDARD.encode(raw)
     );
-    std::fs::write(path, encoded).context("Failed to write decapsulation key")
+    std::fs::write(path, encoded).context("Failed to write decapsulation key")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .context("Failed to set decapsulation key permissions")?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
@@ -63,6 +70,22 @@ pub(crate) fn parse_kem_algorithm(
             _ => Ok(kels_exchange::ML_KEM_768),
         },
     }
+}
+
+async fn current_establishment_serial(cli: &Cli, prefix: &str) -> Result<u64> {
+    let kel_store = create_kel_store(cli, prefix)?;
+    let verification = kels_core::completed_verification(
+        &mut kels_core::StorePageLoader::new(&kel_store),
+        prefix,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        std::iter::empty(),
+    )
+    .await?;
+    verification
+        .last_establishment_event()
+        .map(|e| e.event.serial)
+        .ok_or_else(|| anyhow!("No local KEL found — incept first"))
 }
 
 pub(crate) async fn cmd_exchange_publish_key(
@@ -130,16 +153,18 @@ pub(crate) async fn cmd_exchange_publish_key(
     let v0_sig = provider.sign(v0.said.as_bytes()).await?;
     let v1_sig = provider.sign(v1.said.as_bytes()).await?;
 
+    let establishment_serial = current_establishment_serial(cli, prefix).await?;
+
     let signed_records = vec![
         kels_core::SignedSadPointer {
             pointer: v0,
             signature: v0_sig.qb64(),
-            establishment_serial: 0,
+            establishment_serial,
         },
         kels_core::SignedSadPointer {
             pointer: v1,
             signature: v1_sig.qb64(),
-            establishment_serial: 0,
+            establishment_serial,
         },
     ];
 
@@ -219,10 +244,12 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     let sig = provider.sign(next.said.as_bytes()).await?;
 
+    let establishment_serial = current_establishment_serial(cli, prefix).await?;
+
     let signed = vec![kels_core::SignedSadPointer {
         pointer: next,
         signature: sig.qb64(),
-        establishment_serial: 0,
+        establishment_serial,
     }];
 
     sad_client.submit_sad_pointer(&signed).await?;

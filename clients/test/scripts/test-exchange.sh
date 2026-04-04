@@ -176,10 +176,10 @@ echo "========================================="
 echo "Phase 4: Key Rotation"
 echo "========================================="
 
-test_alice_rotate_key() {
+test_alice_rotate_kem_key() {
     $CLI exchange rotate-key --prefix "$ALICE_PREFIX" 2>&1
     if [ $? -ne 0 ]; then
-        echo "Failed to rotate Alice's key"
+        echo "Failed to rotate Alice's KEM key"
         return 1
     fi
 }
@@ -190,8 +190,59 @@ test_lookup_alice_rotated_key() {
     echo "$OUTPUT" | grep -q "Algorithm:" || return 1
 }
 
-run_test "Alice rotates ML-KEM key" test_alice_rotate_key
+run_test "Alice rotates KEM key" test_alice_rotate_kem_key
 run_test "Look up Alice's rotated key" test_lookup_alice_rotated_key
+
+echo ""
+
+# ================================================================
+# Phase 4b: Key Operations After Signing Key Rotation
+# ================================================================
+
+echo "========================================="
+echo "Phase 4b: KEM Key Ops After Signing Key Rotation"
+echo "========================================="
+
+test_alice_rotate_signing_key() {
+    OUTPUT=$($CLI rotate --prefix "$ALICE_PREFIX" 2>&1)
+    echo "$OUTPUT"
+    echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
+}
+
+test_alice_rotate_kem_after_signing_rotation() {
+    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Failed to rotate Alice's KEM key after signing key rotation"
+        return 1
+    fi
+}
+
+test_lookup_alice_key_after_rotations() {
+    OUTPUT=$($CLI exchange lookup-key "$ALICE_PREFIX" 2>&1)
+    echo "$OUTPUT"
+    echo "$OUTPUT" | grep -q "Algorithm:" || return 1
+}
+
+test_bob_rotate_signing_key() {
+    OUTPUT=$($CLI rotate --prefix "$BOB_PREFIX" 2>&1)
+    echo "$OUTPUT"
+    echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
+}
+
+test_bob_publish_key_after_signing_rotation() {
+    # Bob deletes his KEM chain and re-publishes after signing key rotation
+    $CLI exchange rotate-key --prefix "$BOB_PREFIX" 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Failed to rotate Bob's KEM key after signing key rotation"
+        return 1
+    fi
+}
+
+run_test "Alice rotates signing key" test_alice_rotate_signing_key
+run_test "Alice rotates KEM key after signing rotation" test_alice_rotate_kem_after_signing_rotation
+run_test "Look up Alice's key after both rotations" test_lookup_alice_key_after_rotations
+run_test "Bob rotates signing key" test_bob_rotate_signing_key
+run_test "Bob rotates KEM key after signing rotation" test_bob_publish_key_after_signing_rotation
 
 echo ""
 

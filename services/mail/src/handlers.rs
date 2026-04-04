@@ -12,6 +12,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use base64::Engine;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::{debug, info, warn};
@@ -425,6 +426,10 @@ pub async fn ack(
         return e.into_response();
     }
 
+    if payload.saids.len() > 128 {
+        return (StatusCode::BAD_REQUEST, "Too many SAIDs (max 128)").into_response();
+    }
+
     let mut deleted = 0u32;
     for said in &payload.saids {
         // Verify recipient
@@ -458,7 +463,6 @@ pub async fn ack(
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| e.to_string())
