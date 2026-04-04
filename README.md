@@ -47,13 +47,14 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 
 ## Roadmap
 
-1. Build example applications
-2. Add Android SDK
-3. Re-visit exhaustive proof of divergence reconciliation in distributed environments
-4. Cleanup & self-audit
-5. Third-party audit
-6. Standards proposal (IETF Internet-Draft or equivalent)
-7. DID method specification
+1. Optional access control for mail, sadstore and kels
+2. Build example applications
+3. Add Android SDK
+4. Re-visit exhaustive proof of divergence reconciliation in distributed environments
+5. Cleanup & self-audit
+6. Third-party audit
+7. Standards proposal (IETF Internet-Draft or equivalent)
+8. DID method specification
 
 ## Project Structure
 
