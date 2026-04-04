@@ -199,9 +199,8 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `DATABASE_URL` | PostgreSQL connection URL |
 | `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated) |
 | `REDIS_URL` | Redis for KEL caching and pub/sub invalidation |
-| `KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE` | Per-prefix submission rate limit (default: `128`) |
-| `KELS_MAX_WRITES_PER_IP_PER_SECOND` | Per-IP write rate limit (default: `200`) |
-| `KELS_IP_RATE_LIMIT_BURST` | Per-IP burst allowance (default: `1000`) |
+| `KELS_MAX_WRITES_PER_IP_PER_SECOND` | Per-IP write rate limit (default: `256`) |
+| `KELS_IP_RATE_LIMIT_BURST` | Per-IP burst allowance (default: `1024`) |
 | `KELS_NONCE_WINDOW_SECS` | Nonce deduplication window in seconds; `0` disables (default: `60`) |
 | `KELS_PAGE_SIZE` | Page size for KEL queries and responses (default: `64`) |
 | `KELS_MAX_VERIFICATION_PAGES` | Max pages walked during verification (default: `64`) |

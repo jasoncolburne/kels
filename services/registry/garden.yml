@@ -39,7 +39,6 @@ dependencies:
 
 variables:
   kelsRegistryDatabaseUrl: ${var.postgres.url}/kels_registry
-  identityUrl: ${var.identity.url}
   federationSelfPrefix: ${actions.run.federation-read-prefix.outputs.log}
   federationUrls: ${actions.run.federation-read-member-urls.outputs.log}
 

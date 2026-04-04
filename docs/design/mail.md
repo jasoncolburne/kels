@@ -68,10 +68,10 @@ Three independent layers:
 
 | Limit | Default | Scope |
 |-------|---------|-------|
-| Per-sender daily cap | 100 messages/day | `MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY` |
-| Per-recipient inbox cap | 10,000 messages | `MAIL_MAX_INBOX_SIZE` |
-| Per-recipient local storage cap | 100 MB | `MAIL_MAX_STORAGE_PER_RECIPIENT_MB` (cumulative blob size at this node) |
-| Per-IP token bucket | 500 burst, 100/sec refill | Hardcoded |
+| Per-sender daily cap | 128 messages/day | `MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY` |
+| Per-recipient inbox cap | 8,192 messages | `MAIL_MAX_INBOX_SIZE` |
+| Per-recipient local storage cap | 128 MB | `MAIL_MAX_STORAGE_PER_RECIPIENT_MB` (cumulative blob size at this node) |
+| Per-IP token bucket | 1024 burst, 256/sec refill | `MAIL_IP_RATE_LIMIT_BURST` / `MAIL_MAX_WRITES_PER_IP_PER_SECOND` |
 | Message TTL | 30 days | `MAIL_MESSAGE_TTL_DAYS` |
 | Nonce deduplication window | 60 seconds | `KELS_NONCE_WINDOW_SECS` |
 

@@ -49,7 +49,7 @@ spec:
             - name: DATABASE_URL
               value: "${var.kelsRegistryDatabaseUrl}"
             - name: IDENTITY_URL
-              value: "${var.identityUrl}"
+              value: "${var.identity.url}"
             - name: HEARTBEAT_TIMEOUT_SECS
               value: "${var.registry.heartbeatTimeoutSecs}"
             - name: FEDERATION_SELF_PREFIX

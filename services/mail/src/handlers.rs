@@ -33,15 +33,15 @@ fn nonce_window_secs() -> u64 {
 }
 
 fn max_messages_per_sender_per_day() -> u32 {
-    kels_core::env_usize("MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY", 100) as u32
+    kels_core::env_usize("MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY", 128) as u32
 }
 
 fn max_inbox_size() -> usize {
-    kels_core::env_usize("MAIL_MAX_INBOX_SIZE", 10_000)
+    kels_core::env_usize("MAIL_MAX_INBOX_SIZE", 8192)
 }
 
 fn max_storage_per_recipient_mb() -> usize {
-    kels_core::env_usize("MAIL_MAX_STORAGE_PER_RECIPIENT_MB", 100)
+    kels_core::env_usize("MAIL_MAX_STORAGE_PER_RECIPIENT_MB", 128)
 }
 
 fn max_blob_size_bytes() -> usize {
@@ -131,10 +131,18 @@ fn check_sender_rate_limit(
     Ok(())
 }
 
+fn max_writes_per_ip_per_second() -> u32 {
+    kels_core::env_usize("MAIL_MAX_WRITES_PER_IP_PER_SECOND", 256) as u32
+}
+
+fn ip_rate_limit_burst() -> u32 {
+    kels_core::env_usize("MAIL_IP_RATE_LIMIT_BURST", 1024) as u32
+}
+
 fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> Result<(), String> {
     let now = Instant::now();
-    let burst: u32 = 500;
-    let refill_rate: u32 = 100;
+    let burst = ip_rate_limit_burst();
+    let refill_rate = max_writes_per_ip_per_second();
     let mut entry = limits.entry(ip).or_insert((burst, now));
     let elapsed = now.duration_since(entry.1);
     let refill = (elapsed.as_secs_f64() * refill_rate as f64) as u32;

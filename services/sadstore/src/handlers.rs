@@ -53,17 +53,17 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY", 16) as u32
+    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY", 8) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
 fn max_writes_per_ip_per_second() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 100) as u32
+    kels_core::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 256) as u32
 }
 
 /// Token bucket burst size per IP.
 fn ip_rate_limit_burst() -> u32 {
-    kels_core::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 500) as u32
+    kels_core::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 1024) as u32
 }
 
 /// Max SAD object size in bytes (default 1 MiB).

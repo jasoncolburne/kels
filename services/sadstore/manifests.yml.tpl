@@ -53,7 +53,7 @@ spec:
             - name: REDIS_URL
               value: "${var.redisUrl}"
             - name: KELS_URL
-              value: "${var.kelsUrl}"
+              value: "${var.kels.url}"
             - name: MINIO_ENDPOINT
               value: "http://${var.minio.host}:${var.minio.port}"
             - name: MINIO_REGION
@@ -64,8 +64,8 @@ spec:
               value: "${var.minio.secretKey}"
             - name: KELS_SAD_BUCKET
               value: "${var.sadstore.bucket}"
-            - name: SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY
-              value: "${var.sadstore.maxRecordsPerPrefixPerDay}"
+            - name: SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY
+              value: "${var.sadstore.maxRecordsPerPointerPerDay}"
             - name: SADSTORE_MAX_WRITES_PER_IP_PER_SECOND
               value: "${var.sadstore.maxWritesPerIpPerSecond}"
             - name: SADSTORE_IP_RATE_LIMIT_BURST
@@ -75,7 +75,7 @@ spec:
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
             - name: KELS_TEST_ENDPOINTS
-              value: "${var.testEndpoints}"
+              value: "${var.kels.testEndpoints}"
           livenessProbe:
             httpGet:
               path: /health

@@ -95,9 +95,9 @@ variables:
     port: "80"
     url: http://${var.kels.host}:${var.kels.port}
     # Rate limiting
-    maxSubmissionsPerPrefixPerMinute: "128"
-    maxWritesPerIpPerSecond: "200"
-    ipRateLimitBurst: "1000"
+    maxEventsPerPrefixPerDay: "256"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
     nonceWindowSecs: "60"
     # Test config (remove for production)
     testEndpoints: "false"
@@ -123,17 +123,19 @@ variables:
     replicas: 1
     port: "80"
     bucket: "kels-sad"
-    maxRecordsPerPrefixPerDay: "16"
-    maxWritesPerIpPerSecond: "100"
-    ipRateLimitBurst: "500"
+    maxRecordsPerPointerPerDay: "8"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
     maxObjectSize: "1048576"
   mail:
     replicas: 1
     port: "80"
     bucket: "kels-mail"
-    maxMessagesPerSenderPerDay: "100"
-    maxInboxSize: "10000"
-    maxStoragePerRecipientMb: "100"
+    maxMessagesPerSenderPerDay: "128"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
+    maxInboxSize: "8192"
+    maxStoragePerRecipientMb: "128"
     maxBlobSizeBytes: "1048576"
     messageTtlDays: "30"
   identity:

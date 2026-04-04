@@ -5,7 +5,7 @@
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use kels_gossip_core::Gossip;
 use kels_gossip_core::identity::NodePrefix;
@@ -126,13 +126,13 @@ pub async fn run_gossip(
                     Ok(Event::NeighborUp(id)) => {
                         let prefix_str = id.to_option_string()
                             .unwrap_or_else(|| "<invalid>".to_string());
-                        info!("Connected to peer: {}", prefix_str);
+                        debug!("Connected to peer: {}", prefix_str);
                         let _ = event_tx.send(GossipEvent::PeerConnected(prefix_str)).await;
                     }
                     Ok(Event::NeighborDown(id)) => {
                         let prefix_str = id.to_option_string()
                             .unwrap_or_else(|| "<invalid>".to_string());
-                        info!("Disconnected from peer: {}", prefix_str);
+                        debug!("Disconnected from peer: {}", prefix_str);
                         let _ = event_tx.send(GossipEvent::PeerDisconnected(prefix_str)).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

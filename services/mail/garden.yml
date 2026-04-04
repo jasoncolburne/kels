@@ -37,9 +37,6 @@ dependencies:
 
 variables:
   mailDatabaseUrl: ${var.postgres.url}/mail
-  redisUrl: ${var.redis.mailUrl}
-  kelsUrl: ${var.kels.url}
-  identityUrl: ${var.identity.url}
 
 spec:
   manifestTemplates:

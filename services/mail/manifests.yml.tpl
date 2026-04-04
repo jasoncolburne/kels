@@ -62,11 +62,11 @@ spec:
             - name: DATABASE_URL
               value: "${var.mailDatabaseUrl}"
             - name: REDIS_URL
-              value: "${var.redisUrl}"
+              value: "${var.redis.mailUrl}"
             - name: KELS_URL
-              value: "${var.kelsUrl}"
+              value: "${var.kels.url}"
             - name: IDENTITY_URL
-              value: "${var.identityUrl}"
+              value: "${var.identity.url}"
             - name: MINIO_ENDPOINT
               value: "http://${var.minio.host}:${var.minio.port}"
             - name: MINIO_REGION
@@ -79,6 +79,10 @@ spec:
               value: "${var.mail.bucket}"
             - name: MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY
               value: "${var.mail.maxMessagesPerSenderPerDay}"
+            - name: MAIL_MAX_WRITES_PER_IP_PER_SECOND
+              value: "${var.mail.maxWritesPerIpPerSecond}"
+            - name: MAIL_IP_RATE_LIMIT_BURST
+              value: "${var.mail.ipRateLimitBurst}"
             - name: MAIL_MAX_INBOX_SIZE
               value: "${var.mail.maxInboxSize}"
             - name: MAIL_MAX_STORAGE_PER_RECIPIENT_MB

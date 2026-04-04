@@ -30,11 +30,11 @@ use crate::federation::{
 };
 
 fn max_writes_per_ip_per_second() -> u32 {
-    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 256) as u32
 }
 
 fn ip_rate_limit_burst() -> u32 {
-    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1024) as u32
 }
 
 fn max_member_events_per_prefix_per_day() -> u32 {
