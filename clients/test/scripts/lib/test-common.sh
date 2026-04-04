@@ -251,6 +251,44 @@ wait_for_event_count() {
     return 1
 }
 
+# Check if a KEL on a node contains an event of a given kind.
+# Usage: kel_has_event_kind URL PREFIX KIND
+kel_has_event_kind() {
+    local url="$1"
+    local prefix="$2"
+    local kind="$3"
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq -e --arg k "$kind" '[.[].event.kind] | any(. == $k)' > /dev/null 2>&1
+}
+
+# Poll until a KEL contains a specific event kind on all given nodes (or timeout).
+# Usage: wait_for_event_kind PREFIX KIND TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_event_kind() {
+    local prefix="$1"
+    local kind="$2"
+    local timeout="$3"
+    shift 3
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for '$kind' event in KEL $prefix on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local all_have=true
+        for url in "${urls[@]}"; do
+            if ! kel_has_event_kind "$url" "$prefix" "$kind"; then
+                all_have=false
+                break
+            fi
+        done
+        if $all_have; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: not all nodes have '$kind' event"
+    return 1
+}
+
 # Get KEL status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
 # Usage: get_kel_status URL PREFIX
 get_kel_status() {
