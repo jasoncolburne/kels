@@ -245,6 +245,20 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
 restart-gossip-services:
+	kubectl rollout restart deployment/gossip -n kels-node-a
+	kubectl rollout restart deployment/gossip -n kels-node-b
+	kubectl rollout restart deployment/gossip -n kels-node-c
+	kubectl rollout restart deployment/gossip -n kels-node-d
+	kubectl rollout restart deployment/gossip -n kels-node-e
+	kubectl rollout restart deployment/gossip -n kels-node-f
+	kubectl rollout status deployment/gossip -n kels-node-a
+	kubectl rollout status deployment/gossip -n kels-node-b
+	kubectl rollout status deployment/gossip -n kels-node-c
+	kubectl rollout status deployment/gossip -n kels-node-d
+	kubectl rollout status deployment/gossip -n kels-node-e
+	kubectl rollout status deployment/gossip -n kels-node-f
+
+test-restart-gossip-services:
 	# restart node a first, and let the others sync from it
 	kubectl rollout restart deployment/gossip -n kels-node-a
 	kubectl rollout status deployment/gossip -n kels-node-a
@@ -433,4 +447,4 @@ test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-sad-consistency test-kel-consistency
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes test-restart-gossip-services test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-sad-consistency test-kel-consistency
