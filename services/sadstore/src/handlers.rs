@@ -254,10 +254,10 @@ async fn authenticate_peer_request<T: serde::Serialize>(
         )
     })?;
 
-    let peer = get_verified_peer(redis_conn, &signed_request.peer_prefix).await?;
+    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
     if peer.is_none() {
         refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-        if get_verified_peer(redis_conn, &signed_request.peer_prefix)
+        if get_verified_peer(redis_conn, &signed_request.prefix)
             .await?
             .is_none()
         {
@@ -266,9 +266,9 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     }
 
     // Verify peer's KEL via KELS service to extract trusted public key
-    let verifier = kels_core::KelVerifier::new(&signed_request.peer_prefix);
+    let verifier = kels_core::KelVerifier::new(&signed_request.prefix);
     let kel_verification = kels_core::verify_key_events(
-        &signed_request.peer_prefix,
+        &signed_request.prefix,
         &state.kels_client.as_kel_source().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

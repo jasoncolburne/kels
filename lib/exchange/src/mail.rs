@@ -12,6 +12,8 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 pub struct MailMessage {
     #[said]
     pub said: String,
+    /// Sender's KEL prefix (from authenticated request).
+    pub sender_kel_prefix: String,
     /// Node prefix where the envelope blob lives.
     pub source_node_prefix: String,
     /// Recipient's KEL prefix.
@@ -106,6 +108,7 @@ mod tests {
     fn mail_message_said_derivation() {
         let mut msg = MailMessage {
             said: String::new(),
+            sender_kel_prefix: "sender-prefix".to_string(),
             source_node_prefix: "node-prefix".to_string(),
             recipient_kel_prefix: "recipient-prefix".to_string(),
             blob_digest: "blob-digest-abc".to_string(),
@@ -121,6 +124,7 @@ mod tests {
     fn mail_announcement_serialization() {
         let msg = MailMessage {
             said: "test-said".to_string(),
+            sender_kel_prefix: "sender".to_string(),
             source_node_prefix: "node".to_string(),
             recipient_kel_prefix: "recipient".to_string(),
             blob_digest: "digest".to_string(),

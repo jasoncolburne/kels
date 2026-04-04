@@ -30,6 +30,9 @@ cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = fa
 # KELS library for types and server utilities (shutdown_signal)
 kels-core = { path = "../../lib/kels", features = ["server", "federation"] }
 
+# Exchange protocol types (MailAnnouncement, MailClient)
+kels-exchange = { path = "../../lib/exchange" }
+
 # Verifiable storage for Chained trait and PostgreSQL backend
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }

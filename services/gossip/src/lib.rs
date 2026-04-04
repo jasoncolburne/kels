@@ -119,6 +119,11 @@ impl Config {
     pub fn sadstore_url(&self) -> String {
         format!("http://sadstore.{}", self.base_domain)
     }
+
+    /// Local mail service URL derived from base_domain.
+    pub fn mail_url(&self) -> String {
+        format!("http://mail.{}", self.base_domain)
+    }
 }
 
 /// Raw environment values before validation
@@ -571,6 +576,27 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
+    // Start mail Redis subscriber
+    let mail_redis_command_tx = command_tx.clone();
+    let mail_redis_url = config.redis_url.clone();
+    let mail_redis_recently_stored = recently_stored.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sync::run_mail_redis_subscriber(
+                &mail_redis_url,
+                mail_redis_command_tx.clone(),
+                mail_redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("Mail Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("Mail Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+
     // Create gossip signer and verifier (signer uses identity service)
     let signer = IdentityGossipSigner::new(
         &config.identity_url,
@@ -603,14 +629,19 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Derive topic IDs and join with bootstrap peers
     let topic_id = gossip_layer::topic_id_from_name(&config.topic);
     let sad_topic_id = gossip_layer::topic_id_from_name(gossip_layer::SAD_TOPIC);
+    let mail_topic_id = gossip_layer::topic_id_from_name(gossip_layer::MAIL_TOPIC);
     gossip_instance
         .join(topic_id, peer_addrs.clone())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join KEL gossip topic: {}", e)))?;
     gossip_instance
-        .join(sad_topic_id, peer_addrs)
+        .join(sad_topic_id, peer_addrs.clone())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join SAD gossip topic: {}", e)))?;
+    gossip_instance
+        .join(mail_topic_id, peer_addrs)
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
     // Get local NodePrefix for the gossip event loop
     let local_node_prefix = kels_gossip_core::identity::NodePrefix::option_from_str(
@@ -625,6 +656,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             gossip_instance_clone,
             topic_id,
             sad_topic_id,
+            mail_topic_id,
             command_rx,
             event_tx,
             local_node_prefix,
@@ -641,18 +673,22 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let (peer_connected_tx, peer_connected_rx) = tokio::sync::oneshot::channel::<()>();
     let kels_url = config.kels_url().clone();
     let sadstore_url = config.sadstore_url().clone();
+    let mail_url = config.mail_url().clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
+    let sync_signer = registry_signer.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
             sadstore_url,
+            mail_url,
             event_rx,
             sync_command_tx,
             sync_allowlist,
             recently_stored,
             sync_redis,
+            sync_signer,
             if has_ready_peers {
                 Some(peer_connected_tx)
             } else {

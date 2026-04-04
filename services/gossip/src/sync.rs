@@ -92,11 +92,7 @@ pub async fn run_redis_subscriber(
 
         if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
             debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
-            if command_tx
-                .send(GossipCommand::AnnounceKel(ann))
-                .await
-                .is_err()
-            {
+            if command_tx.send(GossipCommand::Kel(ann)).await.is_err() {
                 error!("Failed to send announce command - channel closed");
                 return Err(SyncError::ChannelClosed);
             }
@@ -199,7 +195,7 @@ pub async fn run_sad_redis_subscriber(
 
         debug!("Broadcasting SAD announcement via gossip");
         if command_tx
-            .send(GossipCommand::AnnounceSad(gossip_message))
+            .send(GossipCommand::Sad(gossip_message))
             .await
             .is_err()
         {
@@ -209,6 +205,66 @@ pub async fn run_sad_redis_subscriber(
     }
 
     warn!("SAD Redis subscriber stream ended");
+    Ok(())
+}
+
+/// Redis pub/sub channel for mail updates
+const MAIL_PUBSUB_CHANNEL: &str = "mail_updates";
+
+/// Runs the Redis subscriber for mail updates.
+/// Broadcasts mail announcements to the gossip network on the mail topic.
+pub async fn run_mail_redis_subscriber(
+    redis_url: &str,
+    command_tx: mpsc::Sender<GossipCommand>,
+    recently_stored: RecentlyStoredFromGossip,
+) -> Result<(), SyncError> {
+    let client = redis::Client::open(redis_url)?;
+    let mut pubsub = client.get_async_pubsub().await?;
+
+    pubsub.subscribe(MAIL_PUBSUB_CHANNEL).await?;
+    info!("Subscribed to Redis channel: {}", MAIL_PUBSUB_CHANNEL);
+
+    let mut stream = pubsub.on_message();
+    while let Some(msg) = stream.next().await {
+        let payload: String = match msg.get_payload() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to get mail Redis message payload: {}", e);
+                continue;
+            }
+        };
+
+        // Feedback loop prevention
+        {
+            let mut guard = recently_stored.write().await;
+            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
+            let cache_key = format!("mail:{}", payload);
+            if guard.contains_key(&cache_key) {
+                debug!(cache_key = %cache_key, "Skipping mail Redis message (recently stored from gossip)");
+                continue;
+            }
+        }
+
+        let announcement: kels_exchange::MailAnnouncement = match serde_json::from_str(&payload) {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("Failed to parse mail announcement from Redis: {}", e);
+                continue;
+            }
+        };
+
+        debug!("Broadcasting mail announcement via gossip");
+        if command_tx
+            .send(GossipCommand::Mail(announcement))
+            .await
+            .is_err()
+        {
+            error!("Failed to send mail announce command - channel closed");
+            return Err(SyncError::ChannelClosed);
+        }
+    }
+
+    warn!("Mail Redis subscriber stream ended");
     Ok(())
 }
 
@@ -224,6 +280,8 @@ const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 pub struct SyncHandler {
     kels_client: KelsClient,
     sadstore_client: kels_core::SadStoreClient,
+    mail_client: kels_exchange::MailClient,
+    signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<String, String>,
     /// Shared allowlist for peer URL lookups
@@ -240,13 +298,19 @@ impl SyncHandler {
     pub fn new(
         kels_url: &str,
         sadstore_url: &str,
+        mail_url: &str,
         allowlist: SharedAllowlist,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
+        signer: Arc<dyn kels_core::PeerSigner>,
     ) -> Result<Self, kels_core::KelsError> {
+        let mail_client = kels_exchange::MailClient::new(mail_url)
+            .map_err(|e| kels_core::KelsError::HttpError(e.to_string()))?;
         Ok(Self {
             kels_client: KelsClient::new(kels_url)?,
             sadstore_client: kels_core::SadStoreClient::new(sadstore_url)?,
+            mail_client,
+            signer,
             local_saids: HashMap::new(),
             allowlist,
             recently_stored,
@@ -290,6 +354,9 @@ impl SyncHandler {
                 announcement: message,
             } => {
                 self.handle_sad_announcement(message).await;
+            }
+            GossipEvent::MailAnnouncementReceived { announcement } => {
+                self.handle_mail_announcement(announcement).await;
             }
             GossipEvent::PeerConnected(peer_prefix) => {
                 debug!("Peer connected: {}", peer_prefix);
@@ -510,6 +577,36 @@ impl SyncHandler {
         }
     }
 
+    /// Handle a mail gossip announcement — replicate metadata or process removal.
+    async fn handle_mail_announcement(&self, announcement: kels_exchange::MailAnnouncement) {
+        let said = match &announcement {
+            kels_exchange::MailAnnouncement::Message(m) => &m.said,
+            kels_exchange::MailAnnouncement::Removal { said } => said,
+        };
+
+        // Feedback loop prevention
+        let cache_key = format!("mail:{}", said);
+        {
+            let guard = self.recently_stored.read().await;
+            if guard.contains_key(&cache_key) {
+                debug!("Skipping mail announcement (recently stored from gossip)");
+                return;
+            }
+        }
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key, Instant::now());
+
+        if let Err(e) = self
+            .mail_client
+            .handle_announcement(&announcement, self.signer.as_ref())
+            .await
+        {
+            warn!("Mail gossip handler failed: {}", e);
+        }
+    }
+
     /// Derive a peer's SADStore URL from their base domain.
     async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
         let guard = self.allowlist.read().await;
@@ -722,15 +819,24 @@ impl SyncHandler {
 pub async fn run_sync_handler(
     kels_url: String,
     sadstore_url: String,
+    mail_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
     recently_stored: RecentlyStoredFromGossip,
     redis: OptionalRedis,
+    signer: Arc<dyn kels_core::PeerSigner>,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
-    let mut handler =
-        SyncHandler::new(&kels_url, &sadstore_url, allowlist, recently_stored, redis)?;
+    let mut handler = SyncHandler::new(
+        &kels_url,
+        &sadstore_url,
+        &mail_url,
+        allowlist,
+        recently_stored,
+        redis,
+        signer,
+    )?;
     let mut reap_interval = tokio::time::interval(Duration::from_secs(300));
     reap_interval.tick().await; // consume initial tick
 
@@ -1792,15 +1898,30 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    struct TestSigner;
+
+    #[async_trait::async_trait]
+    impl kels_core::PeerSigner for TestSigner {
+        async fn sign(&self, _data: &[u8]) -> Result<kels_core::SignResult, kels_core::KelsError> {
+            Ok(kels_core::SignResult {
+                signature: "test-sig".to_string(),
+                peer_prefix: "test-prefix".to_string(),
+            })
+        }
+    }
+
     fn create_test_handler() -> SyncHandler {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
+        let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
         SyncHandler::new(
             "http://localhost:8080",
             "http://localhost:8081",
+            "http://localhost:8083",
             allowlist,
             recently_stored,
             None,
+            signer,
         )
         .unwrap()
     }
@@ -1875,14 +1996,17 @@ mod tests {
         drop(event_tx);
 
         // run_sync_handler should complete when receiver closes
+        let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
         let result = run_sync_handler(
             "http://localhost:8080".to_string(),
             "http://localhost:8082".to_string(),
+            "http://localhost:8083".to_string(),
             event_rx,
             command_tx,
             allowlist,
             recently_stored,
             None,
+            signer,
             None,
         )
         .await;

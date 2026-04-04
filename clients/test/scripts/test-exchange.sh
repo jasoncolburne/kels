@@ -307,6 +307,44 @@ run_test "Alice's inbox is empty" test_alice_inbox_empty
 echo ""
 
 # ================================================================
+# Phase 7: Cross-Node Mail Gossip — Send on node-a, receive on node-b
+# ================================================================
+
+echo "========================================="
+echo "Phase 7: Cross-Node Mail Gossip"
+echo "========================================="
+
+test_alice_send_cross_node() {
+    OUTPUT=$($CLI exchange send \
+        --prefix "$ALICE_PREFIX" \
+        --recipient "$BOB_PREFIX" \
+        --topic "kels/v1/cross-node-test" \
+        --payload "$TEMP_DIR/payload.json" 2>&1)
+    echo "$OUTPUT"
+    echo "$OUTPUT" | grep -q "Message sent" || return 1
+}
+
+test_bob_inbox_on_node_b() {
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    while [ $SECONDS -lt $deadline ]; do
+        OUTPUT=$($CLI_B exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        if echo "$OUTPUT" | grep -q "messages):"; then
+            echo "$OUTPUT"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "$OUTPUT"
+    echo "Timeout waiting for Bob's inbox on node-b (${CONVERGENCE_TIMEOUT}s)"
+    return 1
+}
+
+run_test "Alice sends cross-node message to Bob" test_alice_send_cross_node
+run_test "Bob sees message on node-b (gossip replication)" test_bob_inbox_on_node_b
+
+echo ""
+
+# ================================================================
 # Summary
 # ================================================================
 

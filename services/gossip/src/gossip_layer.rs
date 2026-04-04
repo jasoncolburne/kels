@@ -13,6 +13,8 @@ use kels_gossip_core::net::actor::Event;
 use kels_gossip_core::proto::TopicId;
 use thiserror::Error;
 
+use kels_exchange::MailAnnouncement;
+
 use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
 
 /// Default gossip topic name for KEL announcements
@@ -20,6 +22,9 @@ pub const DEFAULT_TOPIC: &str = "kels/events/v1";
 
 /// Gossip topic name for SAD store announcements
 pub const SAD_TOPIC: &str = "kels/sad/v1";
+
+/// Gossip topic name for mail announcements
+pub const MAIL_TOPIC: &str = "kels/mail/v1";
 
 #[derive(Error, Debug)]
 pub enum GossipError {
@@ -48,6 +53,7 @@ pub async fn run_gossip(
     gossip_handle: Gossip,
     kel_topic: TopicId,
     sad_topic: TopicId,
+    mail_topic: TopicId,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
     local_node_prefix: NodePrefix,
@@ -59,7 +65,7 @@ pub async fn run_gossip(
             // Handle incoming commands from sync layer
             Some(cmd) = command_rx.recv() => {
                 match cmd {
-                    GossipCommand::AnnounceKel(announcement) => {
+                    GossipCommand::Kel(announcement) => {
                         let data = serde_json::to_vec(&announcement)?;
                         if let Err(e) = gossip_handle.broadcast(kel_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
                             warn!("Failed to broadcast KEL announcement: {}", e);
@@ -67,12 +73,20 @@ pub async fn run_gossip(
                             debug!("Broadcast KEL announcement for prefix: {}", announcement.prefix);
                         }
                     }
-                    GossipCommand::AnnounceSad(message) => {
+                    GossipCommand::Sad(message) => {
                         let data = serde_json::to_vec(&message)?;
                         if let Err(e) = gossip_handle.broadcast(sad_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
                             warn!("Failed to broadcast SAD announcement: {}", e);
                         } else {
                             debug!("Broadcast SAD announcement");
+                        }
+                    }
+                    GossipCommand::Mail(announcement) => {
+                        let data = serde_json::to_vec(&announcement)?;
+                        if let Err(e) = gossip_handle.broadcast(mail_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
+                            warn!("Failed to broadcast mail announcement: {}", e);
+                        } else {
+                            debug!("Broadcast mail announcement");
                         }
                     }
                 }
@@ -117,6 +131,19 @@ pub async fn run_gossip(
                                 }
                                 Err(e) => {
                                     warn!("Failed to parse SAD announcement: {}", e);
+                                }
+                            }
+                        } else if msg.topic == mail_topic {
+                            match serde_json::from_slice::<MailAnnouncement>(&msg.content) {
+                                Ok(announcement) => {
+                                    debug!("Received mail announcement");
+                                    event_tx
+                                        .send(GossipEvent::MailAnnouncementReceived { announcement })
+                                        .await
+                                        .map_err(|_| GossipError::ChannelClosed)?;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse mail announcement: {}", e);
                                 }
                             }
                         } else {
@@ -198,9 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn test_kel_and_sad_topics_differ() {
+    fn test_all_topics_differ() {
         let kel = topic_id_from_name(DEFAULT_TOPIC);
         let sad = topic_id_from_name(SAD_TOPIC);
+        let mail = topic_id_from_name(MAIL_TOPIC);
         assert_ne!(kel, sad);
+        assert_ne!(kel, mail);
+        assert_ne!(sad, mail);
     }
 }

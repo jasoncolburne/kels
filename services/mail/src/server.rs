@@ -23,6 +23,8 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/mail/inbox", post(handlers::inbox))
         .route("/api/v1/mail/fetch", post(handlers::fetch))
         .route("/api/v1/mail/ack", post(handlers::ack))
+        .route("/api/v1/mail/replicate", post(handlers::replicate))
+        .route("/api/v1/mail/remove", post(handlers::remove))
         .with_state(state)
 }
 

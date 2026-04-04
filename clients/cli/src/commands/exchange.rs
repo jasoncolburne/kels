@@ -396,7 +396,7 @@ pub(crate) async fn cmd_exchange_send(
 
     let signed_request = kels_core::SignedRequest {
         payload: send_request,
-        peer_prefix: prefix.to_string(),
+        prefix: prefix.to_string(),
         signature: signature.qb64(),
     };
 
@@ -438,7 +438,7 @@ pub(crate) async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
 
     let signed_request = kels_core::SignedRequest {
         payload: inbox_request,
-        peer_prefix: prefix.to_string(),
+        prefix: prefix.to_string(),
         signature: signature.qb64(),
     };
 
@@ -512,7 +512,7 @@ pub(crate) async fn cmd_exchange_fetch(
 
     let signed_request = kels_core::SignedRequest {
         payload: fetch_request,
-        peer_prefix: prefix.to_string(),
+        prefix: prefix.to_string(),
         signature: signature.qb64(),
     };
 

@@ -389,7 +389,7 @@ async fn test_list_prefixes() {
             cursor: None,
             limit: None,
         },
-        peer_prefix: "mock".to_string(),
+        prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -533,7 +533,7 @@ async fn test_list_prefixes_with_limit() {
             cursor: None,
             limit: Some(2),
         },
-        peer_prefix: "mock".to_string(),
+        prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -669,7 +669,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
             cursor: None,
             limit: Some(1),
         },
-        peer_prefix: "mock".to_string(),
+        prefix: "mock".to_string(),
         signature: "mock".to_string(),
     };
 
@@ -694,7 +694,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
                 cursor: Some(cursor.clone()),
                 limit: Some(1),
             },
-            peer_prefix: "mock".to_string(),
+            prefix: "mock".to_string(),
             signature: "mock".to_string(),
         };
 

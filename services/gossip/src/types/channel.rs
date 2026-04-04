@@ -1,5 +1,7 @@
 //! Gossip layer event and command types.
 
+use kels_exchange::MailAnnouncement;
+
 use super::kel::KelAnnouncement;
 use super::sad::SadAnnouncement;
 
@@ -10,6 +12,8 @@ pub(crate) enum GossipEvent {
     KelAnnouncementReceived { announcement: KelAnnouncement },
     /// Received a SAD announcement from a peer
     SadAnnouncementReceived { announcement: SadAnnouncement },
+    /// Received a mail announcement from a peer
+    MailAnnouncementReceived { announcement: MailAnnouncement },
     /// New peer connected
     PeerConnected(String),
     /// Peer disconnected
@@ -20,7 +24,9 @@ pub(crate) enum GossipEvent {
 #[derive(Debug)]
 pub(crate) enum GossipCommand {
     /// Broadcast a KEL announcement to the network
-    AnnounceKel(KelAnnouncement),
+    Kel(KelAnnouncement),
     /// Broadcast a SAD announcement to the network
-    AnnounceSad(SadAnnouncement),
+    Sad(SadAnnouncement),
+    /// Broadcast a mail announcement to the network
+    Mail(MailAnnouncement),
 }

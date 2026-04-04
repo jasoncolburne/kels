@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS mail_messages (
     said TEXT PRIMARY KEY,
+    sender_kel_prefix TEXT NOT NULL,
     source_node_prefix TEXT NOT NULL,
     recipient_kel_prefix TEXT NOT NULL,
     blob_digest TEXT NOT NULL,

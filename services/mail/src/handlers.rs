@@ -180,9 +180,9 @@ async fn authenticate_request<T: serde::Serialize>(
         return Err((StatusCode::FORBIDDEN, "Duplicate nonce".into()));
     }
 
-    let verifier = kels_core::KelVerifier::new(&signed_request.peer_prefix);
+    let verifier = kels_core::KelVerifier::new(&signed_request.prefix);
     let kel_verification = kels_core::verify_key_events(
-        &signed_request.peer_prefix,
+        &signed_request.prefix,
         &state.kels_client.as_kel_source().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -230,7 +230,7 @@ pub async fn send_mail(
         return e.into_response();
     }
 
-    let sender = &signed.peer_prefix;
+    let sender = &signed.prefix;
     if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, sender) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
@@ -295,6 +295,25 @@ pub async fn send_mail(
         _ => {}
     }
 
+    // Verify ESSR envelope sender matches authenticated sender
+    let signed_envelope: kels_exchange::SignedEssrEnvelope = match serde_json::from_slice(&blob) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid ESSR envelope: {}", e),
+            )
+                .into_response();
+        }
+    };
+    if signed_envelope.envelope.sender != *sender {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ESSR envelope sender does not match authenticated sender",
+        )
+            .into_response();
+    }
+
     let blob_digest = compute_blob_digest(&blob);
 
     // Build MailMessage
@@ -305,6 +324,7 @@ pub async fn send_mail(
 
     let mut mail_message = MailMessage {
         said: String::new(),
+        sender_kel_prefix: sender.clone(),
         source_node_prefix: state.node_prefix.clone(),
         recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
         blob_digest: blob_digest.clone(),
@@ -369,7 +389,7 @@ pub async fn inbox(
     match state
         .repo
         .messages
-        .inbox(&signed.peer_prefix, limit, offset)
+        .inbox(&signed.prefix, limit, offset)
         .await
     {
         Ok(messages) => (StatusCode::OK, Json(InboxResponse { messages })).into_response(),
@@ -406,7 +426,7 @@ pub async fn fetch(
     };
 
     // Verify the requester is the recipient
-    if message.recipient_kel_prefix != signed.peer_prefix {
+    if message.recipient_kel_prefix != signed.prefix {
         return (StatusCode::FORBIDDEN, "Not the recipient").into_response();
     }
 
@@ -455,7 +475,7 @@ pub async fn ack(
     for said in &payload.saids {
         // Verify recipient
         let message = match state.repo.messages.get_by_said(said).await {
-            Ok(Some(m)) if m.recipient_kel_prefix == signed.peer_prefix => m,
+            Ok(Some(m)) if m.recipient_kel_prefix == signed.prefix => m,
             _ => continue,
         };
 
@@ -481,6 +501,78 @@ pub async fn ack(
 
     debug!("Acknowledged {} messages", deleted);
     (StatusCode::OK, format!("{}", deleted)).into_response()
+}
+
+// ==================== Replicate (gossip) ====================
+
+/// Replicate request — gossip-authenticated, stores mail metadata only.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicateRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub message: kels_exchange::MailMessage,
+}
+
+pub async fn replicate(
+    State(state): State<Arc<AppState>>,
+    Json(signed): Json<kels_core::SignedRequest<ReplicateRequest>>,
+) -> impl IntoResponse {
+    let payload = &signed.payload;
+    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
+        return e.into_response();
+    }
+
+    // Verify SAID integrity
+    if payload.message.verify_said().is_err() {
+        return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
+    }
+
+    // Store metadata (idempotent — duplicates are ignored)
+    match state.repo.messages.store(&payload.message).await {
+        Ok(_) => (StatusCode::OK, "ok").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage failed: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+// ==================== Remove (gossip) ====================
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveRequest {
+    pub timestamp: i64,
+    pub nonce: String,
+    pub said: String,
+}
+
+pub async fn remove(
+    State(state): State<Arc<AppState>>,
+    Json(signed): Json<kels_core::SignedRequest<RemoveRequest>>,
+) -> impl IntoResponse {
+    let payload = &signed.payload;
+    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
+        return e.into_response();
+    }
+
+    // Delete blob if local
+    if let Ok(Some(message)) = state.repo.messages.get_by_said(&payload.said).await
+        && message.source_node_prefix == state.node_prefix
+    {
+        let _ = state.blob_store.delete(&message.blob_digest).await;
+    }
+
+    match state.repo.messages.delete(&payload.said).await {
+        Ok(_) => (StatusCode::OK, "ok").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Delete failed: {}", e),
+        )
+            .into_response(),
+    }
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
