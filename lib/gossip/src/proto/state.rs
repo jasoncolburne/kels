@@ -315,11 +315,8 @@ fn handle_out_event<PI: PeerPrefixEntity>(
         topic::OutEvent::DisconnectPeer(peer) => {
             let empty = conns
                 .get_mut(&peer)
-                .map(|list| {
-                    list.remove(&topic);
-                    list.is_empty()
-                })
-                .unwrap_or(true);
+                .map(|list| list.remove(&topic) || list.is_empty())
+                .unwrap_or(false);
             if empty {
                 conns.remove(&peer);
                 outbox.push(OutEvent::DisconnectPeer(peer));
