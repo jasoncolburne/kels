@@ -695,22 +695,38 @@ pub async fn submit_sad_pointer(
     } else {
         None
     };
-    if let Some(ref conn) = state.redis_conn
-        && let Some(said) = &effective_said
-    {
-        let mut conn = conn.clone();
-        let message = if is_repair {
-            format!("{}:{}:repair", chain_prefix, said)
-        } else {
-            format!("{}:{}", chain_prefix, said)
-        };
-        if let Err(e) = redis::cmd("PUBLISH")
-            .arg("sad_chain_updates")
-            .arg(&message)
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to publish chain update: {}", e);
+    match (&state.redis_conn, &effective_said) {
+        (Some(conn), Some(said)) => {
+            let mut conn = conn.clone();
+            let message = if is_repair {
+                format!("{}:{}:repair", chain_prefix, said)
+            } else {
+                format!("{}:{}", chain_prefix, said)
+            };
+            if let Err(e) = redis::cmd("PUBLISH")
+                .arg("sad_chain_updates")
+                .arg(&message)
+                .query_async::<()>(&mut conn)
+                .await
+            {
+                warn!("Failed to publish chain update: {}", e);
+            } else {
+                debug!(
+                    chain_prefix = %chain_prefix,
+                    effective_said = %said,
+                    "Published chain update to Redis"
+                );
+            }
+        }
+        (None, _) => {
+            debug!("Skipping chain publish: no Redis connection");
+        }
+        (_, None) => {
+            debug!(
+                chain_prefix = %chain_prefix,
+                should_publish = should_publish,
+                "Skipping chain publish: no effective SAID"
+            );
         }
     }
 

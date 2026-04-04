@@ -12,12 +12,11 @@
 #   NODE_A_MAIL_HOST     - node-a Mail hostname (default: mail)
 #   NODE_B_MAIL_HOST     - node-b Mail hostname (default: mail.node-b.kels)
 #   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
-#   PROPAGATION_DELAY    - Time to wait for gossip propagation (default: 5s)
+#   CONVERGENCE_TIMEOUT  - Timeout for gossip propagation polling (default: 30s)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
-PROPAGATION_DELAY="${PROPAGATION_DELAY:-5}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_A_MAIL_HOST="${NODE_A_MAIL_HOST:-mail}"
@@ -37,7 +36,7 @@ echo "Node-A SADStore: http://${NODE_A_SADSTORE_HOST}"
 echo "Node-A Mail:     http://${NODE_A_MAIL_HOST}"
 echo "Node-B Mail:     http://${NODE_B_MAIL_HOST}"
 echo "Node-B SADStore: http://${NODE_B_SADSTORE_HOST}"
-echo "Propagation:     ${PROPAGATION_DELAY}s"
+echo "Convergence:     ${CONVERGENCE_TIMEOUT}s"
 echo "========================================="
 echo ""
 
@@ -148,14 +147,21 @@ run_test_expect_fail "Look up nonexistent key" test_lookup_nonexistent_key
 
 echo ""
 
-# Wait for gossip propagation to node-b
-echo "Waiting ${PROPAGATION_DELAY}s for SADStore gossip propagation..."
-sleep "$PROPAGATION_DELAY"
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 
 test_lookup_alice_key_from_node_b() {
-    OUTPUT=$($CLI_B exchange lookup-key "$ALICE_PREFIX" 2>&1)
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    while [ $SECONDS -lt $deadline ]; do
+        OUTPUT=$($CLI_B exchange lookup-key "$ALICE_PREFIX" 2>&1)
+        if echo "$OUTPUT" | grep -q "Algorithm:"; then
+            echo "$OUTPUT"
+            return 0
+        fi
+        sleep 2
+    done
     echo "$OUTPUT"
-    echo "$OUTPUT" | grep -q "Algorithm:" || return 1
+    echo "Timeout waiting for Alice's key to propagate to node-b (${CONVERGENCE_TIMEOUT}s)"
+    return 1
 }
 
 run_test "Look up Alice's key from node-b (gossip replication)" test_lookup_alice_key_from_node_b
@@ -222,15 +228,19 @@ echo "========================================="
 echo "Phase 6: Inbox"
 echo "========================================="
 
-# Wait for gossip to propagate the mail announcement
-echo "Waiting ${PROPAGATION_DELAY}s for mail announcement propagation..."
-sleep "$PROPAGATION_DELAY"
-
 test_bob_check_inbox() {
-    OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    while [ $SECONDS -lt $deadline ]; do
+        OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        if echo "$OUTPUT" | grep -q "messages):"; then
+            echo "$OUTPUT"
+            return 0
+        fi
+        sleep 2
+    done
     echo "$OUTPUT"
-    # Should show at least one message
-    echo "$OUTPUT" | grep -q "messages\|Inbox" || return 1
+    echo "Timeout waiting for Bob's inbox to have messages (${CONVERGENCE_TIMEOUT}s)"
+    return 1
 }
 
 test_alice_inbox_empty() {

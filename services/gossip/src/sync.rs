@@ -1807,7 +1807,7 @@ mod tests {
     #[test]
     fn test_sync_error_display() {
         let redis_error = SyncError::Redis(redis::RedisError::from((
-            redis::ErrorKind::IoError,
+            redis::ErrorKind::Io,
             "connection refused",
         )));
         assert!(redis_error.to_string().contains("Redis error"));
@@ -1824,8 +1824,7 @@ mod tests {
 
     #[test]
     fn test_sync_error_from_redis_error() {
-        let redis_error =
-            redis::RedisError::from((redis::ErrorKind::IoError, "connection refused"));
+        let redis_error = redis::RedisError::from((redis::ErrorKind::Io, "connection refused"));
         let sync_error: SyncError = redis_error.into();
         assert!(matches!(sync_error, SyncError::Redis(_)));
     }
