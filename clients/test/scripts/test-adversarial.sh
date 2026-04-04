@@ -35,18 +35,6 @@ cleanup_adversary_backup() {
     rm -rf "$KELS_CLI_HOME.owner"
 }
 
-# Helper: wait for expected KEL status (handles eventual consistency across replicas)
-await_kel_status() {
-    local prefix="$1"
-    local expected="$2"
-    for _ in $(seq 1 10); do
-        local actual
-        actual=$(kels-cli --kels-url "$KELS_URL" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}')
-        [ "$actual" = "$expected" ] && return 0
-        sleep 0.2
-    done
-    return 1
-}
 
 # Test that expects divergence to be caused (returns error but with "Divergence detected" message)
 run_test_expect_divergence() {
@@ -57,13 +45,13 @@ run_test_expect_divergence() {
     # Run the command (expected to fail)
     "$@" 2>&1 || true
     # Check server state for divergence (retry for eventual consistency)
-    if await_kel_status "$prefix" "DIVERGENT"; then
+    if await_kel_status "$KELS_URL" "$prefix" "DIVERGENT"; then
         echo -e "${GREEN}PASSED: ${name}${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
         local status
-        status=$(kels-cli --kels-url "$KELS_URL" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}')
+        status=$(get_kel_status "$KELS_URL" "$prefix")
         echo "Expected status DIVERGENT but got: $status"
         echo -e "${RED}FAILED: ${name} (expected divergence but not detected)${NC}"
         TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -97,7 +85,7 @@ run_test_expect_contest_required() {
 check_kel_status() {
     local prefix="$1"
     local expected_status="$2"
-    await_kel_status "$prefix" "$expected_status"
+    await_kel_status "$KELS_URL" "$prefix" "$expected_status"
 }
 
 check_kel_event_count() {

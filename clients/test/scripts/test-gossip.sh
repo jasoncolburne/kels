@@ -22,51 +22,10 @@ NODE_B_URL="http://${NODE_B_KELS_HOST}"
 
 init_temp_dir
 
+BOTH_NODES=("$NODE_A_URL" "$NODE_B_URL")
+
 wait_for_kel_on_both_nodes() {
-    wait_for_propagation "$1" "$CONVERGENCE_TIMEOUT" "$NODE_A_URL" "$NODE_B_URL"
-}
-
-# Poll until both nodes have matching KELs (or timeout)
-wait_for_convergence() {
-    local prefix="$1"
-    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
-    echo "Waiting for KEL $prefix to converge on both nodes (timeout: ${CONVERGENCE_TIMEOUT}s)..."
-    while [ $SECONDS -lt $deadline ]; do
-        if kels_match "$prefix" 2>/dev/null; then
-            return 0
-        fi
-        sleep 1
-    done
-    # Final check with error output
-    kels_match "$prefix"
-}
-
-# Poll until event count on a node reaches expected value (or timeout)
-wait_for_event_count() {
-    local url="$1"
-    local prefix="$2"
-    local expected="$3"
-    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
-    echo "Waiting for $expected events on $url (timeout: ${CONVERGENCE_TIMEOUT}s)..."
-    while [ $SECONDS -lt $deadline ]; do
-        local count
-        count=$(get_event_count "$url" "$prefix")
-        if [ "$count" = "$expected" ]; then
-            return 0
-        fi
-        sleep 1
-    done
-    echo "Timeout: expected $expected events, got $(get_event_count "$url" "$prefix")"
-    return 1
-}
-
-# Compare KELs between nodes (using md5sum of full response)
-kels_match() {
-    local prefix="$1"
-    local hash_a hash_b
-    hash_a=$(fetch_all_events "$NODE_A_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}')
-    hash_b=$(fetch_all_events "$NODE_B_URL" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}')
-    [ "$hash_a" = "$hash_b" ]
+    wait_for_propagation "$1" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 }
 
 echo "========================================="
@@ -100,7 +59,7 @@ run_test "KEL exists on node-a" kel_exists_on_node "$NODE_A_URL" "$PREFIX1"
 
 # Wait for propagation and verify
 run_test "KEL propagated to node-b" wait_for_kel_on_both_nodes "$PREFIX1"
-run_test "KELs match between nodes" wait_for_convergence "$PREFIX1"
+run_test "KELs match between nodes" wait_for_convergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
 echo ""
 
@@ -119,7 +78,7 @@ SAID_AFTER_ROTATE=$(get_latest_said "$NODE_A_URL" "$PREFIX1")
 echo "SAID after rotation: $SAID_AFTER_ROTATE"
 
 # Verify rotation propagated
-run_test "Rotation propagated to node-b" wait_for_convergence "$PREFIX1"
+run_test "Rotation propagated to node-b" wait_for_convergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
 echo ""
 
@@ -135,7 +94,7 @@ TEST_SAID="KGossipTestAnchor___________________________"
 run_test "Anchor data on node-a" kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX1" --said "$TEST_SAID"
 
 # Verify anchor propagated
-run_test "Anchor propagated to node-b" wait_for_convergence "$PREFIX1"
+run_test "Anchor propagated to node-b" wait_for_convergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
 echo ""
 
@@ -161,7 +120,7 @@ COUNT_A=$(get_event_count "$NODE_A_URL" "$PREFIX4")
 echo "Node-a has $COUNT_A events"
 
 # Wait for all events to propagate
-run_test "All events propagated" wait_for_convergence "$PREFIX4"
+run_test "All events propagated" wait_for_convergence "$PREFIX4" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
 echo ""
 
@@ -206,7 +165,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KPreDivergence______________________________"
 
     # Wait for pre-divergence events to propagate
-    run_test "Pre-divergence KEL converged" wait_for_convergence "$PREFIX6"
+    run_test "Pre-divergence KEL converged" wait_for_convergence "$PREFIX6" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
     # Inject adversary event on node-a
     kels-cli --kels-url "$NODE_A_URL" adversary inject --prefix "$PREFIX6" --events ixn || true
@@ -215,7 +174,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
     kels-cli --kels-url "$NODE_A_URL" anchor --prefix "$PREFIX6" --said "KOwnerCausesDivergence______________________" 2>&1 || true
 
     # Wait for divergent events to propagate to node-b (4 events: icp, anchor, adv_ixn, owner_ixn)
-    run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4"
+    run_test "Divergent events propagated to node-b" wait_for_event_count "$NODE_B_URL" "$PREFIX6" "4" "$CONVERGENCE_TIMEOUT"
 else
     echo -e "${YELLOW}Skipping: kels-cli not built with --features dev-tools${NC}"
     TESTS_PASSED=$((TESTS_PASSED + 1))  # Count as passed since we can't test
@@ -237,7 +196,7 @@ if kels-cli --help 2>&1 | grep -q "adversary"; then
         run_test "Owner recovers on node-a" kels-cli --kels-url "$NODE_A_URL" recover --prefix "$PREFIX6"
 
         # Verify recovery propagated
-        run_test "Recovery propagated to node-b" wait_for_convergence "$PREFIX6"
+        run_test "Recovery propagated to node-b" wait_for_convergence "$PREFIX6" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
     else
         echo -e "${YELLOW}Skipping: PREFIX6 not set from scenario 6${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -267,7 +226,7 @@ run_test "KEL propagated before decommission" wait_for_kel_on_both_nodes "$PREFI
 run_test "Decommission KEL on node-a" kels-cli --kels-url "$NODE_A_URL" decommission --prefix "$PREFIX8"
 
 # Verify decommission propagated
-run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8"
+run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8" "$CONVERGENCE_TIMEOUT" "${BOTH_NODES[@]}"
 
 # Verify the last event on node-b is a dec event
 LAST_KIND=$(fetch_all_events "$NODE_B_URL" "$PREFIX8" | jq -r '.[-1].event.kind')
