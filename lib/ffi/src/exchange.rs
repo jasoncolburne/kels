@@ -3,7 +3,6 @@
 use std::ffi::CString;
 use std::os::raw::c_char;
 
-use base64::Engine;
 use cesr::Matter;
 
 use kels_exchange::{EssrInner, ExchangeError};
@@ -19,7 +18,7 @@ pub struct KelsKemKeyResult {
     pub status: KelsStatus,
     /// CESR-encoded (qb64) encapsulation key (owned, must be freed with kels_free_string)
     pub encapsulation_key: *mut c_char,
-    /// Decapsulation key in "algorithm:base64(raw)" format (owned, must be freed with kels_free_string)
+    /// Decapsulation key in CESR qb64 format (owned, must be freed with kels_free_string)
     pub decapsulation_key: *mut c_char,
     /// Algorithm name: "ML-KEM-768" or "ML-KEM-1024" (owned, must be freed with kels_free_string)
     pub algorithm: *mut c_char,
@@ -70,32 +69,14 @@ impl Default for KelsEssrOpenResult {
 
 // ==================== Helper Functions ====================
 
-/// Encode a DecapsulationKey in the portable "algorithm:base64(raw)" format.
+/// Encode a DecapsulationKey as a CESR qb64 string.
 pub(crate) fn encode_decap_key(dk: &cesr::DecapsulationKey) -> String {
-    let (algo, raw) = match dk {
-        cesr::DecapsulationKey::MlKem768(bytes) => ("ml-kem-768", bytes.as_slice()),
-        cesr::DecapsulationKey::MlKem1024(bytes) => ("ml-kem-1024", bytes.as_slice()),
-    };
-    format!(
-        "{}:{}",
-        algo,
-        base64::engine::general_purpose::STANDARD.encode(raw)
-    )
+    dk.qb64()
 }
 
-/// Decode a DecapsulationKey from the "algorithm:base64(raw)" format.
+/// Decode a DecapsulationKey from a CESR qb64 string.
 pub(crate) fn decode_decap_key(encoded: &str) -> Result<cesr::DecapsulationKey, String> {
-    let (algo, b64) = encoded
-        .split_once(':')
-        .ok_or_else(|| "Invalid decapsulation key format".to_string())?;
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| format!("Invalid base64: {e}"))?;
-    match algo {
-        "ml-kem-768" => Ok(cesr::DecapsulationKey::MlKem768(raw)),
-        "ml-kem-1024" => Ok(cesr::DecapsulationKey::MlKem1024(raw)),
-        _ => Err(format!("Unknown KEM algorithm: {algo}")),
-    }
+    cesr::DecapsulationKey::from_qb64(encoded.trim()).map_err(|e| e.to_string())
 }
 
 fn exchange_error_message(err: &ExchangeError) -> String {
@@ -352,7 +333,7 @@ pub unsafe extern "C" fn kels_essr_seal(
 ///
 /// # Arguments
 /// * `signed_envelope_json` - JSON string of the SignedEssrEnvelope
-/// * `recipient_decap_key` - Recipient's decapsulation key in "algorithm:base64(raw)" format
+/// * `recipient_decap_key` - Recipient's decapsulation key in CESR qb64 format
 /// * `sender_verification_key_qb64` - Sender's CESR-encoded verification key
 ///
 /// # Safety
@@ -786,10 +767,9 @@ mod tests {
     fn test_decap_key_encode_decode_roundtrip() {
         let (_, dk) = cesr::generate_ml_kem_768().expect("keygen");
         let encoded = encode_decap_key(&dk);
-        assert!(encoded.starts_with("ml-kem-768:"));
+        assert!(encoded.starts_with("0m"));
 
         let decoded = decode_decap_key(&encoded).expect("decode");
-        // Re-encode to compare
         assert_eq!(encode_decap_key(&decoded), encoded);
     }
 }

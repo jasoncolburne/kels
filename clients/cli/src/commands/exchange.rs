@@ -2,8 +2,6 @@
 
 use std::{collections::BTreeSet, path::PathBuf};
 
-use base64::Engine;
-
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
@@ -18,16 +16,7 @@ pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey) -> Result<()> {
-    let (algo, raw) = match dk {
-        cesr::DecapsulationKey::MlKem768(bytes) => ("ml-kem-768", bytes.as_slice()),
-        cesr::DecapsulationKey::MlKem1024(bytes) => ("ml-kem-1024", bytes.as_slice()),
-    };
-    let encoded = format!(
-        "{}:{}",
-        algo,
-        base64::engine::general_purpose::STANDARD.encode(raw)
-    );
-    std::fs::write(path, encoded).context("Failed to write decapsulation key")?;
+    std::fs::write(path, dk.qb64()).context("Failed to write decapsulation key")?;
 
     #[cfg(unix)]
     {
@@ -41,17 +30,7 @@ pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey
 
 pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
     let data = std::fs::read_to_string(path).context("Failed to read decapsulation key")?;
-    let (algo, b64) = data
-        .split_once(':')
-        .ok_or_else(|| anyhow!("Invalid decapsulation key format"))?;
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .context("Invalid base64 in decapsulation key")?;
-    match algo {
-        "ml-kem-768" => Ok(cesr::DecapsulationKey::MlKem768(raw)),
-        "ml-kem-1024" => Ok(cesr::DecapsulationKey::MlKem1024(raw)),
-        _ => Err(anyhow!("Unknown KEM algorithm: {}", algo)),
-    }
+    cesr::DecapsulationKey::from_qb64(data.trim()).context("Failed to parse decapsulation key")
 }
 
 pub(crate) fn parse_kem_algorithm(
@@ -379,42 +358,15 @@ pub(crate) async fn cmd_exchange_send(
     println!("  Blob digest:   {}", blob_digest);
     println!("  Payload size:  {} bytes", envelope_bytes.len());
 
-    // POST to mail service
-    let mail_url = cli.mail_url();
-    let timestamp = chrono::Utc::now().timestamp();
-    let nonce = kels_core::crypto::generate_nonce();
-
-    let send_request = kels_exchange::SendRequest {
-        timestamp,
-        nonce,
-        recipient_kel_prefix: recipient.to_string(),
-        blob: base64::engine::general_purpose::STANDARD.encode(&envelope_bytes),
-    };
-
-    let request_json = serde_json::to_vec(&send_request)?;
-    let signature = provider.sign(&request_json).await?;
-
-    let signed_request = kels_core::SignedRequest {
-        payload: send_request,
-        prefix: prefix.to_string(),
-        signature: signature.qb64(),
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("{}/api/v1/mail/send", mail_url))
-        .json(&signed_request)
-        .send()
+    // Send via mail service
+    let mail_client =
+        kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
+    mail_client
+        .send(prefix, recipient, &envelope_bytes, &provider)
         .await
         .context("Failed to send mail")?;
 
-    if response.status().is_success() {
-        println!("{}", "Message sent!".green().bold());
-    } else {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Mail send failed ({}): {}", status, body));
-    }
+    println!("{}", "Message sent!".green().bold());
 
     Ok(())
 }
@@ -422,64 +374,27 @@ pub(crate) async fn cmd_exchange_send(
 pub(crate) async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
     let provider = provider_config(cli, prefix)?.load_provider().await?;
 
-    let mail_url = cli.mail_url();
-    let timestamp = chrono::Utc::now().timestamp();
-    let nonce = kels_core::crypto::generate_nonce();
-
-    let inbox_request = kels_exchange::InboxRequest {
-        timestamp,
-        nonce,
-        limit: None,
-        offset: None,
-    };
-
-    let request_json = serde_json::to_vec(&inbox_request)?;
-    let signature = provider.sign(&request_json).await?;
-
-    let signed_request = kels_core::SignedRequest {
-        payload: inbox_request,
-        prefix: prefix.to_string(),
-        signature: signature.qb64(),
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("{}/api/v1/mail/inbox", mail_url))
-        .json(&signed_request)
-        .send()
+    let mail_client =
+        kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
+    let response = mail_client
+        .inbox(prefix, &provider)
         .await
         .context("Failed to check inbox")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Inbox fetch failed ({}): {}", status, body));
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    let messages = body["messages"].as_array();
-
-    match messages {
-        Some(msgs) if msgs.is_empty() => {
-            println!("{}", "Inbox empty.".yellow());
-        }
-        Some(msgs) => {
+    if response.messages.is_empty() {
+        println!("{}", "Inbox empty.".yellow());
+    } else {
+        println!(
+            "{}",
+            format!("Inbox ({} messages):", response.messages.len())
+                .cyan()
+                .bold()
+        );
+        for msg in &response.messages {
             println!(
-                "{}",
-                format!("Inbox ({} messages):", msgs.len()).cyan().bold()
+                "  {} | from: {} | digest: {} | expires: {}",
+                msg.said, msg.source_node_prefix, msg.blob_digest, msg.expires_at,
             );
-            for msg in msgs {
-                println!(
-                    "  {} | from: {} | digest: {} | expires: {}",
-                    msg["said"].as_str().unwrap_or("-"),
-                    msg["sourceNodePrefix"].as_str().unwrap_or("-"),
-                    msg["blobDigest"].as_str().unwrap_or("-"),
-                    msg["expiresAt"].as_str().unwrap_or("-"),
-                );
-            }
-        }
-        None => {
-            println!("{}", serde_json::to_string_pretty(&body)?);
         }
     }
 
@@ -496,41 +411,14 @@ pub(crate) async fn cmd_exchange_fetch(
 
     let provider = provider_config(cli, prefix)?.load_provider().await?;
 
-    // Authenticate to source node's mail service and fetch the blob
+    // Fetch the blob from the source node's mail service
     let source_mail_url = format!("http://mail.{}", source_domain);
-    let timestamp = chrono::Utc::now().timestamp();
-    let nonce = kels_core::crypto::generate_nonce();
-
-    let fetch_request = kels_exchange::FetchRequest {
-        timestamp,
-        nonce,
-        mail_said: mail_said.to_string(),
-    };
-
-    let request_json = serde_json::to_vec(&fetch_request)?;
-    let signature = provider.sign(&request_json).await?;
-
-    let signed_request = kels_core::SignedRequest {
-        payload: fetch_request,
-        prefix: prefix.to_string(),
-        signature: signature.qb64(),
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("{}/api/v1/mail/fetch", source_mail_url))
-        .json(&signed_request)
-        .send()
+    let mail_client =
+        kels_exchange::MailClient::new(&source_mail_url).context("Failed to create mail client")?;
+    let blob = mail_client
+        .fetch(prefix, mail_said, &provider)
         .await
         .context("Failed to fetch mail")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Mail fetch failed ({}): {}", status, body));
-    }
-
-    let blob = response.bytes().await.context("Failed to read response")?;
 
     // Verify blob digest
     let digest = kels_exchange::compute_blob_digest(&blob);

@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use kels_core::{PeerSigner, sign_request};
+use base64::Engine;
+use cesr::Matter;
+use kels_core::{KeyProvider, PeerSigner, SignedRequest, sign_request};
 
 use crate::{MailAnnouncement, MailMessage};
 
@@ -112,6 +114,137 @@ impl MailClient {
         match announcement {
             MailAnnouncement::Message(message) => self.replicate(message, signer).await,
             MailAnnouncement::Removal { said } => self.remove(said, signer).await,
+        }
+    }
+
+    /// Send an ESSR-encrypted envelope to a recipient.
+    pub async fn send(
+        &self,
+        prefix: &str,
+        recipient: &str,
+        envelope_bytes: &[u8],
+        provider: &dyn KeyProvider,
+    ) -> Result<(), MailClientError> {
+        let send_request = crate::SendRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels_core::crypto::generate_nonce(),
+            recipient_kel_prefix: recipient.to_string(),
+            blob: base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
+        };
+
+        let request_json = serde_json::to_vec(&send_request)
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+        let signature = provider
+            .sign(&request_json)
+            .await
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
+        let signed_request = SignedRequest {
+            payload: send_request,
+            prefix: prefix.to_string(),
+            signature: signature.qb64(),
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/mail/send", self.base_url))
+            .json(&signed_request)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(MailClientError::Http(
+                resp.status(),
+                resp.text().await.unwrap_or_default(),
+            ))
+        }
+    }
+
+    /// Check inbox for messages.
+    pub async fn inbox(
+        &self,
+        prefix: &str,
+        provider: &dyn KeyProvider,
+    ) -> Result<crate::InboxResponse, MailClientError> {
+        let inbox_request = crate::InboxRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels_core::crypto::generate_nonce(),
+            limit: None,
+            offset: None,
+        };
+
+        let request_json = serde_json::to_vec(&inbox_request)
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+        let signature = provider
+            .sign(&request_json)
+            .await
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
+        let signed_request = SignedRequest {
+            payload: inbox_request,
+            prefix: prefix.to_string(),
+            signature: signature.qb64(),
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/mail/inbox", self.base_url))
+            .json(&signed_request)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            Err(MailClientError::Http(
+                resp.status(),
+                resp.text().await.unwrap_or_default(),
+            ))
+        }
+    }
+
+    /// Fetch a mail blob by SAID.
+    pub async fn fetch(
+        &self,
+        prefix: &str,
+        mail_said: &str,
+        provider: &dyn KeyProvider,
+    ) -> Result<Vec<u8>, MailClientError> {
+        let fetch_request = crate::FetchRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels_core::crypto::generate_nonce(),
+            mail_said: mail_said.to_string(),
+        };
+
+        let request_json = serde_json::to_vec(&fetch_request)
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+        let signature = provider
+            .sign(&request_json)
+            .await
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
+        let signed_request = SignedRequest {
+            payload: fetch_request,
+            prefix: prefix.to_string(),
+            signature: signature.qb64(),
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/mail/fetch", self.base_url))
+            .json(&signed_request)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.bytes().await?.to_vec())
+        } else {
+            Err(MailClientError::Http(
+                resp.status(),
+                resp.text().await.unwrap_or_default(),
+            ))
         }
     }
 }
