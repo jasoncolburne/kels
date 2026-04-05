@@ -247,6 +247,49 @@ impl MailClient {
             ))
         }
     }
+
+    /// Acknowledge (delete) messages by SAIDs.
+    pub async fn ack(
+        &self,
+        prefix: &str,
+        saids: &[String],
+        provider: &dyn KeyProvider,
+    ) -> Result<(), MailClientError> {
+        let ack_request = crate::AckRequest {
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: kels_core::crypto::generate_nonce(),
+            saids: saids.to_vec(),
+        };
+
+        let request_json = serde_json::to_vec(&ack_request)
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+        let signature = provider
+            .sign(&request_json)
+            .await
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
+        let signed_request = SignedRequest {
+            payload: ack_request,
+            prefix: prefix.to_string(),
+            signature: signature.qb64(),
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/mail/ack", self.base_url))
+            .json(&signed_request)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(MailClientError::Http(
+                resp.status(),
+                resp.text().await.unwrap_or_default(),
+            ))
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

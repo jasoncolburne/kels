@@ -326,7 +326,7 @@ enum ExchangeCommands {
         prefix: String,
     },
 
-    /// Fetch and decrypt a message from a remote mail node
+    /// Fetch and decrypt a message
     Fetch {
         /// Recipient KEL prefix
         #[arg(long)]
@@ -335,10 +335,17 @@ enum ExchangeCommands {
         /// Mail message SAID
         #[arg(long)]
         said: String,
+    },
 
-        /// Source node base domain (e.g., "node-a.kels")
+    /// Acknowledge (delete) messages
+    Ack {
+        /// Recipient KEL prefix
         #[arg(long)]
-        source_domain: String,
+        prefix: String,
+
+        /// Mail message SAIDs to acknowledge
+        #[arg(long, num_args = 1..)]
+        saids: Vec<String>,
     },
 }
 
@@ -520,11 +527,12 @@ async fn main() -> Result<()> {
             ExchangeCommands::Inbox { prefix } => {
                 commands::exchange::cmd_exchange_inbox(&cli, prefix).await
             }
-            ExchangeCommands::Fetch {
-                prefix,
-                said,
-                source_domain,
-            } => commands::exchange::cmd_exchange_fetch(&cli, prefix, said, source_domain).await,
+            ExchangeCommands::Fetch { prefix, said } => {
+                commands::exchange::cmd_exchange_fetch(&cli, prefix, said).await
+            }
+            ExchangeCommands::Ack { prefix, saids } => {
+                commands::exchange::cmd_exchange_ack(&cli, prefix, saids).await
+            }
         },
 
         Commands::Cred(cred_cmd) => match cred_cmd {

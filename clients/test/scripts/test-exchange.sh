@@ -345,6 +345,93 @@ run_test "Bob sees message on node-b (gossip replication)" test_bob_inbox_on_nod
 echo ""
 
 # ================================================================
+# Phase 8: Fetch & Decrypt — Verify payload roundtrip
+# ================================================================
+
+echo "========================================="
+echo "Phase 8: Fetch & Decrypt"
+echo "========================================="
+
+test_bob_fetch_and_verify() {
+    # Get the first message SAID from Bob's inbox
+    INBOX_OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+    MAIL_SAID=$(echo "$INBOX_OUTPUT" | grep '|' | head -1 | awk '{print $1}')
+    if [ -z "$MAIL_SAID" ]; then
+        echo "No message SAID found in inbox"
+        echo "$INBOX_OUTPUT"
+        return 1
+    fi
+    echo "Fetching message: $MAIL_SAID"
+    echo "$MAIL_SAID" > "$TEMP_DIR/mail_said"
+
+    # Fetch and decrypt
+    PAYLOAD=$($CLI exchange fetch --prefix "$BOB_PREFIX" --said "$MAIL_SAID" 2>&1)
+    FETCH_EXIT=$?
+    echo "$PAYLOAD"
+    if [ $FETCH_EXIT -ne 0 ]; then
+        echo "Fetch failed"
+        return 1
+    fi
+
+    # Verify the decrypted payload matches what Alice sent
+    ORIGINAL=$(cat "$TEMP_DIR/payload.json")
+    # The payload output includes status lines before the actual payload on stdout
+    # The last line should be the JSON payload
+    DECRYPTED=$(echo "$PAYLOAD" | tail -1)
+    if [ "$DECRYPTED" = "$ORIGINAL" ]; then
+        echo "Payload matches!"
+        return 0
+    else
+        echo "MISMATCH!"
+        echo "  Original:  $ORIGINAL"
+        echo "  Decrypted: $DECRYPTED"
+        return 1
+    fi
+}
+
+run_test "Bob fetches and decrypts message (payload roundtrip)" test_bob_fetch_and_verify
+
+echo ""
+
+# ================================================================
+# Phase 9: Acknowledge & Verify Deletion
+# ================================================================
+
+echo "========================================="
+echo "Phase 9: Acknowledge & Verify Deletion"
+echo "========================================="
+
+test_bob_ack_message() {
+    MAIL_SAID=$(cat "$TEMP_DIR/mail_said")
+    OUTPUT=$($CLI exchange ack --prefix "$BOB_PREFIX" --saids "$MAIL_SAID" 2>&1)
+    echo "$OUTPUT"
+    echo "$OUTPUT" | grep -q "acknowledged" || return 1
+}
+
+test_bob_inbox_message_removed() {
+    MAIL_SAID=$(cat "$TEMP_DIR/mail_said")
+    local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
+    while [ $SECONDS -lt $deadline ]; do
+        OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        # Check that the acked message is no longer in the inbox
+        if ! echo "$OUTPUT" | grep -q "$MAIL_SAID"; then
+            echo "$OUTPUT"
+            echo "Message $MAIL_SAID removed from inbox"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "$OUTPUT"
+    echo "Timeout waiting for message removal (${CONVERGENCE_TIMEOUT}s)"
+    return 1
+}
+
+run_test "Bob acknowledges message" test_bob_ack_message
+run_test "Message removed from Bob's inbox" test_bob_inbox_message_removed
+
+echo ""
+
+# ================================================================
 # Summary
 # ================================================================
 

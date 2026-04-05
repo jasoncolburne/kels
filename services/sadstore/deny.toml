@@ -10,8 +10,6 @@ feature-depth = 1
 
 [advisories]
 ignore = [
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained - transitive dev dependency via testcontainers" },
-    { id = "RUSTSEC-2026-0066", reason = "astral-tokio-tar PAX validation - transitive dev dependency via testcontainers" },
     { id = "RUSTSEC-2026-0002", reason = "lru unsoundness - transitive dependency via aws-sdk-s3, pinned at 0.12.x by upstream" },
 ]
 

@@ -401,21 +401,53 @@ pub(crate) async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cmd_exchange_fetch(
-    cli: &Cli,
-    prefix: &str,
-    mail_said: &str,
-    source_domain: &str,
-) -> Result<()> {
+pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str) -> Result<()> {
     println!("{}", "Fetching and decrypting message...".green());
 
     let provider = provider_config(cli, prefix)?.load_provider().await?;
 
+    // Look up message metadata from local inbox to find source node
+    let local_mail =
+        kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
+    let inbox = local_mail
+        .inbox(prefix, &provider)
+        .await
+        .context("Failed to query inbox")?;
+
+    let message = inbox
+        .messages
+        .iter()
+        .find(|m| m.said == mail_said)
+        .ok_or_else(|| anyhow!("Message {} not found in inbox", mail_said))?;
+
+    // Resolve source node's base domain via registry
+    let registry_urls = parse_registry_urls(&cli.registry);
+    let kel_store = create_kel_store(cli, "registry-discovery")?;
+    let peers = kels_core::peers_sorted_by_latency(
+        &registry_urls,
+        std::time::Duration::from_secs(2),
+        &kel_store,
+    )
+    .await
+    .context("Failed to query registry peers")?;
+
+    let source_peer = peers
+        .iter()
+        .find(|p| p.peer_prefix == message.source_node_prefix)
+        .ok_or_else(|| {
+            anyhow!(
+                "Source node {} not found in registry",
+                message.source_node_prefix
+            )
+        })?;
+
+    println!("  Source node:  {}", source_peer.base_domain);
+
     // Fetch the blob from the source node's mail service
-    let source_mail_url = format!("http://mail.{}", source_domain);
-    let mail_client =
-        kels_exchange::MailClient::new(&source_mail_url).context("Failed to create mail client")?;
-    let blob = mail_client
+    let source_mail_url = format!("http://mail.{}", source_peer.base_domain);
+    let source_mail = kels_exchange::MailClient::new(&source_mail_url)
+        .context("Failed to create source mail client")?;
+    let blob = source_mail
         .fetch(prefix, mail_said, &provider)
         .await
         .context("Failed to fetch mail")?;
@@ -475,6 +507,26 @@ pub(crate) async fn cmd_exchange_fetch(
 
     // Write payload to stdout
     std::io::Write::write_all(&mut std::io::stdout(), &inner.payload)?;
+
+    Ok(())
+}
+
+pub(crate) async fn cmd_exchange_ack(cli: &Cli, prefix: &str, saids: &[String]) -> Result<()> {
+    let provider = provider_config(cli, prefix)?.load_provider().await?;
+
+    let mail_client =
+        kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
+    mail_client
+        .ack(prefix, saids, &provider)
+        .await
+        .context("Failed to acknowledge messages")?;
+
+    println!(
+        "{}",
+        format!("{} message(s) acknowledged", saids.len())
+            .green()
+            .bold()
+    );
 
     Ok(())
 }

@@ -52,9 +52,9 @@ redis = { version = "1.1", features = ["tokio-comp", "connection-manager"] }
 [dev-dependencies]
 chrono = "0.4"
 tokio-test = "0.4"
-testcontainers = "0.26"
+testcontainers = "0.27"
 ctor = "0.4"
-testcontainers-modules = { version = "0.14", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serial_test = "3"
 
