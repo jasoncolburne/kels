@@ -262,24 +262,34 @@ test-restart-gossip-services:
 	# restart node a first, and let the others sync from it
 	kubectl rollout restart deployment/gossip -n kels-node-a
 	kubectl rollout status deployment/gossip -n kels-node-a
+	# sleep not required here, this node is the source
 
 	kubectl rollout restart deployment/gossip -n kels-node-b
-	kubectl rollout restart deployment/gossip -n kels-node-c
-	kubectl rollout restart deployment/gossip -n kels-node-d
-	kubectl rollout restart deployment/gossip -n kels-node-e
 	kubectl rollout status deployment/gossip -n kels-node-b
-	kubectl rollout status deployment/gossip -n kels-node-c
+	sleep 10 # wait for sync
+
+	kubectl rollout restart deployment/gossip -n kels-node-d
 	kubectl rollout status deployment/gossip -n kels-node-d
+	sleep 10 # wait for sync
+
+	kubectl rollout status deployment/gossip -n kels-node-c
+	kubectl rollout restart deployment/gossip -n kels-node-c
+	sleep 10 # wait for sync
+
 	kubectl rollout status deployment/gossip -n kels-node-e
+	kubectl rollout restart deployment/gossip -n kels-node-e
+	sleep 10 # wait for sync
 
 	# node f last, we can check its logs for errors
-	sleep 30
 	kubectl rollout restart deployment/gossip -n kels-node-f
 	kubectl rollout status deployment/gossip -n kels-node-f
+	sleep 10 # wait for sync
 
 	# collect logs
-	sleep 10
 	scripts/dump-gossip
+
+	# check for errors
+	! grep -R ERROR logs
 
 test-resync:
 	scripts/coredns.sh apply
