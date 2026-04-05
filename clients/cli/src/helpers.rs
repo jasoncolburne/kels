@@ -35,6 +35,10 @@ pub(crate) fn kel_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("kels"))
 }
 
+fn sad_dir(cli: &Cli) -> Result<PathBuf> {
+    Ok(config_dir(cli)?.join("sad"))
+}
+
 pub(crate) fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
     let key_dir = config_dir(cli)?.join("keys").join(prefix);
     Ok(SoftwareProviderConfig::new(
@@ -91,6 +95,6 @@ pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> 
 }
 
 pub(crate) fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
-    let dir = config_dir(cli)?.join("sad");
+    let dir = sad_dir(cli)?;
     FileSadStore::new(dir).context("Failed to create SAD store")
 }
