@@ -159,13 +159,19 @@ fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> 
 
 // ==================== KEL Authentication ====================
 
+/// Result of successful authentication, carrying verified KEL state.
+struct AuthResult {
+    /// Serial of the sender's latest establishment event.
+    establishment_serial: u64,
+}
+
 /// Authenticate a signed request by verifying the signer's KEL and signature.
 async fn authenticate_request<T: serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
     timestamp: i64,
     nonce: &str,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<AuthResult, (StatusCode, String)> {
     if !kels_core::validate_timestamp(timestamp, 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
     }
@@ -196,6 +202,11 @@ async fn authenticate_request<T: serde::Serialize>(
     .await
     .map_err(|_| (StatusCode::FORBIDDEN, "KEL verification failed".into()))?;
 
+    let establishment_serial = kel_verification
+        .last_establishment_event()
+        .map(|e| e.event.serial)
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "No establishment event found".into()))?;
+
     signed_request
         .verify_signature(&kel_verification)
         .map_err(|_| {
@@ -205,7 +216,9 @@ async fn authenticate_request<T: serde::Serialize>(
             )
         })?;
 
-    Ok(())
+    Ok(AuthResult {
+        establishment_serial,
+    })
 }
 
 // ==================== Health ====================
@@ -226,9 +239,11 @@ pub async fn send_mail(
     }
 
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
-        return e.into_response();
-    }
+    let auth = match authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await
+    {
+        Ok(auth) => auth,
+        Err(e) => return e.into_response(),
+    };
 
     let sender = &signed.prefix;
     if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, sender) {
@@ -310,6 +325,13 @@ pub async fn send_mail(
         return (
             StatusCode::BAD_REQUEST,
             "ESSR envelope sender does not match authenticated sender",
+        )
+            .into_response();
+    }
+    if signed_envelope.envelope.sender_serial != auth.establishment_serial {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ESSR envelope sender_serial does not match current establishment event",
         )
             .into_response();
     }
