@@ -245,50 +245,24 @@ vote-nodes:
 	garden run vote-peer --var proposal=$$(cat /tmp/proposal-f.txt) --env=registry-c
 
 restart-gossip-services:
-	kubectl rollout restart deployment/gossip -n kels-node-a
-	kubectl rollout restart deployment/gossip -n kels-node-b
-	kubectl rollout restart deployment/gossip -n kels-node-c
-	kubectl rollout restart deployment/gossip -n kels-node-d
-	kubectl rollout restart deployment/gossip -n kels-node-e
-	kubectl rollout restart deployment/gossip -n kels-node-f
-	kubectl rollout status deployment/gossip -n kels-node-a
-	kubectl rollout status deployment/gossip -n kels-node-b
-	kubectl rollout status deployment/gossip -n kels-node-c
-	kubectl rollout status deployment/gossip -n kels-node-d
-	kubectl rollout status deployment/gossip -n kels-node-e
-	kubectl rollout status deployment/gossip -n kels-node-f
+	@for node in a b c d e f; do \
+		echo "Restarting gossip on node-$$node..."; \
+		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
+	done
+	@for node in a b c d e f; do \
+		echo "Waiting for node-$$node..."; \
+		kubectl rollout status deployment/gossip -n kels-node-$$node; \
+		sleep 10; \
+	done
 
 test-restart-gossip-services:
-	# restart node a first, and let the others sync from it
-	kubectl rollout restart deployment/gossip -n kels-node-a
-	kubectl rollout status deployment/gossip -n kels-node-a
-	# sleep not required here, this node is the source
-
-	kubectl rollout restart deployment/gossip -n kels-node-b
-	kubectl rollout status deployment/gossip -n kels-node-b
-	sleep 10 # wait for sync
-
-	kubectl rollout restart deployment/gossip -n kels-node-c
-	kubectl rollout status deployment/gossip -n kels-node-c
-	sleep 10 # wait for sync
-
-	kubectl rollout restart deployment/gossip -n kels-node-d
-	kubectl rollout status deployment/gossip -n kels-node-d
-	sleep 10 # wait for sync
-
-	kubectl rollout restart deployment/gossip -n kels-node-e
-	kubectl rollout status deployment/gossip -n kels-node-e
-	sleep 10 # wait for sync
-
-	# node f last, we can check its logs for errors
-	kubectl rollout restart deployment/gossip -n kels-node-f
-	kubectl rollout status deployment/gossip -n kels-node-f
-	sleep 10 # wait for sync
-
-	# collect logs
+	@for node in a b c d e f; do \
+		echo "Restarting gossip on node-$$node..."; \
+		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
+		kubectl rollout status deployment/gossip -n kels-node-$$node; \
+		sleep 10; \
+	done
 	scripts/dump-gossip
-
-	# check for errors
 	! grep -R ERROR logs
 
 test-resync:
