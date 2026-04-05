@@ -77,7 +77,7 @@ pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
-pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
+pub use store::{FileKelStore, FileSadStore, KelStore, KelStoreSink, RepositoryKelStore, SadStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,

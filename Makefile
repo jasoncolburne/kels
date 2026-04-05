@@ -268,12 +268,12 @@ test-restart-gossip-services:
 	kubectl rollout status deployment/gossip -n kels-node-b
 	sleep 10 # wait for sync
 
-	kubectl rollout restart deployment/gossip -n kels-node-d
-	kubectl rollout status deployment/gossip -n kels-node-d
-	sleep 10 # wait for sync
-
 	kubectl rollout status deployment/gossip -n kels-node-c
 	kubectl rollout restart deployment/gossip -n kels-node-c
+	sleep 10 # wait for sync
+
+	kubectl rollout restart deployment/gossip -n kels-node-d
+	kubectl rollout status deployment/gossip -n kels-node-d
 	sleep 10 # wait for sync
 
 	kubectl rollout status deployment/gossip -n kels-node-e

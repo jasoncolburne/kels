@@ -1,36 +1,14 @@
 //! Credential management command handlers.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use colored::Colorize;
-use kels_core::{KeyEventBuilder, ProviderConfig};
+use kels_core::{KeyEventBuilder, ProviderConfig, SadStore};
 use verifiable_storage::SelfAddressed;
 
 use crate::Cli;
-use crate::helpers::{config_dir, create_client, create_kel_store, provider_config};
-
-/// Directory for locally stored credentials.
-fn creds_dir(cli: &Cli) -> Result<PathBuf> {
-    Ok(config_dir(cli)?.join("creds"))
-}
-
-/// Store a credential JSON locally by SAID.
-fn store_cred_locally(creds_dir: &Path, said: &str, value: &serde_json::Value) -> Result<()> {
-    std::fs::create_dir_all(creds_dir)?;
-    let path = creds_dir.join(format!("{}.json", said));
-    let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(&path, json).context("Failed to write credential file")?;
-    Ok(())
-}
-
-/// Load a credential JSON by SAID.
-fn load_cred(creds_dir: &Path, said: &str) -> Result<serde_json::Value> {
-    let path = creds_dir.join(format!("{}.json", said));
-    let data = std::fs::read_to_string(&path)
-        .with_context(|| format!("Credential not found locally: {}", said))?;
-    serde_json::from_str(&data).context("Failed to parse credential JSON")
-}
+use crate::helpers::{create_client, create_kel_store, create_sad_store, provider_config};
 
 pub(crate) async fn cmd_cred_issue(
     cli: &Cli,
@@ -97,16 +75,14 @@ pub(crate) async fn cmd_cred_issue(
         .context("Failed to anchor credential SAID in KEL")?;
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
 
-    // Store credential locally
-    let creds = creds_dir(cli)?;
+    // Store credential, schema, and policy locally
+    let sad_store = create_sad_store(cli)?;
     let cred_value = serde_json::to_value(&credential)?;
-    store_cred_locally(&creds, &credential.said, &cred_value)?;
-
-    // Also store schema and policy locally for later use
+    sad_store.store(&credential.said, &cred_value).await?;
     let schema_value = serde_json::to_value(&schema)?;
-    store_cred_locally(&creds, &schema.said, &schema_value)?;
+    sad_store.store(&schema.said, &schema_value).await?;
     let policy_value = serde_json::to_value(&policy)?;
-    store_cred_locally(&creds, &policy.said, &policy_value)?;
+    sad_store.store(&policy.said, &policy_value).await?;
 
     println!(
         "{}",
@@ -128,27 +104,24 @@ pub(crate) async fn cmd_cred_store(
     let value: serde_json::Value =
         serde_json::from_str(&data).context("Failed to parse credential JSON")?;
 
-    let said = value
-        .get("said")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("Credential missing 'said' field"))?;
-
     // Verify SAID
     value
         .verify_said()
         .context("Credential SAID verification failed")?;
 
-    // Store credential
-    let creds = creds_dir(cli)?;
-    store_cred_locally(&creds, said, &value)?;
+    let said = value.get_said();
 
-    // Store schema
+    // Store credential and schema
+    let sad_store = create_sad_store(cli)?;
+    sad_store.store(&said, &value).await?;
+
     let schema_data = std::fs::read_to_string(schema_path)
         .with_context(|| format!("Failed to read schema: {}", schema_path.display()))?;
     let schema_value: serde_json::Value =
         serde_json::from_str(&schema_data).context("Failed to parse schema")?;
-    if let Some(schema_said) = schema_value.get("said").and_then(|v| v.as_str()) {
-        store_cred_locally(&creds, schema_said, &schema_value)?;
+    let schema_said = schema_value.get_said();
+    if !schema_said.is_empty() {
+        sad_store.store(&schema_said, &schema_value).await?;
     }
 
     println!("{}", format!("Credential stored: {}", said).green().bold());
@@ -157,23 +130,15 @@ pub(crate) async fn cmd_cred_store(
 }
 
 pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
-    let creds = creds_dir(cli)?;
-    if !creds.exists() {
-        println!("{}", "No credentials stored locally.".yellow());
-        return Ok(());
-    }
+    let sad_store = create_sad_store(cli)?;
+    let saids = sad_store.list().await?;
 
     let mut count = 0;
-    for entry in std::fs::read_dir(&creds)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json")
-            && let Ok(data) = std::fs::read_to_string(&path)
-            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&data)
+    for said in &saids {
+        if let Ok(value) = sad_store.load(said).await
             && value.get("schema").is_some()
             && value.get("policy").is_some()
         {
-            let said = value.get("said").and_then(|v| v.as_str()).unwrap_or("-");
             let schema = value.get("schema").and_then(|v| v.as_str()).unwrap_or("-");
             let policy = value.get("policy").and_then(|v| v.as_str()).unwrap_or("-");
             println!("  {} | schema: {} | policy: {}", said, schema, policy);
@@ -191,8 +156,8 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 }
 
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
-    let creds = creds_dir(cli)?;
-    let value = load_cred(&creds, said)?;
+    let sad_store = create_sad_store(cli)?;
+    let value = sad_store.load(said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }

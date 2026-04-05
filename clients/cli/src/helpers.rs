@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
-use kels_core::{FileKelStore, KelsClient, SoftwareProviderConfig, VerificationKeyCode};
+use kels_core::{
+    FileKelStore, FileSadStore, KelsClient, SoftwareProviderConfig, VerificationKeyCode,
+};
 
 use crate::Cli;
 
@@ -86,4 +88,9 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
 pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
     FileKelStore::with_owner(dir, prefix.to_string()).context("Failed to create KEL store")
+}
+
+pub(crate) fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
+    let dir = config_dir(cli)?.join("sad");
+    FileSadStore::new(dir).context("Failed to create SAD store")
 }
