@@ -234,17 +234,6 @@ pub async fn run_mail_redis_subscriber(
             }
         };
 
-        // Feedback loop prevention
-        {
-            let mut guard = recently_stored.write().await;
-            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
-            let cache_key = format!("mail:{}", payload);
-            if guard.contains_key(&cache_key) {
-                debug!(cache_key = %cache_key, "Skipping mail Redis message (recently stored from gossip)");
-                continue;
-            }
-        }
-
         let announcement: kels_exchange::MailAnnouncement = match serde_json::from_str(&payload) {
             Ok(a) => a,
             Err(e) => {
@@ -252,6 +241,21 @@ pub async fn run_mail_redis_subscriber(
                 continue;
             }
         };
+
+        // Feedback loop prevention — use SAID as cache key, matching handle_mail_announcement
+        let said = match &announcement {
+            kels_exchange::MailAnnouncement::Message(m) => &m.said,
+            kels_exchange::MailAnnouncement::Removal { said } => said,
+        };
+        {
+            let mut guard = recently_stored.write().await;
+            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
+            let cache_key = format!("mail:{}", said);
+            if guard.contains_key(&cache_key) {
+                debug!(cache_key = %cache_key, "Skipping mail Redis message (recently stored from gossip)");
+                continue;
+            }
+        }
 
         debug!("Broadcasting mail announcement via gossip");
         if command_tx

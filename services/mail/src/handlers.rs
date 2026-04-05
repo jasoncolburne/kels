@@ -485,16 +485,23 @@ pub async fn ack(
         }
 
         // Delete metadata
-        if state.repo.messages.delete(said).await.unwrap_or(false) {
-            deleted += 1;
+        match state.repo.messages.delete(said).await {
+            Ok(true) => {
+                deleted += 1;
+            }
+            Ok(false) => continue,
+            Err(e) => {
+                warn!("Failed to delete message {}: {}", said, e);
+                continue;
+            }
+        }
 
-            // Gossip removal
-            if let Some(ref redis) = state.redis_conn {
-                let announcement = MailAnnouncement::Removal { said: said.clone() };
-                if let Ok(json) = serde_json::to_string(&announcement) {
-                    let mut conn = redis.clone();
-                    let _: Result<(), _> = conn.publish("mail_updates", &json).await;
-                }
+        // Gossip removal
+        if let Some(ref redis) = state.redis_conn {
+            let announcement = MailAnnouncement::Removal { said: said.clone() };
+            if let Ok(json) = serde_json::to_string(&announcement) {
+                let mut conn = redis.clone();
+                let _: Result<(), _> = conn.publish("mail_updates", &json).await;
             }
         }
     }
