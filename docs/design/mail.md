@@ -18,6 +18,7 @@ Two layers, split between routing metadata and bulk encrypted data:
 ```rust
 pub struct MailMessage {
     pub said: String,
+    pub sender_kel_prefix: String,    // sender's KEL prefix
     pub source_node_prefix: String,   // node where blob lives
     pub recipient_kel_prefix: String, // recipient's KEL prefix
     pub blob_digest: String,          // qb64 Blake3 digest (MinIO key)
@@ -44,7 +45,7 @@ Announcements published to Redis, picked up by the gossip service, and broadcast
 
 1. **Send** — Sender submits ESSR envelope to their local mail node. Node stores blob in MinIO + metadata in PostgreSQL, gossips `Message` announcement.
 2. **Discover** — Recipient queries any node's inbox endpoint. Gets `MailMessage` entries with `source_node_prefix` identifying where blobs live.
-3. **Fetch** — Recipient resolves source node URL (via registry or base domain), authenticates to source node's mail service, retrieves blob. Client verifies `blob_digest` and `blob_size` match.
+3. **Fetch** — Recipient resolves source node URL via registry peer lookup (`source_node_prefix` → `base_domain`), authenticates to source node's mail service, retrieves blob. Client verifies `blob_digest` and `blob_size` match.
 4. **Open** — Recipient deserializes blob as `SignedEssrEnvelope`, verifies sender's KEL, ESSR-opens with local decapsulation key.
 5. **Acknowledge** — Recipient sends ack to local node. Source node deletes blob from MinIO, gossips `Removal` announcement. All nodes delete metadata.
 
