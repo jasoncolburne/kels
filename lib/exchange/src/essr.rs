@@ -6,7 +6,9 @@
 //! - **RUF-CTXT**: Attacker can't strip/replace signature (recipient in signed plaintext)
 
 use base64::Engine;
-use cesr::{DecapsulationKey, EncapsulationKey, Matter, Signature, SigningKey, VerificationKey};
+use cesr::{
+    DecapsulationKey, EncapsulationKey, Matter, Nonce, Signature, SigningKey, VerificationKey,
+};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -48,7 +50,7 @@ pub struct EssrEnvelope {
     pub kem_ciphertext: String,
     /// Base64-encoded AES-GCM-256 ciphertext.
     pub encrypted_payload: String,
-    /// Base64-encoded AES-GCM nonce (12 bytes).
+    /// CESR-encoded AES-GCM nonce (12 bytes, code 1AAN).
     pub nonce: String,
     #[created_at]
     pub created_at: StorageDatetime,
@@ -91,11 +93,9 @@ pub fn seal(
     let aes_key = derive_aes_key(ESSR_KDF_CONTEXT, &shared_secret);
 
     // 4. Generate random nonce and encrypt
-    let mut nonce_bytes = [0u8; 12];
-    getrandom::getrandom(&mut nonce_bytes)
-        .unwrap_or_else(|e| unreachable!("getrandom failed: {}", e));
+    let nonce = Nonce::generate();
 
-    let ciphertext = aes_gcm_encrypt(&aes_key, &nonce_bytes, &inner_json)
+    let ciphertext = aes_gcm_encrypt(&aes_key, &nonce.to_bytes(), &inner_json)
         .map_err(|e| ExchangeError::SealFailed(e.to_string()))?;
 
     // 5. Build envelope with SAID
@@ -106,7 +106,7 @@ pub fn seal(
         recipient: recipient_prefix.to_string(),
         kem_ciphertext: kem_ciphertext.qb64(),
         encrypted_payload: base64_encode(&ciphertext),
-        nonce: base64_encode(&nonce_bytes),
+        nonce: nonce.qb64(),
         created_at: StorageDatetime::now(),
     };
 
@@ -166,16 +166,13 @@ pub fn open(
     let aes_key = derive_aes_key(ESSR_KDF_CONTEXT, &shared_secret);
 
     // 5. Decrypt
-    let nonce_bytes = base64_decode(&signed_envelope.envelope.nonce)
+    let nonce = Nonce::from_qb64(&signed_envelope.envelope.nonce)
         .map_err(|e| ExchangeError::OpenFailed(format!("invalid nonce: {e}")))?;
-    let nonce: [u8; 12] = nonce_bytes
-        .try_into()
-        .map_err(|_| ExchangeError::OpenFailed("nonce must be 12 bytes".into()))?;
 
     let ciphertext = base64_decode(&signed_envelope.envelope.encrypted_payload)
         .map_err(|e| ExchangeError::OpenFailed(format!("invalid ciphertext: {e}")))?;
 
-    let plaintext = aes_gcm_decrypt(&aes_key, &nonce, &ciphertext)
+    let plaintext = aes_gcm_decrypt(&aes_key, &nonce.to_bytes(), &ciphertext)
         .map_err(|e| ExchangeError::OpenFailed(e.to_string()))?;
 
     // 6. Deserialize and verify sender consistency
@@ -192,11 +189,11 @@ pub fn open(
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(data)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
-    base64::engine::general_purpose::STANDARD
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(data)
         .map_err(|e| e.to_string())
 }

@@ -27,9 +27,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Error handling
 thiserror = "1"
 
-# Cryptographic randomness
-getrandom = "0.2"
-
 # Base64 encoding
 base64 = "0.22"
 
