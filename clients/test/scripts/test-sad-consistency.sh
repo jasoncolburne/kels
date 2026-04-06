@@ -29,6 +29,10 @@ NODE_D_SADSTORE_HOST="${NODE_D_SADSTORE_HOST:-sadstore.node-d.kels}"
 NODE_E_SADSTORE_HOST="${NODE_E_SADSTORE_HOST:-sadstore.node-e.kels}"
 NODE_F_SADSTORE_HOST="${NODE_F_SADSTORE_HOST:-sadstore.node-f.kels}"
 
+# Dummy CESR values for test endpoints that skip auth but still deserialize
+DUMMY_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+DUMMY_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 declare -a NODE_NAMES=(a b c d e f)
 declare -a NODE_URLS=(
     "http://${NODE_A_SADSTORE_HOST}"
@@ -73,9 +77,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     reachable=true
     while true; do
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"test",signature:"test"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         else
-            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"test",signature:"test"}')
+            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/pointers/prefixes" 2>/dev/null)
@@ -138,9 +142,9 @@ for i in "${!REACHABLE_NAMES[@]}"; do
 
     while true; do
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"test",signature:"test"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         else
-            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"test",signature:"test"}')
+            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/saids" 2>/dev/null)
