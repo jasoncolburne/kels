@@ -255,7 +255,7 @@ restart-gossip-services:
 		sleep 10; \
 	done
 
-test-restart-gossip-services:
+restart-gossip-services-staggered:
 	@for node in a b c d e f; do \
 		echo "Restarting gossip on node-$$node..."; \
 		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
@@ -435,4 +435,4 @@ test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes test-restart-gossip-services test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-sad-consistency test-kel-consistency
+test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-sad-consistency test-kel-consistency
