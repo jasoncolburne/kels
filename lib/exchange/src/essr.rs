@@ -17,7 +17,7 @@ use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};
 use crate::error::ExchangeError;
 
 /// Blake3 KDF context for ESSR key derivation.
-const ESSR_KDF_CONTEXT: &str = "kels/essr/v1";
+const ESSR_KDF_CONTEXT: &str = "kels/v1/essr";
 
 /// Inner payload (encrypted). Sender inside ciphertext provides RUF-PTXT.
 ///

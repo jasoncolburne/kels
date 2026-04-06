@@ -15,7 +15,7 @@ Four UnForgeability properties:
 SEAL(inner, sender_serial, recipient_prefix, recipient_encap_key, sender_signing_key):
   1. inner_json = serialize(EssrInner { sender, topic, payload })
   2. (kem_ciphertext, shared_secret) = recipient_encap_key.encapsulate()
-  3. aes_key = blake3::derive_key("kels/essr/v1", &shared_secret)
+  3. aes_key = blake3::derive_key("kels/v1/essr", &shared_secret)
   4. nonce = random_12_bytes()
   5. encrypted = AES-GCM-256-encrypt(aes_key, nonce, inner_json)
   6. envelope = EssrEnvelope { said, sender, sender_serial, recipient, kem_ciphertext, encrypted, nonce, created_at }
@@ -31,7 +31,7 @@ OPEN(signed_envelope, recipient_decap_key, sender_verification_key):
   1. verify envelope SAID
   2. ML-DSA-verify(sender_verification_key, envelope.said, signature)
   3. shared_secret = recipient_decap_key.decapsulate(kem_ciphertext)
-  4. aes_key = blake3::derive_key("kels/essr/v1", &shared_secret)
+  4. aes_key = blake3::derive_key("kels/v1/essr", &shared_secret)
   5. inner_json = AES-GCM-256-decrypt(aes_key, nonce, encrypted)
   6. inner = deserialize(inner_json)
   7. assert inner.sender == envelope.sender
@@ -172,6 +172,6 @@ All cryptographic operations use post-quantum algorithms:
 - **ML-KEM-768/1024** — key encapsulation (via `cesr` crate)
 - **ML-DSA-65/87** — digital signatures (via `cesr` crate)
 - **AES-GCM-256** — authenticated encryption (via `kels_core::crypto::aead`)
-- **Blake3** — key derivation with context `"kels/essr/v1"` (via `kels_core::crypto::aead::derive_aes_key`)
+- **Blake3** — key derivation with context `"kels/v1/essr"` (via `kels_core::crypto::aead::derive_aes_key`)
 
 Algorithm strength pairing: ML-DSA-65 pairs with ML-KEM-768; ML-DSA-87 pairs with ML-KEM-1024.

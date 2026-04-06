@@ -12,7 +12,7 @@ use crate::error::KelsError;
 
 /// Derive a 256-bit AES key from input key material using blake3's keyed derivation.
 ///
-/// The `context` string provides domain separation (e.g. `"kels/essr/v1"`).
+/// The `context` string provides domain separation (e.g. `"kels/v1/essr"`).
 pub fn derive_aes_key(context: &str, input_key_material: &[u8]) -> [u8; 32] {
     blake3::derive_key(context, input_key_material)
 }
