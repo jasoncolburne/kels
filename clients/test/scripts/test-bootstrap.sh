@@ -52,7 +52,7 @@ get_peer_count() {
 
 peer_exists() {
     local peer_prefix="$1"
-    curl -s "$REGISTRY_URL/api/v1/peers" | jq -e ".peers[].records[-1] | select(.peerPrefix == \"$peer_prefix\")" > /dev/null
+    curl -s "$REGISTRY_URL/api/v1/peers" | jq -e ".peers[].records[-1] | select(.prefix == \"$peer_prefix\")" > /dev/null
 }
 
 get_prefix_count() {
@@ -62,7 +62,7 @@ get_prefix_count() {
     while true; do
         local body
         body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
-            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},peerPrefix:"test",publicKey:"test",signature:"test"}')
+            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},prefix:"test",signature:"test"}')
         local response
         response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
         local page_count
@@ -84,7 +84,7 @@ get_all_prefixes() {
     while true; do
         local body
         body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
-            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},peerPrefix:"test",publicKey:"test",signature:"test"}')
+            '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},prefix:"test",signature:"test"}')
         local response
         response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
         echo "$response" | jq -r '.prefixes[].prefix'
@@ -259,7 +259,7 @@ echo "Created: $PREFIX1, $PREFIX2"
 
 # Test prefix listing (POST with mock signed request — test endpoint skips auth)
 RESPONSE=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:10},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
+    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:10},prefix:"test",signature:"test"}')" \
     "$NODE_A_URL/api/test/prefixes")
 echo "Prefix list response: $RESPONSE"
 
@@ -286,7 +286,7 @@ done
 
 # Test pagination with limit=2
 PAGE1=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:2},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
+    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:2},prefix:"test",signature:"test"}')" \
     "$NODE_A_URL/api/test/prefixes")
 CURSOR=$(echo "$PAGE1" | jq -r '.nextCursor // empty')
 PAGE1_COUNT=$(echo "$PAGE1" | jq '.prefixes | length')
@@ -295,7 +295,7 @@ echo "Page 1: $PAGE1_COUNT prefixes, cursor: ${CURSOR:-none}"
 
 if [ -n "$CURSOR" ]; then
     PAGE2=$(curl -s -X POST -H 'Content-Type: application/json' \
-        -d "$(jq -n --arg cursor "$CURSOR" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:2},peerPrefix:"test",publicKey:"test",signature:"test"}')" \
+        -d "$(jq -n --arg cursor "$CURSOR" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:2},prefix:"test",signature:"test"}')" \
         "$NODE_A_URL/api/test/prefixes")
     PAGE2_COUNT=$(echo "$PAGE2" | jq '.prefixes | length')
     echo "Page 2: $PAGE2_COUNT prefixes"

@@ -1,19 +1,14 @@
 //! kels-cli - KELS Command Line Interface
 
-use std::{iter, path::PathBuf};
+use std::path::PathBuf;
 
-#[cfg(feature = "dev-tools")]
-use anyhow::bail;
-use anyhow::{Context, Result, anyhow};
-use cesr::Matter;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use colored::Colorize;
-#[cfg(feature = "dev-tools")]
-use kels_core::{EventKind, KelStore};
-use kels_core::{
-    FileKelStore, HttpKelSource, KelVerification, KelVerifier, KelsClient, KeyEventBuilder,
-    KeyProvider, ProviderConfig, SoftwareKeyProvider, SoftwareProviderConfig, VerificationKeyCode,
-};
+
+mod commands;
+mod helpers;
+
+use helpers::{config_dir, parse_algorithm};
 
 const DEFAULT_BASE_DOMAIN: &str = "node-a.kels";
 const DEFAULT_REGISTRY_URL: &str = "http://registry.registry-a.kels";
@@ -179,6 +174,14 @@ enum Commands {
     #[command(subcommand)]
     Sad(SadCommands),
 
+    /// Exchange protocol commands (ESSR messaging + key publication)
+    #[command(subcommand)]
+    Exchange(ExchangeCommands),
+
+    /// Credential management commands
+    #[command(subcommand)]
+    Cred(CredCommands),
+
     /// Development and testing commands
     #[cfg(feature = "dev-tools")]
     #[command(subcommand)]
@@ -267,79 +270,144 @@ enum SadCommands {
     },
 }
 
-fn parse_algorithm(algorithm: &str) -> Result<VerificationKeyCode> {
-    match algorithm {
-        "secp256r1" => Ok(VerificationKeyCode::Secp256r1),
-        "ml-dsa-65" => Ok(VerificationKeyCode::MlDsa65),
-        "ml-dsa-87" => Ok(VerificationKeyCode::MlDsa87),
-        _ => Err(anyhow!(
-            "Unknown algorithm '{}'. Valid options: secp256r1, ml-dsa-65, ml-dsa-87",
-            algorithm
-        )),
-    }
+#[derive(Subcommand, Debug)]
+enum ExchangeCommands {
+    /// Publish an ML-KEM encapsulation key to the SADStore
+    PublishKey {
+        /// KEL prefix whose key to publish
+        #[arg(long)]
+        prefix: String,
+
+        /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
+        #[arg(long)]
+        algorithm: Option<String>,
+    },
+
+    /// Rotate the ML-KEM encapsulation key (appends new version to pointer chain)
+    RotateKey {
+        /// KEL prefix whose key to rotate
+        #[arg(long)]
+        prefix: String,
+
+        /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
+        #[arg(long)]
+        algorithm: Option<String>,
+    },
+
+    /// Look up a prefix's encapsulation key from the SADStore
+    LookupKey {
+        /// KEL prefix to look up
+        prefix: String,
+    },
+
+    /// Send an ESSR-encrypted message to a recipient via the mail service
+    Send {
+        /// Sender KEL prefix
+        #[arg(long)]
+        prefix: String,
+
+        /// Recipient KEL prefix
+        #[arg(long)]
+        recipient: String,
+
+        /// Topic string (e.g., "kels/v1/exchange")
+        #[arg(long, default_value = "kels/v1/exchange")]
+        topic: String,
+
+        /// Path to file containing the payload (or - for stdin)
+        #[arg(long)]
+        payload: PathBuf,
+    },
+
+    /// Check inbox for messages
+    Inbox {
+        /// Recipient KEL prefix
+        #[arg(long)]
+        prefix: String,
+    },
+
+    /// Fetch and decrypt a message
+    Fetch {
+        /// Recipient KEL prefix
+        #[arg(long)]
+        prefix: String,
+
+        /// Mail message SAID
+        #[arg(long)]
+        said: String,
+    },
+
+    /// Acknowledge (delete) messages
+    Ack {
+        /// Recipient KEL prefix
+        #[arg(long)]
+        prefix: String,
+
+        /// Mail message SAIDs to acknowledge
+        #[arg(long, num_args = 1..)]
+        saids: Vec<String>,
+    },
 }
 
-fn config_dir(cli: &Cli) -> Result<PathBuf> {
-    if let Some(ref dir) = cli.config_dir {
-        return Ok(dir.clone());
-    }
+#[derive(Subcommand, Debug)]
+enum CredCommands {
+    /// Issue a new credential (build, anchor in KEL, store locally)
+    Issue {
+        /// KEL prefix of the endorser
+        #[arg(long)]
+        prefix: String,
 
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join(".kels-cli"))
-}
+        /// Path to schema JSON file
+        #[arg(long)]
+        schema: PathBuf,
 
-fn kel_dir(cli: &Cli) -> Result<PathBuf> {
-    Ok(config_dir(cli)?.join("kels"))
-}
+        /// Path to policy JSON file
+        #[arg(long)]
+        policy: PathBuf,
 
-fn provider_config(cli: &Cli, prefix: &str) -> Result<SoftwareProviderConfig> {
-    let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    Ok(SoftwareProviderConfig::new(
-        key_dir,
-        VerificationKeyCode::MlDsa65,
-        VerificationKeyCode::MlDsa65,
-    ))
-}
+        /// Path to claims JSON file
+        #[arg(long)]
+        claims: PathBuf,
 
-/// Parse comma-separated registry URLs into a Vec.
-fn parse_registry_urls(registry: &str) -> Vec<String> {
-    registry
-        .split(',')
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty())
-        .collect()
-}
+        /// Subject prefix (optional)
+        #[arg(long)]
+        subject: Option<String>,
 
-async fn create_client(cli: &Cli) -> Result<KelsClient> {
-    if cli.auto_select {
-        let registry_urls = parse_registry_urls(&cli.registry);
-        if registry_urls.is_empty() {
-            return Err(anyhow!("No registry URLs provided"));
-        }
+        /// Generate a unique nonce (for non-deterministic credentials)
+        #[arg(long)]
+        unique: bool,
+    },
 
-        let store = create_kel_store(cli, "registry-discovery")?;
-        let peers = kels_core::peers_sorted_by_latency(
-            &registry_urls,
-            std::time::Duration::from_secs(2),
-            &store,
-        )
-        .await
-        .context("Failed to discover nodes from registry")?;
+    /// Store a received credential locally (no anchoring)
+    Store {
+        /// Path to credential JSON file
+        #[arg(long)]
+        file: PathBuf,
 
-        println!("{}", "Ready Peers:".cyan());
-        for peer in &peers {
-            println!("  {} - {}", peer.node_id, peer.base_domain);
-        }
-        println!();
+        /// Path to schema JSON file
+        #[arg(long)]
+        schema: PathBuf,
+    },
 
-        let url = match peers.first() {
-            Some(p) => format!("http://kels.{}", p.base_domain),
-            None => return Err(anyhow!("No ready peers found")),
-        };
-        Ok(KelsClient::new(&url)?)
-    } else {
-        Ok(KelsClient::new(&cli.kels_url())?)
-    }
+    /// List locally stored credentials
+    List,
+
+    /// Show a credential by SAID
+    Show {
+        /// Credential SAID
+        said: String,
+    },
+
+    /// Poison a credential (anchor poison hash in KEL)
+    Poison {
+        /// KEL prefix of the endorser
+        #[arg(long)]
+        prefix: String,
+
+        /// Credential SAID to poison
+        #[arg(long)]
+        said: String,
+    },
 }
 
 impl Cli {
@@ -354,856 +422,10 @@ impl Cli {
             .clone()
             .unwrap_or_else(|| format!("http://sadstore.{}", self.base_domain))
     }
-}
 
-fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
-    let dir = kel_dir(cli)?;
-    FileKelStore::with_owner(dir, prefix.to_string()).context("Failed to create KEL store")
-}
-
-// ==================== Command Handlers ====================
-
-async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
-    let registry_urls = parse_registry_urls(&cli.registry);
-    if registry_urls.is_empty() {
-        return Err(anyhow!("No registry URLs provided"));
+    fn mail_url(&self) -> String {
+        format!("http://mail.{}", self.base_domain)
     }
-
-    println!(
-        "{}",
-        format!("Discovering nodes from {}...", cli.registry).green()
-    );
-
-    let store = create_kel_store(cli, "registry-discovery")?;
-    let peers = kels_core::peers_sorted_by_latency(
-        &registry_urls,
-        std::time::Duration::from_secs(2),
-        &store,
-    )
-    .await?;
-
-    if peers.is_empty() {
-        println!("{}", "No ready peers found.".yellow());
-        return Ok(());
-    }
-
-    println!();
-    println!("{}", "Ready Peers (sorted by latency):".cyan().bold());
-
-    for peer in &peers {
-        let kels_url = format!("http://kels.{}", peer.base_domain);
-        let latency_str = if let Ok(client) =
-            KelsClient::with_timeout(&kels_url, std::time::Duration::from_secs(2))
-        {
-            client
-                .test_latency()
-                .await
-                .map(|d| format!("{}ms", d.as_millis()))
-                .unwrap_or_else(|_| "-".to_string())
-        } else {
-            "-".to_string()
-        };
-
-        println!(
-            "  {} [{}] - {} (latency: {})",
-            peer.node_id,
-            "READY".green(),
-            peer.base_domain,
-            latency_str
-        );
-    }
-
-    Ok(())
-}
-
-async fn cmd_incept(
-    cli: &Cli,
-    signing: VerificationKeyCode,
-    recovery: VerificationKeyCode,
-) -> Result<()> {
-    println!("{}", "Creating new KEL...".green());
-
-    let client = create_client(cli).await?;
-    let key_provider = SoftwareKeyProvider::new(signing, recovery);
-
-    // Pass a kel_store to the builder so add_and_flush saves automatically
-    let kel_dir = kel_dir(cli)?;
-    let kel_store = FileKelStore::new(&kel_dir).context("Failed to create KEL store")?;
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        None,
-    )
-    .await?;
-
-    let icp = builder.incept().await.context("Inception failed")?;
-
-    // Save keys to the correct prefix directory
-    let config = provider_config(cli, &icp.event.prefix)?;
-    config.save_provider(builder.key_provider()).await?;
-
-    println!("{}", "KEL created successfully!".green().bold());
-    println!("  Prefix: {}", icp.event.prefix.cyan());
-    println!("  SAID:   {}", icp.event.said);
-
-    Ok(())
-}
-
-async fn cmd_rotate(cli: &Cli, prefix: &str, algorithm: Option<VerificationKeyCode>) -> Result<()> {
-    println!(
-        "{}",
-        format!("Rotating signing key for {}...", prefix).green()
-    );
-
-    let config = provider_config(cli, prefix)?;
-    let client = create_client(cli).await?;
-    let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    if let Some(algo) = algorithm {
-        builder
-            .key_provider_mut()
-            .set_signing_algorithm(algo)
-            .await?;
-    }
-
-    match builder.rotate().await {
-        Ok(rot) => {
-            config.save_provider(builder.key_provider()).await?;
-            println!("{}", "Rotation successful!".green().bold());
-            println!("  Event SAID: {}", rot.event.said);
-            Ok(())
-        }
-        Err(kels_core::KelsError::DivergenceDetected {
-            submission_accepted: true,
-            ref diverged_at,
-        }) => {
-            // Keys were committed internally - save them before returning error
-            config.save_provider(builder.key_provider()).await?;
-            Err(anyhow!(
-                "Divergence detected at: {}, submission_accepted: true",
-                diverged_at
-            ))
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-async fn cmd_rotate_recovery(
-    cli: &Cli,
-    prefix: &str,
-    signing_algorithm: Option<VerificationKeyCode>,
-    recovery_algorithm: Option<VerificationKeyCode>,
-) -> Result<()> {
-    println!(
-        "{}",
-        format!("Rotating signing and recovery keys for {}...", prefix).green()
-    );
-
-    let config = provider_config(cli, prefix)?;
-    let client = create_client(cli).await?;
-    let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    if let Some(algo) = signing_algorithm {
-        builder
-            .key_provider_mut()
-            .set_signing_algorithm(algo)
-            .await?;
-    }
-    if let Some(algo) = recovery_algorithm {
-        builder
-            .key_provider_mut()
-            .set_recovery_algorithm(algo)
-            .await?;
-    }
-
-    let ror = builder
-        .rotate_recovery()
-        .await
-        .context("Recovery rotation failed")?;
-    config.save_provider(builder.key_provider()).await?;
-
-    println!("{}", "Recovery rotation successful!".green().bold());
-    println!("  Event SAID: {}", ror.event.said);
-
-    Ok(())
-}
-
-async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> {
-    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let sig = key_provider
-        .sign(data.as_bytes())
-        .await
-        .context("Signing failed")?;
-    println!("{}", sig.qb64());
-    Ok(())
-}
-
-async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
-    println!("{}", format!("Anchoring SAID in {}...", prefix).green());
-
-    let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    let ixn = builder.interact(said).await.context("Interaction failed")?;
-
-    println!("{}", "Anchor successful!".green().bold());
-    println!("  Event SAID: {}", ixn.event.said);
-    println!("  Anchored:   {}", said);
-
-    Ok(())
-}
-
-async fn cmd_recover(
-    cli: &Cli,
-    prefix: &str,
-    signing_algorithm: Option<&str>,
-    recovery_algorithm: Option<&str>,
-) -> Result<()> {
-    println!("{}", format!("Recovering KEL {}...", prefix).yellow());
-
-    let config = provider_config(cli, prefix)?;
-    let client = create_client(cli).await?;
-    let mut key_provider = config.load_provider().await?;
-
-    if let Some(algo) = signing_algorithm {
-        let algo = parse_algorithm(algo)?;
-        key_provider.set_signing_algorithm(algo).await?;
-    }
-    if let Some(algo) = recovery_algorithm {
-        let algo = parse_algorithm(algo)?;
-        key_provider.set_recovery_algorithm(algo).await?;
-    }
-
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client.clone()),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels_core::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
-    let server_verification = kels_core::verify_key_events(
-        prefix,
-        &source,
-        KelVerifier::new(prefix),
-        kels_core::page_size(),
-        kels_core::max_pages(),
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
-    let owner_last_est_serial = builder
-        .last_establishment_event()
-        .map(|e| e.serial)
-        .unwrap_or(0);
-    let add_rot = kels_core::should_rotate_with_recovery(
-        &server_verification,
-        builder.rotation_count(),
-        owner_last_est_serial,
-    );
-    let rec = builder.recover(add_rot).await.context("Recovery failed")?;
-    config.save_provider(builder.key_provider()).await?;
-
-    println!("{}", "Recovery successful!".green().bold());
-    println!("  Event SAID: {}", rec.event.said);
-
-    Ok(())
-}
-
-async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
-    println!("{}", format!("Contesting KEL {}...", prefix).red().bold());
-    println!(
-        "{}",
-        "WARNING: This will permanently freeze the KEL.".yellow()
-    );
-
-    let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    let cnt = builder.contest().await.context("Contest failed")?;
-
-    println!("{}", "KEL contested and permanently frozen.".red().bold());
-    println!("  Event SAID: {}", cnt.event.said);
-
-    Ok(())
-}
-
-async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
-    println!(
-        "{}",
-        format!("Decommissioning KEL {}...", prefix).yellow().bold()
-    );
-    println!(
-        "{}",
-        "WARNING: This is permanent. No further events can be added.".red()
-    );
-
-    let client = create_client(cli).await?;
-    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let mut builder = KeyEventBuilder::with_dependencies(
-        key_provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
-    )
-    .await?;
-
-    let dec = builder
-        .decommission()
-        .await
-        .context("Decommission failed")?;
-
-    println!("{}", "KEL decommissioned.".green().bold());
-    println!("  Event SAID: {}", dec.event.said);
-
-    Ok(())
-}
-
-fn print_kel_status(kel_verification: &KelVerification, verbose: bool) {
-    if verbose {
-        println!("  Verified: Yes");
-    }
-    if kel_verification.is_contested() {
-        println!("  Status: {}", "CONTESTED".red());
-    } else if kel_verification.is_decommissioned() {
-        println!("  Status: {}", "DECOMMISSIONED".red());
-    } else if kel_verification.is_divergent() {
-        println!("  Status: {}", "DIVERGENT".yellow());
-    } else {
-        println!("  Status: {}", "OK".green());
-    }
-}
-
-fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
-    println!();
-    println!("{}", format!("KEL: {}", prefix).cyan().bold());
-    println!("  Events: {}", kel_verification.event_count());
-
-    if let Some(tip) = kel_verification.branch_tips().last() {
-        println!("  Latest SAID: {}", tip.tip.event.said);
-        println!("  Latest Type: {}", tip.tip.event.kind);
-    }
-}
-
-async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
-    let client = create_client(cli).await?;
-    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
-
-    let msg = if audit {
-        format!("Fetching KEL {} with audit records...", prefix)
-    } else {
-        format!("Fetching KEL {}...", prefix)
-    };
-    println!("{}", msg.green());
-
-    // Verify and print events in a single pass
-    let kel_verification = kels_core::verify_key_events_with(
-        prefix,
-        &source,
-        KelVerifier::new(prefix),
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        |events| {
-            for signed_event in events {
-                let event = &signed_event.event;
-                println!(
-                    "  [{}] {} - {}",
-                    event.serial,
-                    event.kind.as_str().to_uppercase(),
-                    &event.said[..16]
-                );
-            }
-        },
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
-
-    print_kel_summary(prefix, &kel_verification);
-    print_kel_status(&kel_verification, !audit);
-
-    if audit {
-        let mut all_records = Vec::new();
-        let mut offset = 0u64;
-        loop {
-            let page = client
-                .fetch_kel_audit(prefix, kels_core::page_size(), offset)
-                .await?;
-            all_records.extend(page.records);
-            if !page.has_more {
-                break;
-            }
-            offset += kels_core::page_size() as u64;
-        }
-        if !all_records.is_empty() {
-            println!();
-            println!("{}", "Recovery History:".yellow().bold());
-            for (i, record) in all_records.iter().enumerate() {
-                println!("  [{}] {} ({})", i, &record.said[..16], record.created_at);
-                println!(
-                    "      diverged_at={} recovery_serial={}",
-                    record.diverged_at, record.recovery_serial
-                );
-            }
-        } else {
-            println!();
-            println!("{}", "Recovery History: (none)".yellow());
-        }
-    }
-
-    Ok(())
-}
-
-async fn cmd_list(cli: &Cli) -> Result<()> {
-    let kel_dir = kel_dir(cli)?;
-
-    if !kel_dir.exists() {
-        println!("{}", "No KELs found.".yellow());
-        return Ok(());
-    }
-
-    println!("{}", "Local KELs:".cyan().bold());
-
-    let mut found = false;
-    for entry in std::fs::read_dir(&kel_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().is_some_and(|e| e == "jsonl")
-            && let Some(stem) = path.file_stem()
-            && let Some(prefix) = stem.to_str()
-        {
-            // Remove .kel suffix if present
-            let prefix = prefix.strip_suffix(".kel").unwrap_or(prefix);
-            println!("  {}", prefix);
-            found = true;
-        }
-    }
-
-    if !found {
-        println!("{}", "  (none)".yellow());
-    }
-
-    Ok(())
-}
-
-async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, prefix)?;
-
-    let kel_verification = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&kel_store),
-        prefix,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        iter::empty(),
-    )
-    .await?;
-
-    if kel_verification.is_empty() {
-        return Err(anyhow!("KEL not found locally: {}", prefix));
-    }
-
-    let event_count = kel_verification.event_count();
-
-    println!("{}", format!("KEL Status: {}", prefix).cyan().bold());
-    println!("  Local Events: {}", event_count);
-
-    if let Some(bt) = kel_verification.branch_tips().first() {
-        println!("  Latest SAID:  {}", bt.tip.event.said);
-        println!("  Latest Type:  {}", bt.tip.event.kind);
-    }
-    if kel_verification.is_contested() {
-        println!("  Status:       {}", "CONTESTED".red());
-    } else if kel_verification.is_decommissioned() {
-        println!("  Status:       {}", "DECOMMISSIONED".red());
-    } else if kel_verification.is_divergent() {
-        println!("  Status:       {}", "DIVERGENT".yellow());
-        if let Some(serial) = kel_verification.diverged_at_serial() {
-            println!("  Diverged At:  s{}", serial);
-        }
-    } else {
-        println!("  Status:       {}", "OK".green());
-    }
-    let key_dir = config_dir(cli)?.join("keys").join(prefix);
-    let has_keys = key_dir.join("current.key").exists();
-    println!(
-        "  Keys:         {}",
-        if has_keys {
-            "present".green()
-        } else {
-            "missing".red()
-        }
-    );
-
-    Ok(())
-}
-
-async fn cmd_reset(cli: &Cli, prefix: Option<&str>, yes: bool) -> Result<()> {
-    use std::io::{self, Write};
-
-    let config = config_dir(cli)?;
-    let kel_dir = kel_dir(cli)?;
-    let keys_dir = config.join("keys");
-
-    if let Some(p) = prefix {
-        // Reset specific KEL
-        let kel_file = kel_dir.join(format!("{}.kel.json", p));
-        let key_dir = keys_dir.join(p);
-
-        if !kel_file.exists() && !key_dir.exists() {
-            println!("{}", format!("No local state found for {}", p).yellow());
-            return Ok(());
-        }
-
-        if !yes {
-            print!(
-                "{}",
-                format!(
-                    "Reset local state for {}? This will delete local KEL and keys. [y/N] ",
-                    p
-                )
-                .red()
-            );
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
-            }
-        }
-
-        if kel_file.exists() {
-            std::fs::remove_file(&kel_file)?;
-            println!("  Deleted KEL: {}", kel_file.display());
-        }
-        if key_dir.exists() {
-            std::fs::remove_dir_all(&key_dir)?;
-            println!("  Deleted keys: {}", key_dir.display());
-        }
-
-        println!("{}", format!("Reset complete for {}", p).green().bold());
-    } else {
-        // Reset all local state
-        if !yes {
-            print!(
-                "{}",
-                "Reset ALL local state? This will delete ALL local KELs and keys. [y/N] "
-                    .red()
-                    .bold()
-            );
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
-            }
-        }
-
-        let mut count = 0;
-        if kel_dir.exists() {
-            for entry in std::fs::read_dir(&kel_dir)? {
-                let entry = entry?;
-                std::fs::remove_file(entry.path())?;
-                count += 1;
-            }
-            println!("  Deleted {} KEL file(s)", count);
-        }
-
-        if keys_dir.exists() {
-            let key_count = std::fs::read_dir(&keys_dir)?.count();
-            std::fs::remove_dir_all(&keys_dir)?;
-            std::fs::create_dir_all(&keys_dir)?;
-            println!("  Deleted {} key directory(ies)", key_count);
-        }
-
-        println!(
-            "{}",
-            "Reset complete - all local state cleared.".green().bold()
-        );
-    }
-
-    Ok(())
-}
-
-// ==================== Dev Commands ====================
-
-#[cfg(feature = "dev-tools")]
-async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
-    println!(
-        "{}",
-        format!("Truncating local KEL {} to {} events...", prefix, count).yellow()
-    );
-
-    let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels_core::StoreKelSource::new(&kel_store);
-
-    let mut events = kels_core::resolve_key_events(
-        prefix,
-        &source,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
-    if events.is_empty() {
-        return Err(anyhow!("KEL not found locally: {}", prefix));
-    }
-    if count >= events.len() {
-        println!(
-            "KEL already has {} events, nothing to truncate.",
-            events.len()
-        );
-        return Ok(());
-    }
-
-    events.truncate(count);
-    kel_store.overwrite(prefix, &events).await?;
-
-    println!(
-        "{}",
-        format!("Truncated to {} events.", count).green().bold()
-    );
-
-    Ok(())
-}
-
-#[cfg(feature = "dev-tools")]
-async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
-    let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels_core::StoreKelSource::new(&kel_store);
-    let all_events = kels_core::resolve_key_events(
-        prefix,
-        &source,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
-
-    if all_events.is_empty() {
-        return Err(anyhow!("KEL not found locally: {}", prefix));
-    }
-
-    let json = serde_json::to_string_pretty(&all_events)?;
-    println!("{}", json);
-
-    Ok(())
-}
-
-#[cfg(feature = "dev-tools")]
-async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Result<()> {
-    println!(
-        "{}",
-        format!("ADVERSARY: Injecting events to {} (server only)...", prefix)
-            .yellow()
-            .bold()
-    );
-
-    // Load the local KEL to get the chain state (dev-tools, not production)
-    let kel_store = create_kel_store(cli, prefix)?;
-    let source = kels_core::StoreKelSource::new(&kel_store);
-    let events = kels_core::resolve_key_events(
-        prefix,
-        &source,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("{}", e))?;
-    if events.is_empty() {
-        return Err(anyhow!("KEL not found locally: {}", prefix));
-    }
-
-    // Load the key provider (adversary has the same keys as owner)
-    let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-
-    // Parse event types
-    let event_kinds: Vec<EventKind> = events_str
-        .split(',')
-        .map(|s| EventKind::from_short_name(s.trim()))
-        .collect::<Result<_, _>>()?;
-
-    let has_recovery = event_kinds.iter().any(|k| k.reveals_recovery_key());
-
-    if has_recovery {
-        println!(
-            "{}",
-            "(Includes recovery event - simulates true key compromise)".yellow()
-        );
-    }
-
-    // Create adversary builder WITH KELS client but NO kel_store
-    // Events submit to KELS but don't save locally (simulating adversary)
-    let client = create_client(cli).await?;
-    let mut builder = KeyEventBuilder::with_events(key_provider, Some(client), None, events);
-
-    let mut saids = Vec::new();
-
-    for kind in &event_kinds {
-        let signed = match kind {
-            EventKind::Ixn => {
-                let anchor = kels_core::generate_nonce();
-                builder.interact(&anchor).await?
-            }
-            EventKind::Rot => builder.rotate().await?,
-            EventKind::Rec => builder.recover(false).await?,
-            EventKind::Ror => builder.rotate_recovery().await?,
-            EventKind::Dec => builder.decommission().await?,
-            other => {
-                bail!(
-                    "Unsupported adversary event type: {}. Valid types: ixn, rot, rec, ror, dec",
-                    other
-                );
-            }
-        };
-        saids.push(signed.event.said.clone());
-    }
-
-    println!(
-        "{}",
-        format!("Adversary injected {} events!", saids.len())
-            .yellow()
-            .bold()
-    );
-    for (i, said) in saids.iter().enumerate() {
-        println!("  Event {}: {}", i + 1, said);
-    }
-    println!(
-        "{}",
-        "Local state NOT updated (simulating adversary)".yellow()
-    );
-
-    Ok(())
-}
-
-// ==================== SAD Commands ====================
-
-async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
-    use verifiable_storage::SelfAddressed;
-
-    let data = std::fs::read_to_string(file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&data).context("Failed to parse JSON file")?;
-
-    // Compute the SAID if missing or placeholder
-    let current_said = value.get_said();
-    if current_said.is_empty() || current_said.chars().all(|c| c == '#') {
-        value
-            .derive_said()
-            .context("Failed to compute SAID for object")?;
-    }
-
-    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let said = client
-        .post_sad_object(&value)
-        .await
-        .context("Failed to store SAD object")?;
-
-    println!("{}", said);
-    Ok(())
-}
-
-async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
-    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let value = client
-        .get_sad_object(said)
-        .await
-        .context("Failed to retrieve SAD object")?;
-
-    println!("{}", serde_json::to_string_pretty(&value)?);
-    Ok(())
-}
-
-async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
-    let data = std::fs::read_to_string(file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let records: Vec<kels_core::SignedSadPointer> =
-        serde_json::from_str(&data).context("Failed to parse SignedSadPointer JSON")?;
-
-    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    if repair {
-        client
-            .repair_sad_pointer(&records)
-            .await
-            .context("Failed to submit SAD repair")?;
-    } else {
-        client
-            .submit_sad_pointer(&records)
-            .await
-            .context("Failed to submit SAD records")?;
-    }
-
-    let label = if repair { "repaired" } else { "submitted" };
-    println!(
-        "{}",
-        format!("{} SAD record(s) {}", records.len(), label).green()
-    );
-    Ok(())
-}
-
-async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
-    let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let page = client
-        .fetch_sad_pointer(prefix, None)
-        .await
-        .context("Failed to fetch SAD chain")?;
-
-    println!("{}", serde_json::to_string_pretty(&page)?);
-    Ok(())
-}
-
-fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
-    let prefix = kels_core::compute_sad_pointer_prefix(kel_prefix, kind)
-        .context("Failed to compute SAD prefix")?;
-    println!("{}", prefix);
-    Ok(())
 }
 
 // ==================== Main ====================
@@ -1224,11 +446,11 @@ async fn main() -> Result<()> {
                 Some(a) => parse_algorithm(a)?,
                 None => signing,
             };
-            cmd_incept(&cli, signing, recovery).await
+            commands::kel::cmd_incept(&cli, signing, recovery).await
         }
         Commands::Rotate { prefix, algorithm } => {
             let algo = algorithm.as_deref().map(parse_algorithm).transpose()?;
-            cmd_rotate(&cli, prefix, algo).await
+            commands::kel::cmd_rotate(&cli, prefix, algo).await
         }
         Commands::RotateRecovery {
             prefix,
@@ -1243,16 +465,16 @@ async fn main() -> Result<()> {
                 .as_deref()
                 .map(parse_algorithm)
                 .transpose()?;
-            cmd_rotate_recovery(&cli, prefix, signing, recovery).await
+            commands::kel::cmd_rotate_recovery(&cli, prefix, signing, recovery).await
         }
-        Commands::Sign { prefix, data } => cmd_sign(&cli, prefix, data).await,
-        Commands::Anchor { prefix, said } => cmd_anchor(&cli, prefix, said).await,
+        Commands::Sign { prefix, data } => commands::kel::cmd_sign(&cli, prefix, data).await,
+        Commands::Anchor { prefix, said } => commands::kel::cmd_anchor(&cli, prefix, said).await,
         Commands::Recover {
             prefix,
             signing_algorithm,
             recovery_algorithm,
         } => {
-            cmd_recover(
+            commands::kel::cmd_recover(
                 &cli,
                 prefix,
                 signing_algorithm.as_deref(),
@@ -1260,32 +482,101 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Contest { prefix } => cmd_contest(&cli, prefix).await,
-        Commands::Decommission { prefix } => cmd_decommission(&cli, prefix).await,
-        Commands::Get { prefix, audit } => cmd_get(&cli, prefix, *audit).await,
-        Commands::List => cmd_list(&cli).await,
-        Commands::ListNodes => cmd_list_nodes(&cli).await,
-        Commands::Status { prefix } => cmd_status(&cli, prefix).await,
-        Commands::Reset { prefix, yes } => cmd_reset(&cli, prefix.as_deref(), *yes).await,
+        Commands::Contest { prefix } => commands::kel::cmd_contest(&cli, prefix).await,
+        Commands::Decommission { prefix } => commands::kel::cmd_decommission(&cli, prefix).await,
+        Commands::Get { prefix, audit } => commands::kel::cmd_get(&cli, prefix, *audit).await,
+        Commands::List => commands::kel::cmd_list(&cli).await,
+        Commands::ListNodes => commands::kel::cmd_list_nodes(&cli).await,
+        Commands::Status { prefix } => commands::kel::cmd_status(&cli, prefix).await,
+        Commands::Reset { prefix, yes } => {
+            commands::kel::cmd_reset(&cli, prefix.as_deref(), *yes).await
+        }
 
         Commands::Sad(sad_cmd) => match sad_cmd {
-            SadCommands::Put { file } => cmd_sad_put(&cli, file).await,
-            SadCommands::Get { said } => cmd_sad_get(&cli, said).await,
-            SadCommands::Submit { file, repair } => cmd_sad_submit(&cli, file, *repair).await,
-            SadCommands::Pointer { prefix } => cmd_sad_chain(&cli, prefix).await,
-            SadCommands::Prefix { kel_prefix, kind } => cmd_sad_prefix(kel_prefix, kind),
+            SadCommands::Put { file } => commands::sad::cmd_sad_put(&cli, file).await,
+            SadCommands::Get { said } => commands::sad::cmd_sad_get(&cli, said).await,
+            SadCommands::Submit { file, repair } => {
+                commands::sad::cmd_sad_submit(&cli, file, *repair).await
+            }
+            SadCommands::Pointer { prefix } => commands::sad::cmd_sad_chain(&cli, prefix).await,
+            SadCommands::Prefix { kel_prefix, kind } => {
+                commands::sad::cmd_sad_prefix(kel_prefix, kind)
+            }
+        },
+
+        Commands::Exchange(ex_cmd) => match ex_cmd {
+            ExchangeCommands::PublishKey { prefix, algorithm } => {
+                commands::exchange::cmd_exchange_publish_key(&cli, prefix, algorithm.as_deref())
+                    .await
+            }
+            ExchangeCommands::RotateKey { prefix, algorithm } => {
+                commands::exchange::cmd_exchange_rotate_key(&cli, prefix, algorithm.as_deref())
+                    .await
+            }
+            ExchangeCommands::LookupKey { prefix } => {
+                commands::exchange::cmd_exchange_lookup_key(&cli, prefix).await
+            }
+            ExchangeCommands::Send {
+                prefix,
+                recipient,
+                topic,
+                payload,
+            } => {
+                commands::exchange::cmd_exchange_send(&cli, prefix, recipient, topic, payload).await
+            }
+            ExchangeCommands::Inbox { prefix } => {
+                commands::exchange::cmd_exchange_inbox(&cli, prefix).await
+            }
+            ExchangeCommands::Fetch { prefix, said } => {
+                commands::exchange::cmd_exchange_fetch(&cli, prefix, said).await
+            }
+            ExchangeCommands::Ack { prefix, saids } => {
+                commands::exchange::cmd_exchange_ack(&cli, prefix, saids).await
+            }
+        },
+
+        Commands::Cred(cred_cmd) => match cred_cmd {
+            CredCommands::Issue {
+                prefix,
+                schema,
+                policy,
+                claims,
+                subject,
+                unique,
+            } => {
+                commands::cred::cmd_cred_issue(
+                    &cli,
+                    prefix,
+                    schema,
+                    policy,
+                    claims,
+                    subject.as_deref(),
+                    *unique,
+                )
+                .await
+            }
+            CredCommands::Store { file, schema } => {
+                commands::cred::cmd_cred_store(&cli, file, schema).await
+            }
+            CredCommands::List => commands::cred::cmd_cred_list(&cli).await,
+            CredCommands::Show { said } => commands::cred::cmd_cred_show(&cli, said).await,
+            CredCommands::Poison { prefix, said } => {
+                commands::cred::cmd_cred_poison(&cli, prefix, said).await
+            }
         },
 
         #[cfg(feature = "dev-tools")]
         Commands::Dev(dev_cmd) => match dev_cmd {
-            DevCommands::Truncate { prefix, count } => cmd_dev_truncate(&cli, prefix, *count).await,
-            DevCommands::DumpKel { prefix } => cmd_dev_dump_kel(&cli, prefix).await,
+            DevCommands::Truncate { prefix, count } => {
+                commands::dev::cmd_dev_truncate(&cli, prefix, *count).await
+            }
+            DevCommands::DumpKel { prefix } => commands::dev::cmd_dev_dump_kel(&cli, prefix).await,
         },
 
         #[cfg(feature = "dev-tools")]
         Commands::Adversary(adv_cmd) => match adv_cmd {
             AdversaryCommands::Inject { prefix, events } => {
-                cmd_adversary_inject(&cli, prefix, events).await
+                commands::dev::cmd_adversary_inject(&cli, prefix, events).await
             }
         },
     }

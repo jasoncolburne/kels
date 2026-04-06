@@ -83,9 +83,9 @@ spec:
             - name: BASE_DOMAIN
               value: "${environment.name}.kels"
             - name: REDIS_URL
-              value: "${var.redisUrl}"
+              value: "${var.redis.gossipUrl}"
             - name: IDENTITY_URL
-              value: "${var.identityUrl}"
+              value: "${var.identity.url}"
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
             - name: GOSSIP_LISTEN_ADDR
@@ -95,7 +95,7 @@ spec:
             - name: GOSSIP_TOPIC
               value: "${var.gossip.topic}"
             - name: ANTI_ENTROPY_INTERVAL_SECS
-              value: "${var.gossipAntiEntropyIntervalSecs}"
+              value: "${var.gossip.antiEntropyIntervalSecs}"
           livenessProbe:
             httpGet:
               path: /health

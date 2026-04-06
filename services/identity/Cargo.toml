@@ -67,9 +67,9 @@ colored = "2"
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
-testcontainers = "0.26"
+testcontainers = "0.27"
 ctor = "0.4"
-testcontainers-modules = { version = "0.14", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 fips204 = { version = "0.4", default-features = false, features = ["default"] }

@@ -86,15 +86,18 @@ variables:
     sadstoreUrl: "redis://sadstore:${var.redis.sadstorePassword}@${var.redis.host}:${var.redis.port}"
     sadstorePassword: "sadstore-redis-pass"
     sadstorePasswordHash: "6a3c9e0faf19ebda997ac4ce6c3f5e8c41f2a37166fa24dd6a7691750a1d216f"
+    mailUrl: "redis://mail:${var.redis.mailPassword}@${var.redis.host}:${var.redis.port}"
+    mailPassword: "mail-redis-pass"
+    mailPasswordHash: "3554586698768bb04c774c633051ff9bf8f73201eb32d09d792ca288e03c313c"
   kels:
     replicas: 2
     host: kels
     port: "80"
     url: http://${var.kels.host}:${var.kels.port}
     # Rate limiting
-    maxSubmissionsPerPrefixPerMinute: "128"
-    maxWritesPerIpPerSecond: "200"
-    ipRateLimitBurst: "1000"
+    maxEventsPerPrefixPerDay: "256"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
     nonceWindowSecs: "60"
     # Test config (remove for production)
     testEndpoints: "false"
@@ -120,10 +123,21 @@ variables:
     replicas: 1
     port: "80"
     bucket: "kels-sad"
-    maxRecordsPerPrefixPerDay: "16"
-    maxWritesPerIpPerSecond: "100"
-    ipRateLimitBurst: "500"
+    maxRecordsPerPointerPerDay: "8"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
     maxObjectSize: "1048576"
+  mail:
+    replicas: 1
+    port: "80"
+    bucket: "kels-mail"
+    maxMessagesPerSenderPerDay: "128"
+    maxWritesPerIpPerSecond: "256"
+    ipRateLimitBurst: "1024"
+    maxInboxSize: "8192"
+    maxStoragePerRecipientMb: "128"
+    maxBlobSizeBytes: "1048576"
+    messageTtlDays: "30"
   identity:
     port: "80"
     host: identity

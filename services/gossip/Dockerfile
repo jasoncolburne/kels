@@ -13,6 +13,7 @@ RUN apt-get update && \
 # Copy source code
 COPY lib/gossip /app/lib/gossip
 COPY lib/derive /app/lib/derive
+COPY lib/exchange /app/lib/exchange
 COPY lib/kels /app/lib/kels
 COPY services/gossip /app/services/gossip
 

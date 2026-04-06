@@ -16,6 +16,9 @@ dev-tools = ["kels-core/dev-tools"]
 
 [dependencies]
 kels-core = { path = "../../lib/kels", features = ["native", "federation"] }
+kels-exchange = { path = "../../lib/exchange" }
+kels-creds = { path = "../../lib/creds" }
+kels-policy = { path = "../../lib/policy" }
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 tokio = { version = "1", features = ["full"] }

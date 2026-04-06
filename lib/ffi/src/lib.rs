@@ -5,7 +5,6 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
@@ -14,8 +13,6 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
-#[cfg(feature = "dev-tools")]
-use kels_core::EventKind;
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -31,19 +28,66 @@ use kels_core::{
     VerificationKeyCode,
 };
 
+// ==================== Modules ====================
+
+mod credential;
+#[cfg(feature = "dev-tools")]
+mod dev;
+mod exchange;
+mod kel;
+mod registry;
+mod sad;
+
+// ==================== Re-exports for cbindgen visibility ====================
+
+// KEL operations
+pub use kel::{
+    kels_contest, kels_decommission, kels_get_kel, kels_incept, kels_interact, kels_list,
+    kels_recover, kels_rotate, kels_rotate_recovery, kels_status,
+};
+
+// Exchange operations
+pub use exchange::{
+    KelsEssrOpenResult, KelsKemKeyResult, kels_compute_blob_digest, kels_encap_key_kind,
+    kels_encap_key_publication_create, kels_essr_open, kels_essr_open_result_free, kels_essr_seal,
+    kels_generate_kem_keypair, kels_kem_key_result_free,
+};
+
+// Credential operations
+pub use credential::{
+    kels_credential_build, kels_credential_compact, kels_credential_disclose,
+    kels_credential_validate, kels_poison_hash, kels_schema_validate,
+};
+
+// SAD operations
+pub use sad::{
+    kels_compute_sad_pointer_prefix, kels_sad_fetch_pointer, kels_sad_get_object,
+    kels_sad_post_object, kels_sad_submit_pointer,
+};
+
+// Registry operations
+pub use registry::{
+    KelsNodesResult, KelsPrefixResult, kels_discover_nodes, kels_fetch_registry_prefix,
+    kels_nodes_result_free, kels_prefix_result_free,
+};
+
+// Dev tools (feature-gated)
+#[cfg(feature = "dev-tools")]
+pub use dev::{kels_adversary_inject_events, kels_dump_local_kel, kels_truncate_local_kel};
+
 // ==================== Error Handling ====================
 
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-fn set_last_error(err: &str) {
+pub(crate) fn set_last_error(err: &str) {
     LAST_ERROR.with(|e| {
         *e.borrow_mut() = Some(err.to_string());
     });
 }
 
-fn clear_last_error() {
+pub(crate) fn clear_last_error() {
     LAST_ERROR.with(|e| {
         *e.borrow_mut() = None;
     });
@@ -209,12 +253,12 @@ impl Default for KelsRecoveryResult {
     feature = "secure-enclave"
 ))]
 pub struct KelsContext {
-    builder: Arc<Mutex<KeyEventBuilder<HardwareKeyProvider>>>,
-    store: Arc<FileKelStore>,
-    key_state_store: FileKeyStateStore,
-    runtime: Runtime,
-    kels_url: RwLock<String>,
-    state_dir: PathBuf,
+    pub(crate) builder: Arc<Mutex<KeyEventBuilder<HardwareKeyProvider>>>,
+    pub(crate) store: Arc<FileKelStore>,
+    pub(crate) key_state_store: FileKeyStateStore,
+    pub(crate) runtime: Runtime,
+    pub(crate) kels_url: RwLock<String>,
+    pub(crate) state_dir: PathBuf,
 }
 
 /// Opaque context for KELS operations (Software variant)
@@ -223,30 +267,30 @@ pub struct KelsContext {
     feature = "secure-enclave"
 )))]
 pub struct KelsContext {
-    builder: Arc<Mutex<KeyEventBuilder<SoftwareKeyProvider>>>,
-    store: Arc<FileKelStore>,
-    key_state_store: FileKeyStateStore,
-    runtime: Runtime,
-    kels_url: RwLock<String>,
-    state_dir: PathBuf,
+    pub(crate) builder: Arc<Mutex<KeyEventBuilder<SoftwareKeyProvider>>>,
+    pub(crate) store: Arc<FileKelStore>,
+    pub(crate) key_state_store: FileKeyStateStore,
+    pub(crate) runtime: Runtime,
+    pub(crate) kels_url: RwLock<String>,
+    pub(crate) state_dir: PathBuf,
 }
 
 // ==================== Helper Functions ====================
 
-fn to_c_string(s: &str) -> *mut c_char {
+pub(crate) fn to_c_string(s: &str) -> *mut c_char {
     CString::new(s)
         .map(|cs| cs.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
 
-fn from_c_string(ptr: *const c_char) -> Option<String> {
+pub(crate) fn from_c_string(ptr: *const c_char) -> Option<String> {
     if ptr.is_null() {
         return None;
     }
     unsafe { CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_string()) }
 }
 
-fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
+pub(crate) fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
     match from_c_string(algo).as_deref() {
         Some("ml-dsa-65") | Some("ML-DSA-65") => Some(VerificationKeyCode::MlDsa65),
         Some("ml-dsa-87") | Some("ML-DSA-87") => Some(VerificationKeyCode::MlDsa87),
@@ -255,11 +299,11 @@ fn parse_algorithm_option(algo: *const c_char) -> Option<VerificationKeyCode> {
     }
 }
 
-fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
+pub(crate) fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
     parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::MlDsa65)
 }
 
-fn map_error_to_status(err: &KelsError) -> KelsStatus {
+pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
         KelsError::NotFound(_) => KelsStatus::KelNotFound,
         KelsError::HsmKeyNotFound(_) => KelsStatus::Error,
@@ -274,7 +318,7 @@ fn map_error_to_status(err: &KelsError) -> KelsStatus {
 }
 
 /// Save key state from the builder's key provider
-async fn save_key_state<K: KeyProvider + Clone>(
+pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     key_state_store: &FileKeyStateStore,
     prefix: &str,
@@ -560,791 +604,6 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     0
 }
 
-// ==================== KEL Operations ====================
-
-/// Create an inception event (start a new KEL)
-///
-/// # Arguments
-/// * `signing_algorithm` - Signing algorithm for this inception (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Recovery algorithm for this inception (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_incept(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    recovery_algorithm: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let incept_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_recovery_algorithm(algo)
-                .await?;
-        }
-
-        builder_guard.incept().await
-    });
-
-    match incept_result {
-        Ok(icp) => {
-            // Set owner prefix after successful inception
-            ctx.store.set_owner_prefix(Some(&icp.event.prefix));
-
-            // Save key state for future restarts
-            let save_result = ctx.runtime.block_on(save_key_state(
-                &builder_guard,
-                &ctx.key_state_store,
-                &icp.event.prefix,
-            ));
-            if let Err(e) = save_result {
-                // Log but don't fail - the event was created successfully
-                set_last_error(&format!("Warning: Failed to save key state: {}", e));
-            }
-
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&icp.event.prefix);
-            result.said = to_c_string(&icp.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Rotate the signing key
-///
-/// # Arguments
-/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let rotate_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-
-        builder_guard.rotate().await
-    });
-
-    match rotate_result {
-        Ok(rot) => {
-            // Save key state after rotation
-            let save_result = ctx.runtime.block_on(save_key_state(
-                &builder_guard,
-                &ctx.key_state_store,
-                &rot.event.prefix,
-            ));
-            if let Err(e) = save_result {
-                set_last_error(&format!("Warning: Failed to save key state: {}", e));
-            }
-
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&rot.event.prefix);
-            result.said = to_c_string(&rot.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Rotate the recovery key (requires dual signature)
-///
-/// # Arguments
-/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_rotate_recovery(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    recovery_algorithm: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let rotate_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_recovery_algorithm(algo)
-                .await?;
-        }
-
-        builder_guard.rotate_recovery().await
-    });
-
-    match rotate_result {
-        Ok(ror) => {
-            // Save key state after recovery rotation
-            let save_result = ctx.runtime.block_on(save_key_state(
-                &builder_guard,
-                &ctx.key_state_store,
-                &ror.event.prefix,
-            ));
-            if let Err(e) = save_result {
-                set_last_error(&format!("Warning: Failed to save key state: {}", e));
-            }
-
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&ror.event.prefix);
-            result.said = to_c_string(&ror.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Create an interaction event (anchor data to KEL)
-///
-/// # Arguments
-/// * `anchor` - The data to anchor (e.g., a hash or identifier)
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `anchor` must be a valid C string
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_interact(
-    ctx: *mut KelsContext,
-    anchor: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Some(anchor_str) = from_c_string(anchor) else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Invalid anchor string");
-        return;
-    };
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let interact_result = ctx
-        .runtime
-        .block_on(async { builder_guard.interact(&anchor_str).await });
-
-    match interact_result {
-        Ok(ixn) => {
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&ixn.event.prefix);
-            result.said = to_c_string(&ixn.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Attempt recovery from divergence or adversary attack
-///
-/// # Arguments
-/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsRecoveryResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_recover(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    recovery_algorithm: *const c_char,
-    result: *mut KelsRecoveryResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).outcome = KelsRecoveryOutcome::Failed;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsRecoveryResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.outcome = KelsRecoveryOutcome::Failed;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let recover_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_recovery_algorithm(algo)
-                .await?;
-        }
-
-        // Verify server KEL to detect if adversary revealed the rotation key
-        let add_rot = if let Some(prefix) = builder_guard.prefix() {
-            let kels_url = match ctx.kels_url.read() {
-                Ok(url) => url.clone(),
-                Err(_) => {
-                    return Err(kels_core::KelsError::StorageError(
-                        "kels_url lock poisoned".to_string(),
-                    ));
-                }
-            };
-            let source = kels_core::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
-            match kels_core::verify_key_events(
-                prefix,
-                &source,
-                kels_core::KelVerifier::new(prefix),
-                kels_core::page_size(),
-                kels_core::max_pages(),
-            )
-            .await
-            {
-                Ok(server_verification) => {
-                    let owner_last_est_serial = builder_guard
-                        .last_establishment_event()
-                        .map(|e| e.serial)
-                        .unwrap_or(0);
-                    kels_core::should_rotate_with_recovery(
-                        &server_verification,
-                        builder_guard.rotation_count(),
-                        owner_last_est_serial,
-                    )
-                }
-                Err(_) => true, // Fail secure
-            }
-        } else {
-            // Fail secure: no prefix = assume rotation needed
-            true
-        };
-        builder_guard.recover(add_rot).await
-    });
-
-    match recover_result {
-        Ok(rec) => {
-            // Save key state after recovery
-            let save_result = ctx.runtime.block_on(save_key_state(
-                &builder_guard,
-                &ctx.key_state_store,
-                &rec.event.prefix,
-            ));
-            if let Err(e) = save_result {
-                set_last_error(&format!("Warning: Failed to save key state: {}", e));
-            }
-
-            result.status = KelsStatus::Ok;
-            result.outcome = KelsRecoveryOutcome::Recovered;
-            result.prefix = to_c_string(&rec.event.prefix);
-            result.said = to_c_string(&rec.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.outcome = KelsRecoveryOutcome::Failed;
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Contest a malicious recovery by submitting a contest event (cnt)
-///
-/// Use this when an adversary has revealed your recovery key.
-/// The KEL will be permanently frozen after contesting.
-///
-/// # Arguments
-/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_contest(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    recovery_algorithm: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let contest_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_recovery_algorithm(algo)
-                .await?;
-        }
-
-        builder_guard.contest().await
-    });
-
-    match contest_result {
-        Ok(cnt) => {
-            // Save key state after contest (keys rotated during contest)
-            let save_result = ctx.runtime.block_on(save_key_state(
-                &builder_guard,
-                &ctx.key_state_store,
-                &cnt.event.prefix,
-            ));
-            if let Err(e) = save_result {
-                set_last_error(&format!("Warning: Failed to save key state: {}", e));
-            }
-
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&cnt.event.prefix);
-            result.said = to_c_string(&cnt.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Decommission a KEL (permanently disable it)
-///
-/// # Arguments
-/// * `signing_algorithm` - Algorithm for the new signing key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Algorithm for the new recovery key (NULL = keep current).
-///   Supported on all platforms including Secure Enclave.
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsEventResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_decommission(
-    ctx: *mut KelsContext,
-    signing_algorithm: *const c_char,
-    recovery_algorithm: *const c_char,
-    result: *mut KelsEventResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsEventResult::default();
-
-    let Ok(mut builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    let decommission_result = ctx.runtime.block_on(async {
-        if let Some(algo) = parse_algorithm_option(signing_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_signing_algorithm(algo)
-                .await?;
-        }
-        if let Some(algo) = parse_algorithm_option(recovery_algorithm) {
-            builder_guard
-                .key_provider_mut()
-                .set_recovery_algorithm(algo)
-                .await?;
-        }
-
-        builder_guard.decommission().await
-    });
-
-    match decommission_result {
-        Ok(dec) => {
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&dec.event.prefix);
-            result.said = to_c_string(&dec.event.said);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-// ==================== Query Operations ====================
-
-/// Get the status of the current KEL
-///
-/// # Arguments
-/// * `prefix` - Optional prefix to query (NULL for current context's KEL)
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsStatusResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_status(
-    ctx: *mut KelsContext,
-    _prefix: *const c_char,
-    result: *mut KelsStatusResult,
-) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsStatusResult::default();
-
-    let Ok(builder_guard) = ctx.builder.lock() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to acquire builder lock");
-        return;
-    };
-
-    result.status = KelsStatus::Ok;
-
-    if let Some(prefix) = builder_guard.prefix() {
-        result.prefix = to_c_string(prefix);
-    }
-
-    result.event_count = builder_guard.confirmed_count() as u32;
-
-    if let Some(said) = builder_guard.last_said() {
-        result.latest_said = to_c_string(said);
-    }
-
-    if let Some(v) = builder_guard.kel_verification() {
-        result.is_divergent = v.is_divergent();
-        result.is_contested = v.is_contested();
-    }
-    result.is_decommissioned = builder_guard.is_decommissioned();
-
-    #[cfg(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    ))]
-    {
-        result.use_hardware = kels_core::se_is_available();
-    }
-
-    #[cfg(not(all(
-        any(target_os = "macos", target_os = "ios"),
-        feature = "secure-enclave"
-    )))]
-    {
-        result.use_hardware = false;
-    }
-}
-
-/// Get the full KEL as JSON
-///
-/// # Arguments
-/// * `prefix` - The KEL prefix to fetch
-///
-/// # Returns
-/// JSON string `{"events": [...], "has_more": bool}`, or NULL on error.
-/// Must be freed with kels_free_string().
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `prefix` must be a valid C string (or NULL for current KEL)
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_get_kel(
-    ctx: *mut KelsContext,
-    prefix: *const c_char,
-    limit: u64,
-    offset: u64,
-) -> *mut c_char {
-    clear_last_error();
-
-    if ctx.is_null() {
-        set_last_error("Context is null");
-        return std::ptr::null_mut();
-    }
-
-    let ctx = unsafe { &*ctx };
-
-    let prefix_str = from_c_string(prefix);
-
-    let Ok(builder_guard) = ctx.builder.lock() else {
-        set_last_error("Failed to acquire builder lock");
-        return std::ptr::null_mut();
-    };
-
-    // If no prefix specified, use the current KEL
-    let target_prefix = if prefix_str.is_none() || prefix_str.as_deref() == builder_guard.prefix() {
-        match builder_guard.prefix() {
-            Some(p) => p.to_string(),
-            None => {
-                set_last_error("No KEL prefix available");
-                return std::ptr::null_mut();
-            }
-        }
-    } else {
-        set_last_error("Can only get current KEL from context");
-        return std::ptr::null_mut();
-    };
-
-    // Clamp limit to configured page size
-    let limit = limit.min(kels_core::page_size() as u64);
-
-    // Load a page of events from store
-    let result = ctx
-        .runtime
-        .block_on(ctx.store.load(&target_prefix, limit, offset));
-
-    match result {
-        Ok((events, has_more)) => {
-            match serde_json::to_string(&serde_json::json!({
-                "events": events,
-                "has_more": has_more,
-            })) {
-                Ok(json) => to_c_string(&json),
-                Err(e) => {
-                    set_last_error(&format!("Failed to serialize KEL: {}", e));
-                    std::ptr::null_mut()
-                }
-            }
-        }
-        Err(e) => {
-            set_last_error(&format!("Failed to load KEL: {}", e));
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// List all local KEL prefixes
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `result` must be a valid pointer to a KelsListResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_list(ctx: *mut KelsContext, result: *mut KelsListResult) {
-    clear_last_error();
-
-    if ctx.is_null() || result.is_null() {
-        if !result.is_null() {
-            unsafe {
-                (*result).status = KelsStatus::NotInitialized;
-                (*result).error = to_c_string("Context or result is null");
-            }
-        }
-        return;
-    }
-
-    let ctx = unsafe { &*ctx };
-    let result = unsafe { &mut *result };
-    *result = KelsListResult::default();
-
-    // List all .kel.json files in the state directory
-    let prefixes: Vec<String> = match std::fs::read_dir(&ctx.state_dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.ends_with(".kel.json") {
-                    Some(name.trim_end_matches(".kel.json").to_string())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        Err(e) => {
-            result.status = KelsStatus::Error;
-            result.error = to_c_string(&format!("Failed to read state directory: {}", e));
-            return;
-        }
-    };
-
-    result.count = prefixes.len() as u32;
-
-    match serde_json::to_string(&prefixes) {
-        Ok(json) => {
-            result.status = KelsStatus::Ok;
-            result.prefixes_json = to_c_string(&json);
-        }
-        Err(e) => {
-            result.status = KelsStatus::Error;
-            result.error = to_c_string(&format!("Failed to serialize prefixes: {}", e));
-        }
-    }
-}
-
 // ==================== Memory Management ====================
 
 /// Free a KelsEventResult's allocated strings
@@ -1489,6 +748,19 @@ pub unsafe extern "C" fn kels_free_string(s: *mut c_char) {
     }
 }
 
+/// Free a byte buffer returned by KELS functions.
+///
+/// # Safety
+/// The pointer must have been returned by a KELS function (e.g., payload from kels_essr_open).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kels_free_bytes(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(ptr, len, len));
+        }
+    }
+}
+
 /// Get the last error message
 ///
 /// # Returns
@@ -1513,341 +785,6 @@ pub extern "C" fn kels_last_error() -> *const c_char {
             None => std::ptr::null(),
         }
     })
-}
-
-// ==================== Dev Tools (Feature-Gated) ====================
-
-/// Inject adversary events for testing divergence scenarios
-///
-/// # Arguments
-/// * `event_types` - Comma-separated event types to inject (e.g., "rot,ixn")
-///
-/// # Returns
-/// 0 on success, -1 on error
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-/// - `event_types` must be a valid C string
-#[cfg(feature = "dev-tools")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_adversary_inject_events(
-    ctx: *mut KelsContext,
-    event_types: *const c_char,
-) -> i32 {
-    clear_last_error();
-
-    if ctx.is_null() {
-        set_last_error("Context is null");
-        return -1;
-    }
-
-    if event_types.is_null() {
-        set_last_error("Event types is null");
-        return -1;
-    }
-
-    let ctx = unsafe { &*ctx };
-
-    let event_types_str = match unsafe { CStr::from_ptr(event_types) }.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_last_error("Invalid event types string");
-            return -1;
-        }
-    };
-
-    // Parse event types
-    let types: Vec<&str> = event_types_str.split(',').map(|s| s.trim()).collect();
-
-    // Get KELS URL for adversary client
-    let kels_url = match ctx.kels_url.read() {
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            set_last_error("Failed to read KELS URL");
-            return -1;
-        }
-    };
-
-    // Inject events
-    #[allow(clippy::await_holding_lock)]
-    ctx.runtime.block_on(async {
-        // Get key provider and KEL from builder (need to clone for adversary)
-        let Ok(builder_guard) = ctx.builder.lock() else {
-            set_last_error("Failed to acquire builder lock");
-            return -1;
-        };
-
-        if builder_guard.prefix().is_none() {
-            set_last_error("No KEL incepted - cannot inject adversary events");
-            return -1;
-        }
-
-        // Clone key provider for adversary builder
-        #[cfg(all(
-            any(target_os = "macos", target_os = "ios"),
-            feature = "secure-enclave"
-        ))]
-        let adversary_keys = builder_guard.key_provider().clone_async().await;
-
-        #[cfg(not(all(
-            any(target_os = "macos", target_os = "ios"),
-            feature = "secure-enclave"
-        )))]
-        let adversary_keys = builder_guard.key_provider().clone();
-
-        let prefix = match builder_guard.prefix() {
-            Some(p) => p.to_string(),
-            None => {
-                set_last_error("No KEL incepted");
-                return -1;
-            }
-        };
-        drop(builder_guard);
-
-        // Load events from store for the adversary builder
-        let source = kels_core::StoreKelSource::new(ctx.store.as_ref());
-        let events = match kels_core::resolve_key_events(
-            &prefix,
-            &source,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            None,
-        )
-        .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                set_last_error(&format!("Failed to load KEL for adversary: {}", e));
-                return -1;
-            }
-        };
-
-        // Create adversary builder WITH KELS client but NO kel_store
-        // Events submit to KELS but don't save locally (simulating adversary)
-        let client = match KelsClient::new(&kels_url) {
-            Ok(c) => c,
-            Err(e) => {
-                set_last_error(&format!("Failed to build HTTP client: {}", e));
-                return -1;
-            }
-        };
-        let mut adversary_builder =
-            KeyEventBuilder::with_events(adversary_keys, Some(client), None, events);
-
-        let mut counter = 0u32;
-
-        let algo_from_digit = |d: char| -> Option<VerificationKeyCode> {
-            match d {
-                '0' => Some(VerificationKeyCode::Secp256r1),
-                '1' => Some(VerificationKeyCode::MlDsa65),
-                '2' => Some(VerificationKeyCode::MlDsa87),
-                _ => None,
-            }
-        };
-
-        for token in types {
-            // Parse: "ixn", "rot1", "ror02", "dec", "rec"
-            let kind_str = token.trim_end_matches(|c: char| c.is_ascii_digit());
-            let algo_suffix = &token[kind_str.len()..];
-
-            let kind = match EventKind::from_short_name(kind_str) {
-                Ok(k) => k,
-                Err(e) => {
-                    set_last_error(&format!("{}", e));
-                    return -1;
-                }
-            };
-
-            let result = match kind {
-                EventKind::Ixn => {
-                    let anchor = format!(
-                        "KAdversaryAnchor{}{}_",
-                        counter,
-                        "_".repeat(44 - 17 - counter.to_string().len())
-                    );
-                    counter += 1;
-                    adversary_builder.interact(&anchor).await
-                }
-                EventKind::Rot | EventKind::Ror | EventKind::Rec => {
-                    let chars: Vec<char> = algo_suffix.chars().collect();
-                    if let Some(&d) = chars.first()
-                        && let Some(algo) = algo_from_digit(d)
-                        && let Err(e) = adversary_builder
-                            .key_provider_mut()
-                            .set_signing_algorithm(algo)
-                            .await
-                    {
-                        set_last_error(&format!("Failed to set algorithm: {}", e));
-                        return -1;
-                    }
-                    if let Some(&d) = chars.get(1)
-                        && let Some(algo) = algo_from_digit(d)
-                        && let Err(e) = adversary_builder
-                            .key_provider_mut()
-                            .set_recovery_algorithm(algo)
-                            .await
-                    {
-                        set_last_error(&format!("Failed to set algorithm: {}", e));
-                        return -1;
-                    }
-                    match kind {
-                        EventKind::Rot => adversary_builder.rotate().await,
-                        EventKind::Ror => adversary_builder.rotate_recovery().await,
-                        EventKind::Rec => adversary_builder.recover(false).await,
-                        _ => unreachable!(),
-                    }
-                }
-                EventKind::Dec => adversary_builder.decommission().await,
-                other => {
-                    set_last_error(&format!(
-                        "Unsupported event type: {}. Valid: ixn, rot[0-2], rec[0-2][0-2], ror[0-2][0-2], dec",
-                        other
-                    ));
-                    return -1;
-                }
-            };
-
-            if let Err(e) = result {
-                set_last_error(&format!("Failed to inject {} event: {}", token, e));
-                return -1;
-            }
-        }
-
-        0
-    })
-}
-
-/// Truncate the local KEL, keeping only the first N events
-///
-/// # Arguments
-/// * `keep_events` - Number of events to keep
-///
-/// # Returns
-/// 0 on success, -1 on error
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-#[cfg(feature = "dev-tools")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_events: u32) -> i32 {
-    clear_last_error();
-
-    if ctx.is_null() {
-        set_last_error("Context is null");
-        return -1;
-    }
-
-    let ctx = unsafe { &*ctx };
-
-    // Get prefix from builder
-    let Ok(builder_guard) = ctx.builder.lock() else {
-        set_last_error("Failed to acquire builder lock");
-        return -1;
-    };
-
-    let Some(prefix) = builder_guard.prefix().map(|s| s.to_string()) else {
-        set_last_error("No KEL incepted - cannot truncate");
-        return -1;
-    };
-
-    drop(builder_guard);
-
-    // Load KEL from store, truncate, and save
-    ctx.runtime.block_on(async {
-        // Load current KEL
-        let (events, _has_more) = match ctx.store.load(&prefix, kels_core::LOAD_ALL, 0).await {
-            Ok(result) => result,
-            Err(e) => {
-                set_last_error(&format!("Failed to load KEL: {}", e));
-                return -1;
-            }
-        };
-
-        if events.is_empty() {
-            set_last_error("KEL not found in local store");
-            return -1;
-        }
-
-        let mut events = events;
-        let current_len = events.len();
-        let keep = keep_events as usize;
-
-        if keep >= current_len {
-            // Nothing to truncate
-            return 0;
-        }
-
-        // Truncate
-        events.truncate(keep);
-
-        // Save back to store
-        if let Err(e) = ctx.store.overwrite(&prefix, &events).await {
-            set_last_error(&format!("Failed to save truncated KEL: {}", e));
-            return -1;
-        }
-
-        0
-    })
-}
-
-/// Dump the local KEL for debugging
-///
-/// # Returns
-/// JSON string of the KEL, or NULL on error. Must be freed with kels_free_string().
-///
-/// # Safety
-/// - `ctx` must be a valid context pointer
-#[cfg(feature = "dev-tools")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_char {
-    clear_last_error();
-
-    if ctx.is_null() {
-        set_last_error("Context is null");
-        return std::ptr::null_mut();
-    }
-
-    let ctx = unsafe { &*ctx };
-
-    let Ok(builder_guard) = ctx.builder.lock() else {
-        set_last_error("Failed to acquire builder lock");
-        return std::ptr::null_mut();
-    };
-
-    let prefix = match builder_guard.prefix() {
-        Some(p) => p.to_string(),
-        None => {
-            set_last_error("No KEL prefix available");
-            return std::ptr::null_mut();
-        }
-    };
-
-    // Load events from store
-    let events = ctx.runtime.block_on(async {
-        let source = kels_core::StoreKelSource::new(ctx.store.as_ref());
-        kels_core::resolve_key_events(
-            &prefix,
-            &source,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            None,
-        )
-        .await
-    });
-
-    match events {
-        Ok(evts) => match serde_json::to_string_pretty(&evts) {
-            Ok(json) => to_c_string(&json),
-            Err(e) => {
-                set_last_error(&format!("Failed to serialize KEL: {}", e));
-                std::ptr::null_mut()
-            }
-        },
-        Err(e) => {
-            set_last_error(&format!("Failed to load KEL: {}", e));
-            std::ptr::null_mut()
-        }
-    }
 }
 
 // ==================== Reset/Clear Operations ====================
@@ -1917,365 +854,10 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
     if error_count > 0 { -1 } else { 0 }
 }
 
-// ==================== Registry Operations ====================
-
-/// Result from discover nodes operation
-#[repr(C)]
-pub struct KelsNodesResult {
-    pub status: KelsStatus,
-    /// JSON array of node objects (owned, must be freed with kels_free_string)
-    pub nodes_json: *mut c_char,
-    /// Number of nodes
-    pub count: u32,
-    /// Error message if status != Ok (owned, must be freed with kels_free_string)
-    pub error: *mut c_char,
-}
-
-impl Default for KelsNodesResult {
-    fn default() -> Self {
-        Self {
-            status: KelsStatus::Error,
-            nodes_json: std::ptr::null_mut(),
-            count: 0,
-            error: std::ptr::null_mut(),
-        }
-    }
-}
-
-/// Peer info for JSON serialization in FFI
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PeerInfoJson {
-    node_id: String,
-    base_domain: String,
-    gossip_addr: String,
-    peer_prefix: String,
-}
-
-/// Discover verified, ready peers from the registry, sorted by latency.
-///
-/// Returns a JSON array of peer objects (nodeId, baseDomain, gossipAddr, peerPrefix).
-/// All returned peers are verified (anchored + voted) and ready. Sorted fastest first.
-///
-/// This function performs cryptographic verification:
-/// 1. Fetches the registry's KEL and verifies its integrity
-/// 2. Checks that the registry prefix matches the expected trust anchor
-/// 3. Verifies each peer's SAID is anchored in the registry's KEL
-///
-/// # Arguments
-/// * `registry_url` - Comma-separated URLs of registry services
-/// * `registry_prefix` - Expected registry prefix (trust anchor) - can be NULL to skip verification
-///
-/// # Safety
-/// - `registry_url` must be a valid C string
-/// - `registry_prefix` must be a valid C string or NULL
-/// - `result` must be a valid pointer to a KelsNodesResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_discover_nodes(
-    registry_url: *const c_char,
-    registry_prefix: *const c_char,
-    result: *mut KelsNodesResult,
-) {
-    clear_last_error();
-
-    if result.is_null() {
-        return;
-    }
-
-    let result = unsafe { &mut *result };
-    *result = KelsNodesResult::default();
-
-    let Some(urls_str) = from_c_string(registry_url) else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Invalid registry URL");
-        return;
-    };
-
-    let urls: Vec<String> = urls_str
-        .split(',')
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty())
-        .collect();
-
-    if urls.is_empty() {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("No registry URLs provided");
-        return;
-    }
-
-    // registry_prefix is accepted for API compatibility but no longer used
-    if from_c_string(registry_prefix).is_none() {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Invalid registry prefix");
-        return;
-    };
-
-    // Create runtime for async operations
-    let Ok(runtime) = Runtime::new() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to create async runtime");
-        return;
-    };
-
-    let discover_result = runtime.block_on(async {
-        // Use a fresh temp directory for each discovery to avoid stale data
-        let store_dir = std::env::temp_dir().join("kels-ffi-discovery");
-        let _ = std::fs::remove_dir_all(&store_dir);
-        let store = FileKelStore::new(&store_dir)?;
-
-        let peers =
-            kels_core::peers_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store)
-                .await?;
-
-        let peer_infos: Vec<PeerInfoJson> = peers
-            .into_iter()
-            .map(|peer| PeerInfoJson {
-                node_id: peer.node_id,
-                base_domain: peer.base_domain,
-                gossip_addr: peer.gossip_addr,
-                peer_prefix: peer.peer_prefix,
-            })
-            .collect();
-
-        Ok(peer_infos)
-    });
-
-    match discover_result {
-        Ok(nodes) => {
-            result.count = nodes.len() as u32;
-            match serde_json::to_string(&nodes) {
-                Ok(json) => {
-                    result.status = KelsStatus::Ok;
-                    result.nodes_json = to_c_string(&json);
-                }
-                Err(e) => {
-                    result.status = KelsStatus::Error;
-                    result.error = to_c_string(&format!("Failed to serialize nodes: {}", e));
-                }
-            }
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Free a KelsNodesResult's allocated strings
-///
-/// # Safety
-/// The result must have been populated by kels_discover_nodes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_nodes_result_free(result: *mut KelsNodesResult) {
-    if result.is_null() {
-        return;
-    }
-
-    let result = unsafe { &mut *result };
-
-    if !result.nodes_json.is_null() {
-        unsafe {
-            drop(CString::from_raw(result.nodes_json));
-        }
-        result.nodes_json = std::ptr::null_mut();
-    }
-
-    if !result.error.is_null() {
-        unsafe {
-            drop(CString::from_raw(result.error));
-        }
-        result.error = std::ptr::null_mut();
-    }
-}
-
-/// Result of fetching registry prefix
-#[repr(C)]
-pub struct KelsPrefixResult {
-    pub status: KelsStatus,
-    pub prefix: *mut c_char,
-    pub error: *mut c_char,
-}
-
-impl Default for KelsPrefixResult {
-    fn default() -> Self {
-        Self {
-            status: KelsStatus::Error,
-            prefix: std::ptr::null_mut(),
-            error: std::ptr::null_mut(),
-        }
-    }
-}
-
-/// Fetch and verify the registry's KEL, returning its prefix.
-///
-/// This function:
-/// 1. Fetches the registry's KEL from the given URL
-/// 2. Verifies the KEL's cryptographic integrity
-/// 3. Returns the registry's prefix
-///
-/// The caller should verify the returned prefix is in their trusted set.
-///
-/// # Arguments
-/// * `registry_url` - URL of the registry service
-///
-/// # Safety
-/// - `registry_url` must be a valid C string
-/// - `result` must be a valid pointer to a KelsPrefixResult
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_fetch_registry_prefix(
-    registry_url: *const c_char,
-    result: *mut KelsPrefixResult,
-) {
-    clear_last_error();
-
-    if result.is_null() {
-        return;
-    }
-
-    let result = unsafe { &mut *result };
-    *result = KelsPrefixResult::default();
-
-    let Some(url) = from_c_string(registry_url) else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Invalid registry URL");
-        return;
-    };
-
-    // Create runtime for async operations
-    let Ok(runtime) = Runtime::new() else {
-        result.status = KelsStatus::Error;
-        result.error = to_c_string("Failed to create async runtime");
-        return;
-    };
-
-    let fetch_result = runtime.block_on(async {
-        let client = kels_core::KelsRegistryClient::new(&url)?;
-        client.fetch_registry_prefix().await
-    });
-
-    match fetch_result {
-        Ok(prefix) => {
-            result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&prefix);
-        }
-        Err(e) => {
-            result.status = map_error_to_status(&e);
-            result.error = to_c_string(&e.to_string());
-            set_last_error(&e.to_string());
-        }
-    }
-}
-
-/// Free a KelsPrefixResult's allocated strings
-///
-/// # Safety
-/// The result must have been populated by kels_fetch_registry_prefix.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_prefix_result_free(result: *mut KelsPrefixResult) {
-    if result.is_null() {
-        return;
-    }
-
-    let result = unsafe { &mut *result };
-
-    if !result.prefix.is_null() {
-        unsafe {
-            drop(CString::from_raw(result.prefix));
-        }
-        result.prefix = std::ptr::null_mut();
-    }
-
-    if !result.error.is_null() {
-        unsafe {
-            drop(CString::from_raw(result.error));
-        }
-        result.error = std::ptr::null_mut();
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-
-    // ==================== KelsStatus Tests ====================
-
-    #[test]
-    fn test_kels_status_values() {
-        assert_eq!(KelsStatus::Ok as i32, 0);
-        assert_eq!(KelsStatus::NotInitialized as i32, 1);
-        assert_eq!(KelsStatus::DivergenceDetected as i32, 2);
-        assert_eq!(KelsStatus::KelNotFound as i32, 3);
-        assert_eq!(KelsStatus::KelFrozen as i32, 4);
-        assert_eq!(KelsStatus::NetworkError as i32, 5);
-        assert_eq!(KelsStatus::NotIncepted as i32, 6);
-        assert_eq!(KelsStatus::ContestRequired as i32, 7);
-        assert_eq!(KelsStatus::Error as i32, 8);
-    }
-
-    // ==================== KelsRecoveryOutcome Tests ====================
-
-    #[test]
-    fn test_kels_recovery_outcome_values() {
-        assert_eq!(KelsRecoveryOutcome::Recovered as i32, 0);
-        assert_eq!(KelsRecoveryOutcome::Contested as i32, 1);
-        assert_eq!(KelsRecoveryOutcome::Failed as i32, 2);
-    }
-
-    // ==================== Default Implementations Tests ====================
-
-    #[test]
-    fn test_kels_event_result_default() {
-        let result = KelsEventResult::default();
-        assert_eq!(result.status, KelsStatus::Error);
-        assert!(result.prefix.is_null());
-        assert!(result.said.is_null());
-        assert!(result.error.is_null());
-    }
-
-    #[test]
-    fn test_kels_status_result_default() {
-        let result = KelsStatusResult::default();
-        assert_eq!(result.status, KelsStatus::Error);
-        assert!(result.prefix.is_null());
-        assert_eq!(result.event_count, 0);
-        assert!(result.latest_said.is_null());
-        assert!(!result.is_divergent);
-        assert!(!result.is_contested);
-        assert!(!result.is_decommissioned);
-        assert!(!result.use_hardware);
-        assert!(result.error.is_null());
-    }
-
-    #[test]
-    fn test_kels_list_result_default() {
-        let result = KelsListResult::default();
-        assert_eq!(result.status, KelsStatus::Error);
-        assert!(result.prefixes_json.is_null());
-        assert_eq!(result.count, 0);
-        assert!(result.error.is_null());
-    }
-
-    #[test]
-    fn test_kels_recovery_result_default() {
-        let result = KelsRecoveryResult::default();
-        assert_eq!(result.outcome, KelsRecoveryOutcome::Failed);
-        assert_eq!(result.status, KelsStatus::Error);
-        assert!(result.prefix.is_null());
-        assert!(result.said.is_null());
-        assert_eq!(result.version, 0);
-        assert!(result.error.is_null());
-    }
-
-    #[test]
-    fn test_kels_nodes_result_default() {
-        let result = KelsNodesResult::default();
-        assert_eq!(result.status, KelsStatus::Error);
-        assert!(result.nodes_json.is_null());
-        assert_eq!(result.count, 0);
-        assert!(result.error.is_null());
-    }
 
     // ==================== Helper Function Tests ====================
 
@@ -2321,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_to_from_c_string_roundtrip() {
-        let original = "roundtrip test 🎉";
+        let original = "roundtrip test \u{1f389}";
         let ptr = to_c_string(original);
         assert!(!ptr.is_null());
 
@@ -2427,8 +1009,6 @@ mod tests {
 
         clear_last_error();
     }
-
-    // ==================== KeyState Tests ====================
 
     // ==================== kels_last_error Tests ====================
 

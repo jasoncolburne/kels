@@ -1,0 +1,75 @@
+//! Encapsulation key publication — stored as a SAD object, referenced by SadPointer chains.
+
+use serde::{Deserialize, Serialize};
+use verifiable_storage::SelfAddressed;
+
+/// Well-known SadPointer kind for ML-KEM encapsulation key publication.
+pub const ENCAP_KEY_KIND: &str = "kels/v1/mlkem-encap-key";
+
+/// ML-KEM encapsulation key publication, stored as a SAD object in the SADStore.
+///
+/// The owner publishes this by creating a `SadPointer` chain with kind
+/// [`ENCAP_KEY_KIND`] and `content_said` pointing to this object's SAID.
+/// Anyone can discover the key by computing the deterministic pointer prefix:
+/// `compute_sad_pointer_prefix(kel_prefix, ENCAP_KEY_KIND)`.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
+pub struct EncapsulationKeyPublication {
+    #[said]
+    pub said: String,
+    /// Algorithm identifier: `"ML-KEM-768"` or `"ML-KEM-1024"`.
+    pub algorithm: String,
+    /// CESR-encoded ML-KEM encapsulation key.
+    pub encapsulation_key: String,
+}
+
+/// Known ML-KEM algorithm identifiers.
+pub const ML_KEM_768: &str = "ML-KEM-768";
+pub const ML_KEM_1024: &str = "ML-KEM-1024";
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use verifiable_storage::SelfAddressed;
+
+    use super::*;
+
+    #[test]
+    fn said_derivation_is_deterministic() {
+        let mut pub1 = EncapsulationKeyPublication {
+            said: String::new(),
+            algorithm: ML_KEM_768.to_string(),
+            encapsulation_key: "test-key-data".to_string(),
+        };
+        pub1.derive_said().unwrap();
+
+        let mut pub2 = EncapsulationKeyPublication {
+            said: String::new(),
+            algorithm: ML_KEM_768.to_string(),
+            encapsulation_key: "test-key-data".to_string(),
+        };
+        pub2.derive_said().unwrap();
+
+        assert_eq!(pub1.said, pub2.said);
+        assert!(!pub1.said.is_empty());
+    }
+
+    #[test]
+    fn different_keys_produce_different_saids() {
+        let mut pub1 = EncapsulationKeyPublication {
+            said: String::new(),
+            algorithm: ML_KEM_768.to_string(),
+            encapsulation_key: "key-a".to_string(),
+        };
+        pub1.derive_said().unwrap();
+
+        let mut pub2 = EncapsulationKeyPublication {
+            said: String::new(),
+            algorithm: ML_KEM_768.to_string(),
+            encapsulation_key: "key-b".to_string(),
+        };
+        pub2.derive_said().unwrap();
+
+        assert_ne!(pub1.said, pub2.said);
+    }
+}

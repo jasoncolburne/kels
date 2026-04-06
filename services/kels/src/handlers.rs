@@ -39,11 +39,11 @@ fn max_events_per_prefix_per_day() -> u32 {
 }
 
 fn max_writes_per_ip_per_second() -> u32 {
-    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 200) as u32
+    kels_core::env_usize("KELS_MAX_WRITES_PER_IP_PER_SECOND", 256) as u32
 }
 
 fn ip_rate_limit_burst() -> u32 {
-    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1000) as u32
+    kels_core::env_usize("KELS_IP_RATE_LIMIT_BURST", 1024) as u32
 }
 
 fn nonce_window_secs() -> u64 {
@@ -727,12 +727,12 @@ pub(crate) async fn list_prefixes(
         .redis_conn
         .as_ref()
         .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
-    let peer = get_verified_peer(redis_conn, &signed_request.peer_prefix).await?;
+    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
     let _peer = match peer {
         Some(p) => p,
         None => {
             refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            get_verified_peer(redis_conn, &signed_request.peer_prefix)
+            get_verified_peer(redis_conn, &signed_request.prefix)
                 .await?
                 .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
         }
@@ -742,7 +742,7 @@ pub(crate) async fn list_prefixes(
     let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
     let kel_verification = kels_core::completed_verification(
         &mut loader,
-        &signed_request.peer_prefix,
+        &signed_request.prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
         std::iter::empty::<String>(),

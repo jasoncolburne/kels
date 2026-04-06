@@ -1,12 +1,12 @@
 #!/bin/bash
 # load-sads.sh - Populate a SADStore node with SAD objects and chain records
 #
-# For every 9 SAD objects, creates a KEL, stores the objects, then creates
-# a chain with a random number [1,9] of versions, each referencing a different
-# SAD object as content.
+# For each group, creates a KEL, stores SAD objects, then creates a chain with
+# a random number [1, MAX_CHAIN_VERSIONS] of versions, each referencing a
+# different SAD object as content.
 #
 # Usage: load-sads.sh [count] [concurrency]
-#   count:       number of SAD objects to create (default: 900, rounded to multiple of 9)
+#   count:       number of SAD objects to create (default: 900, rounded to group size)
 #   concurrency: parallel workers (default: 10)
 
 set -e
@@ -26,19 +26,20 @@ SADSTORE_URL="http://${TEST_SADSTORE_HOST}:${TEST_SADSTORE_PORT}"
 ALGORITHM="${ALGORITHM:-ml-dsa-65}"
 KIND="${KIND:-kels/v1/test-data}"
 
+MAX_CHAIN_VERSIONS="${MAX_CHAIN_VERSIONS:-7}"
 COUNT=${1:-900}
 CONCURRENCY=${2:-10}
 
-# Round down to multiple of 9
-COUNT=$(( (COUNT / 9) * 9 ))
-GROUP_COUNT=$(( COUNT / 9 ))
+# Round down to multiple of max chain versions
+COUNT=$(( (COUNT / MAX_CHAIN_VERSIONS) * MAX_CHAIN_VERSIONS ))
+GROUP_COUNT=$(( COUNT / MAX_CHAIN_VERSIONS ))
 
 PLACEHOLDER="############################################"
 
 echo "========================================="
 echo "SADStore Load Test"
 echo "========================================="
-echo "SAD objects:  $COUNT (${GROUP_COUNT} groups of 9)"
+echo "SAD objects:  $COUNT (${GROUP_COUNT} groups of ${MAX_CHAIN_VERSIONS})"
 echo "Chains:       $GROUP_COUNT"
 echo "Concurrency:  $CONCURRENCY"
 echo "KELS URL:     $KELS_URL"
@@ -88,7 +89,7 @@ create_group() {
 
     # 2. Create 9 SAD objects and collect their SAIDs
     local object_saids=()
-    for i in $(seq 1 9); do
+    for i in $(seq 1 "$MAX_CHAIN_VERSIONS"); do
         local json
         json=$(jq -nc --arg p "$PLACEHOLDER" --arg v "load-test-${group}-${i}-$(date +%s%N)" \
             '{said: $p, value: $v}')
@@ -119,7 +120,7 @@ create_group() {
     fi
 
     # 4. Pick random n from [1,9]
-    local n=$(( (RANDOM % 9) + 1 ))
+    local n=$(( (RANDOM % MAX_CHAIN_VERSIONS) + 1 ))
 
     # 5. Build chain records: v0 (inception, no content) then v1..vN
     # v0: deterministic inception record
@@ -187,7 +188,7 @@ create_group() {
 }
 
 export -f create_group cesr_blake3 compute_said compute_prefix
-export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER
+export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)
 seq 1 "$GROUP_COUNT" | xargs -P "$CONCURRENCY" -I {} bash -c 'create_group {}'

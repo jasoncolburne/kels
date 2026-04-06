@@ -1,4 +1,4 @@
-//! Cryptographic Key Provider
+//! Cryptographic key provider — key generation, rotation, signing, and persistence.
 
 use std::path::{Path, PathBuf};
 

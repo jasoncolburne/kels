@@ -53,17 +53,17 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY", 16) as u32
+    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY", 8) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
 fn max_writes_per_ip_per_second() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 100) as u32
+    kels_core::env_usize("SADSTORE_MAX_WRITES_PER_IP_PER_SECOND", 256) as u32
 }
 
 /// Token bucket burst size per IP.
 fn ip_rate_limit_burst() -> u32 {
-    kels_core::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 500) as u32
+    kels_core::env_usize("SADSTORE_IP_RATE_LIMIT_BURST", 1024) as u32
 }
 
 /// Max SAD object size in bytes (default 1 MiB).
@@ -254,10 +254,10 @@ async fn authenticate_peer_request<T: serde::Serialize>(
         )
     })?;
 
-    let peer = get_verified_peer(redis_conn, &signed_request.peer_prefix).await?;
+    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
     if peer.is_none() {
         refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-        if get_verified_peer(redis_conn, &signed_request.peer_prefix)
+        if get_verified_peer(redis_conn, &signed_request.prefix)
             .await?
             .is_none()
         {
@@ -266,9 +266,9 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     }
 
     // Verify peer's KEL via KELS service to extract trusted public key
-    let verifier = kels_core::KelVerifier::new(&signed_request.peer_prefix);
+    let verifier = kels_core::KelVerifier::new(&signed_request.prefix);
     let kel_verification = kels_core::verify_key_events(
-        &signed_request.peer_prefix,
+        &signed_request.prefix,
         &state.kels_client.as_kel_source().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -695,22 +695,38 @@ pub async fn submit_sad_pointer(
     } else {
         None
     };
-    if let Some(ref conn) = state.redis_conn
-        && let Some(said) = &effective_said
-    {
-        let mut conn = conn.clone();
-        let message = if is_repair {
-            format!("{}:{}:repair", chain_prefix, said)
-        } else {
-            format!("{}:{}", chain_prefix, said)
-        };
-        if let Err(e) = redis::cmd("PUBLISH")
-            .arg("sad_chain_updates")
-            .arg(&message)
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to publish chain update: {}", e);
+    match (&state.redis_conn, &effective_said) {
+        (Some(conn), Some(said)) => {
+            let mut conn = conn.clone();
+            let message = if is_repair {
+                format!("{}:{}:repair", chain_prefix, said)
+            } else {
+                format!("{}:{}", chain_prefix, said)
+            };
+            if let Err(e) = redis::cmd("PUBLISH")
+                .arg("sad_chain_updates")
+                .arg(&message)
+                .query_async::<()>(&mut conn)
+                .await
+            {
+                warn!("Failed to publish chain update: {}", e);
+            } else {
+                debug!(
+                    chain_prefix = %chain_prefix,
+                    effective_said = %said,
+                    "Published chain update to Redis"
+                );
+            }
+        }
+        (None, _) => {
+            debug!("Skipping chain publish: no Redis connection");
+        }
+        (_, None) => {
+            debug!(
+                chain_prefix = %chain_prefix,
+                should_publish = should_publish,
+                "Skipping chain publish: no effective SAID"
+            );
         }
     }
 

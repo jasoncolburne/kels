@@ -1,0 +1,68 @@
+[package]
+name = "kels-mail"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jason Colburne"]
+license = "MIT"
+description = "KELS Mail - General-purpose ESSR messaging service"
+
+[[bin]]
+name = "mail"
+path = "src/main.rs"
+
+[lib]
+name = "kels_mail"
+path = "src/lib.rs"
+
+[dependencies]
+# Local libraries
+kels-core = { path = "../../lib/kels", features = ["redis", "server"] }
+kels-exchange = { path = "../../lib/exchange" }
+verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+
+# CESR for cryptographic primitives
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Base64 encoding
+base64 = "0.22"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1"
+async-trait = "0.1"
+
+# Per-prefix rate limiting
+dashmap = "6"
+
+# S3-compatible object storage (MinIO)
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Redis for pub/sub announcements
+redis = { version = "1.1", features = ["tokio-comp", "connection-manager"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"

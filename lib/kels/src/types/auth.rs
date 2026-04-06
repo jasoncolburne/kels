@@ -22,7 +22,7 @@ pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct SignedRequest<T> {
     pub payload: T,
-    pub peer_prefix: String,
+    pub prefix: String,
     pub signature: String,
 }
 
@@ -153,7 +153,7 @@ mod tests {
 
         let signed = SignedRequest {
             payload: "test".to_string(),
-            peer_prefix: "test_prefix".to_string(),
+            prefix: "test_prefix".to_string(),
             signature: "test_sig".to_string(),
         };
 

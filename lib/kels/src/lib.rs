@@ -71,13 +71,13 @@ pub use client::{
 };
 pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
-    SoftwareProviderConfig,
+    SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
-pub use store::{FileKelStore, KelStore, KelStoreSink, RepositoryKelStore};
+pub use store::{FileKelStore, FileSadStore, KelStore, KelStoreSink, RepositoryKelStore, SadStore};
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
@@ -94,9 +94,9 @@ pub use types::{
     SignedSadPointer, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
     benchmark_key_events, collect_establishment_serials, completed_verification,
     compute_approval_threshold, compute_rotation_hash, compute_sad_pointer_prefix,
-    forward_key_events, forward_sad_pointer, generate_nonce, hash_effective_said,
-    truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
+    forward_key_events, forward_sad_pointer, hash_effective_said, truncate_incomplete_generation,
+    validate_timestamp, verify_key_events, verify_key_events_collecting_establishment_keys,
+    verify_key_events_with, verify_sad_pointer,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

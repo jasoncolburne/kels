@@ -222,9 +222,9 @@ echo ""
 echo -e "${CYAN}=== Scenario 4: Listing Endpoints ===${NC}"
 echo ""
 
-PREFIX_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test","cursor":null,"limit":null},"peerPrefix":"test","signature":"test"}'
-PREFIX_LISTING_BODY_LIMIT='{"payload":{"timestamp":0,"nonce":"test2","cursor":null,"limit":5},"peerPrefix":"test","signature":"test"}'
-OBJECT_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test3","cursor":null,"limit":null},"peerPrefix":"test","signature":"test"}'
+PREFIX_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test","cursor":null,"limit":null},"prefix":"test","signature":"test"}'
+PREFIX_LISTING_BODY_LIMIT='{"payload":{"timestamp":0,"nonce":"test2","cursor":null,"limit":5},"prefix":"test","signature":"test"}'
+OBJECT_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test3","cursor":null,"limit":null},"prefix":"test","signature":"test"}'
 
 run_test "List chain prefixes" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"

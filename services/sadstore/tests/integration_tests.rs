@@ -438,7 +438,7 @@ async fn test_list_prefixes_empty() {
             cursor: None,
             limit: None,
         },
-        peer_prefix: "test".to_string(),
+        prefix: "test".to_string(),
         signature: "test".to_string(),
     };
 
@@ -469,7 +469,7 @@ async fn test_list_objects_empty() {
             cursor: None,
             limit: None,
         },
-        peer_prefix: "test".to_string(),
+        prefix: "test".to_string(),
         signature: "test".to_string(),
     };
 

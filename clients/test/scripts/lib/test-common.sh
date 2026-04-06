@@ -186,3 +186,198 @@ get_latest_said() {
     events=$(fetch_all_events "$url" "$prefix")
     echo "$events" | jq -r 'sort_by(.event.serial) | .[-1].event.said // empty'
 }
+
+# Compute a deterministic hash of a KEL on a node (for convergence comparison).
+get_kel_hash() {
+    local url="$1"
+    local prefix="$2"
+    fetch_all_events "$url" "$prefix" | jq -cS '[.[] | .signatures |= sort_by(.label)]' | md5sum | awk '{print $1}'
+}
+
+# Check if KELs match across a list of node URLs.
+# Usage: kels_match_nodes PREFIX URL1 URL2 [URL3 ...]
+kels_match_nodes() {
+    local prefix="$1"
+    shift
+    local urls=("$@")
+    local first_hash
+    first_hash=$(get_kel_hash "${urls[0]}" "$prefix")
+    for url in "${urls[@]:1}"; do
+        local h
+        h=$(get_kel_hash "$url" "$prefix")
+        if [ "$h" != "$first_hash" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Poll until KELs match on all given nodes (or timeout).
+# Usage: wait_for_convergence PREFIX TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_convergence() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for KEL $prefix to converge on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        if kels_match_nodes "$prefix" "${urls[@]}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    kels_match_nodes "$prefix" "${urls[@]}"
+}
+
+# Poll until event count on a node reaches expected value (or timeout).
+# Usage: wait_for_event_count URL PREFIX EXPECTED TIMEOUT
+wait_for_event_count() {
+    local url="$1"
+    local prefix="$2"
+    local expected="$3"
+    local timeout="$4"
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for $expected events on $url (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local count
+        count=$(get_event_count "$url" "$prefix")
+        if [ "$count" = "$expected" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: expected $expected events, got $(get_event_count "$url" "$prefix")"
+    return 1
+}
+
+# Check if a KEL on a node contains an event of a given kind.
+# Usage: kel_has_event_kind URL PREFIX KIND
+kel_has_event_kind() {
+    local url="$1"
+    local prefix="$2"
+    local kind="$3"
+    local events
+    events=$(fetch_all_events "$url" "$prefix")
+    echo "$events" | jq -e --arg k "$kind" '[.[].event.kind] | any(. == $k)' > /dev/null 2>&1
+}
+
+# Poll until a KEL contains a specific event kind on all given nodes (or timeout).
+# Usage: wait_for_event_kind PREFIX KIND TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_event_kind() {
+    local prefix="$1"
+    local kind="$2"
+    local timeout="$3"
+    shift 3
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for '$kind' event in KEL $prefix on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local all_have=true
+        for url in "${urls[@]}"; do
+            if ! kel_has_event_kind "$url" "$prefix" "$kind"; then
+                all_have=false
+                break
+            fi
+        done
+        if $all_have; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: not all nodes have '$kind' event"
+    return 1
+}
+
+# Check if a node is either DIVERGENT or has the ror event (for scenario 4-style tests
+# where the ror may protect against divergence depending on event arrival order).
+# Usage: node_is_divergent_or_has_ror URL PREFIX
+node_is_divergent_or_has_ror() {
+    local url="$1"
+    local prefix="$2"
+    local status
+    status=$(get_kel_status "$url" "$prefix")
+    if [ "$status" = "DIVERGENT" ]; then
+        return 0
+    fi
+    kel_has_event_kind "$url" "$prefix" "kels/v1/ror"
+}
+
+# Poll until all nodes are either DIVERGENT or have a ror event (or timeout).
+# Usage: wait_for_divergence_or_ror PREFIX TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_divergence_or_ror() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for KEL $prefix to be DIVERGENT or have ROR on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local all_ready=true
+        for url in "${urls[@]}"; do
+            if ! node_is_divergent_or_has_ror "$url" "$prefix"; then
+                all_ready=false
+                break
+            fi
+        done
+        if $all_ready; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: not all nodes are DIVERGENT or have ROR"
+    return 1
+}
+
+# Get KEL status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
+# Usage: get_kel_status URL PREFIX
+get_kel_status() {
+    local url="$1"
+    local prefix="$2"
+    kels-cli --kels-url "$url" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}'
+}
+
+# Poll until KEL reaches expected status (or timeout).
+# Usage: await_kel_status URL PREFIX EXPECTED_STATUS [TIMEOUT]
+await_kel_status() {
+    local url="$1"
+    local prefix="$2"
+    local expected="$3"
+    local timeout="${4:-10}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local actual
+        actual=$(get_kel_status "$url" "$prefix")
+        [ "$actual" = "$expected" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# Poll until KEL is DIVERGENT on all given nodes (or timeout).
+# Usage: wait_for_divergence PREFIX TIMEOUT URL1 URL2 [URL3 ...]
+wait_for_divergence() {
+    local prefix="$1"
+    local timeout="$2"
+    shift 2
+    local urls=("$@")
+    local deadline=$((SECONDS + timeout))
+    echo "Waiting for KEL $prefix to be DIVERGENT on ${#urls[@]} nodes (timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $deadline ]; do
+        local all_divergent=true
+        for url in "${urls[@]}"; do
+            local status
+            status=$(get_kel_status "$url" "$prefix")
+            if [ "$status" != "DIVERGENT" ]; then
+                all_divergent=false
+                break
+            fi
+        done
+        if $all_divergent; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout: not all nodes are DIVERGENT"
+    return 1
+}

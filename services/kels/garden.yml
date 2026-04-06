@@ -37,11 +37,6 @@ variables:
   kelsDatabaseUrl: ${var.postgres.url}/kels
   redisUrl: "${var.envType != 'standalone' ? var.redis.kelsUrl : ''}"
   federationRegistryUrls: "${var.envType != 'standalone' ? actions.run.federation-read-urls.outputs.log : ''}"
-  maxSubmissionsPerPrefixPerMinute: "${var.kels.maxSubmissionsPerPrefixPerMinute}"
-  maxWritesPerIpPerSecond: "${var.kels.maxWritesPerIpPerSecond}"
-  ipRateLimitBurst: "${var.kels.ipRateLimitBurst}"
-  nonceWindowSecs: "${var.kels.nonceWindowSecs}"
-  testEndpoints: "${var.kels.testEndpoints}"
 
 spec:
   manifestTemplates:

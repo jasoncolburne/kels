@@ -81,7 +81,7 @@ where
 
     Ok(SignedRequest {
         payload: payload.clone(),
-        peer_prefix: sign_result.peer_prefix,
+        prefix: sign_result.peer_prefix,
         signature: sign_result.signature,
     })
 }

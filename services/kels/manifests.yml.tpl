@@ -53,17 +53,17 @@ spec:
               value: "${var.redisUrl}"
             - name: FEDERATION_REGISTRY_URLS
               value: "${var.federationRegistryUrls}"
-            - name: KELS_MAX_SUBMISSIONS_PER_PREFIX_PER_MINUTE
-              value: "${var.maxSubmissionsPerPrefixPerMinute}"
+            - name: KELS_MAX_EVENTS_PER_PREFIX_PER_DAY
+              value: "${var.kels.maxEventsPerPrefixPerDay}"
             - name: KELS_MAX_WRITES_PER_IP_PER_SECOND
-              value: "${var.maxWritesPerIpPerSecond}"
+              value: "${var.kels.maxWritesPerIpPerSecond}"
             - name: KELS_IP_RATE_LIMIT_BURST
-              value: "${var.ipRateLimitBurst}"
+              value: "${var.kels.ipRateLimitBurst}"
             - name: KELS_NONCE_WINDOW_SECS
-              value: "${var.nonceWindowSecs}"
+              value: "${var.kels.nonceWindowSecs}"
             # --- Test config (remove for production) ---
             - name: KELS_TEST_ENDPOINTS
-              value: "${var.testEndpoints}"
+              value: "${var.kels.testEndpoints}"
           livenessProbe:
             httpGet:
               path: /health

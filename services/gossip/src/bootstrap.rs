@@ -243,11 +243,12 @@ impl BootstrapSync {
         }
 
         info!(
-            "Preloading SAD records from {} Ready peer(s)...",
+            "Preloading SAD pointer chains from {} Ready peer(s)...",
             ready_peers.len()
         );
 
         let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
+        let mut synced_chains = 0usize;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
@@ -298,6 +299,8 @@ impl BootstrapSync {
                             "Failed to sync SAD chain {} from {} during bootstrap: {}",
                             state.prefix, peer.node_id, e
                         );
+                    } else {
+                        synced_chains += 1;
                     }
                 }
 
@@ -308,7 +311,10 @@ impl BootstrapSync {
             }
         }
 
-        info!("SAD record preload complete");
+        info!(
+            "SAD pointer chain preload complete: {} chains synced",
+            synced_chains
+        );
         Ok(())
     }
 
@@ -475,7 +481,7 @@ impl BootstrapSync {
         for (prefix, source_peer_prefix, result) in results {
             match result {
                 crate::sync::RepairResult::Repaired => {
-                    info!("Synced KEL for {}", prefix);
+                    debug!("Synced KEL for {}", prefix);
                     total_synced += 1;
                 }
                 crate::sync::RepairResult::NoOp => {}

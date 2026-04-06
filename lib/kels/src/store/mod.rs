@@ -1,10 +1,12 @@
-//! KEL Storage trait - persisting Key Event Logs locally
+//! Storage traits - persisting Key Event Logs and Self-Addressed Data locally
 
 pub mod file;
 pub mod repository;
+pub mod sad;
 
 pub use file::FileKelStore;
 pub use repository::RepositoryKelStore;
+pub use sad::{FileSadStore, SadStore};
 
 use async_trait::async_trait;
 

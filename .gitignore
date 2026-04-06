@@ -3,7 +3,7 @@ target/
 **/*.rs.bk
 *.pdb
 Cargo.lock
-/debug
+/logs
 
 # Garden
 .garden/

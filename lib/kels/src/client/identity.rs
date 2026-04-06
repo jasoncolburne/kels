@@ -206,7 +206,7 @@ impl IdentityClient {
 
         let signed = crate::SignedRequest {
             payload: request.clone(),
-            peer_prefix: prefix,
+            prefix,
             signature: sign_result.signature,
         };
 

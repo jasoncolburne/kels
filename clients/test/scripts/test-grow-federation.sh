@@ -73,8 +73,26 @@ echo
 # Scenario 3: Verify each registry reports 4 members
 # ========================================
 echo -e "${CYAN}=== Scenario 3: Member Count ===${NC}"
-echo "Verifying each registry reports 4 members..."
+echo "Polling for all registries to report 4 members..."
 echo
+
+ALL_HAVE_4=false
+for attempt in {1..60}; do
+    ALL_HAVE_4=true
+    for i in "${!REGISTRY_URLS[@]}"; do
+        url="${REGISTRY_URLS[$i]}"
+        STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
+        MEMBER_COUNT=$(echo "$STATUS" | jq -r '.members | length // 0')
+        if [ "$MEMBER_COUNT" -ne 4 ]; then
+            ALL_HAVE_4=false
+            break
+        fi
+    done
+    if [ "$ALL_HAVE_4" = "true" ]; then
+        break
+    fi
+    sleep 1
+done
 
 for i in "${!REGISTRY_URLS[@]}"; do
     url="${REGISTRY_URLS[$i]}"
@@ -91,26 +109,36 @@ echo
 # Scenario 4: Verify all registries agree on the same leader
 # ========================================
 echo -e "${CYAN}=== Scenario 4: Leader Agreement ===${NC}"
-echo "Verifying all registries agree on the same leader..."
+echo "Polling for all registries to agree on the same leader..."
 echo
 
-LEADERS=()
-for i in "${!REGISTRY_URLS[@]}"; do
-    url="${REGISTRY_URLS[$i]}"
-    name="${REGISTRY_NAMES[$i]}"
-    STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
-    REPORTED_LEADER=$(echo "$STATUS" | jq -r '.leaderId // empty')
-    echo "  registry-${name} reports leader: $REPORTED_LEADER"
-    LEADERS+=("$REPORTED_LEADER")
-done
+ALL_SAME=false
+for attempt in {1..60}; do
+    LEADERS=()
+    for i in "${!REGISTRY_URLS[@]}"; do
+        url="${REGISTRY_URLS[$i]}"
+        STATUS=$(curl -sf "${url}/api/v1/federation/status" 2>/dev/null || echo "{}")
+        REPORTED_LEADER=$(echo "$STATUS" | jq -r '.leaderId // empty')
+        LEADERS+=("$REPORTED_LEADER")
+    done
 
-# Check all leaders are the same
-ALL_SAME=true
-for leader in "${LEADERS[@]}"; do
-    if [ "$leader" != "${LEADERS[0]}" ]; then
-        ALL_SAME=false
+    ALL_SAME=true
+    for leader in "${LEADERS[@]}"; do
+        if [ -z "$leader" ] || [ "$leader" != "${LEADERS[0]}" ]; then
+            ALL_SAME=false
+            break
+        fi
+    done
+
+    if [ "$ALL_SAME" = "true" ]; then
         break
     fi
+    sleep 1
+done
+
+for i in "${!REGISTRY_URLS[@]}"; do
+    name="${REGISTRY_NAMES[$i]}"
+    echo "  registry-${name} reports leader: ${LEADERS[$i]}"
 done
 
 run_test "All registries agree on the same leader" [ "$ALL_SAME" = "true" ]
@@ -120,11 +148,19 @@ echo
 # Scenario 5: Verify node 0 reports itself correctly
 # ========================================
 echo -e "${CYAN}=== Scenario 5: Node 0 Self-Report ===${NC}"
-echo "Verifying node 0 reports its own ID correctly..."
+echo "Polling for node 0 to report its own ID correctly..."
 echo
 
-STATUS_0=$(curl -sf "${REGISTRY_URLS[0]}/api/v1/federation/status" 2>/dev/null || echo "{}")
-NODE_ID_0=$(echo "$STATUS_0" | jq -r '.nodeId // empty')
+NODE_ID_0=""
+for attempt in {1..60}; do
+    STATUS_0=$(curl -sf "${REGISTRY_URLS[0]}/api/v1/federation/status" 2>/dev/null || echo "{}")
+    NODE_ID_0=$(echo "$STATUS_0" | jq -r '.nodeId // empty')
+    if [ "$NODE_ID_0" = "0" ]; then
+        break
+    fi
+    sleep 1
+done
+
 echo "  Node 0 reports nodeId: $NODE_ID_0"
 run_test "Node 0 reports nodeId 0" [ "$NODE_ID_0" = "0" ]
 

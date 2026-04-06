@@ -1,0 +1,43 @@
+kind: Build
+name: mail
+type: container
+
+# Mail service requires federation (gossip for announcements, identity for node prefix)
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
+
+source:
+  path: ../..  # Set build context to repository root
+
+include:
+  - lib/kels/**/*
+  - lib/derive/**/*
+  - lib/exchange/**/*
+  - services/mail/**/*
+  - project.garden.yml
+
+spec:
+  dockerfile: services/mail/Dockerfile
+
+---
+
+kind: Deploy
+name: mail
+type: kubernetes
+
+# Mail service requires federation (gossip for announcements, identity for node prefix)
+disabled: ${var.envType == "registry" || var.envType == "standalone"}
+
+dependencies:
+  - build.mail
+  - deploy.postgres
+  - deploy.minio
+  - deploy.kels
+  - deploy.identity
+  - deploy.redis
+
+variables:
+  mailDatabaseUrl: ${var.postgres.url}/mail
+
+spec:
+  manifestTemplates:
+    - manifests.yml.tpl

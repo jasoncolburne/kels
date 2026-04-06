@@ -163,9 +163,9 @@ Environment variables:
 | `MINIO_ACCESS_KEY` | (required) | S3 access key |
 | `MINIO_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
-| `SADSTORE_MAX_RECORDS_PER_PREFIX_PER_DAY` | `16` | Max chain records per prefix per day |
-| `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `100` | Per-IP write rate (token bucket refill) |
-| `SADSTORE_IP_RATE_LIMIT_BURST` | `500` | Per-IP token bucket burst size |
+| `SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY` | `8` | Max chain records per prefix per day |
+| `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `256` | Per-IP write rate (token bucket refill) |
+| `SADSTORE_IP_RATE_LIMIT_BURST` | `1024` | Per-IP token bucket burst size |
 | `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |
 
 On the gossip service, `BASE_DOMAIN` env var derives both KELS and SADStore URLs for local and peer service discovery.

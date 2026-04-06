@@ -106,7 +106,7 @@ impl Gossip {
         listen_addr: SocketAddr,
     ) -> Result<(Self, GossipHandle), Error> {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let (event_tx, _) = broadcast::channel(256);
+        let (event_tx, _) = broadcast::channel(1024);
 
         let mut actor = net::actor::GossipActor::new(
             config.protocol,
