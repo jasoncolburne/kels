@@ -3,9 +3,6 @@
 use cesr::{Digest, Matter};
 use serde::{Deserialize, Serialize};
 
-// Re-export for backwards compatibility — canonical location is crate::crypto::generate_nonce
-pub use crate::crypto::generate_nonce;
-
 /// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
 ///
 /// Used for deterministic effective SAIDs for divergent and contested KELs:
