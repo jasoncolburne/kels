@@ -210,7 +210,7 @@ impl FederationNode {
     }
 
     /// Get the current leader's prefix, if known.
-    pub async fn leader_prefix(&self) -> Option<String> {
+    pub async fn leader_prefix(&self) -> Option<cesr::Digest> {
         self.leader()
             .await
             .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix.clone()))
@@ -323,7 +323,7 @@ impl FederationNode {
     /// Vote on a peer proposal (leader only).
     pub async fn vote_peer(
         &self,
-        proposal_id: String,
+        proposal_id: cesr::Digest,
         vote: Vote,
     ) -> Result<FederationResponse, FederationError> {
         if !self.is_leader().await {
@@ -346,7 +346,11 @@ impl FederationNode {
 
     /// Verify a SAID is anchored in a federation member's KEL.
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
-    pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
+    pub async fn verify_anchoring(
+        &self,
+        said: &cesr::Digest,
+        member_prefix: &cesr::Digest,
+    ) -> Result<(), String> {
         self.state_machine
             .verify_member_anchoring(said, member_prefix)
             .await
@@ -399,7 +403,10 @@ impl FederationNode {
     }
 
     /// Get a specific addition proposal by ID (raw, for chain building).
-    pub async fn get_addition_proposal(&self, proposal_id: &str) -> Option<PeerAdditionProposal> {
+    pub async fn get_addition_proposal(
+        &self,
+        proposal_id: &cesr::Digest,
+    ) -> Option<PeerAdditionProposal> {
         self.state_machine
             .inner()
             .lock()
@@ -410,7 +417,10 @@ impl FederationNode {
     }
 
     /// Get a specific removal proposal by ID (raw, for chain building).
-    pub async fn get_removal_proposal(&self, proposal_id: &str) -> Option<PeerRemovalProposal> {
+    pub async fn get_removal_proposal(
+        &self,
+        proposal_id: &cesr::Digest,
+    ) -> Option<PeerRemovalProposal> {
         self.state_machine
             .inner()
             .lock()
@@ -423,7 +433,7 @@ impl FederationNode {
     /// Get a specific addition proposal with its votes (searches pending and completed).
     pub async fn get_addition_proposal_with_votes(
         &self,
-        proposal_id: &str,
+        proposal_id: &cesr::Digest,
     ) -> Option<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
@@ -447,7 +457,7 @@ impl FederationNode {
         // Check completed
         sm.completed_addition_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_id))
             .map(|chain| {
                 let prefix = chain[0].prefix.clone();
                 let votes: Vec<Vote> = sm
@@ -469,7 +479,7 @@ impl FederationNode {
     /// Get a specific removal proposal with its votes (searches pending and completed).
     pub async fn get_removal_proposal_with_votes(
         &self,
-        proposal_id: &str,
+        proposal_id: &cesr::Digest,
     ) -> Option<RemovalWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
@@ -493,7 +503,7 @@ impl FederationNode {
         // Check completed
         sm.completed_removal_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_id))
             .map(|chain| {
                 let prefix = chain[0].prefix.clone();
                 let votes: Vec<Vote> = sm
@@ -576,7 +586,7 @@ impl FederationNode {
     }
 
     /// Get the trusted member prefixes.
-    pub fn member_prefixes(&self) -> Vec<String> {
+    pub fn member_prefixes(&self) -> Vec<cesr::Digest> {
         self.config.member_prefixes()
     }
 

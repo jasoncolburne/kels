@@ -207,8 +207,16 @@ pub unsafe extern "C" fn kels_encap_key_publication_create(
         return std::ptr::null_mut();
     };
 
+    let encap_key = match cesr::EncapsulationKey::from_qb64(&encap_key) {
+        Ok(k) => k,
+        Err(e) => {
+            set_last_error(&format!("Invalid encapsulation key CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: String::new(),
+        said: cesr::Digest::blake3_256(b"placeholder"),
         algorithm: algo,
         encapsulation_key: encap_key,
     };
@@ -259,14 +267,28 @@ pub unsafe extern "C" fn kels_essr_seal(
 ) -> *mut c_char {
     clear_last_error();
 
-    let Some(sender) = from_c_string(sender_prefix) else {
+    let Some(sender_str) = from_c_string(sender_prefix) else {
         set_last_error("Invalid sender prefix");
         return std::ptr::null_mut();
     };
+    let sender = match cesr::Digest::from_qb64(&sender_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid sender prefix CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
 
-    let Some(recipient) = from_c_string(recipient_prefix) else {
+    let Some(recipient_str) = from_c_string(recipient_prefix) else {
         set_last_error("Invalid recipient prefix");
         return std::ptr::null_mut();
+    };
+    let recipient = match cesr::Digest::from_qb64(&recipient_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid recipient prefix CESR: {e}"));
+            return std::ptr::null_mut();
+        }
     };
 
     let Some(topic_str) = from_c_string(topic) else {
@@ -402,7 +424,7 @@ pub unsafe extern "C" fn kels_essr_open(
     match kels_exchange::open(&signed_envelope, &decap_key, &verification_key) {
         Ok(inner) => {
             result.status = KelsStatus::Ok;
-            result.sender = to_c_string(&inner.sender);
+            result.sender = to_c_string(inner.sender.as_ref());
             result.topic = to_c_string(&inner.topic);
 
             // Allocate payload bytes on the heap
@@ -490,7 +512,7 @@ pub unsafe extern "C" fn kels_compute_blob_digest(data: *const u8, data_len: usi
     }
 
     let bytes = unsafe { std::slice::from_raw_parts(data, data_len) };
-    to_c_string(&kels_exchange::compute_blob_digest(bytes))
+    to_c_string(kels_exchange::compute_blob_digest(bytes).as_ref())
 }
 
 #[cfg(test)]
@@ -626,8 +648,10 @@ mod tests {
         // Generate recipient KEM keys
         let (recipient_ek, recipient_dk) = cesr::generate_ml_kem_768().expect("keygen");
 
-        let sender_prefix = CString::new("sender-prefix-ffi").expect("cstring");
-        let recipient_prefix = CString::new("recipient-prefix-ffi").expect("cstring");
+        let sender_digest = cesr::Digest::blake3_256(b"sender-prefix-ffi");
+        let recipient_digest = cesr::Digest::blake3_256(b"recipient-prefix-ffi");
+        let sender_prefix = CString::new(sender_digest.as_ref()).expect("cstring");
+        let recipient_prefix = CString::new(recipient_digest.as_ref()).expect("cstring");
         let topic = CString::new("test/v1/roundtrip").expect("cstring");
         let payload = b"hello from FFI";
         let encap_key_qb64 = CString::new(recipient_ek.qb64()).expect("cstring");
@@ -667,7 +691,7 @@ mod tests {
         assert_eq!(open_result.status, KelsStatus::Ok);
         assert_eq!(
             crate::from_c_string(open_result.sender),
-            Some("sender-prefix-ffi".to_string())
+            Some(sender_digest.as_ref().to_string())
         );
         assert_eq!(
             crate::from_c_string(open_result.topic),
@@ -692,8 +716,10 @@ mod tests {
         let (_, wrong_dk) = cesr::generate_ml_kem_768().expect("keygen");
         let (wrong_vk, _) = cesr::generate_ml_dsa_65().expect("keygen");
 
-        let sender_prefix = CString::new("sender").expect("cstring");
-        let recipient_prefix = CString::new("recipient").expect("cstring");
+        let sender_digest = cesr::Digest::blake3_256(b"sender");
+        let recipient_digest = cesr::Digest::blake3_256(b"recipient");
+        let sender_prefix = CString::new(sender_digest.as_ref()).expect("cstring");
+        let recipient_prefix = CString::new(recipient_digest.as_ref()).expect("cstring");
         let topic = CString::new("test").expect("cstring");
         let payload = b"secret";
         let encap_key_qb64 = CString::new(recipient_ek.qb64()).expect("cstring");

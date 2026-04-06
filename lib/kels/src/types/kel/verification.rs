@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use cesr::{Digest, Matter, Signature, VerificationKey};
+use cesr::{Digest, Matter, VerificationKey};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -39,16 +39,16 @@ pub struct BranchTip {
 #[crate_new]
 pub struct KelVerification {
     #[said]
-    said: String,
-    prefix: String,
-    delegating_prefix: Option<String>,
+    said: cesr::Digest,
+    prefix: cesr::Digest,
+    delegating_prefix: Option<cesr::Digest>,
     branch_tips: Vec<BranchTip>,
     is_contested: bool,
     diverged_at_serial: Option<u64>,
     event_count: usize,
     rotation_count: usize,
-    anchored_saids: BTreeSet<String>,
-    queried_saids: BTreeSet<String>,
+    anchored_saids: BTreeSet<cesr::Digest>,
+    queried_saids: BTreeSet<cesr::Digest>,
     /// Whether the KEL maintains proactive recovery rotation compliance:
     /// no more than `MAX_NON_REVEALING_EVENTS` non-revealing events between
     /// consecutive recovery-revealing events. Required to ensure all server
@@ -61,18 +61,18 @@ pub struct KelVerification {
 
 impl KelVerification {
     /// The SAID (content-addressable digest) of this verification state.
-    pub fn said(&self) -> &str {
+    pub fn said(&self) -> &cesr::Digest {
         &self.said
     }
 
     /// The prefix this context is for.
-    pub fn prefix(&self) -> &str {
+    pub fn prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
 
     /// The delegating prefix from the inception event, if it was a `dip`.
-    pub fn delegating_prefix(&self) -> Option<&str> {
-        self.delegating_prefix.as_deref()
+    pub fn delegating_prefix(&self) -> Option<&cesr::Digest> {
+        self.delegating_prefix.as_ref()
     }
 
     /// All verified branch endpoints.
@@ -80,15 +80,15 @@ impl KelVerification {
         &self.branch_tips
     }
 
-    /// Current public key (qb64) from the last verified establishment event.
+    /// Current public key from the last verified establishment event.
     /// Only meaningful for non-divergent KELs (single branch).
-    pub fn current_public_key(&self) -> Option<&str> {
+    pub fn current_public_key(&self) -> Option<&cesr::VerificationKey> {
         if self.branch_tips.len() == 1 {
             self.branch_tips[0]
                 .establishment_tip
                 .event
                 .public_key
-                .as_deref()
+                .as_ref()
         } else {
             None
         }
@@ -142,7 +142,7 @@ impl KelVerification {
     /// - Contested: `hash("contested:{prefix}")` — deterministic across all nodes
     /// - Divergent: `hash("divergent:{prefix}")` — deterministic regardless of which
     ///   fork events each node has, avoiding wasted anti-entropy sync attempts
-    pub fn effective_tail_said(&self) -> Option<String> {
+    pub fn effective_tail_said(&self) -> Option<cesr::Digest> {
         if self.branch_tips.is_empty() {
             return None;
         }
@@ -158,12 +158,12 @@ impl KelVerification {
     }
 
     /// Check if a specific SAID was found anchored in the verified KEL.
-    pub fn is_said_anchored(&self, said: &str) -> bool {
+    pub fn is_said_anchored(&self, said: &cesr::Digest) -> bool {
         self.anchored_saids.contains(said)
     }
 
     /// The full set of verified anchored SAIDs.
-    pub fn anchored_saids(&self) -> &BTreeSet<String> {
+    pub fn anchored_saids(&self) -> &BTreeSet<cesr::Digest> {
         &self.anchored_saids
     }
 
@@ -188,8 +188,8 @@ impl KelVerification {
     }
 }
 /// Compute the rotation hash (Blake3-256 of the public key qb64 string).
-pub fn compute_rotation_hash(public_key: &str) -> String {
-    Digest::blake3_256(public_key.as_bytes()).qb64()
+pub fn compute_rotation_hash(public_key: &VerificationKey) -> cesr::Digest {
+    Digest::blake3_256(public_key.qb64().as_bytes())
 }
 
 /// Per-branch cryptographic state tracked during verification.
@@ -197,9 +197,9 @@ pub fn compute_rotation_hash(public_key: &str) -> String {
 struct BranchState {
     tip: Arc<SignedKeyEvent>,
     establishment_tip: Arc<SignedKeyEvent>,
-    current_public_key: String,
-    pending_rotation_hash: Option<String>,
-    pending_recovery_hash: Option<String>,
+    current_public_key: VerificationKey,
+    pending_rotation_hash: Option<cesr::Digest>,
+    pending_recovery_hash: Option<cesr::Digest>,
     /// Non-revealing events since the last recovery-revealing event on this branch.
     events_since_last_revealing: usize,
 }
@@ -207,7 +207,7 @@ struct BranchState {
 fn branch_state_from_tip(
     tip: &BranchTip,
     events_since_last_revealing: usize,
-) -> Result<(String, BranchState), KelsError> {
+) -> Result<(cesr::Digest, BranchState), KelsError> {
     let pk = tip
         .establishment_tip
         .event
@@ -246,11 +246,11 @@ fn branch_state_from_tip(
 /// After verification, call `into_verification()` to produce a `KelVerification`
 /// (proof-of-verification token).
 pub struct KelVerifier {
-    prefix: String,
+    prefix: cesr::Digest,
     /// Delegating prefix from the inception event, if it was a `dip`.
-    delegating_prefix: Option<String>,
+    delegating_prefix: Option<cesr::Digest>,
     /// Pre-divergence: single branch state. Branches keyed by tip SAID.
-    branches: HashMap<String, BranchState>,
+    branches: HashMap<cesr::Digest, BranchState>,
     /// The current serial we've verified up to.
     last_verified_serial: Option<u64>,
     /// Serial where divergence first occurred.
@@ -262,9 +262,9 @@ pub struct KelVerifier {
     /// Number of rotation (rot/ror) events seen.
     rotation_count: usize,
     /// Anchor checking: SAIDs we're looking for.
-    queried_saids: BTreeSet<String>,
+    queried_saids: BTreeSet<cesr::Digest>,
     /// Anchor checking: SAIDs we've found anchored.
-    anchored_saids: BTreeSet<String>,
+    anchored_saids: BTreeSet<cesr::Digest>,
     /// Non-revealing events since the last recovery-revealing event.
     events_since_last_revealing: usize,
     /// Whether the proactive ror interval has been violated.
@@ -277,9 +277,9 @@ pub struct KelVerifier {
 
 impl KelVerifier {
     /// Start from inception. Used for full verification (e.g., streaming a peer's KEL).
-    pub fn new(prefix: impl Into<String>) -> Self {
+    pub fn new(prefix: &cesr::Digest) -> Self {
         Self {
-            prefix: prefix.into(),
+            prefix: prefix.clone(),
             delegating_prefix: None,
             branches: HashMap::new(),
             last_verified_serial: None,
@@ -327,11 +327,10 @@ impl KelVerifier {
     /// does not produce verifications consumed for delegation checks.
     /// Delegation-aware verification always starts from inception via `new()`.
     pub fn from_branch_tip(
-        prefix: impl Into<String>,
+        prefix: &cesr::Digest,
         tip: &BranchTip,
         events_since_last_revealing: usize,
     ) -> Result<Self, KelsError> {
-        let prefix = prefix.into();
         let mut branches = HashMap::new();
 
         let (said, state) = branch_state_from_tip(tip, events_since_last_revealing)?;
@@ -340,7 +339,7 @@ impl KelVerifier {
         let last_verified_serial = Some(tip.tip.event.serial);
 
         Ok(Self {
-            prefix,
+            prefix: prefix.clone(),
             delegating_prefix: None,
             branches,
             last_verified_serial,
@@ -359,10 +358,9 @@ impl KelVerifier {
 
     /// Resume from a verified `KelVerification`.
     pub fn resume(
-        prefix: impl Into<String>,
+        prefix: &cesr::Digest,
         kel_verification: &KelVerification,
     ) -> Result<Self, KelsError> {
-        let prefix = prefix.into();
         let mut branches = HashMap::new();
 
         let since_revealing_count = kel_verification.events_since_last_revealing();
@@ -378,8 +376,8 @@ impl KelVerifier {
             .max();
 
         Ok(Self {
-            prefix,
-            delegating_prefix: kel_verification.delegating_prefix().map(String::from),
+            prefix: prefix.clone(),
+            delegating_prefix: kel_verification.delegating_prefix().cloned(),
             branches,
             last_verified_serial,
             diverged_at_serial: kel_verification.diverged_at_serial(),
@@ -400,7 +398,7 @@ impl KelVerifier {
     /// Call this before `verify_page()`. As the verifier walks events, it checks
     /// each `ixn` event's `anchor` field against these SAIDs. Results are available
     /// via `KelVerification::anchored_saids()` after calling `into_verification()`.
-    pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = String>) {
+    pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = cesr::Digest>) {
         self.queried_saids.extend(saids);
     }
 
@@ -409,14 +407,11 @@ impl KelVerifier {
         self.proactive_ror_compliant
     }
 
-    /// The current public key (qb64) after the last verified establishment event.
+    /// The current public key after the last verified establishment event.
     /// Only meaningful for non-divergent KELs (single branch).
-    pub fn current_public_key(&self) -> Option<&str> {
+    pub fn current_public_key(&self) -> Option<&VerificationKey> {
         if self.branches.len() == 1 {
-            self.branches
-                .values()
-                .next()
-                .map(|b| b.current_public_key.as_str())
+            self.branches.values().next().map(|b| &b.current_public_key)
         } else {
             None
         }
@@ -531,10 +526,7 @@ impl KelVerifier {
             if self.requested_establishment_serials.contains(&0)
                 && let Some(ref pk) = event.event.public_key
             {
-                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
-                    KelsError::InvalidSignature(format!("Invalid public key at serial 0: {}", e))
-                })?;
-                self.collected_establishment_keys.insert(0, vk);
+                self.collected_establishment_keys.insert(0, pk.clone());
             }
             return Ok(());
         }
@@ -584,10 +576,10 @@ impl KelVerifier {
         }
 
         // Match each event to its branch via `previous` pointer
-        let mut new_branches: HashMap<String, BranchState> = HashMap::new();
+        let mut new_branches: HashMap<cesr::Digest, BranchState> = HashMap::new();
 
         for event in events {
-            let previous = event.event.previous.as_deref().ok_or_else(|| {
+            let previous = event.event.previous.as_ref().ok_or_else(|| {
                 KelsError::InvalidKel(format!(
                     "Non-inception event {} has no previous pointer",
                     event.event.said,
@@ -610,13 +602,7 @@ impl KelVerifier {
                 && self.requested_establishment_serials.contains(&serial)
                 && let Some(ref pk) = event.event.public_key
             {
-                let vk = VerificationKey::from_qb64(pk).map_err(|e| {
-                    KelsError::InvalidSignature(format!(
-                        "Invalid public key at serial {}: {}",
-                        serial, e
-                    ))
-                })?;
-                self.collected_establishment_keys.insert(serial, vk);
+                self.collected_establishment_keys.insert(serial, pk.clone());
             }
 
             // Track anchor checking — exclude events in the divergent region.
@@ -625,7 +611,7 @@ impl KelVerifier {
             if self.diverged_at_serial.is_none_or(|ds| serial < ds)
                 && event.event.is_interaction()
                 && let Some(ref anchor) = event.event.anchor
-                && self.queried_saids.contains(anchor.as_str())
+                && self.queried_saids.contains(anchor)
             {
                 self.anchored_saids.insert(anchor.clone());
             }
@@ -653,7 +639,7 @@ impl KelVerifier {
         for (said, state) in &self.branches {
             if events
                 .iter()
-                .any(|e| e.event.previous.as_deref() == Some(said.as_str()))
+                .any(|e| e.event.previous.as_ref() == Some(said))
             {
                 continue;
             }
@@ -686,13 +672,12 @@ impl KelVerifier {
             )));
         }
 
-        let qb64 = event.public_key.as_ref().ok_or_else(|| {
+        let public_key = event.public_key.as_ref().ok_or_else(|| {
             KelsError::InvalidKel("Establishment event missing public key".to_string())
         })?;
 
         // Verify signature with the event's own public key
-        let public_key = VerificationKey::from_qb64(qb64)?;
-        Self::verify_signatures(signed_event, &public_key)?;
+        Self::verify_signatures(signed_event, public_key)?;
 
         // Capture delegating prefix from dip events
         self.delegating_prefix = event.delegating_prefix.clone();
@@ -704,7 +689,7 @@ impl KelVerifier {
             BranchState {
                 tip: Arc::clone(&arc_event),
                 establishment_tip: arc_event,
-                current_public_key: qb64.clone(),
+                current_public_key: public_key.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
                 events_since_last_revealing: 0,
@@ -727,13 +712,13 @@ impl KelVerifier {
         self.verify_event_basics(event)?;
 
         if event.is_establishment() {
-            let qb64 = event.public_key.as_ref().ok_or_else(|| {
+            let public_key = event.public_key.as_ref().ok_or_else(|| {
                 KelsError::InvalidKel("Establishment event missing public key".to_string())
             })?;
 
             // Verify forward commitment
             if let Some(ref rotation_hash) = branch.pending_rotation_hash {
-                let computed = compute_rotation_hash(qb64);
+                let computed = compute_rotation_hash(public_key);
                 if computed != *rotation_hash {
                     return Err(KelsError::InvalidKel(
                         "Public key does not match previous rotation hash".to_string(),
@@ -761,8 +746,7 @@ impl KelVerifier {
             }
 
             // Verify signature with this event's own public key
-            let public_key = VerificationKey::from_qb64(qb64)?;
-            Self::verify_signatures(signed_event, &public_key)?;
+            Self::verify_signatures(signed_event, public_key)?;
 
             let events_since_last_revealing = if event.reveals_recovery_key() {
                 0
@@ -774,15 +758,14 @@ impl KelVerifier {
             Ok(BranchState {
                 tip: Arc::clone(&arc_event),
                 establishment_tip: arc_event,
-                current_public_key: qb64.clone(),
+                current_public_key: public_key.clone(),
                 pending_rotation_hash: event.rotation_hash.clone(),
                 pending_recovery_hash: event.recovery_hash.clone(),
                 events_since_last_revealing,
             })
         } else {
             // Non-establishment: verify with branch's current public key
-            let public_key = VerificationKey::from_qb64(&branch.current_public_key)?;
-            Self::verify_signatures(signed_event, &public_key)?;
+            Self::verify_signatures(signed_event, &branch.current_public_key)?;
 
             Ok(BranchState {
                 tip: Arc::new(signed_event.clone()),
@@ -826,9 +809,8 @@ impl KelVerifier {
             KelsError::InvalidKel(format!("Event {} has no signing signature", &event.said,))
         })?;
 
-        let signature = Signature::from_qb64(&sig.signature)?;
         public_key
-            .verify(event.said.as_bytes(), &signature)
+            .verify(event.said.qb64().as_bytes(), &sig.signature)
             .map_err(|_| {
                 KelsError::InvalidKel(format!(
                     "Event {} signature verification failed",
@@ -838,7 +820,7 @@ impl KelVerifier {
 
         // Dual-signature requirement for recovery events
         if event.reveals_recovery_key() {
-            let recovery_key_qb64 = event.recovery_key.as_ref().ok_or_else(|| {
+            let recovery_key = event.recovery_key.as_ref().ok_or_else(|| {
                 KelsError::InvalidKel(format!(
                     "Recovery event {} has no recovery_key field",
                     &event.said,
@@ -852,10 +834,8 @@ impl KelVerifier {
                 ))
             })?;
 
-            let recovery_public_key = VerificationKey::from_qb64(recovery_key_qb64)?;
-            let recovery_signature = Signature::from_qb64(&recovery_sig.signature)?;
-            recovery_public_key
-                .verify(event.said.as_bytes(), &recovery_signature)
+            recovery_key
+                .verify(event.said.qb64().as_bytes(), &recovery_sig.signature)
                 .map_err(|_| {
                     KelsError::InvalidKel(format!(
                         "Recovery event {} recovery signature verification failed",

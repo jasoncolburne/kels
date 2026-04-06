@@ -16,17 +16,17 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryRecord {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[created_at]
     pub created_at: StorageDatetime,
     /// The KEL prefix that was recovered.
-    pub kel_prefix: String,
+    pub kel_prefix: cesr::Digest,
     /// Serial number of the `rec` event.
     pub recovery_serial: u64,
     /// Serial where divergence occurred.
     pub diverged_at: u64,
     /// The `previous` field of the `rec` event, used to identify the adversary branch.
-    pub rec_previous: String,
+    pub rec_previous: cesr::Digest,
     /// First serial in the submitted recovery batch.
     pub owner_first_serial: u64,
 }
@@ -41,11 +41,11 @@ pub struct RecoveryRecord {
 #[serde(rename_all = "camelCase")]
 pub struct KelRecoveryEvent {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// The recovery record this event belongs to.
-    pub recovery_said: String,
+    pub recovery_said: cesr::Digest,
     /// The SAID of the archived event.
-    pub event_said: String,
+    pub event_said: cesr::Digest,
 }
 
 /// A page of recovery records.
@@ -63,18 +63,18 @@ mod tests {
     #[test]
     fn test_recovery_record_create() {
         let record = RecoveryRecord::create(
-            "KPrefixExample__________________________________".to_string(),
+            cesr::Digest::blake3_256(b"prefix_example"),
             3,
             2,
-            "KRecPrevious____________________________________".to_string(),
+            cesr::Digest::blake3_256(b"rec_previous"),
             1,
         )
         .unwrap();
 
-        assert!(!record.said.is_empty());
+        assert_eq!(record.said.to_string().len(), 44);
         assert_eq!(
             record.kel_prefix,
-            "KPrefixExample__________________________________"
+            cesr::Digest::blake3_256(b"prefix_example")
         );
         assert_eq!(record.recovery_serial, 3);
         assert_eq!(record.diverged_at, 2);
@@ -83,10 +83,10 @@ mod tests {
     #[test]
     fn test_recovery_record_json_roundtrip() {
         let record = RecoveryRecord::create(
-            "KPrefixExample__________________________________".to_string(),
+            cesr::Digest::blake3_256(b"prefix_example"),
             3,
             2,
-            "KRecPrevious____________________________________".to_string(),
+            cesr::Digest::blake3_256(b"rec_previous"),
             1,
         )
         .unwrap();

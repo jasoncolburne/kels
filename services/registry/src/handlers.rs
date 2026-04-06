@@ -12,7 +12,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use dashmap::DashMap;
 use kels_core::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
@@ -309,10 +308,12 @@ pub async fn federation_rpc(
     State(state): State<Arc<FederationState>>,
     Json(signed_rpc): Json<SignedFederationRpc>,
 ) -> Result<Json<FederationRpcResponse>, ApiError> {
-    use cesr::{Matter, Signature, VerificationKey};
-
     // Verify sender is a federation member
-    if !state.node.config().is_member(&signed_rpc.sender_prefix) {
+    if !state
+        .node
+        .config()
+        .is_member(signed_rpc.sender_prefix.as_ref())
+    {
         return Err(ApiError::forbidden(format!(
             "Unknown federation member: {}",
             signed_rpc.sender_prefix
@@ -329,7 +330,7 @@ pub async fn federation_rpc(
         &signed_rpc.sender_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<String>(),
+        std::iter::empty::<cesr::Digest>(),
     )
     .await;
 
@@ -340,7 +341,7 @@ pub async fn federation_rpc(
             let member = state
                 .node
                 .config()
-                .member_by_prefix(&signed_rpc.sender_prefix)
+                .member_by_prefix(signed_rpc.sender_prefix.as_ref())
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
@@ -368,12 +369,9 @@ pub async fn federation_rpc(
     let current_key = kel_verification.current_public_key().ok_or_else(|| {
         ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
     })?;
-    let public_key = VerificationKey::from_qb64(current_key)
-        .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
-    let signature = Signature::from_qb64(&signed_rpc.signature)
-        .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;
+    let public_key = current_key.clone();
     public_key
-        .verify(signed_rpc.payload.as_bytes(), &signature)
+        .verify(signed_rpc.payload.as_bytes(), &signed_rpc.signature)
         .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
 
     // Parse the verified payload
@@ -490,7 +488,7 @@ pub async fn list_completed_proposals(
 /// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
-    pub peer_prefix: String,
+    pub peer_prefix: cesr::Digest,
     pub node_id: String,
     pub base_domain: String,
     pub gossip_addr: String,
@@ -501,15 +499,21 @@ pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
+    let proposal_digest = {
+        use cesr::Matter;
+        cesr::Digest::from_qb64(&proposal_id)
+            .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?
+    };
+
     if let Some(addition) = state
         .node
-        .get_addition_proposal_with_votes(&proposal_id)
+        .get_addition_proposal_with_votes(&proposal_digest)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Addition(addition)))
     } else if let Some(removal) = state
         .node
-        .get_removal_proposal_with_votes(&proposal_id)
+        .get_removal_proposal_with_votes(&proposal_digest)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Removal(removal)))
@@ -536,7 +540,7 @@ pub async fn admin_submit_addition_proposal(
     Json(proposal): Json<PeerAdditionProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
     // 1. Verify proposer is a federation member
-    if !state.node.config().is_member(&proposal.proposer) {
+    if !state.node.config().is_member(proposal.proposer.as_ref()) {
         return Err(ApiError::forbidden(format!(
             "Proposer {} is not a federation member",
             proposal.proposer
@@ -653,7 +657,7 @@ pub async fn admin_submit_removal_proposal(
     Json(proposal): Json<PeerRemovalProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
     // 1. Verify proposer is a federation member
-    if !state.node.config().is_member(&proposal.proposer) {
+    if !state.node.config().is_member(proposal.proposer.as_ref()) {
         return Err(ApiError::forbidden(format!(
             "Proposer {} is not a federation member",
             proposal.proposer
@@ -773,12 +777,18 @@ pub async fn admin_vote_proposal(
     Path(proposal_id): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
+    let proposal_digest = {
+        use cesr::Matter;
+        cesr::Digest::from_qb64(&proposal_id)
+            .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?
+    };
+
     // 1. Verify vote SAID integrity
     vote.verify_said()
         .map_err(|e| ApiError::bad_request(format!("Vote verification failed: {}", e)))?;
 
     // 2. Verify voter is a federation member
-    if !state.node.config().is_member(&vote.voter) {
+    if !state.node.config().is_member(vote.voter.as_ref()) {
         return Err(ApiError::forbidden(format!(
             "Voter {} is not a federation member",
             vote.voter
@@ -786,7 +796,7 @@ pub async fn admin_vote_proposal(
     }
 
     // 3. Verify vote references this proposal
-    if vote.proposal != proposal_id {
+    if vote.proposal != proposal_digest {
         return Err(ApiError::bad_request(format!(
             "Vote is for proposal {} but submitted to {}",
             vote.proposal, proposal_id
@@ -795,7 +805,7 @@ pub async fn admin_vote_proposal(
 
     // 4. Verify the proposal chain is valid and not withdrawn
     //    Check both addition and removal proposals
-    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await {
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_digest).await {
         let history = AdditionHistory {
             prefix: addition.prefix.clone(),
             records: vec![addition],
@@ -809,7 +819,7 @@ pub async fn admin_vote_proposal(
                 proposal_id
             )));
         }
-    } else if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await {
+    } else if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await {
         let history = RemovalHistory {
             prefix: removal.prefix.clone(),
             records: vec![removal],
@@ -835,7 +845,7 @@ pub async fn admin_vote_proposal(
 
     // 4b. Check proposal expiration (checked here, not in Raft state machine,
     //     to avoid non-determinism from wall clock skew between nodes)
-    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_digest).await
         && addition.is_expired()
     {
         return Err(ApiError::bad_request(format!(
@@ -843,7 +853,7 @@ pub async fn admin_vote_proposal(
             proposal_id
         )));
     }
-    if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await
+    if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await
         && removal.is_expired()
     {
         return Err(ApiError::bad_request(format!(
@@ -861,7 +871,7 @@ pub async fn admin_vote_proposal(
 
     let response = state
         .node
-        .vote_peer(proposal_id.clone(), vote)
+        .vote_peer(proposal_digest, vote)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -917,7 +927,7 @@ pub async fn admin_vote_proposal(
 
                         state
                             .identity_client
-                            .anchor(&peer.said)
+                            .anchor(peer.said.as_ref())
                             .await
                             .map_err(|e| {
                                 ApiError::internal_error(format!(
@@ -999,7 +1009,7 @@ pub async fn admin_vote_proposal(
 
                     state
                         .identity_client
-                        .anchor(&deactivated.said)
+                        .anchor(deactivated.said.as_ref())
                         .await
                         .map_err(|e| {
                             ApiError::internal_error(format!(
@@ -1117,7 +1127,7 @@ pub async fn submit_member_key_events(
     }
 
     // Check trusted prefix
-    if !state.node.config().is_trusted_prefix(&prefix) {
+    if !state.node.config().is_trusted_prefix(prefix.as_ref()) {
         return Err(ApiError::forbidden(format!(
             "Not a trusted member prefix: {}",
             prefix
@@ -1130,7 +1140,7 @@ pub async fn submit_member_key_events(
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
         &state.member_kel_prefix_rate_limits,
-        &prefix,
+        prefix.as_ref(),
         events.len() as u32,
         max_member_events_per_prefix_per_day(),
     )?;
@@ -1140,10 +1150,7 @@ pub async fn submit_member_key_events(
         if signed_event.signatures.is_empty() {
             return Err(ApiError::bad_request("Event missing signature"));
         }
-        for sig in &signed_event.signatures {
-            cesr::Signature::from_qb64(&sig.signature)
-                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
-        }
+        // Signature CESR format is validated at deserialization (cesr::Signature).
         if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
             return Err(ApiError::bad_request(
                 "Dual signatures required for recovery event",
@@ -1154,7 +1161,7 @@ pub async fn submit_member_key_events(
     // Full merge: verification, divergence detection, recovery.
     let outcome = state
         .member_kel_repo
-        .save_with_merge(&prefix, &events)
+        .save_with_merge(prefix.as_ref(), &events)
         .await
         .map_err(|e| match e {
             kels_core::KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
@@ -1170,7 +1177,7 @@ pub async fn submit_member_key_events(
     // Accrue only the actual new events (duplicates don't count)
     accrue_prefix_rate_limit(
         &state.member_kel_prefix_rate_limits,
-        &prefix,
+        prefix.as_ref(),
         outcome.new_event_count as u32,
     );
 

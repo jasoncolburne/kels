@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &database_url,
         redis_url.as_deref(),
         &kels_url,
-        &node_prefix,
+        node_prefix.as_ref(),
     )
     .await?;
 

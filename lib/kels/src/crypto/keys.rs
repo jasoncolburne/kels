@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use cesr::{
-    Matter, Signature, SigningKey, VerificationKey, VerificationKeyCode, generate_ml_dsa_65,
+    Signature, SigningKey, VerificationKey, VerificationKeyCode, generate_ml_dsa_65,
     generate_ml_dsa_87, generate_secp256r1,
 };
 use serde::{Deserialize, Serialize};
@@ -268,7 +268,7 @@ pub trait KeyProvider: Send + Sync {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, String, String), KelsError>;
+    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError>;
 
     // ==================== Query Methods ====================
 
@@ -288,10 +288,12 @@ pub trait KeyProvider: Send + Sync {
     // ==================== Rotation Operations ====================
 
     /// Prepares a key rotation. Returns the new current public key (what next will become).
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError>;
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError>;
 
     /// Prepares a recovery key rotation. Returns (current_recovery_pub, new_recovery_pub).
-    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError>;
+    async fn stage_recovery_rotation(
+        &mut self,
+    ) -> Result<(VerificationKey, cesr::Digest), KelsError>;
 
     /// Commits a staged key rotation (pending becomes active).
     async fn commit(&mut self) -> Result<(), KelsError>;
@@ -522,13 +524,13 @@ impl KeyProvider for SoftwareKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, String, String), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
         let (public, private) = self.generate_signing_keypair()?;
         let (next_public, next_private) = self.generate_signing_keypair()?;
         let (recovery_public, recovery_private) = self.generate_recovery_keypair()?;
 
-        let rotation_hash = compute_rotation_hash(&next_public.qb64());
-        let recovery_hash = compute_rotation_hash(&recovery_public.qb64());
+        let rotation_hash = compute_rotation_hash(&next_public);
+        let recovery_hash = compute_rotation_hash(&recovery_public);
 
         self.keys = vec![private, next_private];
         self.recovery_keys = vec![recovery_private];
@@ -556,7 +558,7 @@ impl KeyProvider for SoftwareKeyProvider {
         self.recovery_keys.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -569,12 +571,14 @@ impl KeyProvider for SoftwareKeyProvider {
         let (new_next_pub, new_next_priv) = self.generate_signing_keypair()?;
         self.keys.push(new_next_priv);
 
-        let rotation_hash = compute_rotation_hash(&new_next_pub.qb64());
+        let rotation_hash = compute_rotation_hash(&new_next_pub);
 
         Ok((new_current_pub, rotation_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_recovery_rotation(
+        &mut self,
+    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
@@ -583,7 +587,7 @@ impl KeyProvider for SoftwareKeyProvider {
 
         let (new_recovery_pub, new_recovery_priv) = self.generate_recovery_keypair()?;
         self.recovery_keys.push(new_recovery_priv);
-        let new_recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
+        let new_recovery_hash = compute_rotation_hash(&new_recovery_pub);
 
         Ok((current_recovery, new_recovery_hash))
     }

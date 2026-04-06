@@ -24,28 +24,44 @@ impl<R: SignedEventRepository> RepositoryKelStore<R> {
 impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
     async fn load(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        self.repo.get_signed_history(prefix, limit, offset).await
+        self.repo
+            .get_signed_history(prefix.as_ref(), limit, offset)
+            .await
     }
 
-    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        self.repo.get_signed_history_tail(prefix, limit).await
+    async fn load_tail(
+        &self,
+        prefix: &cesr::Digest,
+        limit: u64,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        self.repo
+            .get_signed_history_tail(prefix.as_ref(), limit)
+            .await
     }
 
-    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        self.repo.save_with_merge(prefix, events).await?;
+    async fn append(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
+        self.repo.save_with_merge(prefix.as_ref(), events).await?;
         Ok(())
     }
 
-    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        self.repo.save_with_merge(prefix, events).await?;
+    async fn overwrite(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
+        self.repo.save_with_merge(prefix.as_ref(), events).await?;
         Ok(())
     }
 
-    async fn delete(&self, _prefix: &str) -> Result<(), KelsError> {
+    async fn delete(&self, _prefix: &cesr::Digest) -> Result<(), KelsError> {
         Ok(())
     }
 }
@@ -56,7 +72,6 @@ impl<R: SignedEventRepository + 'static> PagedKelSink for RepositoryKelStore<R> 
         if events.is_empty() {
             return Ok(());
         }
-        let prefix = &events[0].event.prefix;
-        self.append(prefix, events).await
+        self.append(&events[0].event.prefix, events).await
     }
 }

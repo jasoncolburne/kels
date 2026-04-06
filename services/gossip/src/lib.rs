@@ -362,11 +362,18 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Transfer verified registry KELs to local store for anchoring checks
     {
+        use cesr::Matter;
         let registry_kel_store =
             kels_core::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
-        for prefix in &registry_prefixes {
-            kels_core::sync_member_kel(prefix, &federation_registry_urls, &registry_kel_store)
+        for prefix_str in &registry_prefixes {
+            if let Ok(prefix_digest) = cesr::Digest::from_qb64(prefix_str) {
+                kels_core::sync_member_kel(
+                    &prefix_digest,
+                    &federation_registry_urls,
+                    &registry_kel_store,
+                )
                 .await;
+            }
         }
     }
     info!("Registry KELs persisted to local store");
@@ -391,7 +398,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 2-3: Check allowlist and wait if not authorized
     loop {
-        match bootstrap.is_peer_authorized(&peer_prefix_str).await {
+        match bootstrap.is_peer_authorized(peer_prefix_str.as_ref()).await {
             Ok(true) => {
                 info!("Peer {} is authorized in allowlist", peer_prefix_str);
                 break;
@@ -600,7 +607,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Create gossip signer and verifier (signer uses identity service)
     let signer = IdentityGossipSigner::new(
         &config.identity_url,
-        &peer_prefix_str,
+        peer_prefix_str.as_ref(),
         requires_kem_1024.clone(),
     )?;
     let verifier_store: std::sync::Arc<dyn kels_core::KelStore> =
@@ -644,10 +651,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
     // Get local NodePrefix for the gossip event loop
-    let local_node_prefix = kels_gossip_core::identity::NodePrefix::option_from_str(
-        &peer_prefix_str,
-    )
-    .ok_or_else(|| ServiceError::Config(format!("Invalid peer prefix: {}", peer_prefix_str)))?;
+    let local_node_prefix =
+        kels_gossip_core::identity::NodePrefix::option_from_str(peer_prefix_str.as_ref())
+            .ok_or_else(|| {
+                ServiceError::Config(format!("Invalid peer prefix: {}", peer_prefix_str))
+            })?;
 
     // Start gossip event loop in background
     let gossip_instance_clone = gossip_instance.clone();

@@ -126,7 +126,7 @@ async fn sync_own_kel(
     let own_prefix = identity_client.get_prefix().await?;
 
     let since = member_kel_repo
-        .effective_said(&own_prefix)
+        .effective_said(own_prefix.as_ref())
         .await
         .ok()
         .flatten();
@@ -136,13 +136,18 @@ async fn sync_own_kel(
         member_kel_repo.pool.clone(),
     )));
 
+    let since_digest = since.as_ref().and_then(|s| {
+        use cesr::Matter;
+        cesr::Digest::from_qb64(s).ok()
+    });
+
     kels_core::forward_key_events(
         &own_prefix,
         &source,
         &sink,
         kels_core::page_size(),
         kels_core::max_pages(),
-        since.as_deref(),
+        since_digest.as_ref(),
     )
     .await?;
 
@@ -162,7 +167,7 @@ async fn push_to_stale_members(
     let config = node.config();
 
     let local_said = member_kel_repo
-        .compute_prefix_effective_said(&own_prefix)
+        .compute_prefix_effective_said(own_prefix.as_ref())
         .await?;
 
     let local_said = match local_said {
@@ -198,7 +203,7 @@ async fn push_to_stale_members(
             }
         };
 
-        if member_said.as_deref() == Some(&local_said) {
+        if member_said.as_deref() == Some(local_said.as_ref()) {
             continue; // Member is up to date
         }
 
@@ -212,15 +217,18 @@ async fn push_to_stale_members(
             };
 
         // Delta fetch with fallback: try since=member_said, fall back to full
-        let since = member_said.as_deref();
-        let result = if since.is_some() {
+        let since_digest = member_said.as_ref().and_then(|s| {
+            use cesr::Matter;
+            cesr::Digest::from_qb64(s).ok()
+        });
+        let result = if since_digest.is_some() {
             match kels_core::forward_key_events(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
                 kels_core::page_size(),
                 kels_core::max_pages(),
-                since,
+                since_digest.as_ref(),
             )
             .await
             {

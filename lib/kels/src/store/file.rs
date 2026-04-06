@@ -11,7 +11,7 @@ use crate::{error::KelsError, types::SignedKeyEvent};
 /// Events are stored as newline-delimited JSON (one JSON object per line).
 pub struct FileKelStore {
     kel_dir: std::path::PathBuf,
-    owner_prefix: std::sync::RwLock<Option<String>>,
+    owner_prefix: std::sync::RwLock<Option<cesr::Digest>>,
 }
 
 impl FileKelStore {
@@ -27,7 +27,7 @@ impl FileKelStore {
     /// Owner prefix protects authoritative KEL from being overwritten by server-fetched data.
     pub fn with_owner(
         kel_dir: impl Into<std::path::PathBuf>,
-        owner_prefix: String,
+        owner_prefix: cesr::Digest,
     ) -> Result<Self, KelsError> {
         let kel_dir = kel_dir.into();
         std::fs::create_dir_all(&kel_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -44,22 +44,22 @@ impl FileKelStore {
 
 #[async_trait]
 impl KelStore for FileKelStore {
-    fn owner_prefix(&self) -> Option<String> {
+    fn owner_prefix(&self) -> Option<cesr::Digest> {
         self.owner_prefix.read().ok().and_then(|g| g.clone())
     }
-    fn set_owner_prefix(&self, prefix: Option<&str>) {
+    fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {
         if let Ok(mut guard) = self.owner_prefix.write() {
-            *guard = prefix.map(|s| s.to_string());
+            *guard = prefix.cloned();
         }
     }
 
     async fn load(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let path = self.kel_path(prefix);
+        let path = self.kel_path(prefix.as_ref());
         if !path.exists() {
             return Ok((vec![], false));
         }
@@ -92,8 +92,12 @@ impl KelStore for FileKelStore {
         Ok((events, false))
     }
 
-    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        let path = self.kel_path(prefix);
+    async fn load_tail(
+        &self,
+        prefix: &cesr::Digest,
+        limit: u64,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        let path = self.kel_path(prefix.as_ref());
         if !path.exists() {
             return Ok(vec![]);
         }
@@ -121,8 +125,12 @@ impl KelStore for FileKelStore {
             .collect()
     }
 
-    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        let path = self.kel_path(prefix);
+    async fn append(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
+        let path = self.kel_path(prefix.as_ref());
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -141,8 +149,12 @@ impl KelStore for FileKelStore {
         Ok(())
     }
 
-    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
-        let path = self.kel_path(prefix);
+    async fn overwrite(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
+        let path = self.kel_path(prefix.as_ref());
         let mut file =
             std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         for event in events {
@@ -157,8 +169,8 @@ impl KelStore for FileKelStore {
         Ok(())
     }
 
-    async fn delete(&self, prefix: &str) -> Result<(), KelsError> {
-        let path = self.kel_path(prefix);
+    async fn delete(&self, prefix: &cesr::Digest) -> Result<(), KelsError> {
+        let path = self.kel_path(prefix.as_ref());
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
         }
@@ -192,8 +204,9 @@ mod tests {
     #[test]
     fn test_with_owner_sets_prefix() {
         let temp = TempDir::new().unwrap();
-        let store = FileKelStore::with_owner(temp.path(), "my_prefix".to_string()).unwrap();
-        assert_eq!(store.owner_prefix(), Some("my_prefix".to_string()));
+        let d = cesr::Digest::blake3_256(b"my_prefix");
+        let store = FileKelStore::with_owner(temp.path(), d.clone()).unwrap();
+        assert_eq!(store.owner_prefix(), Some(d));
     }
 
     #[test]
@@ -208,8 +221,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        store.set_owner_prefix(Some("new_owner"));
-        assert_eq!(store.owner_prefix(), Some("new_owner".to_string()));
+        let d = cesr::Digest::blake3_256(b"new_owner");
+        store.set_owner_prefix(Some(&d));
+        assert_eq!(store.owner_prefix(), Some(d));
 
         store.set_owner_prefix(None);
         assert_eq!(store.owner_prefix(), None);
@@ -220,7 +234,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let (events, has_more) = store.load("nonexistent", crate::LOAD_ALL, 0).await.unwrap();
+        let nonexistent = cesr::Digest::blake3_256(b"nonexistent");
+        let (events, has_more) = store.load(&nonexistent, crate::LOAD_ALL, 0).await.unwrap();
         assert!(events.is_empty());
         assert!(!has_more);
     }
@@ -298,7 +313,8 @@ mod tests {
         let store = FileKelStore::new(temp.path()).unwrap();
 
         // Should not error when deleting non-existent
-        store.delete("nonexistent").await.unwrap();
+        let nonexistent = cesr::Digest::blake3_256(b"nonexistent");
+        store.delete(&nonexistent).await.unwrap();
     }
 
     #[tokio::test]
@@ -306,11 +322,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        // Write invalid JSONL
-        let path = temp.path().join("bad.kel.jsonl");
+        // Write invalid JSONL — use a known digest and its string form for the filename
+        let bad_prefix = cesr::Digest::blake3_256(b"bad");
+        let path = temp.path().join(format!("{}.kel.jsonl", bad_prefix));
         std::fs::write(&path, "not valid json\n").unwrap();
 
-        let result = store.load("bad", crate::LOAD_ALL, 0).await;
+        let result = store.load(&bad_prefix, crate::LOAD_ALL, 0).await;
         assert!(result.is_err());
     }
 
@@ -366,7 +383,7 @@ mod tests {
         let (prefix, events) = crate::store::create_test_events().await;
 
         // Set a different owner prefix
-        store.set_owner_prefix(Some("different_prefix"));
+        store.set_owner_prefix(Some(&cesr::Digest::blake3_256(b"different_prefix")));
 
         // Cache should save because it's not the owner's KEL
         store.cache(&prefix, &events).await.unwrap();

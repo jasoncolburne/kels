@@ -148,7 +148,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
                 node_id: peer.node_id,
                 base_domain: peer.base_domain,
                 gossip_addr: peer.gossip_addr,
-                peer_prefix: peer.peer_prefix,
+                peer_prefix: peer.peer_prefix.to_string(),
             })
             .collect();
 
@@ -254,7 +254,7 @@ pub unsafe extern "C" fn kels_fetch_registry_prefix(
     match fetch_result {
         Ok(prefix) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&prefix);
+            result.prefix = to_c_string(prefix.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);

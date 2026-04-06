@@ -12,19 +12,19 @@ use crate::{KelVerification, KelsError};
 #[serde(rename_all = "camelCase")]
 pub struct Peer {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
     #[created_at]
     pub created_at: StorageDatetime,
-    pub peer_prefix: String,
+    pub peer_prefix: cesr::Digest,
     pub node_id: String,
-    pub authorizing_kel: String,
+    pub authorizing_kel: cesr::Digest,
     pub active: bool,
     /// Base domain for service discovery (e.g., "node-a.kels").
     /// Derive service URLs: http://kels.{base_domain}, http://sadstore.{base_domain}
@@ -45,7 +45,7 @@ impl Peer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerHistory {
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub records: Vec<Peer>,
 }
 
@@ -57,7 +57,7 @@ impl PeerHistory {
         kel_verifications: &[&KelVerification],
     ) -> Result<(), KelsError> {
         for kel_verification in kel_verifications {
-            if !trusted_prefixes.contains(kel_verification.prefix()) {
+            if !trusted_prefixes.contains(kel_verification.prefix().as_ref()) {
                 return Err(KelsError::RegistryFailure(format!(
                     "Could not verify KEL {} as trusted",
                     kel_verification.prefix()
@@ -69,13 +69,13 @@ impl PeerHistory {
     }
 
     fn verify_records(&self) -> Result<(), KelsError> {
-        let mut last_said: Option<String> = None;
+        let mut last_said: Option<cesr::Digest> = None;
         for (i, peer_record) in self.records.iter().enumerate() {
             peer_record.verify()?;
 
             if let Some(said) = last_said {
-                if let Some(previous) = peer_record.previous.as_deref() {
-                    if previous != said {
+                if let Some(previous) = peer_record.previous.as_ref() {
+                    if *previous != said {
                         return Err(KelsError::RegistryFailure(format!(
                             "Peer record {} previous doesn't match {}",
                             peer_record.said, said

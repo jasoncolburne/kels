@@ -1,6 +1,6 @@
 //! PostgreSQL Repository for KELS SADStore
 
-use cesr::VerificationKey;
+use cesr::{Matter, VerificationKey};
 
 use kels_core::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
 use verifiable_storage::{
@@ -38,9 +38,10 @@ impl SadPointerRepository {
             return Ok(0);
         }
 
-        let prefix = &records[0].0.prefix;
+        let prefix_digest = records[0].0.prefix.clone();
+        let prefix = prefix_digest.to_string();
         let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix).await?;
+        tx.acquire_advisory_lock(&prefix).await?;
 
         // Quick divergence check before inserting — reject appends to frozen chains
         let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
@@ -61,20 +62,20 @@ impl SadPointerRepository {
         // We cannot rely on catching unique constraint violations because in
         // Postgres a constraint violation aborts the transaction.
         let existing_saids: std::collections::HashSet<String> = {
-            let saids: Vec<String> = records.iter().map(|(r, _)| r.said.clone()).collect();
+            let saids: Vec<String> = records.iter().map(|(r, _)| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
             tx.fetch(query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said)
+                .map(|r: SadPointer| r.said.to_string())
                 .collect()
         };
 
         let mut count = 0u32;
         for (record, signature) in records {
-            if existing_saids.contains(&record.said) {
+            if existing_saids.contains(&record.said.to_string()) {
                 continue;
             }
             self.insert_in(&mut tx, record.clone()).await?;
@@ -85,7 +86,7 @@ impl SadPointerRepository {
 
         // Verify the full chain (including new records) — catches structural
         // issues, signature failures, and DB tampering. Rolls back on failure.
-        let verifier = Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        let verifier = Self::verify_chain(&mut tx, &prefix, establishment_keys).await?;
 
         // finish() ensures chain is non-empty (DB not wiped)
         verifier.finish().map_err(|e| {
@@ -105,7 +106,10 @@ impl SadPointerRepository {
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<kels_core::SadChainVerifier, StorageError> {
         let page_size = kels_core::page_size() as u64;
-        let mut verifier = kels_core::SadChainVerifier::new(prefix, establishment_keys.clone());
+        let prefix_digest = cesr::Digest::from_qb64(prefix)
+            .map_err(|e| StorageError::StorageError(format!("Invalid prefix CESR: {}", e)))?;
+        let mut verifier =
+            kels_core::SadChainVerifier::new(&prefix_digest, establishment_keys.clone());
 
         let mut offset: u64 = 0;
         loop {
@@ -122,20 +126,22 @@ impl SadPointerRepository {
             }
 
             // Batch-fetch signatures for this page
-            let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
+            let page_saids: Vec<String> = page.iter().map(|r| r.said.to_string()).collect();
             let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
             .r#in("pointer_said", page_saids);
             let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
-            let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
-                sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
+            let sig_map: std::collections::HashMap<String, &SadPointerSignature> = sigs
+                .iter()
+                .map(|s| (s.pointer_said.to_string(), s))
+                .collect();
 
             // Build SignedSadPointers for the verifier
             let signed_records: Vec<kels_core::SignedSadPointer> = page
                 .into_iter()
                 .map(|record| {
-                    let sig_record = sig_map.get(record.said.as_str()).ok_or_else(|| {
+                    let sig_record = sig_map.get(&record.said.to_string()).ok_or_else(|| {
                         StorageError::StorageError(format!(
                             "Missing signature for record {} — DB tampered",
                             record.said
@@ -182,19 +188,20 @@ impl SadPointerRepository {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
 
-        let prefix = &records[0].0.prefix;
+        let prefix_digest = records[0].0.prefix.clone();
+        let prefix = prefix_digest.to_string();
         let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix).await?;
+        tx.acquire_advisory_lock(&prefix).await?;
 
         // Verify full chain integrity before modifying — DB cannot be trusted
-        Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        Self::verify_chain(&mut tx, &prefix, establishment_keys).await?;
 
         // Skip leading records that already exist locally (by SAID). The gossip
         // repair path sends the full chain but only the divergent tail needs
         // truncation. Deduplicating here avoids unnecessary archival of records
         // that are identical on both sides.
         let (new_records, from_version) = {
-            let saids: Vec<String> = records.iter().map(|r| r.0.said.clone()).collect();
+            let saids: Vec<String> = records.iter().map(|r| r.0.said.to_string()).collect();
             let existing_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
@@ -202,11 +209,11 @@ impl SadPointerRepository {
                 .fetch(existing_query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said)
+                .map(|r: SadPointer| r.said.to_string())
                 .collect();
             let deduped: Vec<_> = records
                 .iter()
-                .skip_while(|(r, _)| existing.contains(&r.said))
+                .skip_while(|(r, _)| existing.contains(&r.said.to_string()))
                 .collect();
             if deduped.is_empty() {
                 // All replacement records match existing — truncate from the
@@ -221,13 +228,13 @@ impl SadPointerRepository {
 
         // Archive records and signatures page-at-a-time before deleting
         let page_size = kels_core::page_size();
-        let mut repair_said: Option<String> = None;
+        let mut repair_said: Option<cesr::Digest> = None;
         let mut version_cursor = from_version;
 
         loop {
             let page_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", prefix)
+                    .eq("prefix", &prefix)
                     .gte("version", version_cursor)
                     .order_by("version", verifiable_storage::Order::Asc)
                     .limit(page_size as u64);
@@ -241,16 +248,16 @@ impl SadPointerRepository {
             let repair_said_ref = match &repair_said {
                 Some(said) => said,
                 None => {
-                    let repair = SadPointerRepair::create(prefix.clone(), from_version)?;
+                    let repair = SadPointerRepair::create(prefix_digest.clone(), from_version)?;
                     tx.insert(&repair).await?;
-                    repair_said = Some(repair.said);
+                    repair_said = Some(repair.said.clone());
                     repair_said.as_ref().ok_or_else(|| {
                         StorageError::StorageError("repair SAID missing".to_string())
                     })?
                 }
             };
 
-            let page_saids: Vec<String> = page.iter().map(|r| r.said.clone()).collect();
+            let page_saids: Vec<String> = page.iter().map(|r| r.said.to_string()).collect();
             let sig_query = verifiable_storage_postgres::Query::<SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
             )
@@ -280,7 +287,7 @@ impl SadPointerRepository {
 
         // Delete records at and after from_version — signatures cascade via FK ON DELETE CASCADE
         let delete_records = verifiable_storage::Delete::<SadPointer>::for_table(Self::TABLE_NAME)
-            .eq("prefix", prefix)
+            .eq("prefix", &prefix)
             .gte("version", from_version);
         tx.delete(delete_records).await?;
 
@@ -293,7 +300,7 @@ impl SadPointerRepository {
 
         // Verify the full chain (pre-existing + replacements) — catches structural
         // issues, signature failures, and DB tampering. Rolls back on failure.
-        let verifier = Self::verify_chain(&mut tx, prefix, establishment_keys).await?;
+        let verifier = Self::verify_chain(&mut tx, &prefix, establishment_keys).await?;
         verifier.finish().map_err(|e| {
             StorageError::StorageError(format!("Chain verification incomplete: {}", e))
         })?;
@@ -394,7 +401,7 @@ impl SadPointerRepository {
                 .await?
                 .into_iter()
                 .next()
-                .map(|r| (r.version, r.said))
+                .map(|r| (r.version, r.said.to_string()))
         } else {
             None
         };
@@ -431,7 +438,9 @@ impl SadPointerRepository {
         // Skip records at or before the cursor position
         if let Some((version, said)) = &since_position {
             let skipped = records.len();
-            records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
+            records.retain(|r| {
+                r.version > *version || (r.version == *version && r.said.to_string() > *said)
+            });
             let skipped = skipped - records.len();
 
             // The cursor record itself is always skipped (1). Legitimate divergence
@@ -454,7 +463,7 @@ impl SadPointerRepository {
         }
 
         // Batch-fetch all signatures in one query
-        let saids: Vec<String> = records.iter().map(|r| r.said.clone()).collect();
+        let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
         let query =
             verifiable_storage_postgres::Query::<kels_core::SadPointerSignature>::for_table(
                 Self::SIGNATURES_TABLE_NAME,
@@ -463,12 +472,14 @@ impl SadPointerRepository {
         let sigs: Vec<kels_core::SadPointerSignature> = self.pool.fetch(query).await?;
 
         // Index signatures by pointer_said for O(1) lookup
-        let sig_map: std::collections::HashMap<&str, &kels_core::SadPointerSignature> =
-            sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
+        let sig_map: std::collections::HashMap<String, &kels_core::SadPointerSignature> = sigs
+            .iter()
+            .map(|s| (s.pointer_said.to_string(), s))
+            .collect();
 
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
-            let sig = sig_map.get(record.said.as_str()).ok_or_else(|| {
+            let sig = sig_map.get(&record.said.to_string()).ok_or_else(|| {
                 StorageError::StorageError(format!(
                     "Missing signature for SAD record {}",
                     record.said
@@ -507,17 +518,19 @@ impl SadPointerRepository {
         &self,
         prefix: &str,
     ) -> Result<Option<(String, bool)>, StorageError> {
-        let latest = self.get_latest(prefix).await?;
+        let prefix_digest = cesr::Digest::from_qb64(prefix)
+            .map_err(|e| StorageError::StorageError(format!("Invalid prefix CESR: {}", e)))?;
+        let latest = self.get_latest(&prefix_digest).await?;
         let Some(latest) = latest else {
             return Ok(None);
         };
 
         if self.is_divergent(prefix).await? {
-            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix));
+            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix)).to_string();
             return Ok(Some((said, true)));
         }
 
-        Ok(Some((latest.said, false)))
+        Ok(Some((latest.said.to_string(), false)))
     }
 
     /// Get repairs for a chain prefix, paginated.
@@ -571,7 +584,7 @@ impl SadPointerRepository {
         }
 
         // Collect record SAIDs
-        let pointer_saids: Vec<String> = links.iter().map(|l| l.pointer_said.clone()).collect();
+        let pointer_saids: Vec<String> = links.iter().map(|l| l.pointer_said.to_string()).collect();
 
         // Batch-fetch archived records
         let records_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
@@ -588,13 +601,15 @@ impl SadPointerRepository {
         let sigs: Vec<SadPointerSignature> = self.pool.fetch(sigs_query).await?;
 
         // Index signatures by pointer_said
-        let sig_map: std::collections::HashMap<&str, &SadPointerSignature> =
-            sigs.iter().map(|s| (s.pointer_said.as_str(), s)).collect();
+        let sig_map: std::collections::HashMap<String, &SadPointerSignature> = sigs
+            .iter()
+            .map(|s| (s.pointer_said.to_string(), s))
+            .collect();
 
         // Zip into SignedSadPointer
         let mut signed = Vec::with_capacity(records.len());
         for record in records {
-            let sig = sig_map.get(record.said.as_str()).ok_or_else(|| {
+            let sig = sig_map.get(&record.said.to_string()).ok_or_else(|| {
                 StorageError::StorageError(format!(
                     "Missing signature for archived record {}",
                     record.said
@@ -647,7 +662,7 @@ impl SadPointerRepository {
 
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.clone())
+            prefix_states.last().map(|s| s.prefix.to_string())
         } else if let Some(cursor) = cursor {
             // Wrap around: fill remaining slots from prefixes <= cursor
             let remaining = limit - prefix_states.len();
@@ -672,7 +687,8 @@ impl SadPointerRepository {
 
         // Batch divergence check: find all prefixes in this page that have
         // duplicate versions, in a single query.
-        let page_prefixes: Vec<String> = prefix_states.iter().map(|s| s.prefix.clone()).collect();
+        let page_prefixes: Vec<String> =
+            prefix_states.iter().map(|s| s.prefix.to_string()).collect();
         let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
             .distinct()
             .r#in("prefix", page_prefixes)
@@ -688,7 +704,7 @@ impl SadPointerRepository {
 
         // Replace divergent chain SAIDs with synthetic effective SAIDs
         for state in &mut prefix_states {
-            if divergent_prefixes.contains(&state.prefix) {
+            if divergent_prefixes.contains(state.prefix.as_ref()) {
                 state.said = kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
             }
         }
@@ -721,7 +737,9 @@ impl SadObjectIndex {
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        let entry = kels_core::SadObjectEntry::create(sad_said.to_string())?;
+        let sad_said_digest = cesr::Digest::from_qb64(sad_said)
+            .map_err(|e| StorageError::StorageError(format!("Invalid SAID CESR: {}", e)))?;
+        let entry = kels_core::SadObjectEntry::create(sad_said_digest)?;
 
         let mut tx = self.pool.begin_transaction().await?;
 
@@ -779,7 +797,10 @@ impl SadObjectIndex {
 
         let entries: Vec<kels_core::SadObjectEntry> = self.pool.fetch(query).await?;
 
-        let mut saids: Vec<String> = entries.into_iter().map(|e| e.sad_said).collect();
+        let mut saids: Vec<String> = entries
+            .into_iter()
+            .map(|e| e.sad_said.to_string())
+            .collect();
 
         let next_cursor = if saids.len() > limit {
             saids.pop();
@@ -797,7 +818,7 @@ impl SadObjectIndex {
                     .limit(remaining as u64);
                 let wrap_entries: Vec<kels_core::SadObjectEntry> =
                     self.pool.fetch(wrap_query).await?;
-                saids.extend(wrap_entries.into_iter().map(|e| e.sad_said));
+                saids.extend(wrap_entries.into_iter().map(|e| e.sad_said.to_string()));
             }
             None
         } else {

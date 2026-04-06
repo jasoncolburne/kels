@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
+use cesr::Matter;
 use futures::{StreamExt, future::join_all};
 use kels_core::{KelsClient, KelsError, PeerSigner};
 use rand::seq::SliceRandom;
@@ -53,7 +54,7 @@ pub enum SyncError {
 /// and broadcasts them to the gossip network.
 pub async fn run_redis_subscriber(
     redis_url: &str,
-    local_peer_prefix: String,
+    local_peer_prefix: cesr::Digest,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -113,7 +114,7 @@ const SAD_CHAIN_PUBSUB_CHANNEL: &str = "sad_chain_updates";
 /// Broadcasts announcements to the gossip network on the SAD topic.
 pub async fn run_sad_redis_subscriber(
     redis_url: &str,
-    local_peer_prefix: String,
+    local_peer_prefix: cesr::Digest,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -167,7 +168,7 @@ pub async fn run_sad_redis_subscriber(
             // Object update: payload is just the SAID
             SadAnnouncement::Object {
                 said: payload,
-                origin: local_peer_prefix.clone(),
+                origin: local_peer_prefix.to_string(),
             }
         } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
             // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
@@ -179,9 +180,9 @@ pub async fn run_sad_redis_subscriber(
             };
             if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
                 SadAnnouncement::Pointer {
-                    chain_prefix: ann.prefix,
-                    said: ann.said,
-                    origin: local_peer_prefix.clone(),
+                    chain_prefix: ann.prefix.to_string(),
+                    said: ann.said.to_string(),
+                    origin: local_peer_prefix.to_string(),
                     repair,
                 }
             } else {
@@ -337,7 +338,7 @@ impl SyncHandler {
             .values()
             .map(|peer| {
                 (
-                    peer.peer_prefix.clone(),
+                    peer.peer_prefix.to_string(),
                     format!("http://kels.{}", peer.base_domain),
                 )
             })
@@ -464,11 +465,19 @@ impl SyncHandler {
             return;
         };
 
+        let chain_prefix_digest = match cesr::Digest::from_qb64(chain_prefix) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Invalid chain prefix CESR {}: {}", chain_prefix, e);
+                return;
+            }
+        };
+
         let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
         let local_said = match local_client
-            .fetch_sad_pointer_effective_said(chain_prefix)
+            .fetch_sad_pointer_effective_said(&chain_prefix_digest)
             .await
         {
             Ok(Some((said, _))) => Some(said),
@@ -534,10 +543,12 @@ impl SyncHandler {
             .sad_pointer_exists(remote_said)
             .await
             .unwrap_or(false);
-        let since = if repair || !remote_is_real_pointer {
+        let since_digest = if repair || !remote_is_real_pointer {
             None
         } else {
-            local_said.as_deref()
+            local_said
+                .as_deref()
+                .and_then(|s| cesr::Digest::from_qb64(s).ok())
         };
 
         let source = match remote_client.as_sad_source() {
@@ -550,18 +561,18 @@ impl SyncHandler {
 
         debug!(
             chain_prefix = %chain_prefix,
-            since = ?since,
+            since = ?since_digest,
             repair = repair,
             "Fetching SAD chain from peer"
         );
 
         match kels_core::forward_sad_pointer(
-            chain_prefix,
+            &chain_prefix_digest,
             &source,
             &sink,
             kels_core::page_size(),
             kels_core::max_pages(),
-            since,
+            since_digest.as_ref(),
         )
         .await
         {
@@ -627,17 +638,17 @@ impl SyncHandler {
         &mut self,
         announcement: KelAnnouncement,
     ) -> Result<(), SyncError> {
-        let prefix = &announcement.prefix;
-        let remote_effective_said = &announcement.said;
+        let prefix_str: &str = announcement.prefix.as_ref();
+        let remote_effective_said: &str = announcement.said.as_ref();
 
         // Get our local effective SAID for this prefix
-        let local_effective_said = self.get_local_effective_said(prefix).await?;
+        let local_effective_said = self.get_local_effective_said(prefix_str).await?;
 
         // If effective SAIDs match, we're in sync
         if let Some(ref local) = local_effective_said
-            && local == remote_effective_said
+            && local.as_str() == remote_effective_said
         {
-            debug!("Already in sync for prefix {}", prefix);
+            debug!("Already in sync for prefix {}", prefix_str);
             return Ok(());
         }
 
@@ -645,14 +656,14 @@ impl SyncHandler {
         if self.kels_client.event_exists(remote_effective_said).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
-                remote_effective_said, prefix
+                remote_effective_said, prefix_str
             );
             return Ok(());
         }
 
         info!(
             "SAID mismatch for {}: local_effective={:?}, remote={}, origin={}. Fetching from peers.",
-            prefix, local_effective_said, remote_effective_said, announcement.origin,
+            prefix_str, local_effective_said, remote_effective_said, announcement.origin,
         );
 
         // Build peer list with origin first, then remaining peers
@@ -660,11 +671,12 @@ impl SyncHandler {
         let mut peers = Vec::with_capacity(all_peers.len());
 
         // Origin peer goes first — they definitely have the event
-        if let Some(origin_peer) = all_peers.iter().find(|(pp, _)| pp == &announcement.origin) {
+        let origin_str = announcement.origin.to_string();
+        if let Some(origin_peer) = all_peers.iter().find(|(pp, _)| pp == &origin_str) {
             peers.push(origin_peer.clone());
         }
         for peer in &all_peers {
-            if peer.0 != announcement.origin {
+            if peer.0 != origin_str {
                 peers.push(peer.clone());
             }
         }
@@ -701,7 +713,7 @@ impl SyncHandler {
             // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
             // The KELS service publishes {prefix}:{effective_said} to kel_updates,
             // which matches this key for both divergent and non-divergent KELs.
-            let key = format!("{}:{}", prefix, remote_effective_said);
+            let key = format!("{}:{}", prefix_str, remote_effective_said);
             self.recently_stored
                 .write()
                 .await
@@ -722,15 +734,24 @@ impl SyncHandler {
             } else {
                 None
             };
-            let result =
-                forward_with_fallback(prefix, &remote_source, &local_sink, since, max_pages).await;
+            let result = forward_with_fallback(
+                &announcement.prefix,
+                &remote_source,
+                &local_sink,
+                since,
+                max_pages,
+            )
+            .await;
 
             match result {
                 Ok(()) => {
-                    self.refresh_local_effective_said(prefix).await;
-                    let new_said = self.local_saids.get(prefix).cloned();
+                    self.refresh_local_effective_said(prefix_str).await;
+                    let new_said = self.local_saids.get(prefix_str).cloned();
                     if new_said != local_effective_said {
-                        info!("Forwarded events for prefix {} from {}", prefix, kels_url);
+                        info!(
+                            "Forwarded events for prefix {} from {}",
+                            prefix_str, kels_url
+                        );
                         return Ok(());
                     }
                     // Forward succeeded but no new events — this peer has
@@ -738,35 +759,40 @@ impl SyncHandler {
                     // systematically from all peers later.
                     debug!(
                         "Forward from {} succeeded but no state change for {}",
-                        kels_url, prefix
+                        kels_url, prefix_str
                     );
-                    self.record_stale(prefix, &announcement.origin).await;
+                    self.record_stale(prefix_str, announcement.origin.as_ref())
+                        .await;
                     return Ok(());
                 }
                 Err(KelsError::NotFound(_)) => {
-                    warn!("KEL not found on remote {} for {}", kels_url, prefix);
+                    warn!("KEL not found on remote {} for {}", kels_url, prefix_str);
                     continue;
                 }
                 Err(KelsError::ContestedKel(_)) => {
-                    debug!("KEL {} is already contested locally, skipping sync", prefix);
+                    debug!(
+                        "KEL {} is already contested locally, skipping sync",
+                        prefix_str
+                    );
                     return Ok(());
                 }
                 Err(KelsError::ContestRequired) => {
                     debug!(
                         "KEL {} requires contest, cannot accept forwarded events from {}",
-                        prefix, kels_url
+                        prefix_str, kels_url
                     );
                     continue;
                 }
                 Err(e) => {
-                    warn!("Forward from {} failed for {}: {}", kels_url, prefix, e);
+                    warn!("Forward from {} failed for {}: {}", kels_url, prefix_str, e);
                     continue;
                 }
             }
         }
 
         // No peer had the events — record as stale for anti-entropy repair
-        self.record_stale(prefix, &announcement.origin).await;
+        self.record_stale(prefix_str, announcement.origin.as_ref())
+            .await;
         Ok(())
     }
 
@@ -807,8 +833,12 @@ impl SyncHandler {
         &self,
         prefix: &str,
     ) -> Result<Option<(String, bool)>, SyncError> {
+        use cesr::Matter;
+        let prefix_digest = cesr::Digest::from_qb64(prefix).map_err(|e| {
+            SyncError::Kels(KelsError::HttpError(format!("Invalid prefix CESR: {}", e)))
+        })?;
         self.kels_client
-            .fetch_effective_said(prefix)
+            .fetch_effective_said(&prefix_digest)
             .await
             .map_err(SyncError::Kels)
     }
@@ -881,20 +911,22 @@ pub async fn run_sync_handler(
 /// Tries delta fetch first (using `since`), falls back to full fetch on
 /// `NotFound` (remote may have recovered, removing the since SAID).
 async fn forward_with_fallback(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &kels_core::HttpKelSource,
     sink: &kels_core::HttpKelSink,
     since: Option<&str>,
     max_pages: usize,
 ) -> Result<(), KelsError> {
     if let Some(since_said) = since {
+        let since_digest = cesr::Digest::from_qb64(since_said)
+            .map_err(|e| KelsError::HttpError(format!("Invalid since SAID CESR: {}", e)))?;
         match kels_core::forward_key_events(
             prefix,
             source,
             sink,
             kels_core::page_size(),
             max_pages,
-            Some(since_said),
+            Some(&since_digest),
         )
         .await
         {
@@ -1032,7 +1064,7 @@ pub(crate) enum RepairResult {
 pub(crate) async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
-    prefix: &str,
+    prefix: &cesr::Digest,
     since: Option<&str>,
 ) -> RepairResult {
     let remote_source = match source.as_kel_source() {
@@ -1164,7 +1196,7 @@ pub async fn run_anti_entropy_loop(
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.clone(),
+                        p.peer_prefix.to_string(),
                         format!("http://kels.{}", p.base_domain),
                     )
                 })
@@ -1214,8 +1246,12 @@ pub async fn run_anti_entropy_loop(
                 let source = entry.source.clone();
                 let retries = entry.retries;
                 tasks.push(async move {
+                    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+                        Ok(d) => d,
+                        Err(_) => return (prefix, source, retries, RepairResult::Failed),
+                    };
                     let local_said = local
-                        .fetch_effective_said(&prefix)
+                        .fetch_effective_said(&prefix_digest)
                         .await
                         .ok()
                         .flatten()
@@ -1235,9 +1271,12 @@ pub async fn run_anti_entropy_loop(
                                 continue;
                             }
                         };
-                        let remote_effective =
-                            remote.fetch_effective_said(&prefix).await.ok().flatten();
-                        let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_str());
+                        let remote_effective = remote
+                            .fetch_effective_said(&prefix_digest)
+                            .await
+                            .ok()
+                            .flatten();
+                        let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_ref());
                         let remote_is_divergent =
                             remote_effective.as_ref().map(|(_, d)| *d).unwrap_or(false);
 
@@ -1254,14 +1293,15 @@ pub async fn run_anti_entropy_loop(
                         } else {
                             local_said.as_deref()
                         };
-                        let result = sync_prefix(&remote, &local, &prefix, since_for_sync).await;
+                        let result =
+                            sync_prefix(&remote, &local, &prefix_digest, since_for_sync).await;
                         if matches!(result, RepairResult::Contested) {
                             return (prefix, source, retries, RepairResult::Contested);
                         }
 
                         // Check if local state actually changed
                         let new_said = local
-                            .fetch_effective_said(&prefix)
+                            .fetch_effective_said(&prefix_digest)
                             .await
                             .ok()
                             .flatten()
@@ -1329,7 +1369,7 @@ pub async fn run_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce();
+        let random_cursor = kels_core::generate_nonce().to_string();
         let local_page = local_client
             .fetch_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1345,12 +1385,12 @@ pub async fn run_anti_entropy_loop(
         let local_map: HashMap<&str, &str> = local_page
             .prefixes
             .iter()
-            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
             .collect();
         let remote_map: HashMap<&str, &str> = remote_page
             .prefixes
             .iter()
-            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
             .collect();
 
         if local_map == remote_map {
@@ -1363,7 +1403,7 @@ pub async fn run_anti_entropy_loop(
         // Collect remote prefixes that need syncing (missing or different locally)
         let mut to_fetch = Vec::new();
         for state in &remote_page.prefixes {
-            if local_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+            if local_map.get(state.prefix.as_ref()) == Some(&state.said.as_ref()) {
                 continue;
             }
             // Resolving: fetch local effective SAID for delta comparison
@@ -1398,7 +1438,7 @@ pub async fn run_anti_entropy_loop(
                         info!("Anti-entropy: repaired {} from remote", prefix);
                     }
                     RepairResult::Failed => {
-                        record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
+                        record_stale_prefix(redis.as_ref(), prefix.as_ref(), &peer_prefix).await;
                     }
                     _ => {}
                 }
@@ -1407,7 +1447,7 @@ pub async fn run_anti_entropy_loop(
 
         // Push to remote where remote is missing or different
         for state in &local_page.prefixes {
-            if remote_map.get(state.prefix.as_str()) == Some(&state.said.as_str()) {
+            if remote_map.get(state.prefix.as_ref()) == Some(&state.said.as_ref()) {
                 continue;
             }
             // Resolving: get remote effective SAID for delta push
@@ -1482,7 +1522,7 @@ pub async fn run_sad_anti_entropy_loop(
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.clone(),
+                        p.peer_prefix.to_string(),
                         format!("http://sadstore.{}", p.base_domain),
                     )
                 })
@@ -1529,8 +1569,12 @@ pub async fn run_sad_anti_entropy_loop(
                 let source = entry.source.clone();
                 let retries = entry.retries;
                 tasks.push(async move {
+                    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+                        Ok(d) => d,
+                        Err(_) => return (prefix, source, retries, false),
+                    };
                     let (local_said, local_divergent) =
-                        match local.fetch_sad_pointer_effective_said(&prefix).await {
+                        match local.fetch_sad_pointer_effective_said(&prefix_digest).await {
                             Ok(Some((said, div))) => (Some(said), div),
                             _ => (None, false),
                         };
@@ -1540,11 +1584,13 @@ pub async fn run_sad_anti_entropy_loop(
                             Ok(c) => c,
                             Err(_) => continue,
                         };
-                        let (remote_said, remote_divergent) =
-                            match remote.fetch_sad_pointer_effective_said(&prefix).await {
-                                Ok(Some((said, div))) => (Some(said), div),
-                                _ => (None, false),
-                            };
+                        let (remote_said, remote_divergent) = match remote
+                            .fetch_sad_pointer_effective_said(&prefix_digest)
+                            .await
+                        {
+                            Ok(Some((said, div))) => (Some(said), div),
+                            _ => (None, false),
+                        };
 
                         if remote_said == local_said {
                             continue;
@@ -1554,7 +1600,7 @@ pub async fn run_sad_anti_entropy_loop(
                         // exists in our local chain. If yes, we're ahead → push.
                         // If no, remote is ahead → pull.
                         let remote_said_ref = match &remote_said {
-                            Some(s) => s.as_str(),
+                            Some(s) => s.as_ref(),
                             None => continue,
                         };
                         let we_have_remote = local
@@ -1579,18 +1625,20 @@ pub async fn run_sad_anti_entropy_loop(
                             // Full fetch when repairing or when local is divergent
                             // (delta from remote's SAID may miss branches that sort
                             // before the cursor in a divergent chain).
-                            let since = if use_repair || local_divergent {
+                            let since_digest = if use_repair || local_divergent {
                                 None
                             } else {
-                                remote_said.as_deref()
+                                remote_said
+                                    .as_deref()
+                                    .and_then(|s| cesr::Digest::from_qb64(s).ok())
                             };
                             if kels_core::forward_sad_pointer(
-                                &prefix,
+                                &prefix_digest,
                                 &local_source,
                                 &remote_sink,
                                 kels_core::page_size(),
                                 kels_core::max_pages(),
-                                since,
+                                since_digest.as_ref(),
                             )
                             .await
                             .is_ok()
@@ -1611,18 +1659,20 @@ pub async fn run_sad_anti_entropy_loop(
                             let Ok(local_sink) = sink_result else {
                                 continue;
                             };
-                            let since = if use_repair {
+                            let since_digest = if use_repair {
                                 None
                             } else {
-                                local_said.as_deref()
+                                local_said
+                                    .as_deref()
+                                    .and_then(|s| cesr::Digest::from_qb64(s).ok())
                             };
                             if kels_core::forward_sad_pointer(
-                                &prefix,
+                                &prefix_digest,
                                 &remote_source,
                                 &local_sink,
                                 kels_core::page_size(),
                                 kels_core::max_pages(),
-                                since,
+                                since_digest.as_ref(),
                             )
                             .await
                             .is_ok()
@@ -1676,7 +1726,7 @@ pub async fn run_sad_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce();
+        let random_cursor = kels_core::generate_nonce().to_string();
         let local_page = local_client
             .fetch_sad_pointer_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1692,12 +1742,12 @@ pub async fn run_sad_anti_entropy_loop(
         let local_map: HashMap<&str, &str> = local_page
             .prefixes
             .iter()
-            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
             .collect();
         let remote_map: HashMap<&str, &str> = remote_page
             .prefixes
             .iter()
-            .map(|s| (s.prefix.as_str(), s.said.as_str()))
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
             .collect();
 
         if local_map == remote_map {
@@ -1712,7 +1762,7 @@ pub async fn run_sad_anti_entropy_loop(
             .prefixes
             .iter()
             .chain(local_page.prefixes.iter())
-            .map(|s| s.prefix.as_str())
+            .map(|s| s.prefix.as_ref())
             .collect();
 
         type SadSyncFuture = std::pin::Pin<
@@ -1736,6 +1786,11 @@ pub async fn run_sad_anti_entropy_loop(
                 continue;
             }
 
+            let prefix_digest = match cesr::Digest::from_qb64(prefix) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
             // Determine direction: check if remote's SAID exists locally
             let we_have_remote = if let Some(said) = remote_said_str {
                 local_client.sad_pointer_exists(said).await.unwrap_or(false)
@@ -1744,16 +1799,20 @@ pub async fn run_sad_anti_entropy_loop(
                 true
             };
 
-            let (local_said, local_divergent) =
-                match local_client.fetch_sad_pointer_effective_said(prefix).await {
-                    Ok(Some((said, div))) => (Some(said), div),
-                    _ => (None, false),
-                };
-            let (remote_said, remote_divergent) =
-                match remote_client.fetch_sad_pointer_effective_said(prefix).await {
-                    Ok(Some((said, div))) => (Some(said), div),
-                    _ => (None, false),
-                };
+            let (local_said, local_divergent) = match local_client
+                .fetch_sad_pointer_effective_said(&prefix_digest)
+                .await
+            {
+                Ok(Some((said, div))) => (Some(said), div),
+                _ => (None, false),
+            };
+            let (remote_said, remote_divergent) = match remote_client
+                .fetch_sad_pointer_effective_said(&prefix_digest)
+                .await
+            {
+                Ok(Some((said, div))) => (Some(said), div),
+                _ => (None, false),
+            };
 
             if we_have_remote {
                 // We're ahead — push to remote
@@ -1772,21 +1831,24 @@ pub async fn run_sad_anti_entropy_loop(
                 let since = if use_repair {
                     None
                 } else {
-                    remote_said.as_deref().map(str::to_string)
+                    remote_said
+                        .as_deref()
+                        .and_then(|s| cesr::Digest::from_qb64(s).ok())
                 };
-                let prefix = prefix.to_string();
+                let prefix_str = prefix.to_string();
+                let prefix_d = prefix_digest.clone();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
                     let result = kels_core::forward_sad_pointer(
-                        &prefix,
+                        &prefix_d,
                         &local_source,
                         &remote_sink,
                         kels_core::page_size(),
                         kels_core::max_pages(),
-                        since.as_deref(),
+                        since.as_ref(),
                     )
                     .await;
-                    (prefix, peer, "pushed", result)
+                    (prefix_str, peer, "pushed", result)
                 }));
             } else {
                 // Remote is ahead — pull from remote
@@ -1805,21 +1867,24 @@ pub async fn run_sad_anti_entropy_loop(
                 let since = if use_repair {
                     None
                 } else {
-                    local_said.as_deref().map(str::to_string)
+                    local_said
+                        .as_deref()
+                        .and_then(|s| cesr::Digest::from_qb64(s).ok())
                 };
-                let prefix = prefix.to_string();
+                let prefix_str = prefix.to_string();
+                let prefix_d = prefix_digest.clone();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
                     let result = kels_core::forward_sad_pointer(
-                        &prefix,
+                        &prefix_d,
                         &remote_source,
                         &local_sink,
                         kels_core::page_size(),
                         kels_core::max_pages(),
-                        since.as_deref(),
+                        since.as_ref(),
                     )
                     .await;
-                    (prefix, peer, "pulled", result)
+                    (prefix_str, peer, "pulled", result)
                 }));
             }
         }
@@ -1844,7 +1909,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         // Phase 3: Object comparison — compare SAD object sets with the same random peer
-        let obj_cursor = kels_core::generate_nonce();
+        let obj_cursor = kels_core::generate_nonce().to_string();
         let local_objects = local_client
             .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
             .await;
@@ -1858,9 +1923,9 @@ pub async fn run_sad_anti_entropy_loop(
         };
 
         let local_obj_set: std::collections::HashSet<&str> =
-            local_objects.saids.iter().map(|s| s.as_str()).collect();
+            local_objects.saids.iter().map(|s| s.as_ref()).collect();
         let remote_obj_set: std::collections::HashSet<&str> =
-            remote_objects.saids.iter().map(|s| s.as_str()).collect();
+            remote_objects.saids.iter().map(|s| s.as_ref()).collect();
 
         if local_obj_set == remote_obj_set {
             debug!("SAD anti-entropy: object sample matched");
@@ -1908,8 +1973,9 @@ mod tests {
     impl kels_core::PeerSigner for TestSigner {
         async fn sign(&self, _data: &[u8]) -> Result<kels_core::SignResult, kels_core::KelsError> {
             Ok(kels_core::SignResult {
-                signature: "test-sig".to_string(),
-                peer_prefix: "test-prefix".to_string(),
+                signature: cesr::Signature::from_raw(cesr::SignatureCode::MlDsa65, vec![0u8; 3309])
+                    .unwrap(),
+                peer_prefix: cesr::Digest::blake3_256(b"test-prefix"),
             })
         }
     }

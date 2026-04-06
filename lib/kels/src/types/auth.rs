@@ -1,6 +1,5 @@
 //! Authentication & request signing
 
-use cesr::{Matter, Signature, VerificationKey};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -22,8 +21,8 @@ pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct SignedRequest<T> {
     pub payload: T,
-    pub prefix: String,
-    pub signature: String,
+    pub prefix: cesr::Digest,
+    pub signature: cesr::Signature,
 }
 
 impl<T: Serialize> SignedRequest<T> {
@@ -36,20 +35,14 @@ impl<T: Serialize> SignedRequest<T> {
             return Err(KelsError::Divergent);
         }
 
-        let public_key_qb64 = kel_verification
+        let public_key = kel_verification
             .current_public_key()
             .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
-
-        let public_key = VerificationKey::from_qb64(public_key_qb64)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid public key: {}", e)))?;
-
-        let signature = Signature::from_qb64(&self.signature)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
 
         let payload_json = serde_json::to_vec(&self.payload)?;
 
         public_key
-            .verify(&payload_json, &signature)
+            .verify(&payload_json, &self.signature)
             .map_err(|_| KelsError::SignatureVerificationFailed)?;
 
         Ok(())
@@ -114,7 +107,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
         use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
-        use cesr::{Digest, Matter, VerificationKeyCode};
+        use cesr::{Digest, VerificationKeyCode};
 
         let mut builder1 = KeyEventBuilder::new(
             SoftwareKeyProvider::new(
@@ -126,8 +119,8 @@ mod tests {
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
-        let anchor1 = Digest::blake3_256(b"anchor1").qb64();
-        let anchor2 = Digest::blake3_256(b"anchor2").qb64();
+        let anchor1 = Digest::blake3_256(b"anchor1");
+        let anchor2 = Digest::blake3_256(b"anchor2");
         let ixn1 = builder1.interact(&anchor1).await.unwrap();
         let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
@@ -153,8 +146,13 @@ mod tests {
 
         let signed = SignedRequest {
             payload: "test".to_string(),
-            prefix: "test_prefix".to_string(),
-            signature: "test_sig".to_string(),
+            prefix: Digest::blake3_256(b"test_prefix"),
+            signature: {
+                // Generate a dummy signature for the test — the test only checks
+                // that divergent KELs are rejected, not signature correctness.
+                let (_, sk) = cesr::generate_secp256r1().unwrap();
+                sk.sign(b"dummy").unwrap()
+            },
         };
 
         let result = signed.verify_signature(&kel_verification);

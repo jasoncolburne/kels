@@ -198,7 +198,7 @@ impl SchemaField {
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -212,7 +212,7 @@ impl Schema {
         sad_store: &dyn crate::store::SADStore,
     ) -> Result<(), CredentialError> {
         let value = serde_json::to_value(self)?;
-        sad_store.store_chunk(&self.said, &value).await
+        sad_store.store_chunk(self.said.as_ref(), &value).await
     }
 
     /// Fetch a schema from a SAD store by its SAID.
@@ -733,8 +733,8 @@ mod tests {
     #[test]
     fn test_schema_said_derivation() {
         let schema = test_schema();
-        assert!(!schema.said.is_empty());
-        assert_eq!(schema.said.len(), 44);
+        assert!(!schema.said.to_string().is_empty());
+        assert_eq!(schema.said.to_string().len(), 44);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::{
 #[crate_new]
 pub struct Policy {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     pub expression: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poison: Option<String>,
@@ -74,7 +74,7 @@ impl Policy {
         let immune_field = if immune { Some(true) } else { None };
 
         let mut policy = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             expression: canonical,
             poison: canonical_poison,
             immune: immune_field,
@@ -138,7 +138,7 @@ impl Policy {
             .parse_poison()?
             .map(|poison_ast| poison_ast.compact().to_string());
         let mut policy = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             expression: compacted.to_string(),
             poison: compacted_poison,
             immune: self.immune,
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn test_create_simple() {
         let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
-        assert_eq!(policy.said.len(), 44);
+        assert_eq!(policy.said.to_string().len(), 44);
         assert_eq!(policy.expression, format!("endorse({PREFIX_A})"));
         assert!(policy.immune.is_none());
         assert!(policy.poison.is_none());

@@ -13,6 +13,7 @@ use axum::{
     response::IntoResponse,
 };
 use base64::Engine;
+use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::{debug, info, warn};
@@ -91,7 +92,11 @@ pub fn spawn_reaper(state: Arc<AppState>) {
                         let _ = gc_state.blob_store.delete(blob_digest).await;
                         // Gossip removal
                         if let Some(ref redis) = gc_state.redis_conn {
-                            let announcement = MailAnnouncement::Removal { said: said.clone() };
+                            let said_digest = match cesr::Digest::from_qb64(said) {
+                                Ok(d) => d,
+                                Err(_) => continue,
+                            };
+                            let announcement = MailAnnouncement::Removal { said: said_digest };
                             if let Ok(json) = serde_json::to_string(&announcement) {
                                 let mut conn = redis.clone();
                                 let _: Result<(), _> = conn.publish("mail_updates", &json).await;
@@ -246,7 +251,8 @@ pub async fn send_mail(
     };
 
     let sender = &signed.prefix;
-    if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, sender) {
+    let sender_str = sender.to_string();
+    if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, &sender_str) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
@@ -254,7 +260,7 @@ pub async fn send_mail(
     match state
         .repo
         .messages
-        .count_for_recipient(&payload.recipient_kel_prefix)
+        .count_for_recipient(payload.recipient_kel_prefix.as_ref())
         .await
     {
         Ok(count) if count >= max_inbox_size() => {
@@ -290,7 +296,7 @@ pub async fn send_mail(
     match state
         .repo
         .messages
-        .local_storage_for_recipient(&state.node_prefix, &payload.recipient_kel_prefix)
+        .local_storage_for_recipient(&state.node_prefix, payload.recipient_kel_prefix.as_ref())
         .await
     {
         Ok(current) if current + blob.len() as i64 > max_bytes => {
@@ -344,10 +350,16 @@ pub async fn send_mail(
         chrono::Utc::now() + chrono::Duration::days(message_ttl_days()),
     );
 
+    let node_prefix_digest = match cesr::Digest::from_qb64(&state.node_prefix) {
+        Ok(d) => d,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid node prefix").into_response();
+        }
+    };
     let mut mail_message = MailMessage {
-        said: String::new(),
+        said: cesr::Digest::default(),
         sender_kel_prefix: sender.clone(),
-        source_node_prefix: state.node_prefix.clone(),
+        source_node_prefix: node_prefix_digest,
         recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
         blob_digest: blob_digest.clone(),
         blob_size: blob.len() as i64,
@@ -364,7 +376,8 @@ pub async fn send_mail(
     }
 
     // Store blob first, then metadata. On metadata failure, clean up the blob.
-    if let Err(e) = state.blob_store.put(&blob_digest, &blob).await {
+    let blob_digest_str = blob_digest.to_string();
+    if let Err(e) = state.blob_store.put(&blob_digest_str, &blob).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Blob storage failed: {}", e),
@@ -373,7 +386,7 @@ pub async fn send_mail(
     }
 
     if let Err(e) = state.repo.messages.store(&mail_message).await {
-        let _ = state.blob_store.delete(&blob_digest).await;
+        let _ = state.blob_store.delete(&blob_digest_str).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Metadata storage failed: {}", e),
@@ -383,7 +396,7 @@ pub async fn send_mail(
 
     // Gossip announcement
     if let Some(ref redis) = state.redis_conn {
-        let announcement = MailAnnouncement::Message(mail_message.clone());
+        let announcement = MailAnnouncement::Message(Box::new(mail_message.clone()));
         if let Ok(json) = serde_json::to_string(&announcement) {
             let mut conn = redis.clone();
             let _: Result<(), _> = conn.publish("mail_updates", &json).await;
@@ -411,7 +424,7 @@ pub async fn inbox(
     match state
         .repo
         .messages
-        .inbox(&signed.prefix, limit, offset)
+        .inbox(signed.prefix.as_ref(), limit, offset)
         .await
     {
         Ok(messages) => (StatusCode::OK, Json(InboxResponse { messages })).into_response(),
@@ -435,7 +448,12 @@ pub async fn fetch(
     }
 
     // Look up message metadata
-    let message = match state.repo.messages.get_by_said(&payload.mail_said).await {
+    let message = match state
+        .repo
+        .messages
+        .get_by_said(payload.mail_said.as_ref())
+        .await
+    {
         Ok(Some(m)) => m,
         Ok(None) => return (StatusCode::NOT_FOUND, "Message not found").into_response(),
         Err(e) => {
@@ -453,11 +471,11 @@ pub async fn fetch(
     }
 
     // Only serve blobs for local messages
-    if message.source_node_prefix != state.node_prefix {
+    if AsRef::<str>::as_ref(&message.source_node_prefix) != state.node_prefix {
         return (StatusCode::NOT_FOUND, "Blob not local").into_response();
     }
 
-    match state.blob_store.get(&message.blob_digest).await {
+    match state.blob_store.get(message.blob_digest.as_ref()).await {
         Ok(blob) => {
             // Verify integrity
             let digest = compute_blob_digest(&blob);
@@ -496,18 +514,18 @@ pub async fn ack(
     let mut deleted = 0u32;
     for said in &payload.saids {
         // Verify recipient
-        let message = match state.repo.messages.get_by_said(said).await {
+        let message = match state.repo.messages.get_by_said(said.as_ref()).await {
             Ok(Some(m)) if m.recipient_kel_prefix == signed.prefix => m,
             _ => continue,
         };
 
         // Delete blob if local
-        if message.source_node_prefix == state.node_prefix {
-            let _ = state.blob_store.delete(&message.blob_digest).await;
+        if AsRef::<str>::as_ref(&message.source_node_prefix) == state.node_prefix {
+            let _ = state.blob_store.delete(message.blob_digest.as_ref()).await;
         }
 
         // Delete metadata
-        match state.repo.messages.delete(said).await {
+        match state.repo.messages.delete(said.as_ref()).await {
             Ok(true) => {
                 deleted += 1;
             }
@@ -589,9 +607,9 @@ pub async fn remove(
 
     // Delete blob if local
     if let Ok(Some(message)) = state.repo.messages.get_by_said(&payload.said).await
-        && message.source_node_prefix == state.node_prefix
+        && AsRef::<str>::as_ref(&message.source_node_prefix) == state.node_prefix
     {
-        let _ = state.blob_store.delete(&message.blob_digest).await;
+        let _ = state.blob_store.delete(message.blob_digest.as_ref()).await;
     }
 
     match state.repo.messages.delete(&payload.said).await {

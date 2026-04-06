@@ -90,8 +90,17 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
 }
 
 pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
+    use cesr::Matter;
     let dir = kel_dir(cli)?;
-    FileKelStore::with_owner(dir, prefix.to_string()).context("Failed to create KEL store")
+    match cesr::Digest::from_qb64(prefix) {
+        Ok(prefix_digest) => {
+            FileKelStore::with_owner(dir, prefix_digest).context("Failed to create KEL store")
+        }
+        Err(_) => {
+            // Non-CESR prefix (e.g., "registry-discovery") — create without owner
+            FileKelStore::new(dir).context("Failed to create KEL store")
+        }
+    }
 }
 
 pub(crate) fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {

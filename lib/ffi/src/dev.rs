@@ -87,7 +87,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let adversary_keys = builder_guard.key_provider().clone();
 
         let prefix = match builder_guard.prefix() {
-            Some(p) => p.to_string(),
+            Some(p) => p.clone(),
             None => {
                 set_last_error("No KEL incepted");
                 return -1;
@@ -151,10 +151,8 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
 
             let result = match kind {
                 EventKind::Ixn => {
-                    let anchor = format!(
-                        "KAdversaryAnchor{}{}_",
-                        counter,
-                        "_".repeat(44 - 17 - counter.to_string().len())
+                    let anchor = cesr::Digest::blake3_256(
+                        format!("adversary_anchor_{}", counter).as_bytes(),
                     );
                     counter += 1;
                     adversary_builder.interact(&anchor).await
@@ -235,7 +233,7 @@ pub unsafe extern "C" fn kels_truncate_local_kel(ctx: *mut KelsContext, keep_eve
         return -1;
     };
 
-    let Some(prefix) = builder_guard.prefix().map(|s| s.to_string()) else {
+    let Some(prefix) = builder_guard.prefix().cloned() else {
         set_last_error("No KEL incepted - cannot truncate");
         return -1;
     };
@@ -304,7 +302,7 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
     };
 
     let prefix = match builder_guard.prefix() {
-        Some(p) => p.to_string(),
+        Some(p) => p.clone(),
         None => {
             set_last_error("No KEL prefix available");
             return std::ptr::null_mut();

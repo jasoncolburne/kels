@@ -2,6 +2,7 @@
 
 use std::os::raw::c_char;
 
+use cesr::Matter;
 use tokio::runtime::Runtime;
 
 use crate::{
@@ -41,8 +42,16 @@ pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
         return std::ptr::null_mut();
     };
 
-    match kels_core::compute_sad_pointer_prefix(&prefix, &kind_str) {
-        Ok(pointer_prefix) => to_c_string(&pointer_prefix),
+    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid KEL prefix CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    match kels_core::compute_sad_pointer_prefix(prefix_digest, &kind_str) {
+        Ok(pointer_prefix) => to_c_string(pointer_prefix.as_ref()),
         Err(e) => {
             set_last_error(&format!("Prefix computation failed: {e}"));
             std::ptr::null_mut()
@@ -296,7 +305,8 @@ mod tests {
 
     #[test]
     fn test_compute_sad_pointer_prefix() {
-        let prefix = CString::new("KMyPrefix0000000000000000000000000000000000").expect("cstring");
+        let digest = cesr::Digest::blake3_256(b"test-prefix");
+        let prefix = CString::new(digest.as_ref()).expect("cstring");
         let kind = CString::new("kels/v1/mlkem-encap-key").expect("cstring");
 
         let result = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };

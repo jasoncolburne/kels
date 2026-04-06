@@ -20,6 +20,17 @@ use testcontainers::{
 use testcontainers_modules::postgres::Postgres;
 use verifiable_storage::SelfAddressed;
 
+fn test_digest(label: &[u8]) -> cesr::Digest {
+    cesr::Digest::blake3_256(label)
+}
+
+fn test_signature(label: &[u8]) -> cesr::Signature {
+    // Create a minimal valid CESR signature for test purposes.
+    // We use a real key pair to produce a genuine signature.
+    let (_, sk) = cesr::generate_secp256r1().unwrap();
+    sk.sign(label).unwrap()
+}
+
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
 
 #[dtor]
@@ -343,16 +354,21 @@ async fn test_post_sad_object_invalid_json_rejected() {
 
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_deterministic() {
-    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
+    let p1 =
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
+    let p2 =
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
     assert_eq!(p1, p2);
 }
 
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_different_inputs() {
-    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_pointer_prefix("Ekel_prefix_b", "kels/v1/mlkem-pubkey").unwrap();
-    let p3 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/other-kind").unwrap();
+    let p1 =
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
+    let p2 =
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_b"), "kels/v1/mlkem-pubkey").unwrap();
+    let p3 =
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p1, p3);
 }
@@ -365,9 +381,10 @@ async fn test_chain_fetch_not_found() {
         return;
     };
 
+    let nonexistent = test_digest(b"nonexistent_chain_prefix");
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/pointers/Enonexistent_chain_prefix_________________"))
+        .get(harness.url(&format!("/api/v1/sad/pointers/{}", nonexistent)))
         .send()
         .await
         .unwrap();
@@ -380,15 +397,16 @@ async fn test_effective_said_not_found() {
         return;
     };
 
-    let resp =
-        harness
-            .client()
-            .get(harness.url(
-                "/api/v1/sad/pointers/Enonexistent_chain_prefix_________________/effective-said",
-            ))
-            .send()
-            .await
-            .unwrap();
+    let nonexistent = test_digest(b"nonexistent_chain_prefix");
+    let resp = harness
+        .client()
+        .get(harness.url(&format!(
+            "/api/v1/sad/pointers/{}/effective-said",
+            nonexistent
+        )))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -400,7 +418,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     // Create a record but tamper with the SAID
     let mut pointer = SadPointer::create(
-        "Ekel_test_prefix".to_string(),
+        test_digest(b"kel_test_prefix"),
         "kels/v1/test-kind".to_string(),
         None,
     )
@@ -409,7 +427,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     let records = vec![kels_core::SignedSadPointer {
         pointer,
-        signature: "fake_sig".to_string(),
+        signature: test_signature(b"fake_sig"),
         establishment_serial: 0,
     }];
 
@@ -434,12 +452,12 @@ async fn test_list_prefixes_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: None,
         },
-        prefix: "test".to_string(),
-        signature: "test".to_string(),
+        prefix: test_digest(b"test"),
+        signature: test_signature(b"test"),
     };
 
     let resp = harness
@@ -465,12 +483,12 @@ async fn test_list_objects_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: None,
         },
-        prefix: "test".to_string(),
-        signature: "test".to_string(),
+        prefix: test_digest(b"test"),
+        signature: test_signature(b"test"),
     };
 
     let resp = harness

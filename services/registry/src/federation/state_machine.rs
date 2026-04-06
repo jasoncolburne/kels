@@ -16,8 +16,8 @@ use kels_core::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote}
 /// Consuming: paginated read + verification + inline anchor check.
 async fn verify_member_anchoring_from_repo(
     repo: &crate::raft_store::MemberKelRepository,
-    said: &str,
-    member_prefix: &str,
+    said: &cesr::Digest,
+    member_prefix: &cesr::Digest,
 ) -> Result<(), String> {
     let store = kels_core::RepositoryKelStore::new(Arc::new(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
@@ -27,7 +27,7 @@ async fn verify_member_anchoring_from_repo(
         member_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        iter::once(said.to_string()),
+        iter::once(said.clone()),
     )
     .await
     .map_err(|e| format!("Member KEL verification failed: {}", e))?;
@@ -61,19 +61,19 @@ pub struct StateMachineData {
     /// Last membership configuration
     pub last_membership: StoredMembership<TypeConfig>,
     /// Active peers (keyed by peer_prefix for efficient lookup)
-    pub active_peers: HashMap<String, Peer>,
+    pub active_peers: HashMap<cesr::Digest, Peer>,
     /// Inactive (deactivated) peers for audit trail
-    pub inactive_peers: HashMap<String, Peer>,
+    pub inactive_peers: HashMap<cesr::Digest, Peer>,
     /// Pending addition proposals awaiting votes (keyed by proposal prefix/proposal_id)
-    pub pending_addition_proposals: HashMap<String, PeerAdditionProposal>,
+    pub pending_addition_proposals: HashMap<cesr::Digest, PeerAdditionProposal>,
     /// Completed addition proposals (full chain per proposal) for audit trail
     pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
     /// Pending removal proposals awaiting votes (keyed by proposal prefix/proposal_id)
-    pub pending_removal_proposals: HashMap<String, PeerRemovalProposal>,
+    pub pending_removal_proposals: HashMap<cesr::Digest, PeerRemovalProposal>,
     /// Completed removal proposals (full chain per proposal) for audit trail
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID
-    pub votes: HashMap<String, Vote>,
+    pub votes: HashMap<cesr::Digest, Vote>,
 }
 
 impl StateMachineData {
@@ -97,7 +97,7 @@ impl StateMachineData {
     }
 
     /// Get a peer by peer_prefix (checks active first, then inactive).
-    pub fn get_peer(&self, peer_prefix: &str) -> Option<&Peer> {
+    pub fn get_peer(&self, peer_prefix: &cesr::Digest) -> Option<&Peer> {
         self.active_peers
             .get(peer_prefix)
             .or_else(|| self.inactive_peers.get(peer_prefix))
@@ -112,9 +112,9 @@ impl StateMachineData {
     /// not possible here).
     pub fn verified_voters_for_peer(
         &self,
-        peer_prefix: &str,
-        member_prefixes: &std::collections::HashSet<&str>,
-    ) -> std::collections::HashSet<String> {
+        peer_prefix: &cesr::Digest,
+        member_prefixes: &std::collections::HashSet<&cesr::Digest>,
+    ) -> std::collections::HashSet<cesr::Digest> {
         // Determine the most recent approved proposal action for this peer.
         // For each completed proposal (addition or removal), take the last record.
         // If it's not v0, it was withdrawn — skip it. Otherwise keep its created_at.
@@ -128,7 +128,10 @@ impl StateMachineData {
             if last.version != 0 {
                 continue; // withdrawn
             }
-            if chain.first().is_none_or(|v0| v0.peer_prefix != peer_prefix) {
+            if chain
+                .first()
+                .is_none_or(|v0| &v0.peer_prefix != peer_prefix)
+            {
                 continue;
             }
             recent_actions.push((true, &last.created_at));
@@ -141,7 +144,10 @@ impl StateMachineData {
             if last.version != 0 {
                 continue; // withdrawn
             }
-            if chain.first().is_none_or(|v0| v0.peer_prefix != peer_prefix) {
+            if chain
+                .first()
+                .is_none_or(|v0| &v0.peer_prefix != peer_prefix)
+            {
                 continue;
             }
             recent_actions.push((false, &last.created_at));
@@ -164,7 +170,7 @@ impl StateMachineData {
             .filter(|chain| {
                 chain
                     .first()
-                    .is_some_and(|v0| v0.peer_prefix == peer_prefix)
+                    .is_some_and(|v0| &v0.peer_prefix == peer_prefix)
                     && chain.last().is_some_and(|r| r.version == 0)
             })
             .max_by_key(|chain| chain.last().map(|r| &r.created_at));
@@ -173,13 +179,13 @@ impl StateMachineData {
             return std::collections::HashSet::new();
         };
 
-        let proposal_id = chain.first().map(|p| p.prefix.as_str()).unwrap_or("");
+        let proposal_id = chain.first().map(|p| p.prefix.clone()).unwrap_or_default();
 
         // Count approval votes from trusted members
         self.votes
             .values()
             .filter(|v| {
-                v.proposal == proposal_id && v.approve && member_prefixes.contains(v.voter.as_str())
+                v.proposal == proposal_id && v.approve && member_prefixes.contains(&v.voter)
             })
             .map(|v| v.voter.clone())
             .collect()
@@ -192,7 +198,7 @@ impl StateMachineData {
                 let peer_prefix = peer.peer_prefix.clone();
                 info!("Adding peer: {} (node: {})", peer_prefix, peer.node_id);
                 self.active_peers.insert(peer_prefix.clone(), peer);
-                FederationResponse::PeerAdded(peer_prefix)
+                FederationResponse::PeerAdded(peer_prefix.to_string())
             }
             FederationRequest::RemovePeer(peer) => {
                 let peer_prefix = peer.peer_prefix.clone();
@@ -206,7 +212,7 @@ impl StateMachineData {
                 self.active_peers.remove(&peer_prefix);
                 info!("Deactivated peer: {}", peer_prefix);
                 self.inactive_peers.insert(peer_prefix.clone(), peer);
-                FederationResponse::PeerRemoved(peer_prefix)
+                FederationResponse::PeerRemoved(peer_prefix.to_string())
             }
             FederationRequest::SubmitAdditionProposal(ref submitted) => {
                 if submitted.previous.is_none() {
@@ -252,7 +258,7 @@ impl StateMachineData {
                     };
 
                     // Chain integrity
-                    if submitted.previous.as_deref() != Some(&current.said) {
+                    if submitted.previous.as_ref() != Some(&current.said) {
                         return FederationResponse::SaidMismatch(format!(
                             "Previous SAID mismatch: expected {}, got {:?}",
                             current.said, submitted.previous
@@ -313,7 +319,7 @@ impl StateMachineData {
                 if submitted.previous.is_none() {
                     // New removal proposal (v0)
                     if !self.active_peers.contains_key(&submitted.peer_prefix) {
-                        return FederationResponse::PeerNotFound(submitted.peer_prefix.clone());
+                        return FederationResponse::PeerNotFound(submitted.peer_prefix.to_string());
                     }
 
                     for proposal in self.pending_removal_proposals.values() {
@@ -350,7 +356,7 @@ impl StateMachineData {
                         None => return FederationResponse::ProposalNotFound(proposal_id),
                     };
 
-                    if submitted.previous.as_deref() != Some(&current.said) {
+                    if submitted.previous.as_ref() != Some(&current.said) {
                         return FederationResponse::SaidMismatch(format!(
                             "Previous SAID mismatch: expected {}, got {:?}",
                             current.said, submitted.previous
@@ -422,10 +428,7 @@ impl StateMachineData {
                             .iter()
                             .any(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
                     {
-                        return FederationResponse::ProposalNotFound(format!(
-                            "{} (already completed)",
-                            proposal_id
-                        ));
+                        return FederationResponse::ProposalNotFound(proposal_id.clone());
                     }
                     return FederationResponse::ProposalNotFound(proposal_id);
                 }
@@ -459,7 +462,7 @@ impl StateMachineData {
                     .values()
                     .any(|v| v.proposal == proposal_id && v.voter == voter);
                 if already_voted {
-                    return FederationResponse::AlreadyVoted(proposal_id);
+                    return FederationResponse::AlreadyVoted(proposal_id.clone());
                 }
 
                 // Store vote
@@ -588,15 +591,15 @@ impl StateMachineData {
     }
 
     /// Count approval votes for a proposal.
-    pub fn approval_count(&self, proposal_id: &str) -> usize {
+    pub fn approval_count(&self, proposal_id: &cesr::Digest) -> usize {
         self.votes
             .values()
-            .filter(|v| v.proposal == proposal_id && v.approve)
+            .filter(|v| v.proposal == *proposal_id && v.approve)
             .count()
     }
 
     /// Get a pending proposal by ID.
-    pub fn get_proposal(&self, proposal_id: &str) -> Option<&PeerAdditionProposal> {
+    pub fn get_proposal(&self, proposal_id: &cesr::Digest) -> Option<&PeerAdditionProposal> {
         self.pending_addition_proposals.get(proposal_id)
     }
 
@@ -720,10 +723,10 @@ impl StateMachineStore {
     /// checks anchor inline. Does NOT acquire the inner lock.
     pub async fn verify_member_anchoring(
         &self,
-        said: &str,
-        member_prefix: &str,
+        said: &cesr::Digest,
+        member_prefix: &cesr::Digest,
     ) -> Result<(), String> {
-        if !self.config.is_trusted_prefix(member_prefix) {
+        if !self.config.is_trusted_prefix(member_prefix.as_ref()) {
             return Err(format!("Unknown member: {}", member_prefix));
         }
 
@@ -797,12 +800,8 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 EntryPayload::Normal(request) => {
                     // For AddPeer, verify votes and KEL anchoring
                     if let FederationRequest::AddPeer(ref peer) = request {
-                        let member_prefixes: std::collections::HashSet<&str> = self
-                            .config
-                            .trusted_prefixes
-                            .iter()
-                            .map(|p| p.as_str())
-                            .collect();
+                        let member_prefixes: std::collections::HashSet<&cesr::Digest> =
+                            self.config.trusted_prefixes.iter().collect();
 
                         let candidate_voters =
                             sm.verified_voters_for_peer(&peer.peer_prefix, &member_prefixes);
@@ -820,7 +819,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                     let proposal_id = &v0.prefix;
                                     for vote in sm.votes.values() {
                                         if vote.proposal == *proposal_id
-                                            && &vote.voter == voter
+                                            && vote.voter == *voter
                                             && vote.approve
                                             && vote.verify_said().is_ok()
                                             && verify_member_anchoring_from_repo(
@@ -915,12 +914,8 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
 
                     // For RemovePeer, verify removal proposal threshold and KEL anchoring
                     if let FederationRequest::RemovePeer(ref peer) = request {
-                        let member_prefixes: std::collections::HashSet<&str> = self
-                            .config
-                            .trusted_prefixes
-                            .iter()
-                            .map(|p| p.as_str())
-                            .collect();
+                        let member_prefixes: std::collections::HashSet<&cesr::Digest> =
+                            self.config.trusted_prefixes.iter().collect();
 
                         // Find a completed removal proposal, its threshold, and verify votes
                         let mut proposal_threshold = None;
@@ -935,7 +930,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 for vote in sm.votes.values() {
                                     if vote.proposal == *proposal_id
                                         && vote.approve
-                                        && member_prefixes.contains(vote.voter.as_str())
+                                        && member_prefixes.contains(&vote.voter)
                                         && vote.verify_said().is_ok()
                                         && verify_member_anchoring_from_repo(
                                             repo.ok_or_else(|| {
@@ -1303,15 +1298,19 @@ mod tests {
 
     const TEST_THRESHOLD: usize = 2;
 
+    fn digest(name: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(name.as_bytes())
+    }
+
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
     }
 
     fn make_test_peer(peer_prefix: &str, node_id: &str) -> Peer {
         Peer::create(
-            peer_prefix.to_string(),
+            digest(peer_prefix),
             node_id.to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            digest("EAuthorizingKel"),
             true,
             format!("http://{}:8080", node_id),
             format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_prefix),
@@ -1321,9 +1320,9 @@ mod tests {
 
     fn make_inactive_peer(peer_prefix: &str, node_id: &str) -> Peer {
         Peer::create(
-            peer_prefix.to_string(),
+            digest(peer_prefix),
             node_id.to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            digest("EAuthorizingKel"),
             false,
             format!("http://{}:8080", node_id),
             format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_prefix),
@@ -1331,8 +1330,8 @@ mod tests {
         .unwrap()
     }
 
-    fn make_test_vote(proposal: &str, voter: &str, approve: bool) -> Vote {
-        Vote::create(proposal.to_string(), voter.to_string(), approve).unwrap()
+    fn make_test_vote(proposal: &cesr::Digest, voter: &str, approve: bool) -> Vote {
+        Vote::create(proposal.clone(), digest(voter), approve).unwrap()
     }
 
     fn make_test_proposal(
@@ -1341,11 +1340,11 @@ mod tests {
         proposer: &str,
     ) -> PeerAdditionProposal {
         PeerAdditionProposal::empty(
-            peer_prefix,
+            digest(peer_prefix),
             node_id,
             &format!("http://{}:8080", node_id),
             &format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_prefix),
-            proposer,
+            digest(proposer),
             TEST_THRESHOLD,
             &test_expires_at(),
         )
@@ -1361,7 +1360,7 @@ mod tests {
     }
 
     /// Helper: submit a proposal, returns proposal_id
-    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerAdditionProposal) -> String {
+    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerAdditionProposal) -> cesr::Digest {
         match sm.apply(FederationRequest::SubmitAdditionProposal(proposal)) {
             FederationResponse::ProposalCreated { proposal_id, .. } => proposal_id,
             r => panic!("Expected ProposalCreated, got {:?}", r),
@@ -1369,7 +1368,7 @@ mod tests {
     }
 
     /// Helper: run a full proposal through to approval, returning the proposal_id
-    fn approve_peer(sm: &mut StateMachineData, peer_prefix: &str, node_id: &str) -> String {
+    fn approve_peer(sm: &mut StateMachineData, peer_prefix: &str, node_id: &str) -> cesr::Digest {
         let proposal = make_test_proposal(peer_prefix, node_id, "ERegistryA");
         let proposal_id = submit_proposal(sm, proposal);
 
@@ -1388,10 +1387,15 @@ mod tests {
         proposal_id
     }
 
-    fn trusted_members() -> std::collections::HashSet<&'static str> {
+    fn trusted_member_digests() -> Vec<cesr::Digest> {
         ["ERegistryA", "ERegistryB", "ERegistryC"]
             .into_iter()
+            .map(digest)
             .collect()
+    }
+
+    fn trusted_members(digests: &[cesr::Digest]) -> std::collections::HashSet<&cesr::Digest> {
+        digests.iter().collect()
     }
 
     // ==================== AddPeer / RemovePeer Tests ====================
@@ -1403,7 +1407,7 @@ mod tests {
         let response = sm.apply(FederationRequest::AddPeer(peer));
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
         assert_eq!(sm.peers().len(), 1);
-        assert!(sm.get_peer("peer-1").is_some());
+        assert!(sm.get_peer(&digest("peer-1")).is_some());
     }
 
     #[test]
@@ -1427,11 +1431,11 @@ mod tests {
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-1",
         )));
-        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-1");
+        assert_eq!(sm.get_peer(&digest("peer-1")).unwrap().node_id, "node-1");
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-2",
         )));
-        assert_eq!(sm.get_peer("peer-1").unwrap().node_id, "node-2");
+        assert_eq!(sm.get_peer(&digest("peer-1")).unwrap().node_id, "node-2");
         assert_eq!(sm.peers().len(), 1);
     }
 
@@ -1441,12 +1445,16 @@ mod tests {
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-1",
         )));
-        let peer = sm.get_peer("peer-1").unwrap().deactivate().unwrap();
+        let peer = sm
+            .get_peer(&digest("peer-1"))
+            .unwrap()
+            .deactivate()
+            .unwrap();
         let response = sm.apply(FederationRequest::RemovePeer(peer));
         assert!(matches!(response, FederationResponse::PeerRemoved(_)));
         assert!(sm.peers().is_empty()); // No active peers
-        assert!(sm.get_peer("peer-1").is_some()); // Still in inactive
-        assert!(!sm.get_peer("peer-1").unwrap().active);
+        assert!(sm.get_peer(&digest("peer-1")).is_some()); // Still in inactive
+        assert!(!sm.get_peer(&digest("peer-1")).unwrap().active);
     }
 
     #[test]
@@ -1456,7 +1464,7 @@ mod tests {
             "peer-1", "node-1",
         )));
         // Try to remove with an active peer — should be rejected
-        let active_peer = sm.get_peer("peer-1").unwrap().clone();
+        let active_peer = sm.get_peer(&digest("peer-1")).unwrap().clone();
         let response = sm.apply(FederationRequest::RemovePeer(active_peer));
         assert!(matches!(response, FederationResponse::NotAuthorized(_)));
         assert_eq!(sm.peers().len(), 1); // Still active
@@ -1474,13 +1482,17 @@ mod tests {
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-3", "node-3",
         )));
-        let peer2 = sm.get_peer("peer-2").unwrap().deactivate().unwrap();
+        let peer2 = sm
+            .get_peer(&digest("peer-2"))
+            .unwrap()
+            .deactivate()
+            .unwrap();
         sm.apply(FederationRequest::RemovePeer(peer2));
         assert_eq!(sm.peers().len(), 2); // 2 active
         assert_eq!(sm.all_peers().len(), 3); // 3 total
-        assert!(sm.get_peer("peer-1").unwrap().active);
-        assert!(!sm.get_peer("peer-2").unwrap().active); // deactivated, still findable
-        assert!(sm.get_peer("peer-3").unwrap().active);
+        assert!(sm.get_peer(&digest("peer-1")).unwrap().active);
+        assert!(!sm.get_peer(&digest("peer-2")).unwrap().active); // deactivated, still findable
+        assert!(sm.get_peer(&digest("peer-3")).unwrap().active);
     }
 
     #[test]
@@ -1489,7 +1501,11 @@ mod tests {
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-1",
         )));
-        let peer = sm.get_peer("peer-1").unwrap().deactivate().unwrap();
+        let peer = sm
+            .get_peer(&digest("peer-1"))
+            .unwrap()
+            .deactivate()
+            .unwrap();
         sm.apply(FederationRequest::RemovePeer(peer));
         assert!(sm.peers().is_empty());
 
@@ -1505,7 +1521,7 @@ mod tests {
     #[test]
     fn test_get_peer_not_found() {
         let sm = StateMachineData::new();
-        assert!(sm.get_peer("nonexistent").is_none());
+        assert!(sm.get_peer(&digest("nonexistent")).is_none());
     }
 
     #[test]
@@ -1515,7 +1531,7 @@ mod tests {
             "peer-1", "node-1",
         )));
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
-        assert!(!sm.get_peer("peer-1").unwrap().active);
+        assert!(!sm.get_peer(&digest("peer-1")).unwrap().active);
     }
 
     #[test]
@@ -1557,8 +1573,8 @@ mod tests {
         let mut sm2 = StateMachineData::new();
         sm2.restore(snapshot, &meta);
         assert_eq!(sm2.peers().len(), 2);
-        assert!(sm2.get_peer("peer-1").is_some());
-        assert!(sm2.get_peer("peer-2").is_some());
+        assert!(sm2.get_peer(&digest("peer-1")).is_some());
+        assert!(sm2.get_peer(&digest("peer-2")).is_some());
     }
 
     #[test]
@@ -1569,7 +1585,7 @@ mod tests {
         )));
         let peers = sm.peers();
         assert_eq!(peers.len(), 1);
-        assert!(sm.get_peer("peer-1").is_some());
+        assert!(sm.get_peer(&digest("peer-1")).is_some());
     }
 
     // ==================== Proposal Tests ====================
@@ -1580,7 +1596,7 @@ mod tests {
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let proposal_id = submit_proposal(&mut sm, proposal);
 
-        assert!(sm.get_peer("peer-1").is_none());
+        assert!(sm.get_peer(&digest("peer-1")).is_none());
         assert!(sm.get_proposal(&proposal_id).is_some());
     }
 
@@ -1620,7 +1636,7 @@ mod tests {
         }
 
         // Peer is NOT in state machine yet — leader must create and submit AddPeer
-        assert!(sm.get_peer("peer-1").is_none());
+        assert!(sm.get_peer(&digest("peer-1")).is_none());
         assert!(sm.get_proposal(&proposal_id).is_none());
         assert_eq!(sm.completed_addition_proposals.len(), 1);
     }
@@ -1683,7 +1699,7 @@ mod tests {
 
         let current = sm.get_proposal(&proposal_id).unwrap().clone();
         let mut withdrawal = current.clone();
-        withdrawal.proposer = "ERegistryB".to_string();
+        withdrawal.proposer = digest("ERegistryB");
         withdrawal.withdrawn_at = Some(StorageDatetime::now());
         let _ = withdrawal.increment();
 
@@ -1718,9 +1734,10 @@ mod tests {
     #[test]
     fn test_vote_on_nonexistent_proposal() {
         let mut sm = StateMachineData::new();
-        let vote = make_test_vote("nonexistent", "ERegistryA", true);
+        let nonexistent = digest("nonexistent");
+        let vote = make_test_vote(&nonexistent, "ERegistryA", true);
         let response = sm.apply(FederationRequest::VotePeer {
-            proposal_id: "nonexistent".to_string(),
+            proposal_id: nonexistent,
             vote,
         });
         assert!(matches!(response, FederationResponse::ProposalNotFound(_)));
@@ -1755,7 +1772,7 @@ mod tests {
             }
             _ => panic!("Expected VoteRecorded"),
         }
-        assert!(sm.get_peer("peer-1").is_none());
+        assert!(sm.get_peer(&digest("peer-1")).is_none());
     }
 
     #[test]
@@ -1785,7 +1802,7 @@ mod tests {
         );
 
         // Peer was NOT added
-        assert!(sm.get_peer("peer-1").is_none());
+        assert!(sm.get_peer(&digest("peer-1")).is_none());
 
         // Proposal moved to completed, no longer pending
         assert!(sm.pending_addition_proposals.is_empty());
@@ -1833,40 +1850,44 @@ mod tests {
     #[test]
     fn test_verified_voters_with_approved_proposal() {
         let mut sm = StateMachineData::new();
-        let members = trusted_members();
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert_eq!(voters.len(), 2);
-        assert!(voters.contains("ERegistryA"));
-        assert!(voters.contains("ERegistryB"));
+        assert!(voters.contains(&digest("ERegistryA")));
+        assert!(voters.contains(&digest("ERegistryB")));
     }
 
     #[test]
     fn test_verified_voters_no_proposal() {
         let sm = StateMachineData::new();
-        let members = trusted_members();
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 
     #[test]
     fn test_verified_voters_rogue_leader_adds_peer_without_proposal() {
         let mut sm = StateMachineData::new();
-        let members = trusted_members();
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "rogue-peer",
             "rogue-node",
         )));
-        assert!(sm.get_peer("rogue-peer").is_some());
-        let voters = sm.verified_voters_for_peer("rogue-peer", &members);
+        assert!(sm.get_peer(&digest("rogue-peer")).is_some());
+        let voters = sm.verified_voters_for_peer(&digest("rogue-peer"), &members);
         assert!(voters.is_empty());
     }
 
     #[test]
     fn test_verified_voters_insufficient_votes() {
         let mut sm = StateMachineData::new();
-        let members = trusted_members();
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let proposal_id = submit_proposal(&mut sm, proposal);
 
@@ -1876,15 +1897,18 @@ mod tests {
             vote: vote_a,
         });
 
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 
     #[test]
     fn test_verified_voters_ignores_untrusted_voter() {
         let mut sm = StateMachineData::new();
-        let members: std::collections::HashSet<&str> =
-            ["ERegistryA", "ERegistryB"].into_iter().collect();
+        let member_digests: Vec<cesr::Digest> = ["ERegistryA", "ERegistryB"]
+            .into_iter()
+            .map(digest)
+            .collect();
+        let members: std::collections::HashSet<&cesr::Digest> = member_digests.iter().collect();
 
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let proposal_id = submit_proposal(&mut sm, proposal);
@@ -1901,25 +1925,27 @@ mod tests {
             vote: vote_c,
         });
 
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert_eq!(voters.len(), 1);
-        assert!(voters.contains("ERegistryA"));
+        assert!(voters.contains(&digest("ERegistryA")));
     }
 
     #[test]
     fn test_verified_voters_ignores_rejection_votes() {
         let mut sm = StateMachineData::new();
-        let members = trusted_members();
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert_eq!(voters.len(), 2);
     }
 
     #[test]
     fn test_verified_voters_withdrawn_proposal_not_counted() {
         let mut sm = StateMachineData::new();
-        let members = trusted_members();
+        let member_digests = trusted_member_digests();
+        let members = trusted_members(&member_digests);
 
         let proposal = make_test_proposal("peer-1", "node-1", "ERegistryA");
         let proposal_id = submit_proposal(&mut sm, proposal);
@@ -1928,7 +1954,7 @@ mod tests {
         let withdrawal = make_withdrawal(&current);
         sm.apply(FederationRequest::SubmitAdditionProposal(withdrawal));
 
-        let voters = sm.verified_voters_for_peer("peer-1", &members);
+        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 }

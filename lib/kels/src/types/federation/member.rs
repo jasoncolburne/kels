@@ -7,15 +7,15 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct FederationStatus {
     pub node_id: u64,
-    pub self_prefix: String,
+    pub self_prefix: cesr::Digest,
     pub is_leader: bool,
     pub leader_id: Option<u64>,
-    pub leader_prefix: Option<String>,
+    pub leader_prefix: Option<cesr::Digest>,
     pub leader_url: Option<String>,
     pub term: u64,
     pub last_log_index: u64,
     pub last_applied: u64,
-    pub members: Vec<String>,
+    pub members: Vec<cesr::Digest>,
 }
 
 /// Compute the approval threshold for peer proposals given federation member count.
@@ -34,7 +34,7 @@ pub fn compute_approval_threshold(n: usize) -> usize {
 /// Response from proposal submission, voting, and withdrawal endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalResponse {
-    pub proposal_id: String,
+    pub proposal_id: cesr::Digest,
     pub status: String,
     pub votes_needed: usize,
     pub current_votes: usize,

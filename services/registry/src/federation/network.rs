@@ -62,9 +62,9 @@ pub struct SignedFederationRpc {
     /// The RPC payload as a JSON string (this is what gets signed)
     pub payload: String,
     /// Sender's registry prefix (used to look up their KEL)
-    pub sender_prefix: String,
+    pub sender_prefix: cesr::Digest,
     /// QB64-encoded signature over the payload
-    pub signature: String,
+    pub signature: cesr::Signature,
 }
 
 /// Network layer for federation communication.
@@ -300,10 +300,13 @@ mod tests {
 
     #[test]
     fn test_signed_federation_rpc_serialization() {
+        let sender_prefix = cesr::Digest::blake3_256(b"test");
+        let signature =
+            cesr::Signature::from_raw(cesr::SignatureCode::Secp256r1, vec![0u8; 64]).unwrap();
         let signed_rpc = SignedFederationRpc {
             payload: r#"{"type":"vote","data":{"vote":{"leader_id":{"term":1,"node_id":0},"committed":false},"last_log_id":null}}"#.to_string(),
-            sender_prefix: "ETestPrefix123456789012345678901234567890123".to_string(),
-            signature: "0BSignatureData".to_string(),
+            sender_prefix: sender_prefix.clone(),
+            signature: signature.clone(),
         };
 
         let json = serde_json::to_string(&signed_rpc).unwrap();
@@ -312,8 +315,8 @@ mod tests {
         assert!(json.contains("signature"));
 
         let parsed: SignedFederationRpc = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.sender_prefix, signed_rpc.sender_prefix);
-        assert_eq!(parsed.signature, signed_rpc.signature);
+        assert_eq!(parsed.sender_prefix, sender_prefix);
+        assert_eq!(parsed.signature, signature);
         assert_eq!(parsed.payload, signed_rpc.payload);
     }
 

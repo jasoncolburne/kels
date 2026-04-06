@@ -27,21 +27,21 @@ use verifiable_storage::{SelfAddressed, StorageError};
 #[serde(rename_all = "camelCase")]
 pub struct SadPointer {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
     /// The owning KEL's prefix.
-    pub kel_prefix: String,
+    pub kel_prefix: cesr::Digest,
     /// The pointer kind (e.g., `"kels/v1/mlkem-pubkey"`).
     pub kind: String,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_said: Option<String>,
+    pub content_said: Option<cesr::Digest>,
 }
 
 /// Compute the SAD chain prefix for a given KEL prefix and kind.
@@ -49,8 +49,11 @@ pub struct SadPointer {
 /// Anyone can call this offline — no server needed. The prefix is derived from
 /// the v0 inception pointer content (with said+prefix as placeholders), which
 /// contains only deterministic fields.
-pub fn compute_sad_pointer_prefix(kel_prefix: &str, kind: &str) -> Result<String, StorageError> {
-    let pointer = SadPointer::create(kel_prefix.to_string(), kind.to_string(), None)?;
+pub fn compute_sad_pointer_prefix(
+    kel_prefix: cesr::Digest,
+    kind: &str,
+) -> Result<cesr::Digest, StorageError> {
+    let pointer = SadPointer::create(kel_prefix, kind.to_string(), None)?;
     Ok(pointer.prefix)
 }
 
@@ -64,9 +67,9 @@ pub fn compute_sad_pointer_prefix(kel_prefix: &str, kind: &str) -> Result<String
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerSignature {
     #[said]
-    pub said: String,
-    pub pointer_said: String,
-    pub signature: String,
+    pub said: cesr::Digest,
+    pub pointer_said: cesr::Digest,
+    pub signature: cesr::Signature,
     pub establishment_serial: u64,
 }
 
@@ -79,7 +82,7 @@ pub struct SadPointerSignature {
 #[serde(rename_all = "camelCase")]
 pub struct SignedSadPointer {
     pub pointer: SadPointer,
-    pub signature: String,
+    pub signature: cesr::Signature,
     pub establishment_serial: u64,
 }
 
@@ -109,8 +112,8 @@ impl SadPointerVerification {
     }
 
     /// The SAID of the content object referenced by the current pointer.
-    pub fn current_content_said(&self) -> Option<&str> {
-        self.tip.content_said.as_deref()
+    pub fn current_content_said(&self) -> Option<&cesr::Digest> {
+        self.tip.content_said.as_ref()
     }
 
     /// The KEL establishment serial that signed the tip pointer.
@@ -119,12 +122,12 @@ impl SadPointerVerification {
     }
 
     /// The chain prefix.
-    pub fn prefix(&self) -> &str {
+    pub fn prefix(&self) -> &cesr::Digest {
         &self.tip.prefix
     }
 
     /// The owning KEL prefix.
-    pub fn kel_prefix(&self) -> &str {
+    pub fn kel_prefix(&self) -> &cesr::Digest {
         &self.tip.kel_prefix
     }
 
@@ -149,27 +152,35 @@ mod tests {
 
     use super::*;
 
+    fn test_digest(label: &[u8]) -> cesr::Digest {
+        cesr::Digest::blake3_256(label)
+    }
+
     #[test]
     fn test_compute_sad_pointer_prefix_deterministic() {
-        let prefix1 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
-        let prefix2 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
+        let kel = test_digest(b"kel123");
+        let prefix1 = compute_sad_pointer_prefix(kel.clone(), "kels/v1/mlkem-pubkey").unwrap();
+        let prefix2 = compute_sad_pointer_prefix(kel, "kels/v1/mlkem-pubkey").unwrap();
         assert_eq!(prefix1, prefix2);
     }
 
     #[test]
     fn test_compute_sad_pointer_prefix_different_inputs() {
-        let prefix1 = compute_sad_pointer_prefix("Ekel123", "kels/v1/mlkem-pubkey").unwrap();
-        let prefix2 = compute_sad_pointer_prefix("Ekel456", "kels/v1/mlkem-pubkey").unwrap();
+        let prefix1 =
+            compute_sad_pointer_prefix(test_digest(b"kel123"), "kels/v1/mlkem-pubkey").unwrap();
+        let prefix2 =
+            compute_sad_pointer_prefix(test_digest(b"kel456"), "kels/v1/mlkem-pubkey").unwrap();
         assert_ne!(prefix1, prefix2);
 
-        let prefix3 = compute_sad_pointer_prefix("Ekel123", "kels/v1/other-kind").unwrap();
+        let prefix3 =
+            compute_sad_pointer_prefix(test_digest(b"kel123"), "kels/v1/other-kind").unwrap();
         assert_ne!(prefix1, prefix3);
     }
 
     #[test]
     fn test_sad_record_inception_no_content() {
         let pointer = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -177,14 +188,12 @@ mod tests {
         assert_eq!(pointer.version, 0);
         assert!(pointer.previous.is_none());
         assert!(pointer.content_said.is_none());
-        assert!(!pointer.said.is_empty());
-        assert!(!pointer.prefix.is_empty());
     }
 
     #[test]
     fn test_sad_record_chain_increment() {
         let mut pointer = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -193,38 +202,40 @@ mod tests {
         let v0_said = pointer.said.clone();
         let prefix = pointer.prefix.clone();
 
-        pointer.content_said = Some("Econtent_said_abc".to_string());
+        pointer.content_said = Some(test_digest(b"content_said_abc"));
         pointer.increment().unwrap();
 
         assert_eq!(pointer.version, 1);
         assert_eq!(pointer.previous, Some(v0_said));
         assert_eq!(pointer.prefix, prefix);
-        assert_eq!(pointer.content_said, Some("Econtent_said_abc".to_string()));
+        assert_eq!(pointer.content_said, Some(test_digest(b"content_said_abc")));
     }
 
     #[test]
     fn test_signed_sad_record_serialization() {
         let pointer = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
+        let (_, sk) = cesr::generate_secp256r1().unwrap();
+        let sig = sk.sign(b"test").unwrap();
         let signed = SignedSadPointer {
             pointer,
-            signature: "sig123".to_string(),
+            signature: sig,
             establishment_serial: 2,
         };
         let json = serde_json::to_string(&signed).unwrap();
         let parsed: SignedSadPointer = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.signature, "sig123");
+        assert_eq!(parsed.signature, signed.signature);
         assert_eq!(parsed.establishment_serial, 2);
     }
 
     #[test]
     fn test_sad_record_verify_said() {
         let pointer = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -240,7 +251,7 @@ mod tests {
     #[test]
     fn test_sad_record_verify_prefix() {
         let pointer = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -249,7 +260,7 @@ mod tests {
 
         // Tamper with kel_prefix
         let mut tampered = pointer;
-        tampered.kel_prefix = "Etampered".to_string();
+        tampered.kel_prefix = test_digest(b"tampered");
         tampered.derive_said().unwrap();
         assert!(tampered.verify_prefix().is_err());
     }

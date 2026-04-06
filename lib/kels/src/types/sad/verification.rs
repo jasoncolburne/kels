@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use cesr::{Matter, Signature, VerificationKey};
+use cesr::{Matter, VerificationKey};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use super::pointer::SignedSadPointer;
@@ -32,12 +32,12 @@ struct SadBranchState {
 /// (DB chain walk). Divergence detection is tracked but not rejected —
 /// the caller decides how to handle it.
 pub struct SadChainVerifier {
-    prefix: String,
-    kel_prefix: Option<String>,
+    prefix: cesr::Digest,
+    kel_prefix: Option<cesr::Digest>,
     kind: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
     /// At divergence: two branches (one per fork).
-    branches: HashMap<String, SadBranchState>,
+    branches: HashMap<cesr::Digest, SadBranchState>,
     /// Records buffered for the current generation (same version).
     generation_buffer: Vec<SignedSadPointer>,
     /// The version of the current buffered generation.
@@ -47,9 +47,9 @@ pub struct SadChainVerifier {
 }
 
 impl SadChainVerifier {
-    pub fn new(prefix: &str, establishment_keys: HashMap<u64, VerificationKey>) -> Self {
+    pub fn new(prefix: &cesr::Digest, establishment_keys: HashMap<u64, VerificationKey>) -> Self {
         Self {
-            prefix: prefix.to_string(),
+            prefix: prefix.clone(),
             kel_prefix: None,
             kind: None,
             branches: HashMap::new(),
@@ -78,7 +78,7 @@ impl SadChainVerifier {
         }
 
         if let Some(ref expected) = self.kel_prefix
-            && record.kel_prefix != *expected
+            && &record.kel_prefix != expected
         {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD record {} kel_prefix {} doesn't match chain kel_prefix {}",
@@ -104,10 +104,8 @@ impl SadChainVerifier {
                     stored.establishment_serial, record.said
                 ))
             })?;
-        let sig = Signature::from_qb64(&stored.signature)
-            .map_err(|e| KelsError::VerificationFailed(format!("Invalid signature: {}", e)))?;
         public_key
-            .verify(record.said.as_bytes(), &sig)
+            .verify(record.said.qb64().as_bytes(), &stored.signature)
             .map_err(|_| KelsError::SignatureVerificationFailed)?;
 
         Ok(())
@@ -171,12 +169,12 @@ impl SadChainVerifier {
         }
 
         // Match each record to its branch via `previous` pointer
-        let mut new_branches: HashMap<String, SadBranchState> = HashMap::new();
+        let mut new_branches: HashMap<cesr::Digest, SadBranchState> = HashMap::new();
 
         for stored in &records {
             let record = &stored.pointer;
 
-            let previous = record.previous.as_deref().ok_or_else(|| {
+            let previous = record.previous.as_ref().ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
                     "Non-inception SAD record {} has no previous pointer",
                     record.said,
@@ -211,7 +209,7 @@ impl SadChainVerifier {
         for (said, state) in &self.branches {
             if !records
                 .iter()
-                .any(|r| r.pointer.previous.as_deref() == Some(said.as_str()))
+                .any(|r| r.pointer.previous.as_ref() == Some(said))
             {
                 new_branches.insert(said.clone(), state.clone());
             }
@@ -254,7 +252,7 @@ impl SadChainVerifier {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(SignedSadPointer, String), KelsError> {
+    pub fn finish(mut self) -> Result<(SignedSadPointer, cesr::Digest), KelsError> {
         // Flush any remaining buffered generation
         self.flush_generation()?;
 
@@ -289,19 +287,17 @@ impl SadChainVerifier {
 /// Collect establishment serials from a paged source without verification.
 /// Used as pass 1 to determine which KEL keys are needed before full verification.
 pub async fn collect_establishment_serials(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedSadSource + Sync),
     page_size: usize,
     max_pages: usize,
-) -> Result<(BTreeSet<u64>, String), KelsError> {
+) -> Result<(BTreeSet<u64>, cesr::Digest), KelsError> {
     let mut serials = BTreeSet::new();
-    let mut kel_prefix: Option<String> = None;
-    let mut since: Option<String> = None;
+    let mut kel_prefix: Option<cesr::Digest> = None;
+    let mut since: Option<cesr::Digest> = None;
 
     for _ in 0..max_pages {
-        let (records, has_more) = source
-            .fetch_page(prefix, since.as_deref(), page_size)
-            .await?;
+        let (records, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
 
         if records.is_empty() {
             break;
@@ -340,11 +336,15 @@ mod tests {
         generate_secp256r1().unwrap()
     }
 
+    fn test_digest(label: &[u8]) -> cesr::Digest {
+        cesr::Digest::blake3_256(label)
+    }
+
     fn signed(record: &SadPointer, signing_key: &cesr::SigningKey) -> SignedSadPointer {
-        let sig = signing_key.sign(record.said.as_bytes()).unwrap();
+        let sig = signing_key.sign(record.said.qb64().as_bytes()).unwrap();
         SignedSadPointer {
             pointer: record.clone(),
-            signature: sig.qb64(),
+            signature: sig,
             establishment_serial: 0,
         }
     }
@@ -359,13 +359,13 @@ mod tests {
     fn test_sad_chain_verifier_valid_chain() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
         let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
+        v1.content_said = Some(test_digest(b"content1"));
         v1.increment().unwrap();
 
         let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn test_sad_chain_verifier_empty_fails() {
         let (vk, _) = test_keys();
-        let verifier = SadChainVerifier::new("Etest", keys_map(&vk));
+        let verifier = SadChainVerifier::new(&test_digest(b"test"), keys_map(&vk));
         assert!(verifier.finish().is_err());
     }
 
@@ -389,19 +389,19 @@ mod tests {
     fn test_sad_chain_verifier_broken_linkage_fails() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
         let mut v1 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
         v1.version = 1;
-        v1.previous = Some("Ewrong_said".to_string());
+        v1.previous = Some(test_digest(b"wrong_said"));
         v1.derive_said().unwrap();
 
         let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
@@ -421,7 +421,7 @@ mod tests {
     fn test_sad_chain_verifier_inconsistent_kind_fails() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -445,13 +445,13 @@ mod tests {
     fn test_sad_chain_verifier_wrong_version_fails() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
         let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
+        v1.content_said = Some(test_digest(b"content1"));
         v1.increment().unwrap();
         v1.version = 5;
         v1.derive_said().unwrap();
@@ -473,16 +473,16 @@ mod tests {
     fn test_sad_chain_verifier_multi_page() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
         let mut v1 = v0.clone();
-        v1.content_said = Some("Econtent1".to_string());
+        v1.content_said = Some(test_digest(b"content1"));
         v1.increment().unwrap();
         let mut v2 = v1.clone();
-        v2.content_said = Some("Econtent2".to_string());
+        v2.content_said = Some(test_digest(b"content2"));
         v2.increment().unwrap();
 
         let mut verifier = SadChainVerifier::new(&v0.prefix, keys_map(&vk));
@@ -495,7 +495,7 @@ mod tests {
 
         let (tip, kel_prefix) = verifier.finish().unwrap();
         assert_eq!(tip.pointer.version, 2);
-        assert_eq!(kel_prefix, "Ekel123");
+        assert_eq!(kel_prefix, test_digest(b"kel123"));
     }
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
         let (vk, _) = test_keys();
         let (_, other_sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -523,7 +523,7 @@ mod tests {
     fn test_sad_chain_verifier_missing_key_fails() {
         let (_, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -543,7 +543,7 @@ mod tests {
     fn test_sad_chain_verifier_divergent_chain() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -551,11 +551,11 @@ mod tests {
 
         // Two competing v1 records (fork at version 1)
         let mut v1a = v0.clone();
-        v1a.content_said = Some("Econtent_a".to_string());
+        v1a.content_said = Some(test_digest(b"content_a"));
         v1a.increment().unwrap();
 
         let mut v1b = v0.clone();
-        v1b.content_said = Some("Econtent_b".to_string());
+        v1b.content_said = Some(test_digest(b"content_b"));
         v1b.increment().unwrap();
 
         // Sort by said ASC (as DB would)
@@ -577,18 +577,18 @@ mod tests {
         let (vk, sk) = test_keys();
         let (_, bad_sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
 
         let mut v1a = v0.clone();
-        v1a.content_said = Some("Econtent_a".to_string());
+        v1a.content_said = Some(test_digest(b"content_a"));
         v1a.increment().unwrap();
 
         let mut v1b = v0.clone();
-        v1b.content_said = Some("Econtent_b".to_string());
+        v1b.content_said = Some(test_digest(b"content_b"));
         v1b.increment().unwrap();
 
         let mut records = vec![signed(&v1a, &sk), signed(&v1b, &bad_sk)];
@@ -611,7 +611,7 @@ mod tests {
     fn test_sad_chain_verifier_divergent_chain_linkage_verified() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
@@ -619,14 +619,14 @@ mod tests {
 
         // Create a properly linked v1
         let mut v1a = v0.clone();
-        v1a.content_said = Some("Econtent_a".to_string());
+        v1a.content_said = Some(test_digest(b"content_a"));
         v1a.increment().unwrap();
 
         // Create a v1 with wrong previous (not pointing to v0)
         let mut v1b = v0.clone();
-        v1b.content_said = Some("Econtent_b".to_string());
+        v1b.content_said = Some(test_digest(b"content_b"));
         v1b.version = 1;
-        v1b.previous = Some("Ewrong_said".to_string());
+        v1b.previous = Some(test_digest(b"wrong_said"));
         v1b.derive_said().unwrap();
 
         let mut records = vec![signed(&v1a, &sk), signed(&v1b, &sk)];
@@ -649,18 +649,18 @@ mod tests {
     fn test_sad_chain_verifier_divergent_across_pages() {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
-            "Ekel123".to_string(),
+            test_digest(b"kel123"),
             "kels/v1/mlkem-pubkey".to_string(),
             None,
         )
         .unwrap();
 
         let mut v1a = v0.clone();
-        v1a.content_said = Some("Econtent_a".to_string());
+        v1a.content_said = Some(test_digest(b"content_a"));
         v1a.increment().unwrap();
 
         let mut v1b = v0.clone();
-        v1b.content_said = Some("Econtent_b".to_string());
+        v1b.content_said = Some(test_digest(b"content_b"));
         v1b.increment().unwrap();
 
         // Sort by said ASC

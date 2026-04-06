@@ -170,7 +170,9 @@ mod tests {
                 None => return Ok((vec![], false)),
             };
             // Find the since event, return everything after it
-            let pos = events.iter().position(|e| e.event.said == since_said);
+            let pos = events
+                .iter()
+                .position(|e| e.event.said.to_string() == since_said);
             match pos {
                 Some(idx) => {
                     let start = idx + 1;
@@ -192,7 +194,7 @@ mod tests {
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             match map.get(prefix) {
                 Some(events) if !events.is_empty() => {
-                    Ok(Some(events.last().unwrap().event.said.clone()))
+                    Ok(Some(events.last().unwrap().event.said.to_string()))
                 }
                 _ => Ok(None),
             }
@@ -204,7 +206,7 @@ mod tests {
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             for (prefix, events) in map.iter() {
-                if events.iter().any(|e| e.event.said == said) {
+                if events.iter().any(|e| e.event.said.to_string() == said) {
                     return Ok(Some(prefix.clone()));
                 }
             }
@@ -212,12 +214,16 @@ mod tests {
         }
     }
 
+    fn digest(label: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(label.as_bytes())
+    }
+
     fn make_event(prefix: &str, said: &str, serial: u64) -> SignedKeyEvent {
         use crate::types::{EventKind, KeyEvent};
         SignedKeyEvent {
             event: KeyEvent {
-                said: said.to_string(),
-                prefix: prefix.to_string(),
+                said: digest(said),
+                prefix: digest(prefix),
                 serial,
                 previous: None,
                 kind: EventKind::Icp,
@@ -256,6 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_delta_fetch_returns_events_after_since() {
         let prefix = "EPREFIX2";
+        let since_said = digest("ESAID10").to_string();
         let events = vec![
             make_event(prefix, "ESAID10", 0),
             make_event(prefix, "ESAID11", 1),
@@ -263,30 +270,31 @@ mod tests {
         ];
         let server = MockKelServer::with_events(prefix, events);
 
-        let page = serve_kel_page(&server, prefix, Some("ESAID10"), 10)
+        let page = serve_kel_page(&server, prefix, Some(&since_said), 10)
             .await
             .unwrap();
         assert_eq!(page.events.len(), 2);
-        assert_eq!(page.events[0].event.said, "ESAID11");
-        assert_eq!(page.events[1].event.said, "ESAID12");
+        assert_eq!(page.events[0].event.said, digest("ESAID11"));
+        assert_eq!(page.events[1].event.said, digest("ESAID12"));
     }
 
     #[tokio::test]
     async fn test_delta_fetch_effective_said_match_returns_empty() {
         let prefix = "EPREFIX3";
+        let since_said = digest("ESAID20").to_string();
         let events = vec![make_event(prefix, "ESAID20", 0)];
         let server = MockKelServer::with_events(prefix, events);
 
-        // The effective SAID is the last event's SAID ("ESAID20").
+        // The effective SAID is the last event's SAID.
         // Querying with a non-event SAID that happens to match the effective
         // SAID should return empty (already in sync).
-        // Here we ask for "ESAID20" which IS a real event, so it takes the
+        // Here we ask for the SAID which IS a real event, so it takes the
         // normal delta path. Let's test with a composite-style SAID instead.
         // Use the effective_said directly — our mock returns last event SAID.
-        let page = serve_kel_page(&server, prefix, Some("ESAID20"), 10)
+        let page = serve_kel_page(&server, prefix, Some(&since_said), 10)
             .await
             .unwrap();
-        // Since "ESAID20" is the only event and there's nothing after it
+        // Since this is the only event and there's nothing after it
         assert_eq!(page.events.len(), 0);
         assert!(!page.has_more);
     }
@@ -297,8 +305,9 @@ mod tests {
         let events = vec![make_event(prefix, "ESAID30", 0)];
         let server = MockKelServer::with_events(prefix, events);
 
-        // "EUNKNOWN" is not a real event and doesn't match the effective SAID
-        let result = serve_kel_page(&server, prefix, Some("EUNKNOWN"), 10).await;
+        // Unknown SAID doesn't match any event or the effective SAID
+        let unknown = digest("EUNKNOWN").to_string();
+        let result = serve_kel_page(&server, prefix, Some(&unknown), 10).await;
         assert!(matches!(result, Err(KelsError::NotFound(_))));
     }
 
@@ -308,7 +317,8 @@ mod tests {
         let server = MockKelServer::with_events("EPREFIX_A", events_a);
 
         // ESAID40 belongs to EPREFIX_A, but we're querying EPREFIX_B
-        let result = serve_kel_page(&server, "EPREFIX_B", Some("ESAID40"), 10).await;
+        let said40 = digest("ESAID40").to_string();
+        let result = serve_kel_page(&server, "EPREFIX_B", Some(&said40), 10).await;
         assert!(matches!(result, Err(KelsError::InvalidKel(_))));
     }
 

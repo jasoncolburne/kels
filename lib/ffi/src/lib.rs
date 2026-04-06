@@ -321,11 +321,11 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
 pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     key_state_store: &FileKeyStateStore,
-    prefix: &str,
+    prefix: impl AsRef<str>,
 ) -> Result<(), KelsError> {
     builder
         .key_provider()
-        .save_state(key_state_store, prefix)
+        .save_state(key_state_store, prefix.as_ref())
         .await
 }
 
@@ -468,12 +468,24 @@ pub extern "C" fn kels_init(
     };
 
     // Create builder
+    let prefix_digest = prefix_opt.as_ref().map(|p| {
+        use cesr::Matter;
+        cesr::Digest::from_qb64(p)
+    });
+    let prefix_digest = match prefix_digest {
+        Some(Ok(d)) => Some(d),
+        Some(Err(e)) => {
+            set_last_error(&format!("Invalid prefix CESR: {}", e));
+            return std::ptr::null_mut();
+        }
+        None => None,
+    };
     let builder = runtime.block_on(async {
         KeyEventBuilder::with_dependencies(
             key_provider,
             Some(client),
             Some(store.clone()),
-            prefix_opt.as_deref(),
+            prefix_digest.as_ref(),
         )
         .await
     });
@@ -558,7 +570,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     };
 
     // Get current state from builder
-    let prefix = builder_guard.prefix().map(|s| s.to_string());
+    let prefix = builder_guard.prefix().cloned();
 
     // Clone the key provider
     #[cfg(all(
@@ -581,7 +593,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
             key_provider,
             Some(client),
             Some(ctx.store.clone()),
-            prefix.as_deref(),
+            prefix.as_ref(),
         )
         .await
     });

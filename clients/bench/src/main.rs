@@ -11,6 +11,7 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 use anyhow::{anyhow, Result};
+use cesr::Matter;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
@@ -34,7 +35,7 @@ fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
     }
 }
 
-fn test_said(name: &str) -> String {
+fn test_anchor(name: &str) -> cesr::Digest {
     compute_said(&name.to_string()).expect("valid said computation")
 }
 
@@ -193,9 +194,11 @@ impl Stats {
 
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
+    use cesr::Matter;
+    let prefix_digest = cesr::Digest::from_qb64(prefix)?;
     let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
     let events = kels_core::resolve_key_events(
-        prefix,
+        &prefix_digest,
         &source,
         kels_core::page_size(),
         kels_core::max_pages(),
@@ -226,7 +229,7 @@ async fn create_test_kel(
         if i % 5 == 0 {
             builder.rotate().await?;
         } else {
-            let anchor = test_said(&format!("test_anchor_{}", i));
+            let anchor = test_anchor(&format!("test_anchor_{}", i));
             builder.interact(&anchor).await?;
         }
     }
@@ -235,7 +238,7 @@ async fn create_test_kel(
     if !response.applied {
         anyhow::bail!("Failed to create test KEL: events were not applied");
     }
-    Ok(prefix)
+    Ok(prefix.to_string())
 }
 
 async fn setup_new_kels(
@@ -292,12 +295,24 @@ async fn run_worker(
         }
     };
 
+    // Pre-parse prefix digest if needed
+    let prefix_digest = match &benchmark_type {
+        BenchmarkType::GetKel { prefix, .. } => match cesr::Digest::from_qb64(prefix) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("Invalid prefix CESR: {}", e);
+                return;
+            }
+        },
+        _ => None,
+    };
+
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
-        let result: Result<u64, _> = match &benchmark_type {
-            BenchmarkType::Health => client.health().await.map(|_| 0),
-            BenchmarkType::GetKel { prefix, kel_bytes } => kels_core::benchmark_key_events(
-                prefix,
+        let result: Result<u64, _> = match (&benchmark_type, &prefix_digest) {
+            (BenchmarkType::Health, _) => client.health().await.map(|_| 0),
+            (BenchmarkType::GetKel { kel_bytes, .. }, Some(pd)) => kels_core::benchmark_key_events(
+                pd,
                 &source,
                 kels_core::page_size(),
                 kels_core::max_pages(),
@@ -305,6 +320,7 @@ async fn run_worker(
             )
             .await
             .map(|_| *kel_bytes),
+            _ => unreachable!(),
         };
 
         let latency_us = start.elapsed().as_micros() as u64;

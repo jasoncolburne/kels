@@ -184,10 +184,13 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
             .map_err(|e| format!("Failed to store HSM binding: {}", e))?;
 
         // Anchor the binding SAID in the KEL so it can't be faked by DB-only attacker
-        builder
-            .interact(&binding.said)
-            .await
-            .map_err(|e| format!("Failed to anchor HSM binding: {}", e))?;
+        {
+            let binding_digest = binding.said.clone();
+            builder
+                .interact(&binding_digest)
+                .await
+                .map_err(|e| format!("Failed to anchor HSM binding: {}", e))?;
+        }
 
         let authority = AuthorityMapping::create(
             AUTHORITY_IDENTITY_NAME.to_string(),
@@ -299,7 +302,8 @@ async fn check_and_rotate(
     }
 
     // Consuming: verify full KEL under advisory lock with inline anchor checking
-    let binding_saids: Vec<String> = bindings.iter().map(|b| b.said.clone()).collect();
+    let binding_saids: Vec<cesr::Digest> =
+        { bindings.iter().map(|b| b.said.clone()).collect::<Vec<_>>() };
     let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
     let kel_verification = kels_core::completed_verification(
         &mut tx,
@@ -369,7 +373,7 @@ pub(crate) async fn perform_kel_operation(
         .await
         .map_err(|e| format!("Failed to reload KEL: {}", e))?;
 
-    let prefix = builder.prefix().ok_or("Builder has no prefix")?.to_string();
+    let prefix = builder.prefix().ok_or("Builder has no prefix")?.clone();
 
     if builder.last_said().is_none() {
         return Err("KEL is empty".into());
@@ -409,16 +413,16 @@ pub(crate) async fn perform_kel_operation(
             // verification state. The identity service uses its forward_url to reach
             // the colocated KELS service.
             let add_rot = if let Some(ref forward_url) = state.forward_url
-                && let Some(prefix) = builder.prefix()
+                && let Some(prefix_digest) = builder.prefix()
             {
                 let source = kels_core::HttpKelSource::new(
                     forward_url,
                     &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
                 )?;
                 match kels_core::verify_key_events(
-                    prefix,
+                    prefix_digest,
                     &source,
-                    kels_core::KelVerifier::new(prefix),
+                    kels_core::KelVerifier::new(prefix_digest),
                     kels_core::page_size(),
                     kels_core::max_pages(),
                 )
@@ -496,7 +500,10 @@ pub(crate) async fn perform_kel_operation(
         }
 
         binding.increment()?;
-        builder.interact(&binding.said).await?;
+        {
+            let binding_digest = binding.said.clone();
+            builder.interact(&binding_digest).await?;
+        }
         state
             .repo
             .hsm_bindings
@@ -534,7 +541,7 @@ pub(crate) async fn perform_kel_operation(
 
     Ok(ManageKelResponse {
         prefix,
-        said: event.event.said,
+        said: event.event.said.clone(),
         event_kind: event_kind.short_name().to_string(),
         rotation_number,
         current_key_handle: current_handle,

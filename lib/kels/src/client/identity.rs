@@ -8,7 +8,7 @@ use crate::{KelsError, SignedKeyEventPage};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityInfo {
-    pub prefix: String,
+    pub prefix: cesr::Digest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,9 +16,9 @@ pub struct IdentityInfo {
 pub struct IdentityStatus {
     pub initialized: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<String>,
+    pub prefix: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_said: Option<String>,
+    pub last_said: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_key_handle: Option<String>,
 }
@@ -47,15 +47,15 @@ pub enum ManageKelOperation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManageKelRequest {
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub operation: ManageKelOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManageKelResponse {
-    pub prefix: String,
-    pub said: String,
+    pub prefix: cesr::Digest,
+    pub said: cesr::Digest,
     pub event_kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation_number: Option<usize>,
@@ -83,7 +83,7 @@ struct SignRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignResponse {
-    pub signature: String, // QB64-encoded signature
+    pub signature: cesr::Signature, // QB64-encoded signature
 }
 
 /// Identity service error response (simpler than the kels service's ErrorResponse).
@@ -138,7 +138,7 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn get_prefix(&self) -> Result<String, KelsError> {
+    pub async fn get_prefix(&self) -> Result<cesr::Digest, KelsError> {
         let url = format!("{}/api/v1/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
         let info: IdentityInfo = self.parse_response(response).await?;

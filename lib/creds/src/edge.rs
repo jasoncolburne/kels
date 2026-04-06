@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize};
 
 use verifiable_storage::SelfAddressed;
@@ -10,7 +11,7 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     pub schema: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
@@ -24,7 +25,7 @@ pub struct Edge {
 #[serde(rename_all = "camelCase")]
 pub struct Edges {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[serde(flatten)]
     pub edges: BTreeMap<String, Edge>,
 }
@@ -42,8 +43,10 @@ impl TryFrom<RawEdges> for Edges {
 
     fn try_from(raw: RawEdges) -> Result<Self, Self::Error> {
         validate_labels(&raw.edges)?;
+        let said = cesr::Digest::from_qb64(&raw.said)
+            .map_err(|e| CredentialError::VerificationError(format!("Invalid SAID CESR: {}", e)))?;
         Ok(Self {
-            said: raw.said,
+            said,
             edges: raw.edges,
         })
     }
@@ -79,7 +82,7 @@ impl Edges {
             edge.derive_said()?;
         }
         let mut instance = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             edges,
         };
         instance.derive_said()?;
@@ -106,8 +109,8 @@ mod tests {
     #[test]
     fn test_edge_said_derivation() {
         let edge = test_edge();
-        assert!(!edge.said.is_empty());
-        assert_eq!(edge.said.len(), 44);
+        assert!(!edge.said.to_string().is_empty());
+        assert_eq!(edge.said.to_string().len(), 44);
     }
 
     #[test]
@@ -149,8 +152,8 @@ mod tests {
         edges_map.insert("license".to_string(), test_edge());
 
         let edges = Edges::new_validated(edges_map).unwrap();
-        assert!(!edges.said.is_empty());
-        assert_eq!(edges.said.len(), 44);
+        assert!(!edges.said.to_string().is_empty());
+        assert_eq!(edges.said.to_string().len(), 44);
         assert!(edges.verify_said().is_ok());
     }
 

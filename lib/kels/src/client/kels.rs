@@ -248,7 +248,10 @@ impl KelsClient {
                 break;
             }
 
-            current_since = last_said;
+            current_since = last_said.map(|d| {
+                use cesr::Matter;
+                d.qb64()
+            });
         }
 
         if !exhausted {
@@ -268,7 +271,7 @@ impl KelsClient {
     /// Returns `None` if the prefix doesn't exist.
     pub async fn fetch_effective_said(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<Option<(String, bool)>, KelsError> {
         let resp = self
             .client
@@ -357,7 +360,10 @@ impl KelsClient {
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce(),
+            nonce: {
+                use cesr::Matter;
+                crate::generate_nonce().qb64()
+            },
             cursor: cursor.map(|s| s.to_string()),
             limit: Some(limit),
         };
@@ -549,8 +555,14 @@ mod tests {
                 None,
             );
             let icp = builder.incept().await.unwrap();
-            let ixn1 = builder.interact("anchor1").await.unwrap();
-            let ixn2 = builder.interact("anchor2").await.unwrap();
+            let ixn1 = builder
+                .interact(&cesr::Digest::blake3_256(b"anchor1"))
+                .await
+                .unwrap();
+            let ixn2 = builder
+                .interact(&cesr::Digest::blake3_256(b"anchor2"))
+                .await
+                .unwrap();
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events_chunked(&[icp, ixn1, ixn2], 1).await;
@@ -679,7 +691,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
-            let result = client.fetch_key_events(&prefix, None, 32).await;
+            let result = client.fetch_key_events(prefix.as_ref(), None, 32).await;
 
             assert!(result.is_ok());
             let page = result.unwrap();

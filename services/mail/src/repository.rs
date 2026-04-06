@@ -68,8 +68,9 @@ impl MailMessageRepository {
             }
 
             for msg in &batch {
-                match self.delete(&msg.said).await {
-                    Ok(true) => deleted.push((msg.said.clone(), msg.blob_digest.clone())),
+                let said_str = msg.said.to_string();
+                match self.delete(&said_str).await {
+                    Ok(true) => deleted.push((said_str, msg.blob_digest.to_string())),
                     Ok(false) => {}
                     Err(e) => warn!("Failed to delete expired message {}: {}", msg.said, e),
                 }

@@ -5,6 +5,7 @@
 //! Connects via localhost HTTP to the registry for proposals and via identity service for signing.
 
 use anyhow::{Context, anyhow};
+use cesr::Matter;
 use clap::{Parser, Subcommand};
 
 use verifiable_storage::{Chained, StorageDatetime};
@@ -131,7 +132,7 @@ enum FederationAction {
 /// Shared context for all commands
 struct AdminContext {
     identity_client: IdentityClient,
-    self_prefix: String,
+    self_prefix: cesr::Digest,
     registry_url: String,
     registry_client: KelsRegistryClient,
 }
@@ -232,6 +233,9 @@ async fn propose_peer(
     base_domain: &str,
     gossip_addr: &str,
 ) -> anyhow::Result<()> {
+    let peer_prefix_digest =
+        cesr::Digest::from_qb64(peer_prefix).context("Invalid peer prefix CESR")?;
+
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
@@ -247,18 +251,18 @@ async fn propose_peer(
 
     // Create payload for signing
     let peer_proposal = PeerAdditionProposal::empty(
-        peer_prefix,
+        peer_prefix_digest,
         node_id,
         base_domain,
         gossip_addr,
-        &proposer,
+        proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
     )?;
 
     // Anchor the proposal's SAID in our KEL (this IS the signature)
     ctx.identity_client
-        .anchor(&peer_proposal.said)
+        .anchor(peer_proposal.said.as_ref())
         .await
         .context("Failed to anchor proposal")?;
 
@@ -274,6 +278,9 @@ async fn propose_peer(
 }
 
 async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
+    let peer_prefix_digest =
+        cesr::Digest::from_qb64(peer_prefix).context("Invalid peer prefix CESR")?;
+
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
@@ -289,15 +296,15 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
 
     // Create removal proposal
     let removal_proposal = PeerRemovalProposal::empty(
-        peer_prefix,
-        &proposer,
+        peer_prefix_digest,
+        proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
     )?;
 
     // Anchor the proposal's SAID in our KEL
     ctx.identity_client
-        .anchor(&removal_proposal.said)
+        .anchor(removal_proposal.said.as_ref())
         .await
         .context("Failed to anchor removal proposal")?;
 
@@ -321,12 +328,13 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .context("Failed to get voter prefix")?;
 
     // Create vote (SAID is auto-derived)
-    let vote =
-        Vote::create(proposal_id.to_string(), voter, approve).context("Failed to create vote")?;
+    let proposal_digest =
+        cesr::Digest::from_qb64(proposal_id).context("Invalid proposal ID CESR")?;
+    let vote = Vote::create(proposal_digest, voter, approve).context("Failed to create vote")?;
 
     // Anchor the vote's SAID in our KEL (this IS the signature)
     ctx.identity_client
-        .anchor(&vote.said)
+        .anchor(vote.said.as_ref())
         .await
         .context("Failed to anchor vote in KEL")?;
 
@@ -490,7 +498,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .context("Failed to create withdrawal record")?;
 
             ctx.identity_client
-                .anchor(&withdrawal.said)
+                .anchor(withdrawal.said.as_ref())
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
@@ -528,7 +536,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .context("Failed to create withdrawal record")?;
 
             ctx.identity_client
-                .anchor(&withdrawal.said)
+                .anchor(withdrawal.said.as_ref())
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
@@ -723,14 +731,15 @@ async fn show_identity_status(
         if page.events.is_empty() {
             break;
         }
-        since = page.events.last().map(|e| e.event.said.clone());
+        since = page.events.last().map(|e| e.event.said.to_string());
         all_events.extend(page.events);
         if !page.has_more {
             break;
         }
     }
     let event_count = all_events.len();
-    let mut verifier = kels_core::KelVerifier::new(&prefix);
+    let prefix_digest = prefix.clone();
+    let mut verifier = kels_core::KelVerifier::new(&prefix_digest);
     let verification = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()
     } else {

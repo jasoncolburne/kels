@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use async_trait::async_trait;
-use cesr::{Matter, Signature, SignatureCode, VerificationKey, VerificationKeyCode};
+use cesr::{Signature, SignatureCode, VerificationKey, VerificationKeyCode};
 use cryptoki::{
     context::{CInitializeArgs, CInitializeFlags, Pkcs11},
     mechanism::{Mechanism, dsa::HedgeType, dsa::SignAdditionalContext},
@@ -408,13 +408,13 @@ impl KeyProvider for HsmKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, String, String), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
         let (current_handle, current_pub) = self.generate_signing_key().await?;
         let (next_handle, next_pub) = self.generate_signing_key().await?;
         let (recovery_handle, recovery_pub) = self.generate_recovery_key().await?;
 
-        let next_hash = compute_rotation_hash(&next_pub.qb64());
-        let recovery_hash = compute_rotation_hash(&recovery_pub.qb64());
+        let next_hash = compute_rotation_hash(&next_pub);
+        let recovery_hash = compute_rotation_hash(&recovery_pub);
 
         let mut key_handles = self.key_handles.write().await;
         *key_handles = vec![current_handle, next_handle];
@@ -463,7 +463,7 @@ impl KeyProvider for HsmKeyProvider {
         Ok(())
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -479,12 +479,14 @@ impl KeyProvider for HsmKeyProvider {
         let mut key_handles = self.key_handles.write().await;
         key_handles.push(new_next_handle);
 
-        let next_hash = compute_rotation_hash(&new_next_pub.qb64());
+        let next_hash = compute_rotation_hash(&new_next_pub);
 
         Ok((new_current_pub, next_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_recovery_rotation(
+        &mut self,
+    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
@@ -503,7 +505,7 @@ impl KeyProvider for HsmKeyProvider {
         let mut recovery_handles = self.recovery_handles.write().await;
         recovery_handles.push(new_recovery_handle);
 
-        let recovery_hash = compute_rotation_hash(&new_recovery_pub.qb64());
+        let recovery_hash = compute_rotation_hash(&new_recovery_pub);
 
         Ok((current_recovery, recovery_hash))
     }
@@ -576,6 +578,8 @@ impl KeyProvider for HsmKeyProvider {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    use cesr::Matter;
     use tokio::sync::Mutex;
 
     // ==================== KeyHandle Tests ====================
@@ -815,8 +819,8 @@ mod tests {
 
         let (public_key, next_hash, recovery_hash) = result.unwrap();
         assert!(!public_key.qb64().is_empty());
-        assert!(!next_hash.is_empty());
-        assert!(!recovery_hash.is_empty());
+        assert!(!next_hash.to_string().is_empty());
+        assert!(!recovery_hash.to_string().is_empty());
 
         assert!(provider.has_current().await);
         assert!(provider.has_next().await);

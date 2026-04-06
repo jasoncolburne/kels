@@ -74,16 +74,11 @@ impl SadStoreClient {
     /// The object must have a valid `said` field. The SAID is verified by
     /// both the client (before sending) and the server (on receipt).
     pub async fn post_sad_object(&self, object: &serde_json::Value) -> Result<String, KelsError> {
-        let said = object.get_said();
-        if said.is_empty() {
-            return Err(KelsError::VerificationFailed(
-                "Object has no SAID".to_string(),
-            ));
-        }
-
         object.verify_said().map_err(|e| {
             KelsError::VerificationFailed(format!("Object SAID verification failed: {}", e))
         })?;
+
+        let said = object.get_said().to_string();
 
         let url = format!("{}/api/v1/sad", self.base_url);
         let body = serde_json::to_vec(object)?;
@@ -135,7 +130,7 @@ impl SadStoreClient {
     ) -> Result<crate::SadObjectListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce(),
+            nonce: crate::generate_nonce().to_string(),
             cursor: cursor.map(|s| s.to_string()),
             limit: Some(limit),
         };
@@ -223,7 +218,7 @@ impl SadStoreClient {
     /// Returns `(said, is_divergent)`. Used for sync comparison.
     pub async fn fetch_sad_pointer_effective_said(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<Option<(String, bool)>, KelsError> {
         let url = format!(
             "{}/api/v1/sad/pointers/{}/effective-said",
@@ -233,7 +228,7 @@ impl SadStoreClient {
 
         if resp.status().is_success() {
             let body: EffectiveSaidResponse = resp.json().await?;
-            Ok(Some((body.said, body.divergent)))
+            Ok(Some((body.said.to_string(), body.divergent)))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)
         } else {
@@ -258,7 +253,7 @@ impl SadStoreClient {
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce(),
+            nonce: crate::generate_nonce().to_string(),
             cursor: cursor.map(|s| s.to_string()),
             limit: Some(limit),
         };
@@ -335,7 +330,7 @@ impl SadStoreClient {
     /// signature verification.
     pub async fn verify_sad_pointer(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         kels_client: &crate::KelsClient,
     ) -> Result<SadPointerVerification, KelsError> {
         crate::verify_sad_pointer(

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 kels-core = { path = "../../lib/kels", features = ["native", "dev-tools", "federation"] }
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

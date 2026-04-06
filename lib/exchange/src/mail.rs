@@ -1,6 +1,5 @@
 //! Mail service types — message metadata and gossip announcements.
 
-use cesr::{Digest, Matter};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -11,15 +10,15 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct MailMessage {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Sender's KEL prefix (from authenticated request).
-    pub sender_kel_prefix: String,
+    pub sender_kel_prefix: cesr::Digest,
     /// Node prefix where the envelope blob lives.
-    pub source_node_prefix: String,
+    pub source_node_prefix: cesr::Digest,
     /// Recipient's KEL prefix.
-    pub recipient_kel_prefix: String,
-    /// qb64 Blake3 digest of the ESSR envelope blob (content-addressable MinIO key).
-    pub blob_digest: String,
+    pub recipient_kel_prefix: cesr::Digest,
+    /// Blake3 digest of the ESSR envelope blob (content-addressable MinIO key).
+    pub blob_digest: cesr::Digest,
     /// Size of the ESSR envelope blob in bytes.
     pub blob_size: i64,
     #[created_at]
@@ -33,20 +32,20 @@ pub struct MailMessage {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum MailAnnouncement {
     /// New mail message available.
-    Message(MailMessage),
+    Message(Box<MailMessage>),
     /// Mail message removed (blob deleted at source).
     Removal {
         /// SAID of the removed mail message.
-        said: String,
+        said: cesr::Digest,
     },
 }
 
 /// Gossip topic for mail announcements.
 pub const MAIL_GOSSIP_TOPIC: &str = "kels/mail/v1";
 
-/// Compute the Blake3 digest of a blob, returned as a qb64 CESR-encoded string.
-pub fn compute_blob_digest(blob: &[u8]) -> String {
-    Digest::blake3_256(blob).qb64()
+/// Compute the Blake3 digest of a blob, returned as a CESR Digest.
+pub fn compute_blob_digest(blob: &[u8]) -> cesr::Digest {
+    cesr::Digest::blake3_256(blob)
 }
 
 // ==================== Mail API Request/Response Types ====================
@@ -57,7 +56,7 @@ pub fn compute_blob_digest(blob: &[u8]) -> String {
 pub struct SendRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub recipient_kel_prefix: String,
+    pub recipient_kel_prefix: cesr::Digest,
     /// Base64-encoded ESSR envelope blob.
     pub blob: String,
 }
@@ -85,7 +84,7 @@ pub struct InboxResponse {
 pub struct FetchRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub mail_said: String,
+    pub mail_said: cesr::Digest,
 }
 
 /// Request payload for acknowledging (deleting) messages.
@@ -94,7 +93,7 @@ pub struct FetchRequest {
 pub struct AckRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub saids: Vec<String>,
+    pub saids: Vec<cesr::Digest>,
 }
 
 #[cfg(test)]
@@ -104,50 +103,56 @@ mod tests {
 
     use super::*;
 
+    fn test_digest(label: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(label.as_bytes())
+    }
+
     #[test]
     fn mail_message_said_derivation() {
         let mut msg = MailMessage {
-            said: String::new(),
-            sender_kel_prefix: "sender-prefix".to_string(),
-            source_node_prefix: "node-prefix".to_string(),
-            recipient_kel_prefix: "recipient-prefix".to_string(),
-            blob_digest: "blob-digest-abc".to_string(),
+            said: cesr::Digest::default(),
+            sender_kel_prefix: test_digest("sender-prefix"),
+            source_node_prefix: test_digest("node-prefix"),
+            recipient_kel_prefix: test_digest("recipient-prefix"),
+            blob_digest: test_digest("blob-digest-abc"),
             blob_size: 1024,
             created_at: StorageDatetime::now(),
             expires_at: StorageDatetime::now(),
         };
         msg.derive_said().unwrap();
-        assert!(!msg.said.is_empty());
+        assert_ne!(msg.said, cesr::Digest::default());
     }
 
     #[test]
     fn mail_announcement_serialization() {
+        let test_said = test_digest("test-said");
         let msg = MailMessage {
-            said: "test-said".to_string(),
-            sender_kel_prefix: "sender".to_string(),
-            source_node_prefix: "node".to_string(),
-            recipient_kel_prefix: "recipient".to_string(),
-            blob_digest: "digest".to_string(),
+            said: test_said.clone(),
+            sender_kel_prefix: test_digest("sender"),
+            source_node_prefix: test_digest("node"),
+            recipient_kel_prefix: test_digest("recipient"),
+            blob_digest: test_digest("digest"),
             blob_size: 512,
             created_at: StorageDatetime::now(),
             expires_at: StorageDatetime::now(),
         };
 
-        let announcement = MailAnnouncement::Message(msg);
+        let announcement = MailAnnouncement::Message(Box::new(msg));
         let json = serde_json::to_string(&announcement).unwrap();
         let deserialized: MailAnnouncement = serde_json::from_str(&json).unwrap();
         match deserialized {
-            MailAnnouncement::Message(m) => assert_eq!(m.said, "test-said"),
+            MailAnnouncement::Message(m) => assert_eq!(m.said, test_said),
             _ => unreachable!(),
         }
 
+        let remove_said = test_digest("remove-said");
         let removal = MailAnnouncement::Removal {
-            said: "remove-said".to_string(),
+            said: remove_said.clone(),
         };
         let json = serde_json::to_string(&removal).unwrap();
         let deserialized: MailAnnouncement = serde_json::from_str(&json).unwrap();
         match deserialized {
-            MailAnnouncement::Removal { said } => assert_eq!(said, "remove-said"),
+            MailAnnouncement::Removal { said } => assert_eq!(said, remove_said),
             _ => unreachable!(),
         }
     }
@@ -158,7 +163,7 @@ mod tests {
         let d1 = compute_blob_digest(data);
         let d2 = compute_blob_digest(data);
         assert_eq!(d1, d2);
-        assert!(!d1.is_empty());
+        assert_ne!(d1, cesr::Digest::default());
     }
 
     #[test]

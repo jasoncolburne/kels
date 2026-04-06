@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize};
 
 use verifiable_storage::SelfAddressed;
@@ -10,7 +11,7 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     pub condition: String,
 }
 
@@ -18,7 +19,7 @@ pub struct Rule {
 #[serde(rename_all = "camelCase")]
 pub struct Rules {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[serde(flatten)]
     pub rules: BTreeMap<String, Rule>,
 }
@@ -36,8 +37,10 @@ impl TryFrom<RawRules> for Rules {
 
     fn try_from(raw: RawRules) -> Result<Self, Self::Error> {
         validate_labels(&raw.rules)?;
+        let said = cesr::Digest::from_qb64(&raw.said)
+            .map_err(|e| CredentialError::VerificationError(format!("Invalid SAID CESR: {}", e)))?;
         Ok(Self {
-            said: raw.said,
+            said,
             rules: raw.rules,
         })
     }
@@ -73,7 +76,7 @@ impl Rules {
             rule.derive_said()?;
         }
         let mut instance = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             rules,
         };
         instance.derive_said()?;
@@ -94,8 +97,8 @@ mod tests {
     #[test]
     fn test_rule_said_derivation() {
         let rule = test_rule();
-        assert!(!rule.said.is_empty());
-        assert_eq!(rule.said.len(), 44);
+        assert!(!rule.said.to_string().is_empty());
+        assert_eq!(rule.said.to_string().len(), 44);
     }
 
     #[test]
@@ -126,8 +129,8 @@ mod tests {
         rules_map.insert("terms".to_string(), test_rule());
 
         let rules = Rules::new_validated(rules_map).unwrap();
-        assert!(!rules.said.is_empty());
-        assert_eq!(rules.said.len(), 44);
+        assert!(!rules.said.to_string().is_empty());
+        assert_eq!(rules.said.to_string().len(), 44);
         assert!(rules.verify_said().is_ok());
     }
 

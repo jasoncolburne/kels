@@ -11,7 +11,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::{Matter, Signature};
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
@@ -385,8 +384,8 @@ pub(crate) async fn submit_events(
         )));
     }
 
-    // Get prefix from first event
-    let prefix = events[0].event.prefix.clone();
+    // Get prefix from first event (convert to String for DB/cache layer)
+    let prefix = events[0].event.prefix.to_string();
 
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
@@ -401,10 +400,7 @@ pub(crate) async fn submit_events(
         if signed_event.signatures.is_empty() {
             return Err(ApiError::bad_request("Event missing signature"));
         }
-        for sig in &signed_event.signatures {
-            Signature::from_qb64(&sig.signature)
-                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
-        }
+        // Signatures are already typed — no qb64 parsing needed
         if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
             return Err(ApiError::bad_request(
                 "Dual signatures required for recovery event",
@@ -492,7 +488,7 @@ pub(crate) async fn submit_events(
             }
         };
         if let Some(ref said) = effective_said
-            && let Err(e) = kel_cache.publish_update(&prefix, said).await
+            && let Err(e) = kel_cache.publish_update(&prefix, said.as_ref()).await
         {
             warn!("Failed to publish cache update: {}", e);
         }
@@ -727,12 +723,13 @@ pub(crate) async fn list_prefixes(
         .redis_conn
         .as_ref()
         .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
-    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
+    let request_prefix = signed_request.prefix.to_string();
+    let peer = get_verified_peer(redis_conn, &request_prefix).await?;
     let _peer = match peer {
         Some(p) => p,
         None => {
             refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            get_verified_peer(redis_conn, &signed_request.prefix)
+            get_verified_peer(redis_conn, &request_prefix)
                 .await?
                 .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
         }
@@ -745,7 +742,7 @@ pub(crate) async fn list_prefixes(
         &signed_request.prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<String>(),
+        std::iter::empty::<cesr::Digest>(),
     )
     .await
     .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;

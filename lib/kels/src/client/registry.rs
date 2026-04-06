@@ -48,9 +48,9 @@ pub fn trusted_prefixes() -> HashSet<&'static str> {
 #[derive(Debug, Clone)]
 pub struct SignResult {
     /// CESR qb64 encoded signature
-    pub signature: String,
+    pub signature: cesr::Signature,
     /// The signer's peer identity (KELS prefix)
-    pub peer_prefix: String,
+    pub peer_prefix: cesr::Digest,
 }
 
 /// Trait for signing requests.
@@ -170,7 +170,7 @@ impl KelsRegistryClient {
             history
                 .records
                 .last()
-                .map(|peer| peer.peer_prefix == peer_prefix)
+                .map(|peer| peer.peer_prefix.as_ref() == peer_prefix)
                 .unwrap_or(false)
         }) {
             return Err(KelsError::RegistryFailure(format!(
@@ -213,7 +213,7 @@ impl KelsRegistryClient {
     }
 
     /// Fetch the registry's own prefix from federation status.
-    pub async fn fetch_registry_prefix(&self) -> Result<String, KelsError> {
+    pub async fn fetch_registry_prefix(&self) -> Result<cesr::Digest, KelsError> {
         let url = format!("{}/api/v1/federation/status", self.base_url);
         let response = self.client.get(&url).send().await?;
 
@@ -439,7 +439,7 @@ where
 
 /// Sync a registry member KEL to a local store, trying each registry URL until one succeeds.
 pub async fn sync_member_kel(
-    prefix: &str,
+    prefix: &cesr::Digest,
     registry_urls: &[String],
     sink: &(dyn crate::PagedKelSink + Sync),
 ) {
@@ -480,10 +480,12 @@ pub async fn verify_peer_anchoring(
     let saids = || iter::once(peer.said.clone());
 
     // First try from local store
+    let authorizing_kel = &peer.authorizing_kel;
+
     let mut loader = crate::StorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
-        &peer.authorizing_kel,
+        authorizing_kel,
         crate::page_size(),
         crate::max_pages(),
         saids(),
@@ -498,12 +500,12 @@ pub async fn verify_peer_anchoring(
 
     // Retry: re-sync from registry HTTP, then re-verify from store
     let sink = crate::KelStoreSink(store);
-    sync_member_kel(&peer.authorizing_kel, registry_urls, &sink).await;
+    sync_member_kel(authorizing_kel, registry_urls, &sink).await;
 
     let mut loader = crate::StorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
-        &peer.authorizing_kel,
+        authorizing_kel,
         crate::page_size(),
         crate::max_pages(),
         saids(),
@@ -523,7 +525,7 @@ enum ProposalCandidateRef<'a> {
 /// Uses a `KelStore` for anchor verification, with HTTP re-sync on cache miss.
 pub async fn verify_peer_votes(
     store: &(dyn crate::KelStore + Sync),
-    peer_prefix: &str,
+    peer_prefix: &cesr::Digest,
     proposals_response: &Option<CompletedProposalsResponse>,
     trusted_prefixes: &HashSet<&str>,
     registry_urls: &[String],
@@ -543,7 +545,7 @@ pub async fn verify_peer_votes(
             || awv
                 .history
                 .inception()
-                .is_none_or(|p| p.peer_prefix != peer_prefix)
+                .is_none_or(|p| &p.peer_prefix != peer_prefix)
             || awv.status(last.threshold) != ProposalStatus::Approved
         {
             continue;
@@ -559,7 +561,7 @@ pub async fn verify_peer_votes(
             || rwv
                 .history
                 .inception()
-                .is_none_or(|p| p.peer_prefix != peer_prefix)
+                .is_none_or(|p| &p.peer_prefix != peer_prefix)
             || rwv.status(last.threshold) != ProposalStatus::Approved
         {
             continue;
@@ -642,8 +644,8 @@ pub async fn verify_peer_votes(
 /// Verify anchoring from a local store, retrying with HTTP re-sync if needed.
 async fn verify_anchors_from_store(
     store: &(dyn crate::KelStore + Sync),
-    prefix: &str,
-    saids: impl IntoIterator<Item = String> + Clone,
+    prefix: &cesr::Digest,
+    saids: impl IntoIterator<Item = cesr::Digest> + Clone,
     registry_urls: &[String],
 ) -> Result<Option<KelVerification>, KelsError> {
     // First try from local store
@@ -688,11 +690,11 @@ async fn verify_anchors_from_store(
 #[allow(clippy::too_many_arguments)]
 async fn verify_proposal_dag_standalone<'a>(
     store: &(dyn crate::KelStore + Sync),
-    peer_prefix: &str,
+    peer_prefix: &cesr::Digest,
     kind: &str,
     structural_result: Result<(), KelsError>,
-    proposer: Option<&str>,
-    record_saids: impl Iterator<Item = &'a String>,
+    proposer: Option<&cesr::Digest>,
+    record_saids: impl Iterator<Item = &'a cesr::Digest>,
     votes: &[Vote],
     threshold: usize,
     member_prefixes: &HashSet<&str>,
@@ -704,28 +706,29 @@ async fn verify_proposal_dag_standalone<'a>(
     }
 
     let proposer = match proposer {
-        Some(p) => p.to_string(),
+        Some(p) => p,
         None => {
             warn!(peer_prefix = %peer_prefix, "{} proposal has no proposer", kind);
             return false;
         }
     };
+    let proposer_str: &str = proposer.as_ref();
 
-    if !member_prefixes.contains(proposer.as_str()) {
+    if !member_prefixes.contains(proposer_str) {
         warn!(peer_prefix = %peer_prefix, proposer = %proposer, "{} proposer is not a federation member", kind);
         return false;
     }
 
-    let mut proposer_saids: Vec<String> = record_saids.cloned().collect();
+    let mut proposer_saids: Vec<cesr::Digest> = record_saids.cloned().collect();
 
     let eligible_votes: Vec<&Vote> = votes
         .iter()
-        .filter(|v| v.approve && member_prefixes.contains(v.voter.as_str()))
+        .filter(|v| v.approve && member_prefixes.contains(AsRef::<str>::as_ref(&v.voter)))
         .collect();
 
     let mut proposer_voted = false;
     for vote in &eligible_votes {
-        if vote.voter == proposer {
+        if vote.voter == *proposer {
             proposer_saids.push(vote.said.clone());
             proposer_voted = true;
         }
@@ -738,7 +741,7 @@ async fn verify_proposal_dag_standalone<'a>(
         "verify_proposal_dag: checking proposer anchoring (records + vote)"
     );
 
-    match verify_anchors_from_store(store, &proposer, proposer_saids, registry_urls).await {
+    match verify_anchors_from_store(store, proposer, proposer_saids, registry_urls).await {
         Ok(Some(_)) => {
             debug!(proposer = %proposer, "verify_proposal_dag: proposer anchoring OK");
         }
@@ -760,13 +763,13 @@ async fn verify_proposal_dag_standalone<'a>(
         }
     }
 
-    let mut verified_voters: HashSet<String> = HashSet::new();
+    let mut verified_voters: HashSet<cesr::Digest> = HashSet::new();
     if proposer_voted {
         verified_voters.insert(proposer.clone());
     }
 
     for vote in &eligible_votes {
-        if vote.voter == proposer {
+        if vote.voter == *proposer {
             continue;
         }
 
@@ -828,21 +831,27 @@ pub async fn peers_sorted_by_latency(
 
     // Fetch and verify registry member KELs to the local store
     let sink = crate::KelStoreSink(store);
-    for prefix in &trusted {
-        sync_member_kel(prefix, urls, &sink).await;
+    for prefix_str in &trusted {
+        use cesr::Matter;
+        if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
+            sync_member_kel(&prefix, urls, &sink).await;
+        }
     }
 
     // Verify each trusted prefix from store
-    for prefix in &trusted {
-        let mut loader = crate::StorePageLoader::new(store);
-        let _ = crate::completed_verification(
-            &mut loader,
-            prefix,
-            crate::page_size(),
-            crate::max_pages(),
-            iter::empty(),
-        )
-        .await;
+    for prefix_str in &trusted {
+        use cesr::Matter;
+        if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
+            let mut loader = crate::StorePageLoader::new(store);
+            let _ = crate::completed_verification(
+                &mut loader,
+                &prefix,
+                crate::page_size(),
+                crate::max_pages(),
+                iter::empty(),
+            )
+            .await;
+        }
     }
 
     // Fetch peers with failover
@@ -967,14 +976,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let peer = Peer {
-            said: "KTestPeerSaid_______________________________".to_string(),
-            prefix: "KTestPeerPrefix_____________________________".to_string(),
+            said: cesr::Digest::blake3_256(b"test_peer_said"),
+            prefix: cesr::Digest::blake3_256(b"test_peer_prefix"),
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),
-            peer_prefix: "EPeer1Prefix________________________________".to_string(),
+            peer_prefix: cesr::Digest::blake3_256(b"EPeer1Prefix"),
             node_id: "node-1".to_string(),
-            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
             active: true,
             base_domain: "node-1.kels".to_string(),
             gossip_addr: "10.0.0.1:9000".to_string(),
@@ -1005,9 +1014,9 @@ mod tests {
 
     fn make_test_peer(peer_prefix: &str, node_id: &str, active: bool) -> Peer {
         Peer::create(
-            peer_prefix.to_string(),
+            cesr::Digest::blake3_256(peer_prefix.as_bytes()),
             node_id.to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            cesr::Digest::blake3_256(b"EAuthorizingKel"),
             active,
             format!("http://{}:8080", node_id),
             "127.0.0.1:4001".to_string(),

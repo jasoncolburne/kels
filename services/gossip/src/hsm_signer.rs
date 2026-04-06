@@ -95,7 +95,7 @@ impl Signer for IdentityGossipSigner {
             .map_err(|e| GossipError::Handshake(format!("Identity sign failed: {}", e)))?;
 
         // Return CESR-encoded signature (qb64 bytes) — type is embedded in the encoding
-        Ok(result.signature.into_bytes())
+        Ok(result.signature.qb64().into_bytes())
     }
 }
 
@@ -172,10 +172,12 @@ impl KelsPeerVerifier {
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP client: {}", e))
             })?;
+        let prefix_digest = cesr::Digest::from_qb64(prefix)
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid prefix CESR: {}", e)))?;
         let kel_verification = kels_core::verify_key_events(
-            prefix,
+            &prefix_digest,
             &source,
-            kels_core::KelVerifier::new(prefix),
+            kels_core::KelVerifier::new(&prefix_digest),
             kels_core::page_size(),
             kels_core::max_pages(),
         )
@@ -191,13 +193,11 @@ impl KelsPeerVerifier {
             )));
         }
 
-        let qb64_key = kel_verification.current_public_key().ok_or_else(|| {
+        let vk = kel_verification.current_public_key().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
-        VerificationKey::from_qb64(qb64_key).map_err(|e| {
-            GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
-        })
+        Ok(vk.clone())
     }
 
     /// Verify a CESR-encoded signature against a public key from the KEL.
@@ -262,8 +262,10 @@ impl KelsPeerVerifier {
             kels_core::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events").map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP sink: {}", e))
             })?;
+        let prefix_digest = cesr::Digest::from_qb64(prefix)
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid prefix CESR: {}", e)))?;
         if let Err(e) = kels_core::forward_key_events(
-            prefix,
+            &prefix_digest,
             &source,
             &sink,
             kels_core::page_size(),
@@ -338,11 +340,14 @@ impl PeerVerifier for KelsPeerVerifier {
 /// key is used for all signing operations (gossip handshakes, registry requests).
 pub struct IdentitySigner {
     identity_client: kels_core::IdentityClient,
-    peer_prefix: String,
+    peer_prefix: cesr::Digest,
 }
 
 impl IdentitySigner {
-    pub fn new(identity_url: &str, peer_prefix: String) -> Result<Self, kels_core::KelsError> {
+    pub fn new(
+        identity_url: &str,
+        peer_prefix: cesr::Digest,
+    ) -> Result<Self, kels_core::KelsError> {
         Ok(Self {
             identity_client: kels_core::IdentityClient::new(identity_url)?,
             peer_prefix,
@@ -399,15 +404,9 @@ mod tests {
 
     #[test]
     fn test_identity_registry_signer_new() {
-        let signer = IdentitySigner::new(
-            "http://identity:80",
-            "ETestPeerPrefix_____________________________".to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            signer.peer_prefix,
-            "ETestPeerPrefix_____________________________"
-        );
+        let peer_prefix = cesr::Digest::blake3_256(b"test-peer-prefix");
+        let signer = IdentitySigner::new("http://identity:80", peer_prefix.clone()).unwrap();
+        assert_eq!(signer.peer_prefix, peer_prefix);
     }
 
     // ==================== KelsPeerVerifier Tests ====================

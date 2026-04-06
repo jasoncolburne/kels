@@ -17,7 +17,10 @@ pub struct InMemoryPolicyResolver {
 
 impl InMemoryPolicyResolver {
     pub fn new(policies: Vec<Policy>) -> Self {
-        let map = policies.into_iter().map(|p| (p.said.clone(), p)).collect();
+        let map = policies
+            .into_iter()
+            .map(|p| (p.said.to_string(), p))
+            .collect();
         Self { policies: map }
     }
 
@@ -57,9 +60,9 @@ mod tests {
             false,
         )
         .unwrap();
-        let said = policy.said.clone();
+        let said = policy.said.to_string();
         let resolver = InMemoryPolicyResolver::new(vec![policy]);
         let resolved = resolver.resolve_policy(&said).await.unwrap();
-        assert_eq!(resolved.said, said);
+        assert_eq!(resolved.said.to_string(), said);
     }
 }

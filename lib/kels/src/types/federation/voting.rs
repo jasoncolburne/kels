@@ -44,11 +44,11 @@ impl std::fmt::Display for ProposalStatus {
 pub struct Vote {
     /// Self-Addressing IDentifier - content hash for tamper evidence.
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// The proposal prefix this vote is for (must match proposal.prefix).
-    pub proposal: String,
+    pub proposal: cesr::Digest,
     /// The voter's registry prefix.
-    pub voter: String,
+    pub voter: cesr::Digest,
     /// Whether the voter approves (true) or rejects (false).
     pub approve: bool,
     /// When the vote was cast.
@@ -61,16 +61,16 @@ pub struct Vote {
 /// Provides default implementations for `proposal_id()`, `is_expired()`, and
 /// `is_withdrawn()` based on accessor methods that each concrete type implements.
 pub trait Proposal: Chained {
-    fn proposal_said(&self) -> &str;
-    fn proposal_prefix(&self) -> &str;
-    fn proposal_previous(&self) -> Option<&str>;
+    fn proposal_said(&self) -> &cesr::Digest;
+    fn proposal_prefix(&self) -> &cesr::Digest;
+    fn proposal_previous(&self) -> Option<&cesr::Digest>;
     fn proposal_version(&self) -> u64;
-    fn proposer(&self) -> &str;
+    fn proposer(&self) -> &cesr::Digest;
     fn proposal_created_at(&self) -> &StorageDatetime;
     fn expires_at(&self) -> &StorageDatetime;
     fn withdrawn_at(&self) -> Option<&StorageDatetime>;
 
-    fn proposal_id(&self) -> &str {
+    fn proposal_id(&self) -> &cesr::Digest {
         self.proposal_prefix()
     }
     fn is_expired(&self) -> bool {
@@ -89,7 +89,7 @@ pub trait Proposal: Chained {
 pub trait ProposalHistory {
     type Record: Proposal;
 
-    fn history_prefix(&self) -> &str;
+    fn history_prefix(&self) -> &cesr::Digest;
     fn records(&self) -> &[Self::Record];
     /// Label for error messages, e.g. "Addition proposal" or "Removal proposal".
     fn label(&self) -> &str;
@@ -110,7 +110,7 @@ pub trait ProposalHistory {
             )));
         }
 
-        let mut last_said: Option<String> = None;
+        let mut last_said: Option<cesr::Digest> = None;
         for (i, record) in self.records().iter().enumerate() {
             record.verify()?;
 
@@ -125,7 +125,7 @@ pub trait ProposalHistory {
             }
 
             if let Some(said) = &last_said {
-                if record.proposal_previous() != Some(said.as_str()) {
+                if record.proposal_previous() != Some(said) {
                     return Err(KelsError::RegistryFailure(format!(
                         "{} record {} previous doesn't match {}",
                         self.label(),
@@ -170,7 +170,7 @@ pub trait ProposalHistory {
                 )));
             }
 
-            last_said = Some(record.proposal_said().to_string());
+            last_said = Some(record.proposal_said().clone());
         }
 
         if self.records().len() == 2 && !self.records()[1].is_withdrawn() {
@@ -278,19 +278,16 @@ pub trait ProposalWithVotesMethods {
         self.history().inception().is_some_and(|p| p.is_expired())
     }
 
-    fn proposal_id(&self) -> &str {
+    fn proposal_id(&self) -> &cesr::Digest {
         self.history().history_prefix()
     }
 
-    fn proposer(&self) -> Option<&str> {
+    fn proposer(&self) -> Option<&cesr::Digest> {
         self.history().inception().map(|p| p.proposer())
     }
 
-    fn voters(&self) -> Vec<&str> {
-        self.proposal_votes()
-            .iter()
-            .map(|v| v.voter.as_str())
-            .collect()
+    fn voters(&self) -> Vec<&cesr::Digest> {
+        self.proposal_votes().iter().map(|v| &v.voter).collect()
     }
 }
 
@@ -307,23 +304,23 @@ pub trait ProposalWithVotesMethods {
 pub struct PeerAdditionProposal {
     /// Self-Addressing IDentifier - changes with each update.
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Stable proposal identifier (derived from inception SAID).
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     /// SAID of previous version (None for inception).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[previous]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
     /// The KELS prefix of the peer being proposed.
-    pub peer_prefix: String,
+    pub peer_prefix: cesr::Digest,
     /// The node_id being proposed.
     pub node_id: String,
     pub base_domain: String,
     pub gossip_addr: String,
-    pub proposer: String,
+    pub proposer: cesr::Digest,
     /// Approval threshold at time of proposal creation.
     pub threshold: usize,
     /// When the proposal was created/updated.
@@ -342,20 +339,20 @@ impl PeerAdditionProposal {
     /// The prefix (proposal ID) is derived from content - no UUID needed.
     /// The proposer must submit their vote separately via VotePeer.
     pub fn empty(
-        peer_prefix: &str,
+        peer_prefix: cesr::Digest,
         node_id: &str,
         base_domain: &str,
         gossip_addr: &str,
-        proposer: &str,
+        proposer: cesr::Digest,
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
         Self::create(
-            peer_prefix.to_string(),
+            peer_prefix,
             node_id.to_string(),
             base_domain.to_string(),
             gossip_addr.to_string(),
-            proposer.to_string(),
+            proposer,
             threshold,
             expires_at.clone(),
             None,
@@ -364,19 +361,19 @@ impl PeerAdditionProposal {
 }
 
 impl Proposal for PeerAdditionProposal {
-    fn proposal_said(&self) -> &str {
+    fn proposal_said(&self) -> &cesr::Digest {
         &self.said
     }
-    fn proposal_prefix(&self) -> &str {
+    fn proposal_prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
-    fn proposal_previous(&self) -> Option<&str> {
-        self.previous.as_deref()
+    fn proposal_previous(&self) -> Option<&cesr::Digest> {
+        self.previous.as_ref()
     }
     fn proposal_version(&self) -> u64 {
         self.version
     }
-    fn proposer(&self) -> &str {
+    fn proposer(&self) -> &cesr::Digest {
         &self.proposer
     }
     fn proposal_created_at(&self) -> &StorageDatetime {
@@ -394,14 +391,14 @@ impl Proposal for PeerAdditionProposal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdditionHistory {
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub records: Vec<PeerAdditionProposal>,
 }
 
 impl ProposalHistory for AdditionHistory {
     type Record = PeerAdditionProposal;
 
-    fn history_prefix(&self) -> &str {
+    fn history_prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
     fn records(&self) -> &[PeerAdditionProposal] {
@@ -442,16 +439,16 @@ pub enum ProposalWithVotes {
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 pub struct PeerRemovalProposal {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[previous]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
-    pub peer_prefix: String,
-    pub proposer: String,
+    pub peer_prefix: cesr::Digest,
+    pub proposer: cesr::Digest,
     pub threshold: usize,
     #[created_at]
     pub created_at: StorageDatetime,
@@ -462,35 +459,29 @@ pub struct PeerRemovalProposal {
 
 impl PeerRemovalProposal {
     pub fn empty(
-        peer_prefix: &str,
-        proposer: &str,
+        peer_prefix: cesr::Digest,
+        proposer: cesr::Digest,
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
-        Self::create(
-            peer_prefix.to_string(),
-            proposer.to_string(),
-            threshold,
-            expires_at.clone(),
-            None,
-        )
+        Self::create(peer_prefix, proposer, threshold, expires_at.clone(), None)
     }
 }
 
 impl Proposal for PeerRemovalProposal {
-    fn proposal_said(&self) -> &str {
+    fn proposal_said(&self) -> &cesr::Digest {
         &self.said
     }
-    fn proposal_prefix(&self) -> &str {
+    fn proposal_prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
-    fn proposal_previous(&self) -> Option<&str> {
-        self.previous.as_deref()
+    fn proposal_previous(&self) -> Option<&cesr::Digest> {
+        self.previous.as_ref()
     }
     fn proposal_version(&self) -> u64 {
         self.version
     }
-    fn proposer(&self) -> &str {
+    fn proposer(&self) -> &cesr::Digest {
         &self.proposer
     }
     fn proposal_created_at(&self) -> &StorageDatetime {
@@ -508,14 +499,14 @@ impl Proposal for PeerRemovalProposal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovalHistory {
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub records: Vec<PeerRemovalProposal>,
 }
 
 impl ProposalHistory for RemovalHistory {
     type Record = PeerRemovalProposal;
 
-    fn history_prefix(&self) -> &str {
+    fn history_prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
     fn records(&self) -> &[PeerRemovalProposal] {
@@ -559,6 +550,10 @@ mod tests {
     use super::*;
     use verifiable_storage::{Chained, SelfAddressed};
 
+    fn digest(name: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(name.as_bytes())
+    }
+
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
     }
@@ -568,11 +563,11 @@ mod tests {
     #[test]
     fn test_addition_history_valid_timestamps() {
         let v0 = PeerAdditionProposal::empty(
-            "peer-1",
+            digest("peer-1"),
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            "KRegistryA",
+            digest("KRegistryA"),
             2,
             &test_expires_at(),
         )
@@ -592,11 +587,11 @@ mod tests {
     #[test]
     fn test_addition_history_non_monotonic_timestamp_fails() {
         let v0 = PeerAdditionProposal::empty(
-            "peer-1",
+            digest("peer-1"),
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            "KRegistryA",
+            digest("KRegistryA"),
             2,
             &test_expires_at(),
         )
@@ -625,7 +620,13 @@ mod tests {
 
     #[test]
     fn test_removal_history_valid_timestamps() {
-        let v0 = PeerRemovalProposal::empty("peer-1", "KRegistryA", 2, &test_expires_at()).unwrap();
+        let v0 = PeerRemovalProposal::empty(
+            digest("peer-1"),
+            digest("KRegistryA"),
+            2,
+            &test_expires_at(),
+        )
+        .unwrap();
 
         let mut v1 = v0.clone();
         v1.withdrawn_at = Some(StorageDatetime::now());
@@ -640,7 +641,13 @@ mod tests {
 
     #[test]
     fn test_removal_history_non_monotonic_timestamp_fails() {
-        let v0 = PeerRemovalProposal::empty("peer-1", "KRegistryA", 2, &test_expires_at()).unwrap();
+        let v0 = PeerRemovalProposal::empty(
+            digest("peer-1"),
+            digest("KRegistryA"),
+            2,
+            &test_expires_at(),
+        )
+        .unwrap();
 
         let mut v1 = v0.clone();
         v1.withdrawn_at = Some(StorageDatetime::now());

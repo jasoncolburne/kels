@@ -159,7 +159,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 let mut map: std::collections::HashMap<String, Vec<kels_core::EventSignature>> =
                     std::collections::HashMap::new();
                 for sig in sigs {
-                    map.entry(sig.event_said.clone()).or_default().push(sig);
+                    map.entry(sig.event_said.to_string()).or_default().push(sig);
                 }
 
                 Ok(map)
@@ -273,7 +273,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 // Filter out the since event itself (we want events *after* it,
                 // but we need >= its serial to include divergent events at the same serial)
-                events.retain(|e| e.said != since_said);
+                events.retain(|e| e.said.to_string() != since_said);
 
                 let has_more = events.len() > clamped_limit as usize;
                 if has_more {
@@ -284,18 +284,19 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     return Ok((vec![], false));
                 }
 
-                let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+                let saids: Vec<String> = events.iter().map(|e| e.said.to_string()).collect();
                 let signatures = self.get_signatures_by_saids(&saids).await?;
 
                 let mut signed_events = Vec::with_capacity(events.len());
                 for event in events {
-                    let sigs = signatures.get(&event.said).ok_or_else(|| {
+                    let said_str = event.said.to_string();
+                    let sigs = signatures.get(&said_str).ok_or_else(|| {
                         verifiable_storage::StorageError::StorageError(format!(
                             "No signatures found for event {}",
                             event.said
                         ))
                     })?;
-                    let sig_pairs: Vec<(String, String)> = sigs
+                    let sig_pairs: Vec<(String, cesr::Signature)> = sigs
                         .iter()
                         .map(|s| (s.label.clone(), s.signature.clone()))
                         .collect();
@@ -313,7 +314,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             pub async fn compute_prefix_effective_said(
                 &self,
                 prefix: &str,
-            ) -> Result<Option<(String, bool)>, verifiable_storage::StorageError> {
+            ) -> Result<Option<(cesr::Digest, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
                 let query = verifiable_storage::Query::<kels_core::KeyEvent>::for_table(Self::TABLE_NAME)
@@ -527,14 +528,16 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels_core::KelsError> {
                 self.compute_prefix_effective_said(prefix)
                     .await
-                    .map(|opt| opt.map(|(said, _)| said))
+                    .map(|opt| opt.map(|(said, _)| said.to_string()))
                     .map_err(kels_core::KelsError::from)
             }
 
             async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels_core::KelsError> {
+                use cesr::Matter;
                 use verifiable_storage::ChainedRepository;
-                let event: Option<kels_core::KeyEvent> = self.get_by_said(said).await.map_err(kels_core::KelsError::from)?;
-                Ok(event.map(|e| e.prefix))
+                let said_digest = cesr::Digest::from_qb64(said).map_err(|e| kels_core::KelsError::CryptoError(e.to_string()))?;
+                let event: Option<kels_core::KeyEvent> = self.get_by_said(&said_digest).await.map_err(kels_core::KelsError::from)?;
+                Ok(event.map(|e| e.prefix.to_string()))
             }
         }
     };

@@ -117,7 +117,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         }
 
         // Verify schema SAID matches credential's schema reference
-        if credential.schema != schema.said {
+        if credential.schema != schema.said.to_string() {
             return Err(CredentialError::VerificationError(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
                 credential.schema, schema.said
@@ -125,7 +125,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         }
 
         // Verify policy SAID matches credential's policy reference
-        if credential.policy != policy.said {
+        if credential.policy != policy.said.to_string() {
             return Err(CredentialError::VerificationError(format!(
                 "policy SAID mismatch: credential references {}, provided policy has {}",
                 credential.policy, policy.said
@@ -135,7 +135,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         // Expanded SAID integrity — verify the credential's own SAID is consistent with data
         let value = serde_json::to_value(credential)?;
         let computed_said = compute_said_from_value(&value)?;
-        if computed_said != credential.said {
+        if computed_said.to_string() != credential.said {
             return Err(CredentialError::VerificationError(format!(
                 "SAID mismatch: credential has {}, data produces {}",
                 credential.said, computed_said
@@ -176,7 +176,7 @@ fn verify_credential_bounded<'a, T: Claims>(
 
         Ok(CredentialVerification {
             credential: credential.said.clone(),
-            policy: policy.said.clone(),
+            policy: policy.said.to_string(),
             subject: credential.subject.clone(),
             is_expired,
             policy_verification,
@@ -231,7 +231,7 @@ async fn verify_edges<T: Claims>(
             .get("schema")
             .and_then(|s| s.as_str())
             .unwrap_or("");
-        if cred_schema_said != edge_schema.said {
+        if cred_schema_said != AsRef::<str>::as_ref(&edge_schema.said) {
             return Err(CredentialError::VerificationError(format!(
                 "edge '{label}': credential schema {cred_schema_said} does not match \
                  edge schema {}",
@@ -268,7 +268,7 @@ async fn verify_edges<T: Claims>(
                     "edge '{label}': failed to compact credential policy: {e}"
                 ))
             })?;
-            if *expected_policy != canonical.said {
+            if *expected_policy != canonical.said.to_string() {
                 return Err(CredentialError::VerificationError(format!(
                     "edge '{label}': policy mismatch — edge declares {expected_policy}, \
                      credential's canonical policy is {}",

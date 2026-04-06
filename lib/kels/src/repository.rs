@@ -12,14 +12,14 @@ use crate::{
 /// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
 pub(crate) fn zip_events_with_signatures(
     events: Vec<KeyEvent>,
-    sig_map: &HashMap<String, Vec<EventSignature>>,
+    sig_map: &HashMap<cesr::Digest, Vec<EventSignature>>,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let mut result = Vec::with_capacity(events.len());
     for event in events {
         let sigs = sig_map.get(&event.said).ok_or_else(|| {
             KelsError::StorageError(format!("No signatures found for event {}", event.said))
         })?;
-        let sig_pairs: Vec<(String, String)> = sigs
+        let sig_pairs: Vec<(String, cesr::Signature)> = sigs
             .iter()
             .map(|s| (s.label.clone(), s.signature.clone()))
             .collect();
@@ -61,10 +61,16 @@ pub async fn load_signed_history(
         return Ok((vec![], false));
     }
 
-    let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+    let saids: Vec<String> = events
+        .iter()
+        .map(|e| {
+            use cesr::Matter;
+            e.said.qb64()
+        })
+        .collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
-    let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+    let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
         sig_map.entry(sig.event_said.clone()).or_default().push(sig);
     }
@@ -98,10 +104,16 @@ pub async fn load_signed_history_tail(
     // Reverse to serial-ascending order
     events.reverse();
 
-    let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+    let saids: Vec<String> = events
+        .iter()
+        .map(|e| {
+            use cesr::Matter;
+            e.said.qb64()
+        })
+        .collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
-    let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+    let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
         sig_map.entry(sig.event_said.clone()).or_default().push(sig);
     }

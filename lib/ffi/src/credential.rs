@@ -322,7 +322,7 @@ pub unsafe extern "C" fn kels_poison_hash(credential_said: *const c_char) -> *mu
         return std::ptr::null_mut();
     };
 
-    to_c_string(&kels_policy::poison_hash(&said))
+    to_c_string(kels_policy::poison_hash(&said).as_ref())
 }
 
 /// Validate a schema's structure and compliance.

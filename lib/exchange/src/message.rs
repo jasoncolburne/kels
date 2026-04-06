@@ -27,27 +27,27 @@ pub enum ExchangeKind {
 #[serde(rename_all = "camelCase")]
 pub struct ExchangeMessage {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Thread identifier (deterministic from v0 inception).
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     /// SAID of prior message in thread (None for thread inception).
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     /// Message sequence within thread.
     #[version]
     pub message_number: u64,
     /// Message kind.
     pub kind: ExchangeKind,
     /// Sender's KEL prefix.
-    pub sender: String,
+    pub sender: cesr::Digest,
     /// Recipient's KEL prefix.
-    pub recipient: String,
+    pub recipient: cesr::Digest,
     #[created_at]
     pub created_at: StorageDatetime,
-    /// Anti-replay nonce.
-    pub nonce: String,
+    /// Anti-replay nonce (Blake3 hash of random bytes).
+    pub nonce: cesr::Digest,
     /// Kind-specific payload.
     pub payload: ExchangePayload,
 }
@@ -123,13 +123,17 @@ mod tests {
 
     use super::*;
 
+    fn test_digest(label: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(label.as_bytes())
+    }
+
     #[test]
     fn exchange_message_create() {
         let msg = ExchangeMessage::create(
             ExchangeKind::Apply,
-            "sender-prefix".to_string(),
-            "recipient-prefix".to_string(),
-            "test-nonce".to_string(),
+            test_digest("sender-prefix"),
+            test_digest("recipient-prefix"),
+            test_digest("test-nonce"),
             ExchangePayload::Apply {
                 schema: "schema-said".to_string(),
                 policy: None,
@@ -138,19 +142,22 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!msg.said.is_empty());
-        assert!(!msg.prefix.is_empty());
+        assert_ne!(msg.said, cesr::Digest::default());
+        assert_ne!(msg.prefix, cesr::Digest::default());
         assert!(msg.previous.is_none());
         assert_eq!(msg.message_number, 0);
     }
 
     #[test]
     fn chained_messages_share_thread_prefix() {
+        let sender = test_digest("sender");
+        let recipient = test_digest("recipient");
+
         let mut thread = ExchangeMessage::create(
             ExchangeKind::Apply,
-            "sender".to_string(),
-            "recipient".to_string(),
-            "nonce-0".to_string(),
+            sender.clone(),
+            recipient.clone(),
+            test_digest("nonce-0"),
             ExchangePayload::Apply {
                 schema: "schema".to_string(),
                 policy: None,
@@ -163,9 +170,9 @@ mod tests {
 
         // Update fields for the reply, then increment
         thread.kind = ExchangeKind::Offer;
-        thread.sender = "recipient".to_string();
-        thread.recipient = "sender".to_string();
-        thread.nonce = "nonce-1".to_string();
+        thread.sender = recipient;
+        thread.recipient = sender;
+        thread.nonce = test_digest("nonce-1");
         thread.payload = ExchangePayload::Offer {
             schema: "schema".to_string(),
             policy: "policy".to_string(),

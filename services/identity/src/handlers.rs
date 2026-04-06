@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
     ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
@@ -101,7 +102,7 @@ pub async fn get_identity(
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
     Ok(Json(IdentityInfo {
-        prefix: prefix.to_string(),
+        prefix: prefix.clone(),
     }))
 }
 
@@ -110,7 +111,7 @@ pub async fn get_status(
 ) -> Result<Json<kels_core::IdentityStatus>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = match builder.prefix() {
-        Some(p) => p.to_string(),
+        Some(p) => p.clone(),
         None => {
             return Ok(Json(kels_core::IdentityStatus {
                 initialized: false,
@@ -160,9 +161,10 @@ pub async fn get_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
+    let prefix_str = prefix.to_string();
     let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
-        prefix,
+        &prefix_str,
         query.since.as_deref(),
         limit,
     )
@@ -172,7 +174,7 @@ pub async fn get_key_events(
 }
 
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
-pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
+pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest) {
     let forward_url = match state.forward_url.as_ref() {
         Some(url) => url,
         None => return,
@@ -226,10 +228,12 @@ pub async fn anchor(
     let prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-        .to_string();
+        .clone();
 
+    let anchor_digest = cesr::Digest::from_qb64(&request.said)
+        .map_err(|e| ApiError::internal(format!("Invalid SAID: {}", e)))?;
     let ixn = builder
-        .interact(&request.said)
+        .interact(&anchor_digest)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
@@ -246,7 +250,7 @@ pub async fn anchor(
     forward_kel(&state, &prefix).await;
 
     Ok(Json(AnchorResponse {
-        event_said: ixn.event.said,
+        event_said: ixn.event.said.to_string(),
     }))
 }
 
@@ -258,7 +262,6 @@ pub async fn sign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SignRequest>,
 ) -> Result<Json<SignResponse>, ApiError> {
-    use cesr::Matter;
     use kels_core::KeyProvider;
 
     let builder = state.builder.read().await;
@@ -269,9 +272,7 @@ pub async fn sign(
         .await
         .map_err(|e| ApiError::internal(format!("Signing failed: {}", e)))?;
 
-    Ok(Json(SignResponse {
-        signature: signature.qb64(),
-    }))
+    Ok(Json(SignResponse { signature }))
 }
 
 pub async fn manage_kel(
@@ -283,7 +284,7 @@ pub async fn manage_kel(
         builder
             .prefix()
             .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-            .to_string()
+            .clone()
     };
 
     if signed.payload.prefix != prefix {
@@ -389,12 +390,13 @@ mod tests {
 
     #[test]
     fn test_identity_info_serialization() {
+        let prefix = cesr::Digest::blake3_256(b"EPREFIX123");
         let info = IdentityInfo {
-            prefix: "EPREFIX123".to_string(),
+            prefix: prefix.clone(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("prefix"));
-        assert!(json.contains("EPREFIX123"));
+        assert!(json.contains(prefix.as_ref()));
     }
 
     #[test]
@@ -465,7 +467,7 @@ mod tests {
     #[test]
     fn test_identity_info_roundtrip() {
         let original = IdentityInfo {
-            prefix: "EPREFIX".to_string(),
+            prefix: cesr::Digest::blake3_256(b"EPREFIX"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();

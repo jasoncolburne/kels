@@ -149,7 +149,7 @@ pub async fn refresh_allowlist(
             );
 
             if latest.active {
-                authorized_peers.insert(latest.peer_prefix.clone(), latest.clone());
+                authorized_peers.insert(latest.peer_prefix.to_string(), latest.clone());
             }
         }
     }
@@ -166,18 +166,25 @@ pub async fn refresh_allowlist(
                 break;
             }
         };
+        let prefix_digest = match cesr::Digest::from_qb64(peer_prefix) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(peer_prefix, error = %e, "Invalid peer prefix, assuming ML-DSA-87 (fail secure)");
+                any_dsa_87 = true;
+                break;
+            }
+        };
         match kels_core::verify_key_events(
-            peer_prefix,
+            &prefix_digest,
             &source,
-            kels_core::KelVerifier::new(peer_prefix),
+            kels_core::KelVerifier::new(&prefix_digest),
             kels_core::page_size(),
             kels_core::max_pages(),
         )
         .await
         {
             Ok(verification) => {
-                if let Some(qb64_key) = verification.current_public_key()
-                    && let Ok(pk) = cesr::VerificationKey::from_qb64(qb64_key)
+                if let Some(pk) = verification.current_public_key()
                     && pk.code() == cesr::VerificationKeyCode::MlDsa87.code()
                 {
                     debug!(peer_prefix, "Peer uses ML-DSA-87, requiring ML-KEM-1024");
@@ -286,14 +293,14 @@ mod tests {
 
     fn _create_test_peer(peer_prefix: &str) -> kels_core::Peer {
         kels_core::Peer {
-            said: "test-said".to_string(),
-            prefix: "test-prefix".to_string(),
+            said: cesr::Digest::blake3_256(b"test-said"),
+            prefix: cesr::Digest::blake3_256(b"test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: peer_prefix.to_string(),
+            peer_prefix: cesr::Digest::blake3_256(peer_prefix.as_bytes()),
             node_id: "test-node".to_string(),
-            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
             active: true,
             base_domain: "test.kels".to_string(),
             gossip_addr: "127.0.0.1:4001".to_string(),

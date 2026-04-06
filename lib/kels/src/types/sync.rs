@@ -1,6 +1,6 @@
 //! Caching & sync types
 
-use cesr::{Digest, Matter};
+use cesr::Digest;
 use serde::{Deserialize, Serialize};
 
 /// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Used for deterministic effective SAIDs for divergent and contested KELs:
 /// - `hash_effective_said("divergent:{prefix}")` — all divergent nodes agree
 /// - `hash_effective_said("contested:{prefix}")` — all contested nodes agree
-pub fn hash_effective_said(input: &str) -> String {
-    Digest::blake3_256(input.as_bytes()).qb64()
+pub fn hash_effective_said(input: &str) -> cesr::Digest {
+    Digest::blake3_256(input.as_bytes())
 }
 
 /// Request payload for authenticated prefix listing.
@@ -44,6 +44,6 @@ pub struct PrefixListResponse {
 /// A prefix with its latest SAID, used for bootstrap sync
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrefixState {
-    pub prefix: String,
-    pub said: String,
+    pub prefix: cesr::Digest,
+    pub said: cesr::Digest,
 }

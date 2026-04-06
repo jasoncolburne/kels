@@ -107,7 +107,7 @@ pub async fn store(
         .ok_or_else(|| {
             CredentialError::InvalidCredential("credential has no schema field".to_string())
         })?;
-    if cred_schema != schema.said {
+    if cred_schema != schema.said.to_string() {
         return Err(CredentialError::InvalidSchema(format!(
             "schema SAID mismatch: credential references {cred_schema}, provided schema has {}",
             schema.said
@@ -199,7 +199,7 @@ pub fn validate(
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
     let schema: Schema = serde_json::from_str(json_schema)?;
 
-    if credential.schema != schema.said {
+    if credential.schema != schema.said.to_string() {
         return Err(CredentialError::InvalidSaid(
             "Schema said mismatch".to_string(),
         ));
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(edges.edges.len(), 1);
         assert!(edges.edges.contains_key("license"));
         let edge = edges.edges.get("license").unwrap();
-        assert_eq!(edge.said.len(), 44);
+        assert_eq!(edge.said.as_ref().len(), 44);
     }
 
     #[tokio::test]
@@ -355,6 +355,6 @@ mod tests {
         assert_eq!(rules.rules.len(), 1);
         assert!(rules.rules.contains_key("terms"));
         let rule = rules.rules.get("terms").unwrap();
-        assert_eq!(rule.said.len(), 44);
+        assert_eq!(rule.said.as_ref().len(), 44);
     }
 }

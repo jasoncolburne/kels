@@ -28,6 +28,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
+use cesr::Matter;
 use futures::future::join_all;
 use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner, PrefixState};
 use thiserror::Error;
@@ -280,18 +281,21 @@ impl BootstrapSync {
                         .flatten()
                         .map(|(s, _)| s);
 
-                    if local_said.as_deref() == Some(&state.said) {
+                    if local_said.as_deref() == Some(state.said.as_ref()) {
                         continue;
                     }
 
                     // Forward the full chain (paginated) from remote to local
+                    let since_digest = local_said
+                        .as_deref()
+                        .and_then(|s| cesr::Digest::from_qb64(s).ok());
                     if let Err(e) = kels_core::forward_sad_pointer(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,
                         kels_core::page_size(),
                         kels_core::max_pages(),
-                        local_said.as_deref(),
+                        since_digest.as_ref(),
                     )
                     .await
                     {
@@ -341,7 +345,7 @@ impl BootstrapSync {
                         history
                             .records
                             .last()
-                            .map(|peer| peer.peer_prefix == peer_prefix && peer.active)
+                            .map(|peer| peer.peer_prefix.as_ref() == peer_prefix && peer.active)
                             .unwrap_or(false)
                     }));
                 }
@@ -425,10 +429,10 @@ impl BootstrapSync {
                     Ok(page) => {
                         for state in &page.prefixes {
                             if let Some(since) = self.sync_check(state, &local_client).await {
-                                all_prefixes.entry(state.prefix.clone()).or_insert((
+                                all_prefixes.entry(state.prefix.to_string()).or_insert((
                                     since,
                                     peer_url.to_string(),
-                                    peer.peer_prefix.clone(),
+                                    peer.peer_prefix.to_string(),
                                 ));
                             }
                         }
@@ -466,8 +470,12 @@ impl BootstrapSync {
                             return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed);
                         }
                     };
+                    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+                        Ok(d) => d,
+                        Err(_) => return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed),
+                    };
                     let result =
-                        crate::sync::sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
+                        crate::sync::sync_prefix(&remote, &local, &prefix_digest, since.as_deref()).await;
                     (prefix, source_peer_prefix, result)
                 }
             })
@@ -530,7 +538,7 @@ impl BootstrapSync {
             .await
         {
             Ok(Some((local_effective, _))) => {
-                if local_effective == remote_state.said {
+                if local_effective.as_str() == remote_state.said.as_ref() {
                     None // In sync
                 } else {
                     Some(Some(local_effective)) // Delta fetch from this SAID
@@ -603,14 +611,14 @@ mod tests {
     #[test]
     fn test_get_sync_url() {
         let peer = kels_core::Peer {
-            said: "test-said".to_string(),
-            prefix: "test-prefix".to_string(),
+            said: cesr::Digest::blake3_256(b"test-said"),
+            prefix: cesr::Digest::blake3_256(b"test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: "test-peer".to_string(),
+            peer_prefix: cesr::Digest::blake3_256(b"test-peer"),
             node_id: "node-1".to_string(),
-            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
             active: true,
             base_domain: "node-1.kels".to_string(),
             gossip_addr: "/ip4/127.0.0.1/tcp/4001".to_string(),

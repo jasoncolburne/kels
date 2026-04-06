@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cesr::Matter;
 use colored::Colorize;
 use kels_core::{KeyEventBuilder, ProviderConfig, SadStore};
 use verifiable_storage::SelfAddressed;
@@ -57,6 +58,7 @@ pub(crate) async fn cmd_cred_issue(
     println!("  Canonical SAID:  {}", canonical_said);
 
     // Anchor the canonical SAID in the KEL via ixn
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -65,12 +67,14 @@ pub(crate) async fn cmd_cred_issue(
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
+    let anchor_digest =
+        cesr::Digest::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
     let signed = builder
-        .interact(&canonical_said)
+        .interact(&anchor_digest)
         .await
         .context("Failed to anchor credential SAID in KEL")?;
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
@@ -78,11 +82,13 @@ pub(crate) async fn cmd_cred_issue(
     // Store credential, schema, and policy locally
     let sad_store = create_sad_store(cli)?;
     let cred_value = serde_json::to_value(&credential)?;
-    sad_store.store(&credential.said, &cred_value).await?;
+    sad_store
+        .store(credential.said.as_ref(), &cred_value)
+        .await?;
     let schema_value = serde_json::to_value(&schema)?;
-    sad_store.store(&schema.said, &schema_value).await?;
+    sad_store.store(schema.said.as_ref(), &schema_value).await?;
     let policy_value = serde_json::to_value(&policy)?;
-    sad_store.store(&policy.said, &policy_value).await?;
+    sad_store.store(policy.said.as_ref(), &policy_value).await?;
 
     println!(
         "{}",
@@ -113,15 +119,15 @@ pub(crate) async fn cmd_cred_store(
 
     // Store credential and schema
     let sad_store = create_sad_store(cli)?;
-    sad_store.store(&said, &value).await?;
+    sad_store.store(said.as_ref(), &value).await?;
 
     let schema_data = std::fs::read_to_string(schema_path)
         .with_context(|| format!("Failed to read schema: {}", schema_path.display()))?;
     let schema_value: serde_json::Value =
         serde_json::from_str(&schema_data).context("Failed to parse schema")?;
     let schema_said = schema_value.get_said();
-    if !schema_said.is_empty() {
-        sad_store.store(&schema_said, &schema_value).await?;
+    if !schema_said.as_ref().is_empty() {
+        sad_store.store(schema_said.as_ref(), &schema_value).await?;
     }
 
     println!("{}", format!("Credential stored: {}", said).green().bold());
@@ -180,6 +186,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
     println!("  Poison hash: {}", poison);
 
     // Anchor poison hash in KEL via ixn
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -188,7 +195,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 

@@ -12,8 +12,8 @@ use verifiable_storage::SelfAddressed;
 #[serde(rename_all = "camelCase")]
 pub struct SadObjectEntry {
     #[said]
-    pub said: String,
-    pub sad_said: String,
+    pub said: cesr::Digest,
+    pub sad_said: cesr::Digest,
 }
 
 /// Response for listing SAD object SAIDs.

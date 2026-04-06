@@ -91,7 +91,10 @@ impl KeyEventRepository {
             return Ok((vec![], false));
         }
 
-        let event_saids: Vec<String> = join_records.iter().map(|r| r.event_said.clone()).collect();
+        let event_saids: Vec<String> = join_records
+            .iter()
+            .map(|r| r.event_said.to_string())
+            .collect();
 
         // Fetch the archived events by their SAIDs.
         let events_query = Query::<KeyEvent>::for_table("kels_archived_events")
@@ -108,20 +111,24 @@ impl KeyEventRepository {
 
         let mut sig_map: HashMap<String, Vec<kels_core::EventSignature>> = HashMap::new();
         for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+            sig_map
+                .entry(sig.event_said.to_string())
+                .or_default()
+                .push(sig);
         }
 
         tx.commit().await?;
 
         let mut result = Vec::with_capacity(events.len());
         for event in events {
-            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+            let said_str = event.said.to_string();
+            let sigs = sig_map.get(&said_str).ok_or_else(|| {
                 kels_core::KelsError::StorageError(format!(
                     "No signatures found for event {}",
                     event.said
                 ))
             })?;
-            let sig_pairs: Vec<(String, String)> = sigs
+            let sig_pairs: Vec<(String, cesr::Signature)> = sigs
                 .iter()
                 .map(|s| (s.label.clone(), s.signature.clone()))
                 .collect();
@@ -168,15 +175,15 @@ impl KeyEventRepository {
         let mut prefix_states: Vec<PrefixState> = events
             .into_iter()
             .map(|e| PrefixState {
-                prefix: e.prefix,
-                said: e.said,
+                prefix: e.prefix.clone(),
+                said: e.said.clone(),
             })
             .collect();
 
         // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.clone())
+            prefix_states.last().map(|s| s.prefix.to_string())
         } else if let Some(cursor) = since {
             // Wrap around: fill remaining slots from prefixes <= cursor
             // (the beginning of the prefix space). No duplicates because
@@ -191,8 +198,8 @@ impl KeyEventRepository {
                     .limit(remaining as u64);
                 let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {
-                    prefix: e.prefix,
-                    said: e.said,
+                    prefix: e.prefix.clone(),
+                    said: e.said.clone(),
                 }));
             }
             None
@@ -202,7 +209,8 @@ impl KeyEventRepository {
 
         // Batch divergence check: find all prefixes in this page that have
         // duplicate serials, in a single query.
-        let page_prefixes: Vec<String> = prefix_states.iter().map(|s| s.prefix.clone()).collect();
+        let page_prefixes: Vec<String> =
+            prefix_states.iter().map(|s| s.prefix.to_string()).collect();
         let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
             .distinct()
             .r#in("prefix", page_prefixes)
@@ -219,9 +227,10 @@ impl KeyEventRepository {
         // For divergent prefixes, replace the single tip SAID with a deterministic
         // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
-            if divergent_prefixes.contains(&state.prefix)
-                && let Some((effective, _)) =
-                    self.compute_prefix_effective_said(&state.prefix).await?
+            if divergent_prefixes.contains(AsRef::<str>::as_ref(&state.prefix))
+                && let Some((effective, _)) = self
+                    .compute_prefix_effective_said(state.prefix.as_ref())
+                    .await?
             {
                 state.said = effective;
             }

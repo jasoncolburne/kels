@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use cesr::{Matter, Signature};
+use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -254,10 +254,11 @@ async fn authenticate_peer_request<T: serde::Serialize>(
         )
     })?;
 
-    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
+    let request_prefix_str = signed_request.prefix.to_string();
+    let peer = get_verified_peer(redis_conn, &request_prefix_str).await?;
     if peer.is_none() {
         refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-        if get_verified_peer(redis_conn, &signed_request.prefix)
+        if get_verified_peer(redis_conn, &request_prefix_str)
             .await?
             .is_none()
         {
@@ -334,14 +335,11 @@ pub async fn post_sad_object(
         }
     };
 
-    let said = value.get_said();
-    if said.is_empty() {
-        return (StatusCode::BAD_REQUEST, "Missing said field").into_response();
-    }
-
     if value.verify_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
     }
+
+    let said = value.get_said().to_string();
 
     // HEAD check — short-circuit if already exists
     match state.object_store.exists(&said).await {
@@ -466,8 +464,12 @@ pub async fn submit_sad_pointer(
     }
 
     // All records must be for the same chain prefix
-    let chain_prefix = &records[0].pointer.prefix;
-    if records.iter().any(|r| r.pointer.prefix != *chain_prefix) {
+    let chain_prefix_digest = &records[0].pointer.prefix;
+    let chain_prefix = chain_prefix_digest.to_string();
+    if records
+        .iter()
+        .any(|r| r.pointer.prefix != *chain_prefix_digest)
+    {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -478,15 +480,19 @@ pub async fn submit_sad_pointer(
     // Per-chain-prefix daily rate limit (check before, accrue after)
     if let Err(msg) = check_prefix_rate_limit(
         &state.prefix_rate_limits,
-        chain_prefix,
+        &chain_prefix,
         records.len() as u32,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
     // All records must be for the same KEL prefix
-    let kel_prefix = &records[0].pointer.kel_prefix;
-    if records.iter().any(|r| r.pointer.kel_prefix != *kel_prefix) {
+    let kel_prefix_digest = &records[0].pointer.kel_prefix;
+    let kel_prefix = kel_prefix_digest.to_string();
+    if records
+        .iter()
+        .any(|r| r.pointer.kel_prefix != *kel_prefix_digest)
+    {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same kel_prefix",
@@ -512,7 +518,7 @@ pub async fn submit_sad_pointer(
     match state
         .repo
         .sad_records
-        .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
+        .existing_establishment_serials(&chain_prefix, kels_core::max_collected_keys())
         .await
     {
         Ok(existing) => establishment_serials.extend(existing),
@@ -523,7 +529,7 @@ pub async fn submit_sad_pointer(
     }
 
     // Verify KEL once, collecting establishment keys for all serials
-    let verifier = match kels_core::KelVerifier::new(kel_prefix)
+    let verifier = match kels_core::KelVerifier::new(kel_prefix_digest)
         .with_establishment_key_collection(establishment_serials, kels_core::max_collected_keys())
     {
         Ok(v) => v,
@@ -545,7 +551,7 @@ pub async fn submit_sad_pointer(
 
     let (verification, establishment_keys) =
         match kels_core::verify_key_events_collecting_establishment_keys(
-            kel_prefix,
+            kel_prefix_digest,
             &kel_source,
             verifier,
             kels_core::page_size(),
@@ -581,19 +587,8 @@ pub async fn submit_sad_pointer(
                 .into_response();
         };
 
-        let sig = match Signature::from_qb64(&r.signature) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid signature on record {}: {}", r.pointer.said, e),
-                )
-                    .into_response();
-            }
-        };
-
         if verification_key
-            .verify(r.pointer.said.as_bytes(), &sig)
+            .verify(r.pointer.said.to_string().as_bytes(), &r.signature)
             .is_err()
         {
             return (
@@ -673,7 +668,7 @@ pub async fn submit_sad_pointer(
     }
 
     // Accrue only actual new records to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, &chain_prefix, new_record_count);
 
     // Publish the effective SAID to Redis for gossip. Using the effective SAID
     // (not the tip record SAID) ensures the gossip feedback loop cache key matches
@@ -681,7 +676,7 @@ pub async fn submit_sad_pointer(
     // Repair updates include a ":repair" suffix so the gossip subscriber
     // can propagate the repair flag to other nodes.
     let effective_said = if should_publish {
-        match state.repo.sad_records.effective_said(chain_prefix).await {
+        match state.repo.sad_records.effective_said(&chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
@@ -778,11 +773,20 @@ pub async fn get_sad_pointer_effective_said(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.repo.sad_records.effective_said(&prefix).await {
-        Ok(Some((said, divergent))) => (
-            StatusCode::OK,
-            Json(kels_core::EffectiveSaidResponse { said, divergent }),
-        )
-            .into_response(),
+        Ok(Some((said, divergent))) => match cesr::Digest::from_qb64(&said) {
+            Ok(said_digest) => (
+                StatusCode::OK,
+                Json(kels_core::EffectiveSaidResponse {
+                    said: said_digest,
+                    divergent,
+                }),
+            )
+                .into_response(),
+            Err(e) => {
+                warn!("Invalid effective SAID: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "invalid SAID").into_response()
+            }
+        },
         Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);

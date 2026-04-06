@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cesr::Matter;
 use colored::Colorize;
 use verifiable_storage::SelfAddressed;
 
@@ -16,7 +17,8 @@ pub(crate) async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 
     // Compute the SAID if missing or placeholder
     let current_said = value.get_said();
-    if current_said.is_empty() || current_said.chars().all(|c| c == '#') {
+    let current_said_str: &str = current_said.as_ref();
+    if current_said_str.is_empty() || current_said_str.chars().all(|c| c == '#') {
         value
             .derive_said()
             .context("Failed to compute SAID for object")?;
@@ -82,7 +84,8 @@ pub(crate) async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 pub(crate) fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
-    let prefix = kels_core::compute_sad_pointer_prefix(kel_prefix, kind)
+    let kel_digest = cesr::Digest::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
+    let prefix = kels_core::compute_sad_pointer_prefix(kel_digest, kind)
         .context("Failed to compute SAD prefix")?;
     println!("{}", prefix);
     Ok(())
