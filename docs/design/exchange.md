@@ -20,7 +20,7 @@ SEAL(inner, sender_serial, recipient_prefix, recipient_encap_key, sender_signing
   5. encrypted = AES-GCM-256-encrypt(aes_key, nonce, inner_json)
   6. envelope = EssrEnvelope { said, sender, sender_serial, recipient, kem_ciphertext, encrypted, nonce, created_at }
   7. derive envelope SAID
-  8. signature = ML-DSA-sign(sender_signing_key, serialize(envelope))
+  8. signature = ML-DSA-sign(sender_signing_key, envelope.said)
   9. return SignedEssrEnvelope { envelope, signature }
 ```
 
@@ -29,7 +29,7 @@ SEAL(inner, sender_serial, recipient_prefix, recipient_encap_key, sender_signing
 ```
 OPEN(signed_envelope, recipient_decap_key, sender_verification_key):
   1. verify envelope SAID
-  2. ML-DSA-verify(sender_verification_key, envelope_json, signature)
+  2. ML-DSA-verify(sender_verification_key, envelope.said, signature)
   3. shared_secret = recipient_decap_key.decapsulate(kem_ciphertext)
   4. aes_key = blake3::derive_key("kels/essr/v1", &shared_secret)
   5. inner_json = AES-GCM-256-decrypt(aes_key, nonce, encrypted)
@@ -63,8 +63,8 @@ pub struct EssrEnvelope {
     pub sender_serial: u64,       // establishment event serial at signing time
     pub recipient: String,        // signed plaintext = anti-KCI
     pub kem_ciphertext: String,   // CESR ML-KEM ciphertext
-    pub encrypted_payload: String,// base64 AES-GCM-256 ciphertext
-    pub nonce: String,            // base64 AES-GCM nonce
+    pub encrypted_payload: String,// url-safe base64 no-pad AES-GCM-256 ciphertext
+    pub nonce: String,            // CESR-encoded AES-GCM nonce (code 1AAN)
     pub created_at: StorageDatetime,
 }
 ```
@@ -74,7 +74,7 @@ pub struct EssrEnvelope {
 ```rust
 pub struct SignedEssrEnvelope {
     pub envelope: EssrEnvelope,
-    pub signature: String,        // CESR ML-DSA signature over serialized envelope
+    pub signature: String,        // CESR ML-DSA signature over envelope SAID
 }
 ```
 
@@ -84,7 +84,7 @@ ML-KEM encapsulation keys are published as SADStore pointer chains with kind `ke
 
 **Publication flow:**
 1. Generate ML-KEM keypair (768 or 1024, matched to signing key strength)
-2. Store decapsulation key locally (`~/.kels-cli/keys/{prefix}/kem.key`)
+2. Store decapsulation key seed locally as CESR qb64 (`~/.kels-cli/keys/{prefix}/kem.key`)
 3. Create `EncapsulationKeyPublication` SAD object, upload to SADStore
 4. Create `SadPointer` chain (v0 inception + v1 with content_said), submit signed
 
