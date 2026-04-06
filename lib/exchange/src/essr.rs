@@ -114,10 +114,9 @@ pub fn seal(
         .derive_said()
         .map_err(|e| ExchangeError::SealFailed(format!("SAID derivation failed: {e}")))?;
 
-    // 6. Sign the serialized envelope
-    let envelope_json = serde_json::to_vec(&envelope)?;
+    // 6. Sign the envelope SAID (commits to all content)
     let signature = sender_signing_key
-        .sign(&envelope_json)
+        .sign(envelope.said.as_bytes())
         .map_err(|e| ExchangeError::SealFailed(format!("ML-DSA sign failed: {e}")))?;
 
     Ok(SignedEssrEnvelope {
@@ -146,12 +145,11 @@ pub fn open(
         .verify_said()
         .map_err(|e| ExchangeError::SaidVerification(e.to_string()))?;
 
-    // 2. Verify signature
-    let envelope_json = serde_json::to_vec(&signed_envelope.envelope)?;
+    // 2. Verify signature (over the SAID, which commits to all content)
     let signature = Signature::from_qb64(&signed_envelope.signature)
         .map_err(|e| ExchangeError::SignatureVerification(format!("invalid signature: {e}")))?;
     sender_verification_key
-        .verify(&envelope_json, &signature)
+        .verify(signed_envelope.envelope.said.as_bytes(), &signature)
         .map_err(|e| ExchangeError::SignatureVerification(e.to_string()))?;
 
     // 3. ML-KEM decapsulate
