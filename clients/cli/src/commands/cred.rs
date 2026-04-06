@@ -131,19 +131,30 @@ pub(crate) async fn cmd_cred_store(
 
 pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
-    let saids = sad_store.list().await?;
 
     let mut count = 0;
-    for said in &saids {
-        if let Ok(value) = sad_store.load(said).await
-            && value.get("schema").is_some()
-            && value.get("policy").is_some()
-        {
-            let schema = value.get("schema").and_then(|v| v.as_str()).unwrap_or("-");
-            let policy = value.get("policy").and_then(|v| v.as_str()).unwrap_or("-");
-            println!("  {} | schema: {} | policy: {}", said, schema, policy);
-            count += 1;
+    let mut since: Option<String> = None;
+    loop {
+        let (saids, has_more) = sad_store
+            .list(since.as_deref(), kels_core::page_size())
+            .await?;
+
+        for said in &saids {
+            if let Ok(value) = sad_store.load(said).await
+                && value.get("schema").is_some()
+                && value.get("policy").is_some()
+            {
+                let schema = value.get("schema").and_then(|v| v.as_str()).unwrap_or("-");
+                let policy = value.get("policy").and_then(|v| v.as_str()).unwrap_or("-");
+                println!("  {} | schema: {} | policy: {}", said, schema, policy);
+                count += 1;
+            }
         }
+
+        if !has_more {
+            break;
+        }
+        since = saids.last().cloned();
     }
 
     if count == 0 {

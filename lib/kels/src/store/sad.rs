@@ -13,8 +13,13 @@ pub trait SadStore: Send + Sync {
     /// Load a self-addressed JSON object by SAID.
     async fn load(&self, said: &str) -> Result<serde_json::Value, KelsError>;
 
-    /// List all stored SAIDs.
-    async fn list(&self) -> Result<Vec<String>, KelsError>;
+    /// List stored SAIDs (paginated). Returns `(saids, has_more)`.
+    /// SAIDs are returned in sorted order after `since` (exclusive).
+    async fn list(
+        &self,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<String>, bool), KelsError>;
 
     /// Delete a self-addressed object by SAID. No-op if not found.
     async fn delete(&self, said: &str) -> Result<(), KelsError>;
@@ -60,7 +65,11 @@ impl SadStore for FileSadStore {
         serde_json::from_str(&data).map_err(|e| KelsError::StorageError(e.to_string()))
     }
 
-    async fn list(&self) -> Result<Vec<String>, KelsError> {
+    async fn list(
+        &self,
+        since: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<String>, bool), KelsError> {
         let mut saids = Vec::new();
         let entries =
             std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -73,7 +82,15 @@ impl SadStore for FileSadStore {
                 saids.push(stem.to_string());
             }
         }
-        Ok(saids)
+        saids.sort();
+
+        if let Some(cursor) = since {
+            saids.retain(|s| s.as_str() > cursor);
+        }
+
+        let has_more = saids.len() > limit;
+        saids.truncate(limit);
+        Ok((saids, has_more))
     }
 
     async fn delete(&self, said: &str) -> Result<(), KelsError> {
@@ -136,9 +153,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut saids = store.list().await.unwrap();
-        saids.sort();
+        let (saids, has_more) = store.list(None, 100).await.unwrap();
         assert_eq!(saids, vec!["aaa", "bbb"]);
+        assert!(!has_more);
     }
 
     #[tokio::test]
@@ -146,8 +163,36 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
-        let saids = store.list().await.unwrap();
+        let (saids, has_more) = store.list(None, 100).await.unwrap();
         assert!(saids.is_empty());
+        assert!(!has_more);
+    }
+
+    #[tokio::test]
+    async fn test_list_pagination() {
+        let temp = TempDir::new().unwrap();
+        let store = FileSadStore::new(temp.path()).unwrap();
+
+        store
+            .store("aaa", &serde_json::json!({"said": "aaa"}))
+            .await
+            .unwrap();
+        store
+            .store("bbb", &serde_json::json!({"said": "bbb"}))
+            .await
+            .unwrap();
+        store
+            .store("ccc", &serde_json::json!({"said": "ccc"}))
+            .await
+            .unwrap();
+
+        let (page1, has_more) = store.list(None, 2).await.unwrap();
+        assert_eq!(page1, vec!["aaa", "bbb"]);
+        assert!(has_more);
+
+        let (page2, has_more) = store.list(Some("bbb"), 2).await.unwrap();
+        assert_eq!(page2, vec!["ccc"]);
+        assert!(!has_more);
     }
 
     #[tokio::test]
