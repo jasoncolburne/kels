@@ -149,8 +149,8 @@ if [ "$MODE" = "setup" ]; then
     echo ""
 
     stale_clear > /dev/null
-    FAKE_PREFIX="fakeprefix"
-    FAKE_SOURCE="Efakesource0000000000000000000000000000000000"
+    FAKE_PREFIX="Kfakeprefix000000000000000000000000000000000"
+    FAKE_SOURCE="Kfakesource000000000000000000000000000000000"
     stale_add "$FAKE_PREFIX" "$FAKE_SOURCE" > /dev/null
 
     COUNT=$(stale_count)

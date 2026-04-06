@@ -17,7 +17,7 @@ const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrustedMember {
     id: FederationNodeId,
-    prefix: String,
+    prefix: cesr::Digest,
     active: bool,
 }
 
@@ -103,7 +103,7 @@ impl FederationConfig {
         }
 
         // If our prefix isn't in the trusted set, we're in standalone mode
-        let self_member = trusted_members.iter().find(|m| m.prefix == self_prefix_str);
+        let self_member = trusted_members.iter().find(|m| m.prefix == self_prefix);
         match self_member {
             None => return Ok(None),
             Some(m) if !m.active => {
@@ -116,17 +116,8 @@ impl FederationConfig {
         }
 
         // Collect all trusted prefixes (active + inactive)
-        let trusted_prefixes: Vec<cesr::Digest> = trusted_members
-            .iter()
-            .map(|m| {
-                cesr::Digest::from_qb64(&m.prefix).map_err(|e| {
-                    FederationError::ConfigError(format!(
-                        "Invalid CESR digest for trusted prefix '{}': {}",
-                        m.prefix, e
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let trusted_prefixes: Vec<cesr::Digest> =
+            trusted_members.iter().map(|m| m.prefix.clone()).collect();
 
         // Parse runtime URLs
         let urls_str = match std::env::var("FEDERATION_URLS") {
@@ -142,21 +133,16 @@ impl FederationConfig {
             if !tm.active {
                 continue;
             }
-            let url = url_map.get(&tm.prefix).ok_or_else(|| {
+            let prefix_str: &str = tm.prefix.as_ref();
+            let url = url_map.get(prefix_str).ok_or_else(|| {
                 FederationError::ConfigError(format!(
                     "No URL provided for trusted prefix '{}' in FEDERATION_URLS",
                     tm.prefix
                 ))
             })?;
-            let prefix_digest = cesr::Digest::from_qb64(&tm.prefix).map_err(|e| {
-                FederationError::ConfigError(format!(
-                    "Invalid CESR digest for member prefix '{}': {}",
-                    tm.prefix, e
-                ))
-            })?;
             members.push(FederationMember {
                 id: tm.id,
-                prefix: prefix_digest,
+                prefix: tm.prefix.clone(),
                 url: url.clone(),
             });
         }
@@ -615,21 +601,21 @@ mod tests {
 
     #[test]
     fn test_trusted_member_deserialization_missing_active_rejected() {
-        let json = r#"[{"id": 0, "prefix": "EA"}]"#;
+        let json = r#"[{"id": 0, "prefix": "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]"#;
         let result: Result<Vec<TrustedMember>, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_trusted_member_deserialization_inactive() {
-        let json = r#"[{"id": 0, "prefix": "EA", "active": false}]"#;
+        let json = r#"[{"id": 0, "prefix": "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "active": false}]"#;
         let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
         assert!(!members[0].active);
     }
 
     #[test]
     fn test_trusted_member_deserialization_active() {
-        let json = r#"[{"id": 0, "prefix": "EA", "active": true}]"#;
+        let json = r#"[{"id": 0, "prefix": "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "active": true}]"#;
         let members: Vec<TrustedMember> = serde_json::from_str(json).unwrap();
         assert!(members[0].active);
     }

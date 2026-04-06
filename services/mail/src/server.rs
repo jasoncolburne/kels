@@ -6,6 +6,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use cesr::Matter;
 use kels_core::shutdown_signal;
 use tracing::info;
 use verifiable_storage_postgres::RepositoryConnection;
@@ -89,7 +90,8 @@ pub async fn run(
         blob_store: Arc::new(blob_store),
         kels_client,
         redis_conn,
-        node_prefix: node_prefix.to_string(),
+        node_prefix: cesr::Digest::from_qb64(node_prefix)
+            .map_err(|e| format!("Invalid node prefix: {}", e))?,
         sender_rate_limits: dashmap::DashMap::new(),
         ip_rate_limits: dashmap::DashMap::new(),
         nonce_cache: dashmap::DashMap::new(),

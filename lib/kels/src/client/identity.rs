@@ -65,13 +65,13 @@ pub struct ManageKelResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnchorRequest {
-    said: String,
+    said: cesr::Digest,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnchorResponse {
-    event_said: String,
+    event_said: cesr::Digest,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -158,15 +158,13 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn anchor(&self, said: &str) -> Result<String, KelsError> {
+    pub async fn anchor(&self, said: &cesr::Digest) -> Result<cesr::Digest, KelsError> {
         let url = format!("{}/api/v1/identity/anchor", self.base_url);
 
         let response = self
             .client
             .post(&url)
-            .json(&AnchorRequest {
-                said: said.to_string(),
-            })
+            .json(&AnchorRequest { said: said.clone() })
             .send()
             .await?;
 

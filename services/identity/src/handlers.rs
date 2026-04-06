@@ -9,7 +9,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
     ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
@@ -24,13 +23,13 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRequest {
-    pub said: String,
+    pub said: cesr::Digest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorResponse {
-    pub event_said: String,
+    pub event_said: cesr::Digest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,10 +229,8 @@ pub async fn anchor(
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
         .clone();
 
-    let anchor_digest = cesr::Digest::from_qb64(&request.said)
-        .map_err(|e| ApiError::internal(format!("Invalid SAID: {}", e)))?;
     let ixn = builder
-        .interact(&anchor_digest)
+        .interact(&request.said)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create anchor event: {}", e)))?;
 
@@ -250,7 +247,7 @@ pub async fn anchor(
     forward_kel(&state, &prefix).await;
 
     Ok(Json(AnchorResponse {
-        event_said: ixn.event.said.to_string(),
+        event_said: ixn.event.said.clone(),
     }))
 }
 
@@ -373,19 +370,24 @@ mod tests {
 
     #[test]
     fn test_anchor_request_deserialization() {
-        let json = r#"{"said": "ESAID123456"}"#;
-        let request: AnchorRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.said, "ESAID123456");
+        let digest = cesr::Digest::blake3_256(b"test_anchor");
+        let json = serde_json::to_string(&AnchorRequest {
+            said: digest.clone(),
+        })
+        .unwrap();
+        let request: AnchorRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.said, digest);
     }
 
     #[test]
     fn test_anchor_response_serialization() {
+        let digest = cesr::Digest::blake3_256(b"NEWEVENT789");
         let response = AnchorResponse {
-            event_said: "ENEWEVENT789".to_string(),
+            event_said: digest.clone(),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("eventSaid")); // camelCase
-        assert!(json.contains("ENEWEVENT789"));
+        assert!(json.contains(digest.as_ref()));
     }
 
     #[test]
@@ -447,7 +449,7 @@ mod tests {
     #[test]
     fn test_anchor_request_roundtrip() {
         let original = AnchorRequest {
-            said: "ESAID123".to_string(),
+            said: cesr::Digest::blake3_256(b"SAID123"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorRequest = serde_json::from_str(&json).unwrap();
@@ -457,7 +459,7 @@ mod tests {
     #[test]
     fn test_anchor_response_roundtrip() {
         let original = AnchorResponse {
-            event_said: "EEVENT456".to_string(),
+            event_said: cesr::Digest::blake3_256(b"EVENT456"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorResponse = serde_json::from_str(&json).unwrap();

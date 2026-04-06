@@ -44,7 +44,7 @@ struct PeerInfoJson {
     node_id: String,
     base_domain: String,
     gossip_addr: String,
-    peer_prefix: String,
+    peer_prefix: cesr::Digest,
 }
 
 /// Result of fetching registry prefix
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
                 node_id: peer.node_id,
                 base_domain: peer.base_domain,
                 gossip_addr: peer.gossip_addr,
-                peer_prefix: peer.peer_prefix.to_string(),
+                peer_prefix: peer.peer_prefix,
             })
             .collect();
 

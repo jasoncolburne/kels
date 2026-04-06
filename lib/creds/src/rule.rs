@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use cesr::Matter;
 use serde::{Deserialize, Serialize};
 
 use verifiable_storage::SelfAddressed;
@@ -27,7 +26,7 @@ pub struct Rules {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawRules {
-    said: String,
+    said: cesr::Digest,
     #[serde(flatten)]
     rules: BTreeMap<String, Rule>,
 }
@@ -37,10 +36,8 @@ impl TryFrom<RawRules> for Rules {
 
     fn try_from(raw: RawRules) -> Result<Self, Self::Error> {
         validate_labels(&raw.rules)?;
-        let said = cesr::Digest::from_qb64(&raw.said)
-            .map_err(|e| CredentialError::VerificationError(format!("Invalid SAID CESR: {}", e)))?;
         Ok(Self {
-            said,
+            said: raw.said,
             rules: raw.rules,
         })
     }
@@ -185,7 +182,7 @@ mod tests {
     #[test]
     fn test_rules_try_from_rejects_reserved_label() {
         let raw = super::RawRules {
-            said: "KAbc1234567890123456789012345678901234567890".to_string(),
+            said: cesr::Digest::blake3_256(b"reserved_label_test"),
             rules: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_rule());

@@ -128,7 +128,7 @@ impl KeyEventRepository {
         tx.acquire_advisory_lock(prefix.as_ref()).await?;
         Ok(LockedKelTransaction {
             tx,
-            prefix: prefix.to_string(),
+            prefix: prefix.clone(),
         })
     }
 }
@@ -137,7 +137,7 @@ impl KeyEventRepository {
 /// Reads from this transaction see a consistent snapshot under the lock.
 pub struct LockedKelTransaction {
     tx: <PgPool as QueryExecutor>::Transaction,
-    prefix: String,
+    prefix: cesr::Digest,
 }
 
 impl LockedKelTransaction {
@@ -151,7 +151,7 @@ impl LockedKelTransaction {
             &mut self.tx,
             KeyEventRepository::TABLE_NAME,
             KeyEventRepository::SIGNATURES_TABLE_NAME,
-            &self.prefix,
+            self.prefix.as_ref(),
             limit,
             offset,
         )

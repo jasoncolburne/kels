@@ -117,7 +117,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         }
 
         // Verify schema SAID matches credential's schema reference
-        if credential.schema != schema.said.to_string() {
+        if credential.schema != schema.said {
             return Err(CredentialError::VerificationError(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
                 credential.schema, schema.said
@@ -125,7 +125,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         }
 
         // Verify policy SAID matches credential's policy reference
-        if credential.policy != policy.said.to_string() {
+        if credential.policy != policy.said {
             return Err(CredentialError::VerificationError(format!(
                 "policy SAID mismatch: credential references {}, provided policy has {}",
                 credential.policy, policy.said
@@ -135,7 +135,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         // Expanded SAID integrity — verify the credential's own SAID is consistent with data
         let value = serde_json::to_value(credential)?;
         let computed_said = compute_said_from_value(&value)?;
-        if computed_said.to_string() != credential.said {
+        if computed_said != credential.said {
             return Err(CredentialError::VerificationError(format!(
                 "SAID mismatch: credential has {}, data produces {}",
                 credential.said, computed_said
@@ -175,7 +175,7 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential: credential.said.clone(),
+            credential: credential.said.to_string(),
             policy: policy.said.to_string(),
             subject: credential.subject.clone(),
             is_expired,
@@ -255,7 +255,7 @@ async fn verify_edges<T: Claims>(
         // but the same canonical SAID).
         if let Some(ref expected_policy) = edge.policy {
             let edge_cred_policy = resolver
-                .resolve_policy(&edge_credential.policy)
+                .resolve_policy(edge_credential.policy.as_ref())
                 .await
                 .map_err(|e| {
                     CredentialError::VerificationError(format!(
@@ -268,7 +268,7 @@ async fn verify_edges<T: Claims>(
                     "edge '{label}': failed to compact credential policy: {e}"
                 ))
             })?;
-            if *expected_policy != canonical.said.to_string() {
+            if expected_policy.as_str() != canonical.said.as_ref() {
                 return Err(CredentialError::VerificationError(format!(
                     "edge '{label}': policy mismatch — edge declares {expected_policy}, \
                      credential's canonical policy is {}",
@@ -278,12 +278,15 @@ async fn verify_edges<T: Claims>(
         }
 
         // Resolve the edge credential's policy for verification
-        let edge_policy = &edge_credential.policy;
-        let edge_policy = resolver.resolve_policy(edge_policy).await.map_err(|e| {
-            CredentialError::VerificationError(format!(
-                "edge '{label}': failed to resolve policy {edge_policy}: {e}"
-            ))
-        })?;
+        let edge_policy_said = &edge_credential.policy;
+        let edge_policy = resolver
+            .resolve_policy(edge_policy_said.as_ref())
+            .await
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': failed to resolve policy {edge_policy_said}: {e}"
+                ))
+            })?;
 
         let verification = verify_credential_bounded(
             &edge_credential,

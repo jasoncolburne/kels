@@ -199,7 +199,7 @@ pub fn validate(
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
     let schema: Schema = serde_json::from_str(json_schema)?;
 
-    if credential.schema != schema.said.to_string() {
+    if credential.schema != schema.said {
         return Err(CredentialError::InvalidSaid(
             "Schema said mismatch".to_string(),
         ));

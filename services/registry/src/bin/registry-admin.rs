@@ -262,7 +262,7 @@ async fn propose_peer(
 
     // Anchor the proposal's SAID in our KEL (this IS the signature)
     ctx.identity_client
-        .anchor(peer_proposal.said.as_ref())
+        .anchor(&peer_proposal.said)
         .await
         .context("Failed to anchor proposal")?;
 
@@ -304,7 +304,7 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
 
     // Anchor the proposal's SAID in our KEL
     ctx.identity_client
-        .anchor(removal_proposal.said.as_ref())
+        .anchor(&removal_proposal.said)
         .await
         .context("Failed to anchor removal proposal")?;
 
@@ -334,7 +334,7 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
 
     // Anchor the vote's SAID in our KEL (this IS the signature)
     ctx.identity_client
-        .anchor(vote.said.as_ref())
+        .anchor(&vote.said)
         .await
         .context("Failed to anchor vote in KEL")?;
 
@@ -498,7 +498,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .context("Failed to create withdrawal record")?;
 
             ctx.identity_client
-                .anchor(withdrawal.said.as_ref())
+                .anchor(&withdrawal.said)
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 
@@ -536,7 +536,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
                 .context("Failed to create withdrawal record")?;
 
             ctx.identity_client
-                .anchor(withdrawal.said.as_ref())
+                .anchor(&withdrawal.said)
                 .await
                 .context("Failed to anchor withdrawal in KEL")?;
 

@@ -404,6 +404,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 prefix: &str,
                 events: &[kels_core::SignedKeyEvent],
             ) -> Result<kels_core::MergeOutcome, kels_core::KelsError> {
+                use cesr::Matter;
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
 
                 if events.is_empty() {
@@ -413,9 +414,11 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 let mut tx = self.pool.begin_transaction().await?;
                 tx.acquire_advisory_lock(prefix).await?;
 
+                let prefix_digest = cesr::Digest::from_qb64(prefix)
+                    .map_err(|e| kels_core::KelsError::CryptoError(format!("Invalid prefix: {}", e)))?;
                 let mut merge_tx = kels_core::MergeTransaction::new(
                     tx,
-                    prefix.to_string(),
+                    prefix_digest,
                     Self::TABLE_NAME,
                     Self::SIGNATURES_TABLE_NAME,
                     #recovery_table,

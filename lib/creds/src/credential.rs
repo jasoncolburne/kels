@@ -67,9 +67,9 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
-    pub said: String,
-    pub schema: String,
-    pub policy: String,
+    pub said: cesr::Digest,
+    pub schema: cesr::Digest,
+    pub policy: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     pub issued_at: StorageDatetime,
@@ -110,9 +110,9 @@ impl<T: Claims> Credential<T> {
         };
 
         let credential = Self {
-            said: String::new(),
-            schema: schema.said.to_string(),
-            policy: policy.said.to_string(),
+            said: cesr::Digest::default(),
+            schema: schema.said.clone(),
+            policy: policy.said.clone(),
             subject,
             issued_at,
             nonce,
@@ -174,7 +174,7 @@ impl<T: Claims> Credential<T> {
         &self,
         schema: &Schema,
     ) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
-        if self.schema != schema.said.to_string() {
+        if self.schema != schema.said {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
                 self.schema, schema.said
@@ -310,8 +310,8 @@ mod tests {
         assert!(!compacted_said.is_empty());
         assert_eq!(compacted_said.len(), 44);
         // Expanded SAID differs from compacted SAID
-        assert_ne!(cred.said, compacted_said);
-        assert_eq!(cred.said.len(), 44);
+        assert_ne!(cred.said.to_string(), compacted_said);
+        assert_eq!(cred.said.as_ref().len(), 44);
     }
 
     #[tokio::test]
@@ -324,7 +324,7 @@ mod tests {
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         // schema is always a SAID string
-        assert_eq!(compacted_cred.schema.len(), 44);
+        assert_eq!(compacted_cred.schema.as_ref().len(), 44);
         assert!(compacted_cred.claims.as_said().is_some());
     }
 
@@ -636,7 +636,7 @@ mod tests {
             .await
             .unwrap();
         result.is_valid(true).unwrap();
-        assert_eq!(result.credential, cred.said);
+        assert_eq!(result.credential, cred.said.to_string());
         assert_eq!(result.policy, policy.said.to_string());
     }
 
@@ -935,7 +935,7 @@ mod tests {
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
-            cred_a.schema.clone(),
+            cred_a.schema.to_string(),
             Some(policy_a.said.to_string()),
             Some(compacted_said_a.clone()),
             None,
@@ -1172,7 +1172,7 @@ mod tests {
 
         // Intermediate credential with edge to root
         let edge_to_root = Edge::create(
-            cred_root.schema.clone(),
+            cred_root.schema.to_string(),
             Some(root_policy.said.to_string()),
             Some(compacted_root.clone()),
             None,
@@ -1206,7 +1206,7 @@ mod tests {
 
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
-            cred_mid.schema.clone(),
+            cred_mid.schema.to_string(),
             Some(mid_policy.said.to_string()),
             Some(compacted_mid),
             None,

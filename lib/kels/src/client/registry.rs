@@ -1029,7 +1029,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let peer = make_test_peer(
-            "EPeer1Prefix________________________________",
+            "KPeer1Prefix________________________________",
             "node-1",
             true,
         );

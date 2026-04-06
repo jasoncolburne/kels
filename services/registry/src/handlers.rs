@@ -927,7 +927,7 @@ pub async fn admin_vote_proposal(
 
                         state
                             .identity_client
-                            .anchor(peer.said.as_ref())
+                            .anchor(&peer.said)
                             .await
                             .map_err(|e| {
                                 ApiError::internal_error(format!(
@@ -1009,7 +1009,7 @@ pub async fn admin_vote_proposal(
 
                     state
                         .identity_client
-                        .anchor(deactivated.said.as_ref())
+                        .anchor(&deactivated.said)
                         .await
                         .map_err(|e| {
                             ApiError::internal_error(format!(

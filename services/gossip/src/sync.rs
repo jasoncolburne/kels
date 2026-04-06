@@ -166,9 +166,16 @@ pub async fn run_sad_redis_subscriber(
 
         let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
             // Object update: payload is just the SAID
+            let said_digest = match cesr::Digest::from_qb64(&payload) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!("Invalid SAID CESR in SAD Redis message: {}", e);
+                    continue;
+                }
+            };
             SadAnnouncement::Object {
-                said: payload,
-                origin: local_peer_prefix.to_string(),
+                said: said_digest,
+                origin: local_peer_prefix.clone(),
             }
         } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
             // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
@@ -180,9 +187,9 @@ pub async fn run_sad_redis_subscriber(
             };
             if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
                 SadAnnouncement::Pointer {
-                    chain_prefix: ann.prefix.to_string(),
-                    said: ann.said.to_string(),
-                    origin: local_peer_prefix.to_string(),
+                    chain_prefix: ann.prefix.clone(),
+                    said: ann.said.clone(),
+                    origin: local_peer_prefix.clone(),
                     repair,
                 }
             } else {
@@ -380,7 +387,8 @@ impl SyncHandler {
     async fn handle_sad_announcement(&self, message: SadAnnouncement) {
         match message {
             SadAnnouncement::Object { said, origin } => {
-                self.handle_sad_object_announcement(&said, &origin).await;
+                self.handle_sad_object_announcement(said.as_ref(), origin.as_ref())
+                    .await;
             }
             SadAnnouncement::Pointer {
                 chain_prefix,
@@ -388,8 +396,13 @@ impl SyncHandler {
                 origin,
                 repair,
             } => {
-                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin, repair)
-                    .await;
+                self.handle_sad_chain_announcement(
+                    chain_prefix.as_ref(),
+                    said.as_ref(),
+                    origin.as_ref(),
+                    repair,
+                )
+                .await;
             }
         }
     }

@@ -710,6 +710,6 @@ pub struct SignedKeyEventPage {
 #[serde(rename_all = "camelCase")]
 pub struct CachedKel {
     #[cfg_attr(feature = "server-caching", cache_key(primary))]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub events: Vec<SignedKeyEvent>,
 }

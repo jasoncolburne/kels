@@ -59,7 +59,7 @@ pub struct AppState {
     pub blob_store: Arc<BlobStore>,
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
-    pub node_prefix: String,
+    pub node_prefix: cesr::Digest,
     pub sender_rate_limits: DashMap<String, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
     pub nonce_cache: DashMap<String, Instant>,
@@ -296,7 +296,10 @@ pub async fn send_mail(
     match state
         .repo
         .messages
-        .local_storage_for_recipient(&state.node_prefix, payload.recipient_kel_prefix.as_ref())
+        .local_storage_for_recipient(
+            state.node_prefix.as_ref(),
+            payload.recipient_kel_prefix.as_ref(),
+        )
         .await
     {
         Ok(current) if current + blob.len() as i64 > max_bytes => {
@@ -350,16 +353,10 @@ pub async fn send_mail(
         chrono::Utc::now() + chrono::Duration::days(message_ttl_days()),
     );
 
-    let node_prefix_digest = match cesr::Digest::from_qb64(&state.node_prefix) {
-        Ok(d) => d,
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid node prefix").into_response();
-        }
-    };
     let mut mail_message = MailMessage {
         said: cesr::Digest::default(),
         sender_kel_prefix: sender.clone(),
-        source_node_prefix: node_prefix_digest,
+        source_node_prefix: state.node_prefix.clone(),
         recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
         blob_digest: blob_digest.clone(),
         blob_size: blob.len() as i64,
@@ -471,7 +468,7 @@ pub async fn fetch(
     }
 
     // Only serve blobs for local messages
-    if AsRef::<str>::as_ref(&message.source_node_prefix) != state.node_prefix {
+    if message.source_node_prefix != state.node_prefix {
         return (StatusCode::NOT_FOUND, "Blob not local").into_response();
     }
 
@@ -520,7 +517,7 @@ pub async fn ack(
         };
 
         // Delete blob if local
-        if AsRef::<str>::as_ref(&message.source_node_prefix) == state.node_prefix {
+        if message.source_node_prefix == state.node_prefix {
             let _ = state.blob_store.delete(message.blob_digest.as_ref()).await;
         }
 
@@ -593,7 +590,7 @@ pub async fn replicate(
 pub struct RemoveRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub said: String,
+    pub said: cesr::Digest,
 }
 
 pub async fn remove(
@@ -606,13 +603,13 @@ pub async fn remove(
     }
 
     // Delete blob if local
-    if let Ok(Some(message)) = state.repo.messages.get_by_said(&payload.said).await
-        && AsRef::<str>::as_ref(&message.source_node_prefix) == state.node_prefix
+    if let Ok(Some(message)) = state.repo.messages.get_by_said(payload.said.as_ref()).await
+        && message.source_node_prefix == state.node_prefix
     {
         let _ = state.blob_store.delete(message.blob_digest.as_ref()).await;
     }
 
-    match state.repo.messages.delete(&payload.said).await {
+    match state.repo.messages.delete(payload.said.as_ref()).await {
         Ok(_) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

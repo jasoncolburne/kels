@@ -453,11 +453,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Create shared flag for KEM algorithm auto-negotiation.
-    // Initialized to `true` (fail secure — use ML-KEM-1024 until federation algorithms are known).
-    let requires_kem_1024: allowlist::RequiresKem1024 =
-        Arc::new(std::sync::atomic::AtomicBool::new(true));
-
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
     let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
     match allowlist::refresh_allowlist(
@@ -465,8 +460,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         &allowlist_store,
         &allowlist,
         Some(&config.node_id),
-        &requires_kem_1024,
-        &config.kels_url(),
     )
     .await
     {
@@ -605,11 +598,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Create gossip signer and verifier (signer uses identity service)
-    let signer = IdentityGossipSigner::new(
-        &config.identity_url,
-        peer_prefix_str.as_ref(),
-        requires_kem_1024.clone(),
-    )?;
+    let signer = IdentityGossipSigner::new(&config.identity_url, peer_prefix_str.as_ref())?;
     let verifier_store: std::sync::Arc<dyn kels_core::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
@@ -618,7 +607,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         federation_registry_urls.clone(),
         config.node_id.clone(),
         verifier_store,
-        requires_kem_1024.clone(),
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -792,8 +780,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let refresh_urls = federation_registry_urls.clone();
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
-    let refresh_kem_flag = requires_kem_1024.clone();
-    let refresh_kels_url = config.kels_url().clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &refresh_urls,
@@ -801,8 +787,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             allowlist,
             refresh_interval,
             &refresh_node_id,
-            refresh_kem_flag,
-            &refresh_kels_url,
         )
         .await;
     });

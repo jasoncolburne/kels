@@ -49,7 +49,7 @@ impl MergeOutcome {
 /// derive macro).
 pub struct MergeTransaction<T: TransactionExecutor> {
     tx: T,
-    prefix: String,
+    prefix: cesr::Digest,
     events_table: &'static str,
     signatures_table: &'static str,
     recovery_table: &'static str,
@@ -62,7 +62,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tx: T,
-        prefix: String,
+        prefix: cesr::Digest,
         events_table: &'static str,
         signatures_table: &'static str,
         recovery_table: &'static str,
@@ -82,15 +82,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
     }
 
-    pub fn prefix(&self) -> &str {
+    pub fn prefix(&self) -> &cesr::Digest {
         &self.prefix
     }
 
-    /// Parse the prefix string into a typed `cesr::Digest`.
     fn prefix_digest(&self) -> Result<cesr::Digest, KelsError> {
-        use cesr::Matter;
-        cesr::Digest::from_qb64(&self.prefix)
-            .map_err(|e| KelsError::InvalidPrefix(format!("Invalid prefix: {}", e)))
+        Ok(self.prefix.clone())
     }
 
     // ==================== Assembly helpers ====================
@@ -478,7 +475,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             &mut self.tx,
             self.events_table,
             self.signatures_table,
-            &self.prefix,
+            self.prefix.as_ref(),
             limit,
             offset,
         )
@@ -520,14 +517,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Validate all events belong to this prefix
-        {
-            use cesr::Matter;
-            for event in events {
-                if event.event.prefix.qb64() != self.prefix {
-                    return Err(KelsError::InvalidKeyEvent(
-                        "All events must have the same prefix".to_string(),
-                    ));
-                }
+        for event in events {
+            if event.event.prefix != self.prefix {
+                return Err(KelsError::InvalidKeyEvent(
+                    "All events must have the same prefix".to_string(),
+                ));
             }
         }
 
@@ -545,13 +539,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             }
         }
 
-        let prefix = {
-            use cesr::Matter;
-            cesr::Digest::from_qb64(&self.prefix)?
-        };
-
         // Re-verify the entire KEL on every submission. We cannot cache KelVerification
         // tokens because the DB cannot be trusted (verification invariant).
+        let prefix = self.prefix.clone();
         let kel_verification = completed_verification(
             self,
             &prefix,

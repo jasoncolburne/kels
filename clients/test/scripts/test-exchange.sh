@@ -135,7 +135,7 @@ test_lookup_bob_key() {
 }
 
 test_lookup_nonexistent_key() {
-    OUTPUT=$($CLI exchange lookup-key "Enonexistent00000000000000000000000000000000" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "Knonexistent00000000000000000000000000000000" 2>&1)
     echo "$OUTPUT"
     # Should fail
     return 1
