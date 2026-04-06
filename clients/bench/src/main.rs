@@ -18,7 +18,6 @@ use hdrhistogram::Histogram;
 use kels_core::{
     HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode,
 };
-use verifiable_storage::compute_said;
 
 fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
     match algorithm {
@@ -36,7 +35,7 @@ fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
 }
 
 fn test_anchor(name: &str) -> cesr::Digest {
-    compute_said(&name.to_string()).expect("valid said computation")
+    cesr::Digest::blake3_256(name.as_bytes())
 }
 
 const DEFAULT_KELS_URL: &str = "http://kels.node-a.kels";
