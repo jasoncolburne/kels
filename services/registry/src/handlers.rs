@@ -887,17 +887,19 @@ pub async fn admin_vote_proposal(
                 if let Some(v0) = proposal {
                     let self_prefix = state.node.config().self_prefix.clone();
 
-                    // Idempotency: if peer already exists, skip create/anchor/submit
-                    let already_exists = state
+                    // Idempotency: if peer is already active, skip create/anchor/submit.
+                    // Note: get_peer() checks both active and inactive — we must only
+                    // skip for active peers, otherwise re-adding a removed peer is a no-op.
+                    let already_active = state
                         .node
                         .state_machine()
                         .inner()
                         .lock()
                         .await
-                        .get_peer(&v0.peer_prefix)
-                        .is_some();
+                        .active_peers
+                        .contains_key(&v0.peer_prefix);
 
-                    if !already_exists {
+                    if !already_active {
                         let peer = Peer::create(
                             v0.peer_prefix.clone(),
                             v0.node_id.clone(),
