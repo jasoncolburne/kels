@@ -131,7 +131,7 @@ These are intentionally public. The security model relies on cryptographic verif
 2. ~~**Proposal/vote endpoints missing localhost check**~~ — not a risk: these are federation RPC endpoints that remote registries must reach; KEL anchoring is the correct security mechanism
 3. ~~**Allowlist refresh flood**~~ — mitigated: `retry_once!` limits refresh to one attempt per unknown peer; subsequent connections use the cached allowlist
 4. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), 5 MiB body limit
-5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption
+5. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable. Federation RPC uses `SignedFederationRpc` for integrity. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption. Unlike the data plane (see node-attack-surface.md), traffic correlation is low risk here — registries communicate only with other registries and their own pod-internal services, not with external users
 6. (removed)
 
 ## Roadmap
@@ -153,5 +153,5 @@ No application-level rate limiting exists on any endpoint. The allowlist pending
 
 ### ~~TLS between services (addresses residual risk 5)~~
 
-~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
+~~No TLS at the application level.~~ Not required — all data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). Federation RPC is wrapped in `SignedFederationRpc` for integrity. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption. Traffic correlation risk is low — registries communicate only with other registries and pod-internal services, not with external users. TLS would add confidentiality for non-confidential data and redundant transport-level integrity.
 
