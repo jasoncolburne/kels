@@ -215,7 +215,7 @@ async fn create_test_kel(
     let prefix = icp.event.prefix.clone();
 
     for i in 1..event_count {
-        if i == 32 {
+        if i == 33 {
             builder.rotate_recovery().await?; // prevents an additional event at 64 events
         } else if i % 5 == 0 {
             builder.rotate().await?;
