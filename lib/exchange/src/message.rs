@@ -59,10 +59,10 @@ pub enum ExchangePayload {
     /// Apply: request a credential.
     Apply {
         /// Schema SAID being requested.
-        schema: String,
+        schema: cesr::Digest,
         /// Optional policy SAID constraint.
         #[serde(skip_serializing_if = "Option::is_none")]
-        policy: Option<String>,
+        policy: Option<cesr::Digest>,
         /// Optional disclosure expression.
         #[serde(skip_serializing_if = "Option::is_none")]
         disclosure: Option<String>,
@@ -70,9 +70,9 @@ pub enum ExchangePayload {
     /// Offer: propose issuing a credential.
     Offer {
         /// Schema SAID.
-        schema: String,
+        schema: cesr::Digest,
         /// Policy SAID.
-        policy: String,
+        policy: cesr::Digest,
         /// Optional credential preview (partial claims).
         #[serde(skip_serializing_if = "Option::is_none")]
         credential_preview: Option<serde_json::Value>,
@@ -83,7 +83,7 @@ pub enum ExchangePayload {
     /// Agree: accept an offer.
     Agree {
         /// SAID of the accepted offer message.
-        offer: String,
+        offer: cesr::Digest,
     },
     /// Grant: deliver a credential.
     Grant {
@@ -103,7 +103,7 @@ pub enum ExchangePayload {
     /// Admit: acknowledge receipt and verification of a grant.
     Admit {
         /// SAID of the acknowledged grant message.
-        grant: String,
+        grant: cesr::Digest,
     },
     /// Reject: reject a message in the thread.
     Reject {
@@ -135,7 +135,7 @@ mod tests {
             test_digest("recipient-prefix"),
             test_digest("test-nonce"),
             ExchangePayload::Apply {
-                schema: "schema-said".to_string(),
+                schema: test_digest("schema-said"),
                 policy: None,
                 disclosure: None,
             },
@@ -159,7 +159,7 @@ mod tests {
             recipient.clone(),
             test_digest("nonce-0"),
             ExchangePayload::Apply {
-                schema: "schema".to_string(),
+                schema: test_digest("schema"),
                 policy: None,
                 disclosure: None,
             },
@@ -174,8 +174,8 @@ mod tests {
         thread.recipient = sender;
         thread.nonce = test_digest("nonce-1");
         thread.payload = ExchangePayload::Offer {
-            schema: "schema".to_string(),
-            policy: "policy".to_string(),
+            schema: test_digest("schema"),
+            policy: test_digest("policy"),
             credential_preview: None,
             rules: None,
         };

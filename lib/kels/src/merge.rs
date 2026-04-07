@@ -166,14 +166,21 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Check which of the given SAIDs already exist in the database.
     pub async fn existing_saids(
         &mut self,
-        saids: &[String],
+        saids: &[cesr::Digest],
     ) -> Result<HashSet<cesr::Digest>, KelsError> {
         if saids.is_empty() {
             return Ok(HashSet::new());
         }
+        let said_strings: Vec<String> = saids
+            .iter()
+            .map(|s| {
+                use cesr::Matter;
+                s.qb64()
+            })
+            .collect();
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
-            .r#in("said", saids.to_vec());
+            .r#in("said", said_strings);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
         Ok(events.into_iter().map(|e| e.said).collect())
     }
@@ -282,11 +289,21 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     /// Delete events by SAID.
-    pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, KelsError> {
+    pub async fn delete_events_by_said(
+        &mut self,
+        saids: Vec<cesr::Digest>,
+    ) -> Result<u64, KelsError> {
         if saids.is_empty() {
             return Ok(0);
         }
-        let delete = Delete::<KeyEvent>::for_table(self.events_table).r#in("said", saids);
+        let said_strings: Vec<String> = saids
+            .iter()
+            .map(|s| {
+                use cesr::Matter;
+                s.qb64()
+            })
+            .collect();
+        let delete = Delete::<KeyEvent>::for_table(self.events_table).r#in("said", said_strings);
         Ok(self.tx.delete(delete).await?)
     }
 
@@ -305,20 +322,28 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn archive_adversary_events(
         &mut self,
         recovery_said: &cesr::Digest,
-        adversary_saids: Vec<String>,
+        adversary_saids: Vec<cesr::Digest>,
     ) -> Result<(), KelsError> {
         if adversary_saids.is_empty() {
             return Ok(());
         }
 
+        let adversary_said_strings: Vec<String> = adversary_saids
+            .iter()
+            .map(|s| {
+                use cesr::Matter;
+                s.qb64()
+            })
+            .collect();
+
         // Fetch events and signatures to archive
         let event_query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
-            .r#in("said", adversary_saids.clone());
+            .r#in("said", adversary_said_strings.clone());
         let events: Vec<KeyEvent> = self.tx.fetch(event_query).await?;
 
         let sig_query = Query::<EventSignature>::for_table(self.signatures_table)
-            .r#in("event_said", adversary_saids.clone());
+            .r#in("event_said", adversary_said_strings.clone());
         let signatures: Vec<EventSignature> = self.tx.fetch(sig_query).await?;
 
         // Insert into archive tables and create recovery-event links
@@ -341,7 +366,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Delete from live tables — signatures cascade via FK ON DELETE CASCADE
         let event_delete =
-            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
+            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_said_strings);
         self.tx.delete(event_delete).await?;
 
         Ok(())
@@ -384,7 +409,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         diverged_at: u64,
         rec_previous: &cesr::Digest,
-    ) -> Result<Vec<String>, KelsError> {
+    ) -> Result<Vec<cesr::Digest>, KelsError> {
         use cesr::Matter;
         // Build owner SAID set by walking backward from rec_previous.
         // Since rec/rot haven't been inserted yet, only pre-existing owner
@@ -419,7 +444,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(all_events
             .into_iter()
             .filter(|e| !owner_saids.contains(&e.said))
-            .map(|e| e.said.qb64())
+            .map(|e| e.said)
             .collect())
     }
 
@@ -429,12 +454,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         diverged_at: u64,
         rec_previous: &cesr::Digest,
-    ) -> Result<Vec<String>, KelsError> {
+    ) -> Result<Vec<cesr::Digest>, KelsError> {
         use cesr::Matter;
         let (adversary, adversary_has_chain) =
             self.find_adversary_event(diverged_at, rec_previous).await?;
 
-        let mut saids = vec![adversary.event.said.qb64()];
+        let mut saids = vec![adversary.event.said.clone()];
 
         if adversary_has_chain {
             // Walk forward from adversary event to collect the chain
@@ -450,7 +475,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                     0 => break,
                     1 => {
                         current_said = children[0].said.clone();
-                        saids.push(current_said.qb64());
+                        saids.push(current_said.clone());
                     }
                     _ => {
                         return Err(KelsError::StorageError(format!(
@@ -685,13 +710,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Filter duplicates
-        let submitted_saids: Vec<String> = events
-            .iter()
-            .map(|e| {
-                use cesr::Matter;
-                e.event.said.qb64()
-            })
-            .collect();
+        let submitted_saids: Vec<cesr::Digest> =
+            events.iter().map(|e| e.event.said.clone()).collect();
         let existing = self.existing_saids(&submitted_saids).await?;
         let new_events: Vec<SignedKeyEvent> = events
             .iter()

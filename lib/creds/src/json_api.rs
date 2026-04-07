@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, str::FromStr};
 
+use cesr::Matter;
 use serde::Deserialize;
 
 use kels_core::PagedKelSource;
@@ -77,7 +78,10 @@ pub async fn build(
     let (credential, canonical_said) = Credential::build(
         &schema,
         &policy,
-        subject.map(String::from),
+        subject
+            .map(cesr::Digest::from_qb64)
+            .transpose()
+            .map_err(|e| CredentialError::VerificationError(format!("Invalid subject: {}", e)))?,
         claims,
         unique,
         edges,

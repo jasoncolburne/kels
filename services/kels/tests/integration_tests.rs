@@ -366,7 +366,10 @@ async fn test_get_nonexistent_kel() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_that_does_not_exist"))
+        .get(harness.url(&format!(
+            "/api/v1/kels/kel/{}",
+            cesr::Digest::blake3_256(b"nonexistent_prefix")
+        )))
         .send()
         .await
         .expect("Failed to send request");
@@ -784,7 +787,10 @@ async fn test_get_kel_not_found_with_audit() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
+        .get(harness.url(&format!(
+            "/api/v1/kels/kel/{}?audit=true",
+            cesr::Digest::blake3_256(b"nonexistent_prefix_for_audit")
+        )))
         .send()
         .await
         .expect("Failed to send request");

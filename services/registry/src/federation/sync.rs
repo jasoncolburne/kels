@@ -126,7 +126,7 @@ async fn sync_own_kel(
     let own_prefix = identity_client.get_prefix().await?;
 
     let since = member_kel_repo
-        .effective_said(own_prefix.as_ref())
+        .effective_said(&own_prefix)
         .await
         .ok()
         .flatten();

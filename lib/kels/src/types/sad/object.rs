@@ -20,6 +20,6 @@ pub struct SadObjectEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadObjectListResponse {
-    pub saids: Vec<String>,
+    pub saids: Vec<cesr::Digest>,
     pub next_cursor: Option<String>,
 }

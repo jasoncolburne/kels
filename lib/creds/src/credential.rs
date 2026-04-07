@@ -71,7 +71,7 @@ pub struct Credential<T: Claims> {
     pub schema: cesr::Digest,
     pub policy: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub subject: Option<cesr::Digest>,
     pub issued_at: StorageDatetime,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
@@ -94,7 +94,7 @@ impl<T: Claims> Credential<T> {
     pub async fn build(
         schema: &Schema,
         policy: &Policy,
-        subject: Option<String>,
+        subject: Option<cesr::Digest>,
         claims: T,
         unique: bool,
         edges: Option<Edges>,
@@ -293,7 +293,7 @@ mod tests {
         Credential::build(
             &test_schema(),
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -586,7 +586,7 @@ mod tests {
         let (cred, said) = Credential::build(
             &test_schema(),
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -607,7 +607,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -636,8 +636,8 @@ mod tests {
             .await
             .unwrap();
         result.is_valid(true).unwrap();
-        assert_eq!(result.credential, cred.said.to_string());
-        assert_eq!(result.policy, policy.said.to_string());
+        assert_eq!(result.credential, cred.said);
+        assert_eq!(result.policy, policy.said);
     }
 
     #[tokio::test]
@@ -671,7 +671,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -805,7 +805,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -850,7 +850,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -912,7 +912,7 @@ mod tests {
         let (cred_a, compacted_said_a) = Credential::build(
             &schema_a,
             &policy_a,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -997,7 +997,7 @@ mod tests {
         let (cred_b, compacted_said_b) = Credential::build(
             &schema_b,
             &policy_b,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             Some(edges),
@@ -1081,7 +1081,7 @@ mod tests {
         assert!(result_b.edge_verifications.contains_key("license"));
         let edge_v = result_b.edge_verifications.get("license").unwrap();
         assert!(edge_v.policy_verification.is_satisfied);
-        assert_eq!(edge_v.policy, policy_a.said.to_string());
+        assert_eq!(edge_v.policy, policy_a.said);
     }
 
     #[tokio::test]
@@ -1103,7 +1103,7 @@ mod tests {
         let (cred_root, compacted_root) = Credential::build(
             &root_schema,
             &root_policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(cesr::Digest::blake3_256(b"test-subject")),
             test_claims(),
             false,
             None,
@@ -1294,11 +1294,11 @@ mod tests {
         assert!(result.edge_verifications.contains_key("authority"));
 
         let mid_v = result.edge_verifications.get("authority").unwrap();
-        assert_eq!(mid_v.policy, mid_policy.said.to_string());
+        assert_eq!(mid_v.policy, mid_policy.said);
         assert!(mid_v.edge_verifications.contains_key("root"));
 
         let root_v = mid_v.edge_verifications.get("root").unwrap();
-        assert_eq!(root_v.policy, root_policy.said.to_string());
+        assert_eq!(root_v.policy, root_policy.said);
         assert!(root_v.edge_verifications.is_empty());
     }
 }

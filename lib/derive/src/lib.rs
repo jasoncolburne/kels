@@ -508,38 +508,36 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         impl kels_core::KelServer for #repo_name {
             async fn load_page(
                 &self,
-                prefix: &str,
+                prefix: &cesr::Digest,
                 limit: u64,
                 offset: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
-                self.get_signed_history(prefix, limit, offset)
+                self.get_signed_history(prefix.as_ref(), limit, offset)
                     .await
                     .map_err(kels_core::KelsError::from)
             }
 
             async fn load_page_since(
                 &self,
-                prefix: &str,
-                since_said: &str,
+                prefix: &cesr::Digest,
+                since_said: &cesr::Digest,
                 limit: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
-                self.get_signed_history_since(prefix, since_said, limit)
+                self.get_signed_history_since(prefix.as_ref(), since_said.as_ref(), limit)
                     .await
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn effective_said(&self, prefix: &str) -> Result<Option<String>, kels_core::KelsError> {
-                self.compute_prefix_effective_said(prefix)
+            async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, kels_core::KelsError> {
+                self.compute_prefix_effective_said(prefix.as_ref())
                     .await
                     .map(|opt| opt.map(|(said, _)| said.to_string()))
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, kels_core::KelsError> {
-                use cesr::Matter;
+            async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<String>, kels_core::KelsError> {
                 use verifiable_storage::ChainedRepository;
-                let said_digest = cesr::Digest::from_qb64(said).map_err(|e| kels_core::KelsError::CryptoError(e.to_string()))?;
-                let event: Option<kels_core::KeyEvent> = self.get_by_said(&said_digest).await.map_err(kels_core::KelsError::from)?;
+                let event: Option<kels_core::KeyEvent> = self.get_by_said(said).await.map_err(kels_core::KelsError::from)?;
                 Ok(event.map(|e| e.prefix.to_string()))
             }
         }

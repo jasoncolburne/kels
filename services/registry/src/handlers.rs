@@ -1276,10 +1276,19 @@ pub async fn get_member_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
+    use cesr::Matter;
+    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
+    let since_digest = query
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         &state.member_kel_repo,
-        &prefix,
-        query.since.as_deref(),
+        &prefix_digest,
+        since_digest.as_ref(),
         limit,
     )
     .await

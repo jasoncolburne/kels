@@ -384,8 +384,9 @@ pub(crate) async fn submit_events(
         )));
     }
 
-    // Get prefix from first event (convert to String for DB/cache layer)
-    let prefix = events[0].event.prefix.to_string();
+    // Get prefix from first event
+    let prefix_digest = events[0].event.prefix.clone();
+    let prefix = prefix_digest.to_string();
 
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
@@ -459,16 +460,16 @@ pub(crate) async fn submit_events(
         {
             Ok((events, has_more)) => {
                 if !has_more {
-                    if let Err(e) = kel_cache.store(&prefix, &events).await {
+                    if let Err(e) = kel_cache.store(&prefix_digest, &events).await {
                         warn!("Failed to cache KEL: {}", e);
                     }
-                } else if let Err(e) = kel_cache.invalidate(&prefix).await {
+                } else if let Err(e) = kel_cache.invalidate(&prefix_digest).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
             Err(e) => {
                 warn!("Failed to rebuild cache for {}: {}", prefix, e);
-                if let Err(e) = kel_cache.invalidate(&prefix).await {
+                if let Err(e) = kel_cache.invalidate(&prefix_digest).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
@@ -488,7 +489,7 @@ pub(crate) async fn submit_events(
             }
         };
         if let Some(ref said) = effective_said
-            && let Err(e) = kel_cache.publish_update(&prefix, said.as_ref()).await
+            && let Err(e) = kel_cache.publish_update(&prefix_digest, said).await
         {
             warn!("Failed to publish cache update: {}", e);
         }
@@ -505,17 +506,28 @@ pub(crate) async fn get_kel(
     Path(prefix): Path<String>,
     Query(params): Query<KeyEventsQuery>,
 ) -> Result<Response, ApiError> {
+    use cesr::Matter;
+
+    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
+    let since_digest = params
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
+
     let limit = params
         .limit
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
 
     // Delta fetch path — canonical since-resolution
-    if params.since.is_some() {
+    if since_digest.is_some() {
         let page = kels_core::serve_kel_page(
             &state.repo.key_events,
-            &prefix,
-            params.since.as_deref(),
+            &prefix_digest,
+            since_digest.as_ref(),
             limit,
         )
         .await?;
@@ -526,7 +538,7 @@ pub(crate) async fn get_kel(
     if limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
-        match kel_cache.get_full_serialized(&prefix).await {
+        match kel_cache.get_full_serialized(&prefix_digest).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -544,12 +556,13 @@ pub(crate) async fn get_kel(
     }
 
     // Cache miss or non-default limit — canonical full fetch
-    let page = kels_core::serve_kel_page(&state.repo.key_events, &prefix, None, limit).await?;
+    let page =
+        kels_core::serve_kel_page(&state.repo.key_events, &prefix_digest, None, limit).await?;
 
     // Store in cache (skips if too large per cache logic)
     if !page.has_more
         && let Some(ref kel_cache) = state.kel_cache
-        && let Err(e) = kel_cache.store(&prefix, &page.events).await
+        && let Err(e) = kel_cache.store(&prefix_digest, &page.events).await
     {
         warn!("Failed to cache KEL: {}", e);
     }

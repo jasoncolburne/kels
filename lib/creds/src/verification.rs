@@ -18,9 +18,9 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialVerification {
-    pub credential: String,
-    pub policy: String,
-    pub subject: Option<String>,
+    pub credential: cesr::Digest,
+    pub policy: cesr::Digest,
+    pub subject: Option<cesr::Digest>,
     pub is_expired: bool,
     pub policy_verification: PolicyVerification,
     pub schema_validation: SchemaValidationReport,
@@ -175,8 +175,8 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential: credential.said.to_string(),
-            policy: policy.said.to_string(),
+            credential: credential.said.clone(),
+            policy: policy.said.clone(),
             subject: credential.subject.clone(),
             is_expired,
             policy_verification,

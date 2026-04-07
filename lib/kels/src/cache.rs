@@ -350,7 +350,11 @@ impl ServerKelCache {
         format!("{}:{}", self.key_prefix, prefix)
     }
 
-    pub async fn publish_update(&self, prefix: &str, said: &str) -> Result<(), KelsError> {
+    pub async fn publish_update(
+        &self,
+        prefix: &cesr::Digest,
+        said: &cesr::Digest,
+    ) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let message = format!("{}:{}", prefix, said);
         let _: () = conn
@@ -362,16 +366,21 @@ impl ServerKelCache {
 
     /// Store a complete KEL as pre-serialized JSON (does not publish an update announcement).
     /// Skips caching for KELs larger than MAX_CACHED_KEL_EVENTS.
-    pub async fn store(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    pub async fn store(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
         if events.is_empty() || events.len() > crate::page_size() {
             return Ok(());
         }
 
+        let prefix_str: &str = prefix.as_ref();
         let json = serde_json::to_vec(events)?;
 
         // Store in Redis with 1-hour TTL (reconstructable from DB on miss)
         let mut conn = self.conn.clone();
-        let redis_key = self.redis_key(prefix);
+        let redis_key = self.redis_key(prefix_str);
         let _: () = conn
             .set_ex(&redis_key, &json, 3600)
             .await
@@ -380,7 +389,7 @@ impl ServerKelCache {
         // Update local cache
         {
             let mut local = self.local_cache.write().await;
-            local.set(prefix.to_string(), json);
+            local.set(prefix_str.to_string(), json);
         }
 
         Ok(())
@@ -389,18 +398,19 @@ impl ServerKelCache {
     /// Get full KEL as pre-serialized bytes (for returning directly to client)
     pub async fn get_full_serialized(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
+        let prefix_str: &str = prefix.as_ref();
         // Check local cache first
         {
             let mut local = self.local_cache.write().await;
-            if let Some(bytes) = local.get(prefix) {
+            if let Some(bytes) = local.get(prefix_str) {
                 return Ok(Some(bytes));
             }
         }
 
         // Fetch from Redis
-        let redis_key = self.redis_key(prefix);
+        let redis_key = self.redis_key(prefix_str);
         let mut conn = self.conn.clone();
         let bytes: Option<Vec<u8>> = conn
             .get(&redis_key)
@@ -413,7 +423,7 @@ impl ServerKelCache {
                 // Cache locally
                 {
                     let mut local = self.local_cache.write().await;
-                    local.set(prefix.to_string(), b);
+                    local.set(prefix_str.to_string(), b);
                 }
                 Ok(Some(arc_bytes))
             }
@@ -422,20 +432,21 @@ impl ServerKelCache {
     }
 
     /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
-    pub async fn invalidate(&self, prefix: &str) -> Result<(), KelsError> {
+    pub async fn invalidate(&self, prefix: &cesr::Digest) -> Result<(), KelsError> {
+        let prefix_str: &str = prefix.as_ref();
         let mut conn = self.conn.clone();
-        let redis_key = self.redis_key(prefix);
+        let redis_key = self.redis_key(prefix_str);
         let _: () = conn
             .del(&redis_key)
             .await
             .map_err(|e| KelsError::CacheError(format!("Redis DEL failed: {}", e)))?;
         let mut local = self.local_cache.write().await;
-        local.clear(prefix);
+        local.clear(prefix_str);
         Ok(())
     }
 
     /// Get full KEL deserialized (for processing)
-    pub async fn get_full(&self, prefix: &str) -> Result<Vec<SignedKeyEvent>, KelsError> {
+    pub async fn get_full(&self, prefix: &cesr::Digest) -> Result<Vec<SignedKeyEvent>, KelsError> {
         match self.get_full_serialized(prefix).await? {
             Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
             None => Ok(vec![]),

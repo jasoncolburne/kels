@@ -797,14 +797,11 @@ impl SadObjectIndex {
 
         let entries: Vec<kels_core::SadObjectEntry> = self.pool.fetch(query).await?;
 
-        let mut saids: Vec<String> = entries
-            .into_iter()
-            .map(|e| e.sad_said.to_string())
-            .collect();
+        let mut saids: Vec<cesr::Digest> = entries.into_iter().map(|e| e.sad_said).collect();
 
         let next_cursor = if saids.len() > limit {
             saids.pop();
-            saids.last().cloned()
+            saids.last().map(|s| s.to_string())
         } else if let Some(cursor) = cursor {
             // Wrap around: fill remaining slots from SAIDs <= cursor
             let remaining = limit - saids.len();
@@ -818,7 +815,7 @@ impl SadObjectIndex {
                     .limit(remaining as u64);
                 let wrap_entries: Vec<kels_core::SadObjectEntry> =
                     self.pool.fetch(wrap_query).await?;
-                saids.extend(wrap_entries.into_iter().map(|e| e.sad_said.to_string()));
+                saids.extend(wrap_entries.into_iter().map(|e| e.sad_said));
             }
             None
         } else {

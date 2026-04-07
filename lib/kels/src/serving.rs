@@ -24,7 +24,7 @@ pub trait KelServer: Send + Sync {
     /// Load a page of signed events (full fetch path).
     async fn load_page(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
@@ -32,17 +32,17 @@ pub trait KelServer: Send + Sync {
     /// Load signed events after a given SAID (delta fetch path).
     async fn load_page_since(
         &self,
-        prefix: &str,
-        since_said: &str,
+        prefix: &cesr::Digest,
+        since_said: &cesr::Digest,
         limit: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
     /// Compute the effective SAID for a prefix.
     /// Single tip -> tip SAID. Multiple tips -> deterministic hash (divergent/contested).
-    async fn effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError>;
+    async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, KelsError>;
 
     /// Look up the prefix of an event by its SAID.
-    async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, KelsError>;
+    async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<String>, KelsError>;
 }
 
 /// Canonical since-resolution logic for serving paginated KEL pages.
@@ -55,8 +55,8 @@ pub trait KelServer: Send + Sync {
 ///   result returns `Err(NotFound)`.
 pub async fn serve_kel_page(
     server: &dyn KelServer,
-    prefix: &str,
-    since: Option<&str>,
+    prefix: &cesr::Digest,
+    since: Option<&cesr::Digest>,
     limit: u64,
 ) -> Result<SignedKeyEventPage, KelsError> {
     if let Some(since_said) = since {
@@ -67,7 +67,7 @@ pub async fn serve_kel_page(
                 // SAID not found as a real event — check if it's a composite
                 // effective SAID for a divergent KEL.
                 let effective = server.effective_said(prefix).await?;
-                if effective.as_deref() == Some(since_said) {
+                if effective.as_deref() == Some(since_said.as_ref()) {
                     return Ok(SignedKeyEventPage {
                         events: vec![],
                         has_more: false,
@@ -80,7 +80,7 @@ pub async fn serve_kel_page(
             }
         };
 
-        if event_prefix != prefix {
+        if event_prefix != prefix.as_ref() {
             return Err(KelsError::InvalidKel(
                 "Since SAID does not belong to this prefix".to_string(),
             ));
@@ -123,7 +123,8 @@ mod tests {
 
         fn with_events(prefix: &str, events: Vec<SignedKeyEvent>) -> Self {
             let mut map = HashMap::new();
-            map.insert(prefix.to_string(), events);
+            // Key by the digest's QB64 representation (matches how load_page looks up)
+            map.insert(digest(prefix).to_string(), events);
             Self {
                 events: Mutex::new(map),
             }
@@ -134,15 +135,16 @@ mod tests {
     impl KelServer for MockKelServer {
         async fn load_page(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+            let prefix_str = prefix.to_string();
             let map = self
                 .events
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
-            let events = match map.get(prefix) {
+            let events = match map.get(&prefix_str) {
                 Some(e) => e.clone(),
                 None => return Ok((vec![], false)),
             };
@@ -157,22 +159,21 @@ mod tests {
 
         async fn load_page_since(
             &self,
-            prefix: &str,
-            since_said: &str,
+            prefix: &cesr::Digest,
+            since_said: &cesr::Digest,
             limit: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
+            let prefix_str = prefix.to_string();
             let map = self
                 .events
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
-            let events = match map.get(prefix) {
+            let events = match map.get(&prefix_str) {
                 Some(e) => e.clone(),
                 None => return Ok((vec![], false)),
             };
             // Find the since event, return everything after it
-            let pos = events
-                .iter()
-                .position(|e| e.event.said.to_string() == since_said);
+            let pos = events.iter().position(|e| e.event.said == *since_said);
             match pos {
                 Some(idx) => {
                     let start = idx + 1;
@@ -187,12 +188,13 @@ mod tests {
             }
         }
 
-        async fn effective_said(&self, prefix: &str) -> Result<Option<String>, KelsError> {
+        async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, KelsError> {
+            let prefix_str = prefix.to_string();
             let map = self
                 .events
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
-            match map.get(prefix) {
+            match map.get(&prefix_str) {
                 Some(events) if !events.is_empty() => {
                     Ok(Some(events.last().unwrap().event.said.to_string()))
                 }
@@ -200,13 +202,16 @@ mod tests {
             }
         }
 
-        async fn event_prefix_by_said(&self, said: &str) -> Result<Option<String>, KelsError> {
+        async fn event_prefix_by_said(
+            &self,
+            said: &cesr::Digest,
+        ) -> Result<Option<String>, KelsError> {
             let map = self
                 .events
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             for (prefix, events) in map.iter() {
-                if events.iter().any(|e| e.event.said.to_string() == said) {
+                if events.iter().any(|e| e.event.said == *said) {
                     return Ok(Some(prefix.clone()));
                 }
             }
@@ -241,13 +246,16 @@ mod tests {
     #[tokio::test]
     async fn test_full_fetch_returns_events() {
         let prefix = "EPREFIX1";
+        let prefix_digest = digest(prefix);
         let events = vec![
             make_event(prefix, "ESAID1", 0),
             make_event(prefix, "ESAID2", 1),
         ];
         let server = MockKelServer::with_events(prefix, events.clone());
 
-        let page = serve_kel_page(&server, prefix, None, 10).await.unwrap();
+        let page = serve_kel_page(&server, &prefix_digest, None, 10)
+            .await
+            .unwrap();
         assert_eq!(page.events.len(), 2);
         assert!(!page.has_more);
     }
@@ -255,14 +263,16 @@ mod tests {
     #[tokio::test]
     async fn test_full_fetch_empty_returns_key_not_found() {
         let server = MockKelServer::new();
-        let result = serve_kel_page(&server, "ENOPREFIX", None, 10).await;
+        let prefix_digest = digest("ENOPREFIX");
+        let result = serve_kel_page(&server, &prefix_digest, None, 10).await;
         assert!(matches!(result, Err(KelsError::NotFound(_))));
     }
 
     #[tokio::test]
     async fn test_delta_fetch_returns_events_after_since() {
         let prefix = "EPREFIX2";
-        let since_said = digest("ESAID10").to_string();
+        let prefix_digest = digest(prefix);
+        let since_said = digest("ESAID10");
         let events = vec![
             make_event(prefix, "ESAID10", 0),
             make_event(prefix, "ESAID11", 1),
@@ -270,7 +280,7 @@ mod tests {
         ];
         let server = MockKelServer::with_events(prefix, events);
 
-        let page = serve_kel_page(&server, prefix, Some(&since_said), 10)
+        let page = serve_kel_page(&server, &prefix_digest, Some(&since_said), 10)
             .await
             .unwrap();
         assert_eq!(page.events.len(), 2);
@@ -281,7 +291,8 @@ mod tests {
     #[tokio::test]
     async fn test_delta_fetch_effective_said_match_returns_empty() {
         let prefix = "EPREFIX3";
-        let since_said = digest("ESAID20").to_string();
+        let prefix_digest = digest(prefix);
+        let since_said = digest("ESAID20");
         let events = vec![make_event(prefix, "ESAID20", 0)];
         let server = MockKelServer::with_events(prefix, events);
 
@@ -291,7 +302,7 @@ mod tests {
         // Here we ask for the SAID which IS a real event, so it takes the
         // normal delta path. Let's test with a composite-style SAID instead.
         // Use the effective_said directly — our mock returns last event SAID.
-        let page = serve_kel_page(&server, prefix, Some(&since_said), 10)
+        let page = serve_kel_page(&server, &prefix_digest, Some(&since_said), 10)
             .await
             .unwrap();
         // Since this is the only event and there's nothing after it
@@ -302,12 +313,13 @@ mod tests {
     #[tokio::test]
     async fn test_delta_fetch_unknown_said_returns_key_not_found() {
         let prefix = "EPREFIX4";
+        let prefix_digest = digest(prefix);
         let events = vec![make_event(prefix, "ESAID30", 0)];
         let server = MockKelServer::with_events(prefix, events);
 
         // Unknown SAID doesn't match any event or the effective SAID
-        let unknown = digest("EUNKNOWN").to_string();
-        let result = serve_kel_page(&server, prefix, Some(&unknown), 10).await;
+        let unknown = digest("EUNKNOWN");
+        let result = serve_kel_page(&server, &prefix_digest, Some(&unknown), 10).await;
         assert!(matches!(result, Err(KelsError::NotFound(_))));
     }
 
@@ -317,14 +329,16 @@ mod tests {
         let server = MockKelServer::with_events("EPREFIX_A", events_a);
 
         // ESAID40 belongs to EPREFIX_A, but we're querying EPREFIX_B
-        let said40 = digest("ESAID40").to_string();
-        let result = serve_kel_page(&server, "EPREFIX_B", Some(&said40), 10).await;
+        let prefix_b = digest("EPREFIX_B");
+        let said40 = digest("ESAID40");
+        let result = serve_kel_page(&server, &prefix_b, Some(&said40), 10).await;
         assert!(matches!(result, Err(KelsError::InvalidKel(_))));
     }
 
     #[tokio::test]
     async fn test_full_fetch_respects_limit() {
         let prefix = "EPREFIX5";
+        let prefix_digest = digest(prefix);
         let events = vec![
             make_event(prefix, "ESAID50", 0),
             make_event(prefix, "ESAID51", 1),
@@ -332,7 +346,9 @@ mod tests {
         ];
         let server = MockKelServer::with_events(prefix, events);
 
-        let page = serve_kel_page(&server, prefix, None, 2).await.unwrap();
+        let page = serve_kel_page(&server, &prefix_digest, None, 2)
+            .await
+            .unwrap();
         assert_eq!(page.events.len(), 2);
         assert!(page.has_more);
     }

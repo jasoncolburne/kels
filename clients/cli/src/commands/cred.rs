@@ -44,7 +44,10 @@ pub(crate) async fn cmd_cred_issue(
     let (credential, canonical_said) = kels_creds::Credential::build(
         &schema,
         &policy,
-        subject.map(|s| s.to_string()),
+        subject
+            .map(cesr::Digest::from_qb64)
+            .transpose()
+            .context("Invalid subject prefix")?,
         claims,
         unique,
         None, // edges
@@ -146,7 +149,8 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
             .await?;
 
         for said in &saids {
-            if let Ok(value) = sad_store.load(said).await
+            let said_str: &str = said.as_ref();
+            if let Ok(value) = sad_store.load(said_str).await
                 && value.get("schema").is_some()
                 && value.get("policy").is_some()
             {
@@ -160,7 +164,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
         if !has_more {
             break;
         }
-        since = saids.last().cloned();
+        since = saids.last().map(|s| s.to_string());
     }
 
     if count == 0 {

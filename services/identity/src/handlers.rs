@@ -160,11 +160,19 @@ pub async fn get_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let prefix_str = prefix.to_string();
+    let since_digest = query
+        .since
+        .as_deref()
+        .map(|s| {
+            use cesr::Matter;
+            cesr::Digest::from_qb64(s)
+        })
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
-        &prefix_str,
-        query.since.as_deref(),
+        prefix,
+        since_digest.as_ref(),
         limit,
     )
     .await?;

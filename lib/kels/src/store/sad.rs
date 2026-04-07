@@ -19,7 +19,7 @@ pub trait SadStore: Send + Sync {
         &self,
         since: Option<&str>,
         limit: usize,
-    ) -> Result<(Vec<String>, bool), KelsError>;
+    ) -> Result<(Vec<cesr::Digest>, bool), KelsError>;
 
     /// Delete a self-addressed object by SAID. No-op if not found.
     async fn delete(&self, said: &str) -> Result<(), KelsError>;
@@ -69,8 +69,10 @@ impl SadStore for FileSadStore {
         &self,
         since: Option<&str>,
         limit: usize,
-    ) -> Result<(Vec<String>, bool), KelsError> {
-        let mut saids = Vec::new();
+    ) -> Result<(Vec<cesr::Digest>, bool), KelsError> {
+        use cesr::Matter;
+
+        let mut said_strings = Vec::new();
         let entries =
             std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
         for entry in entries {
@@ -79,17 +81,21 @@ impl SadStore for FileSadStore {
             if path.extension().is_some_and(|e| e == "json")
                 && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
             {
-                saids.push(stem.to_string());
+                said_strings.push(stem.to_string());
             }
         }
-        saids.sort();
+        said_strings.sort();
 
         if let Some(cursor) = since {
-            saids.retain(|s| s.as_str() > cursor);
+            said_strings.retain(|s| s.as_str() > cursor);
         }
 
-        let has_more = saids.len() > limit;
-        saids.truncate(limit);
+        let has_more = said_strings.len() > limit;
+        said_strings.truncate(limit);
+        let saids = said_strings
+            .into_iter()
+            .map(|s| cesr::Digest::from_qb64(&s).map_err(|e| KelsError::CryptoError(e.to_string())))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((saids, has_more))
     }
 
@@ -108,6 +114,10 @@ mod tests {
 
     use super::*;
 
+    fn test_said(label: &str) -> String {
+        cesr::Digest::blake3_256(label.as_bytes()).to_string()
+    }
+
     #[test]
     fn test_new_creates_directory() {
         let temp = TempDir::new().unwrap();
@@ -123,10 +133,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
-        let value = serde_json::json!({"said": "abc123", "data": "hello"});
-        store.store("abc123", &value).await.unwrap();
+        let said = test_said("abc123");
+        let value = serde_json::json!({"said": said, "data": "hello"});
+        store.store(&said, &value).await.unwrap();
 
-        let loaded = store.load("abc123").await.unwrap();
+        let loaded = store.load(&said).await.unwrap();
         assert_eq!(loaded, value);
     }
 
@@ -144,17 +155,22 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
+        let said_a = test_said("aaa");
+        let said_b = test_said("bbb");
         store
-            .store("aaa", &serde_json::json!({"said": "aaa"}))
+            .store(&said_a, &serde_json::json!({"said": said_a}))
             .await
             .unwrap();
         store
-            .store("bbb", &serde_json::json!({"said": "bbb"}))
+            .store(&said_b, &serde_json::json!({"said": said_b}))
             .await
             .unwrap();
 
         let (saids, has_more) = store.list(None, 100).await.unwrap();
-        assert_eq!(saids, vec!["aaa", "bbb"]);
+        let said_strings: Vec<String> = saids.iter().map(|s| s.to_string()).collect();
+        assert!(said_strings.contains(&said_a));
+        assert!(said_strings.contains(&said_b));
+        assert_eq!(saids.len(), 2);
         assert!(!has_more);
     }
 
@@ -173,25 +189,31 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
+        // Use SAIDs that sort deterministically
+        let said_a = test_said("aaa");
+        let said_b = test_said("bbb");
+        let said_c = test_said("ccc");
         store
-            .store("aaa", &serde_json::json!({"said": "aaa"}))
+            .store(&said_a, &serde_json::json!({"said": said_a}))
             .await
             .unwrap();
         store
-            .store("bbb", &serde_json::json!({"said": "bbb"}))
+            .store(&said_b, &serde_json::json!({"said": said_b}))
             .await
             .unwrap();
         store
-            .store("ccc", &serde_json::json!({"said": "ccc"}))
+            .store(&said_c, &serde_json::json!({"said": said_c}))
             .await
             .unwrap();
 
         let (page1, has_more) = store.list(None, 2).await.unwrap();
-        assert_eq!(page1, vec!["aaa", "bbb"]);
+        assert_eq!(page1.len(), 2);
         assert!(has_more);
 
-        let (page2, has_more) = store.list(Some("bbb"), 2).await.unwrap();
-        assert_eq!(page2, vec!["ccc"]);
+        // Use last element of first page as cursor
+        let cursor = page1.last().unwrap().to_string();
+        let (page2, has_more) = store.list(Some(&cursor), 2).await.unwrap();
+        assert_eq!(page2.len(), 1);
         assert!(!has_more);
     }
 
@@ -200,14 +222,15 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
+        let said = test_said("abc");
         store
-            .store("abc", &serde_json::json!({"said": "abc"}))
+            .store(&said, &serde_json::json!({"said": said}))
             .await
             .unwrap();
-        assert!(temp.path().join("abc.json").exists());
+        assert!(temp.path().join(format!("{}.json", said)).exists());
 
-        store.delete("abc").await.unwrap();
-        assert!(!temp.path().join("abc.json").exists());
+        store.delete(&said).await.unwrap();
+        assert!(!temp.path().join(format!("{}.json", said)).exists());
     }
 
     #[tokio::test]
