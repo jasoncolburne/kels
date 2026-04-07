@@ -21,8 +21,8 @@ pub enum AllowlistRefreshError {
     KelVerificationFailed(String),
 }
 
-/// Shared allowlist type - maps peer_prefix (KELS prefix string) to full Peer data
-pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels_core::Peer>>>;
+/// Shared allowlist type - maps peer_prefix to full Peer data
+pub type SharedAllowlist = Arc<RwLock<HashMap<cesr::Digest, kels_core::Peer>>>;
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
@@ -136,7 +136,7 @@ pub async fn refresh_allowlist(
             );
 
             if latest.active {
-                authorized_peers.insert(latest.peer_prefix.to_string(), latest.clone());
+                authorized_peers.insert(latest.peer_prefix.clone(), latest.clone());
             }
         }
     }

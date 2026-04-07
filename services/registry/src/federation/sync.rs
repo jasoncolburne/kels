@@ -125,7 +125,7 @@ async fn sync_own_kel(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let own_prefix = identity_client.get_prefix().await?;
 
-    let since = member_kel_repo
+    let since_digest = member_kel_repo
         .effective_said(&own_prefix)
         .await
         .ok()
@@ -135,11 +135,6 @@ async fn sync_own_kel(
     let sink = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),
     )));
-
-    let since_digest = since.as_ref().and_then(|s| {
-        use cesr::Matter;
-        cesr::Digest::from_qb64(s).ok()
-    });
 
     kels_core::forward_key_events(
         &own_prefix,

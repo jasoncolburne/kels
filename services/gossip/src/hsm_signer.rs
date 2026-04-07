@@ -123,13 +123,13 @@ impl KelsPeerVerifier {
     }
 
     /// Check if a peer is in the allowlist (without refreshing).
-    async fn is_in_allowlist(&self, prefix: &str) -> Result<bool, GossipError> {
+    async fn is_in_allowlist(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
         let guard = self.allowlist.read().await;
         Ok(guard.contains_key(prefix))
     }
 
     /// Refresh the allowlist from the registry, then check again.
-    async fn is_in_allowlist_refreshed(&self, prefix: &str) -> Result<bool, GossipError> {
+    async fn is_in_allowlist_refreshed(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
         if let Err(e) = crate::allowlist::refresh_allowlist(
             &self.federation_registry_urls,
             self.registry_kel_store.as_ref(),
@@ -147,19 +147,17 @@ impl KelsPeerVerifier {
     /// Get the current public key from a peer's verified KEL.
     async fn public_key_from_key_events(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
         let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP client: {}", e))
             })?;
-        let prefix_digest = cesr::Digest::from_qb64(prefix)
-            .map_err(|e| GossipError::VerificationFailed(format!("Invalid prefix CESR: {}", e)))?;
         let kel_verification = kels_core::verify_key_events(
-            &prefix_digest,
+            prefix,
             &source,
-            kels_core::KelVerifier::new(&prefix_digest),
+            kels_core::KelVerifier::new(prefix),
             kels_core::page_size(),
             kels_core::max_pages(),
         )
@@ -205,7 +203,7 @@ impl KelsPeerVerifier {
     /// will trigger the refresh path).
     async fn try_verify(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -220,7 +218,7 @@ impl KelsPeerVerifier {
     /// Re-fetch the peer's KEL from their KELS instance, submit it locally, then verify.
     async fn try_verify_refreshed(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -244,10 +242,8 @@ impl KelsPeerVerifier {
             kels_core::HttpKelSink::new(&self.kels_url, "/api/v1/kels/events").map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP sink: {}", e))
             })?;
-        let prefix_digest = cesr::Digest::from_qb64(prefix)
-            .map_err(|e| GossipError::VerificationFailed(format!("Invalid prefix CESR: {}", e)))?;
         if let Err(e) = kels_core::forward_key_events(
-            &prefix_digest,
+            prefix,
             &source,
             &sink,
             kels_core::page_size(),
@@ -256,7 +252,7 @@ impl KelsPeerVerifier {
         )
         .await
         {
-            warn!(prefix, error = %e, "failed to refresh peer KEL, retrying verification with cached state");
+            warn!(%prefix, error = %e, "failed to refresh peer KEL, retrying verification with cached state");
         }
 
         // Retry verification with the now-updated local KEL
@@ -274,39 +270,44 @@ impl PeerVerifier for KelsPeerVerifier {
         let prefix_str = peer.to_option_string().ok_or_else(|| {
             GossipError::VerificationFailed("Invalid peer prefix encoding".to_string())
         })?;
+        let prefix_digest = cesr::Digest::from_qb64(&prefix_str)
+            .map_err(|e| GossipError::VerificationFailed(format!("Invalid prefix CESR: {}", e)))?;
 
         // Authorization: check peer is in allowlist, refresh once if not found
         let authorized = kels_core::retry_once!(
-            self.is_in_allowlist(&prefix_str),
+            self.is_in_allowlist(&prefix_digest),
             |ok: &bool| *ok,
-            self.is_in_allowlist_refreshed(&prefix_str),
+            self.is_in_allowlist_refreshed(&prefix_digest),
         )
         .map_err(|e| {
-            GossipError::VerificationFailed(format!("Allowlist check for {}: {}", prefix_str, e))
+            GossipError::VerificationFailed(format!("Allowlist check for {}: {}", prefix_digest, e))
         })?;
 
         if authorized != Some(true) {
             return Err(GossipError::VerificationFailed(format!(
                 "Peer {} not in allowlist",
-                prefix_str
+                prefix_digest
             )));
         }
 
         // Authentication: verify against local KEL, refresh from peer on mismatch
         let verified = kels_core::retry_once!(
-            self.try_verify(&prefix_str, data, signature),
+            self.try_verify(&prefix_digest, data, signature),
             |ok: &bool| *ok,
-            self.try_verify_refreshed(&prefix_str, data, signature),
+            self.try_verify_refreshed(&prefix_digest, data, signature),
         )
         .map_err(|e| {
-            GossipError::VerificationFailed(format!("KEL verification for {}: {}", prefix_str, e))
+            GossipError::VerificationFailed(format!(
+                "KEL verification for {}: {}",
+                prefix_digest, e
+            ))
         })?;
 
         match verified {
             Some(true) => Ok(()),
             _ => Err(GossipError::VerificationFailed(format!(
                 "Peer {} handshake key does not match KEL",
-                prefix_str
+                prefix_digest
             ))),
         }
     }

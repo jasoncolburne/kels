@@ -217,7 +217,28 @@ pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     let mut edges = BTreeMap::new();
 
     for (label, input) in inputs {
-        let edge = Edge::create(input.schema, input.policy, input.credential, input.nonce)?;
+        let schema = cesr::Digest::from_qb64(&input.schema).map_err(|e| {
+            CredentialError::VerificationError(format!("edge '{label}': invalid schema CESR: {e}"))
+        })?;
+        let policy = input
+            .policy
+            .map(|s| cesr::Digest::from_qb64(&s))
+            .transpose()
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': invalid policy CESR: {e}"
+                ))
+            })?;
+        let credential = input
+            .credential
+            .map(|s| cesr::Digest::from_qb64(&s))
+            .transpose()
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': invalid credential CESR: {e}"
+                ))
+            })?;
+        let edge = Edge::create(schema, policy, credential, input.nonce)?;
         edges.insert(label, edge);
     }
 
@@ -336,15 +357,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_edges() {
-        let json = r#"{
+        let schema_said = cesr::Digest::blake3_256(b"test-schema").to_string();
+        let policy_said = cesr::Digest::blake3_256(b"test-policy").to_string();
+        let cred_said = cesr::Digest::blake3_256(b"test-credential").to_string();
+        let json = serde_json::json!({
             "license": {
-                "schema": "KAbc1234567890123456789012345678901234567890",
-                "policy": "KPolicy23456789012345678901234567890abcdefg",
-                "credential": "KCred12345678901234567890123456789012abcdef"
+                "schema": schema_said,
+                "policy": policy_said,
+                "credential": cred_said
             }
-        }"#;
+        })
+        .to_string();
 
-        let edges = super::parse_edges(json).unwrap();
+        let edges = super::parse_edges(&json).unwrap();
         assert_eq!(edges.edges.len(), 1);
         assert!(edges.edges.contains_key("license"));
         let edge = edges.edges.get("license").unwrap();

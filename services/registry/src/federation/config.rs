@@ -170,18 +170,18 @@ impl FederationConfig {
     }
 
     /// Get member by prefix.
-    pub fn member_by_prefix(&self, prefix: &str) -> Option<&FederationMember> {
-        self.members.iter().find(|m| m.prefix.as_ref() == prefix)
+    pub fn member_by_prefix(&self, prefix: &cesr::Digest) -> Option<&FederationMember> {
+        self.members.iter().find(|m| m.prefix == *prefix)
     }
 
     /// Check if a prefix is an active federation member.
-    pub fn is_member(&self, prefix: &str) -> bool {
-        self.members.iter().any(|m| m.prefix.as_ref() == prefix)
+    pub fn is_member(&self, prefix: &cesr::Digest) -> bool {
+        self.members.iter().any(|m| m.prefix == *prefix)
     }
 
     /// Check if a prefix is a trusted prefix (active or inactive).
-    pub fn is_trusted_prefix(&self, prefix: &str) -> bool {
-        self.trusted_prefixes.iter().any(|p| p.as_ref() == prefix)
+    pub fn is_trusted_prefix(&self, prefix: &cesr::Digest) -> bool {
+        self.trusted_prefixes.contains(prefix)
     }
 
     /// Calculate approval threshold for peer proposals.
@@ -334,8 +334,8 @@ mod tests {
             }],
         );
 
-        assert!(config.is_member(digest("ERegistryA").as_ref()));
-        assert!(!config.is_member(digest("ERegistryUnknown").as_ref()));
+        assert!(config.is_member(&digest("ERegistryA")));
+        assert!(!config.is_member(&digest("ERegistryUnknown")));
     }
 
     #[test]
@@ -375,7 +375,11 @@ mod tests {
             }],
         );
 
-        assert!(config.member_by_prefix("ERegistryUnknown").is_none());
+        assert!(
+            config
+                .member_by_prefix(&digest("ERegistryUnknown"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -396,9 +400,7 @@ mod tests {
             ],
         );
 
-        let member = config
-            .member_by_prefix(digest("ERegistryB").as_ref())
-            .unwrap();
+        let member = config.member_by_prefix(&digest("ERegistryB")).unwrap();
         assert_eq!(member.url, "https://b.example.com");
     }
 
@@ -561,8 +563,8 @@ mod tests {
         );
 
         assert_eq!(config.members.len(), 1);
-        assert!(config.is_member(digest("ERegistryA").as_ref()));
-        assert!(!config.is_member(digest("ERegistryB").as_ref()));
+        assert!(config.is_member(&digest("ERegistryA")));
+        assert!(!config.is_member(&digest("ERegistryB")));
     }
 
     #[test]
@@ -577,9 +579,9 @@ mod tests {
             vec![digest("ERegistryA"), digest("ERegistryB")],
         );
 
-        assert!(config.is_trusted_prefix(digest("ERegistryA").as_ref()));
-        assert!(config.is_trusted_prefix(digest("ERegistryB").as_ref()));
-        assert!(!config.is_trusted_prefix(digest("ERegistryUnknown").as_ref()));
+        assert!(config.is_trusted_prefix(&digest("ERegistryA")));
+        assert!(config.is_trusted_prefix(&digest("ERegistryB")));
+        assert!(!config.is_trusted_prefix(&digest("ERegistryUnknown")));
     }
 
     #[test]

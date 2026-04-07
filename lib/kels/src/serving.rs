@@ -39,10 +39,16 @@ pub trait KelServer: Send + Sync {
 
     /// Compute the effective SAID for a prefix.
     /// Single tip -> tip SAID. Multiple tips -> deterministic hash (divergent/contested).
-    async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, KelsError>;
+    async fn effective_said(
+        &self,
+        prefix: &cesr::Digest,
+    ) -> Result<Option<cesr::Digest>, KelsError>;
 
     /// Look up the prefix of an event by its SAID.
-    async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<String>, KelsError>;
+    async fn event_prefix_by_said(
+        &self,
+        said: &cesr::Digest,
+    ) -> Result<Option<cesr::Digest>, KelsError>;
 }
 
 /// Canonical since-resolution logic for serving paginated KEL pages.
@@ -67,7 +73,7 @@ pub async fn serve_kel_page(
                 // SAID not found as a real event — check if it's a composite
                 // effective SAID for a divergent KEL.
                 let effective = server.effective_said(prefix).await?;
-                if effective.as_deref() == Some(since_said.as_ref()) {
+                if effective.as_ref() == Some(since_said) {
                     return Ok(SignedKeyEventPage {
                         events: vec![],
                         has_more: false,
@@ -80,7 +86,7 @@ pub async fn serve_kel_page(
             }
         };
 
-        if event_prefix != prefix.as_ref() {
+        if event_prefix != *prefix {
             return Err(KelsError::InvalidKel(
                 "Since SAID does not belong to this prefix".to_string(),
             ));
@@ -188,7 +194,10 @@ mod tests {
             }
         }
 
-        async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, KelsError> {
+        async fn effective_said(
+            &self,
+            prefix: &cesr::Digest,
+        ) -> Result<Option<cesr::Digest>, KelsError> {
             let prefix_str = prefix.to_string();
             let map = self
                 .events
@@ -196,7 +205,7 @@ mod tests {
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             match map.get(&prefix_str) {
                 Some(events) if !events.is_empty() => {
-                    Ok(Some(events.last().unwrap().event.said.to_string()))
+                    Ok(Some(events.last().unwrap().event.said.clone()))
                 }
                 _ => Ok(None),
             }
@@ -205,14 +214,14 @@ mod tests {
         async fn event_prefix_by_said(
             &self,
             said: &cesr::Digest,
-        ) -> Result<Option<String>, KelsError> {
+        ) -> Result<Option<cesr::Digest>, KelsError> {
             let map = self
                 .events
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
-            for (prefix, events) in map.iter() {
-                if events.iter().any(|e| e.event.said == *said) {
-                    return Ok(Some(prefix.clone()));
+            for (_prefix_str, events) in map.iter() {
+                if let Some(event) = events.iter().find(|e| e.event.said == *said) {
+                    return Ok(Some(event.event.prefix.clone()));
                 }
             }
             Ok(None)

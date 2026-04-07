@@ -309,11 +309,7 @@ pub async fn federation_rpc(
     Json(signed_rpc): Json<SignedFederationRpc>,
 ) -> Result<Json<FederationRpcResponse>, ApiError> {
     // Verify sender is a federation member
-    if !state
-        .node
-        .config()
-        .is_member(signed_rpc.sender_prefix.as_ref())
-    {
+    if !state.node.config().is_member(&signed_rpc.sender_prefix) {
         return Err(ApiError::forbidden(format!(
             "Unknown federation member: {}",
             signed_rpc.sender_prefix
@@ -341,7 +337,7 @@ pub async fn federation_rpc(
             let member = state
                 .node
                 .config()
-                .member_by_prefix(signed_rpc.sender_prefix.as_ref())
+                .member_by_prefix(&signed_rpc.sender_prefix)
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
@@ -540,7 +536,7 @@ pub async fn admin_submit_addition_proposal(
     Json(proposal): Json<PeerAdditionProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
     // 1. Verify proposer is a federation member
-    if !state.node.config().is_member(proposal.proposer.as_ref()) {
+    if !state.node.config().is_member(&proposal.proposer) {
         return Err(ApiError::forbidden(format!(
             "Proposer {} is not a federation member",
             proposal.proposer
@@ -657,7 +653,7 @@ pub async fn admin_submit_removal_proposal(
     Json(proposal): Json<PeerRemovalProposal>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
     // 1. Verify proposer is a federation member
-    if !state.node.config().is_member(proposal.proposer.as_ref()) {
+    if !state.node.config().is_member(&proposal.proposer) {
         return Err(ApiError::forbidden(format!(
             "Proposer {} is not a federation member",
             proposal.proposer
@@ -788,7 +784,7 @@ pub async fn admin_vote_proposal(
         .map_err(|e| ApiError::bad_request(format!("Vote verification failed: {}", e)))?;
 
     // 2. Verify voter is a federation member
-    if !state.node.config().is_member(vote.voter.as_ref()) {
+    if !state.node.config().is_member(&vote.voter) {
         return Err(ApiError::forbidden(format!(
             "Voter {} is not a federation member",
             vote.voter
@@ -1127,7 +1123,7 @@ pub async fn submit_member_key_events(
     }
 
     // Check trusted prefix
-    if !state.node.config().is_trusted_prefix(prefix.as_ref()) {
+    if !state.node.config().is_trusted_prefix(&prefix) {
         return Err(ApiError::forbidden(format!(
             "Not a trusted member prefix: {}",
             prefix

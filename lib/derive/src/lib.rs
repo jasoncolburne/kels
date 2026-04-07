@@ -528,17 +528,17 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<String>, kels_core::KelsError> {
+            async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<cesr::Digest>, kels_core::KelsError> {
                 self.compute_prefix_effective_said(prefix.as_ref())
                     .await
-                    .map(|opt| opt.map(|(said, _)| said.to_string()))
+                    .map(|opt| opt.map(|(said, _)| said))
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<String>, kels_core::KelsError> {
+            async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<cesr::Digest>, kels_core::KelsError> {
                 use verifiable_storage::ChainedRepository;
                 let event: Option<kels_core::KeyEvent> = self.get_by_said(said).await.map_err(kels_core::KelsError::from)?;
-                Ok(event.map(|e| e.prefix.to_string()))
+                Ok(event.map(|e| e.prefix))
             }
         }
     };

@@ -5,9 +5,10 @@
 //! - **RUF-PTXT**: Receiver can't forge sender attribution (sender inside ciphertext)
 //! - **RUF-CTXT**: Attacker can't strip/replace signature (recipient in signed plaintext)
 
+use serde::{Deserialize, Serialize};
+
 use base64::Engine;
 use cesr::{DecapsulationKey, EncapsulationKey, Matter, Nonce, SigningKey, VerificationKey};
-use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};

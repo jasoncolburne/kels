@@ -387,8 +387,7 @@ impl SyncHandler {
     async fn handle_sad_announcement(&self, message: SadAnnouncement) {
         match message {
             SadAnnouncement::Object { said, origin } => {
-                self.handle_sad_object_announcement(said.as_ref(), origin.as_ref())
-                    .await;
+                self.handle_sad_object_announcement(&said, &origin).await;
             }
             SadAnnouncement::Pointer {
                 chain_prefix,
@@ -396,19 +395,14 @@ impl SyncHandler {
                 origin,
                 repair,
             } => {
-                self.handle_sad_chain_announcement(
-                    chain_prefix.as_ref(),
-                    said.as_ref(),
-                    origin.as_ref(),
-                    repair,
-                )
-                .await;
+                self.handle_sad_chain_announcement(&chain_prefix, &said, &origin, repair)
+                    .await;
             }
         }
     }
 
     /// Handle a SAD object announcement — fetch the object if we don't have it.
-    async fn handle_sad_object_announcement(&self, said: &str, origin: &str) {
+    async fn handle_sad_object_announcement(&self, said: &cesr::Digest, origin: &cesr::Digest) {
         // Look up origin peer's SADStore URL
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
             debug!("No SADStore URL for origin peer {}", origin);
@@ -425,7 +419,8 @@ impl SyncHandler {
         };
 
         // Check if we already have it locally (HEAD check, no data transfer)
-        match local_client.sad_object_exists(said).await {
+        let said_str: &str = said.as_ref();
+        match local_client.sad_object_exists(said_str).await {
             Ok(true) => {
                 debug!("SAD object {} already exists locally", said);
                 return;
@@ -449,7 +444,7 @@ impl SyncHandler {
         }
 
         // Fetch from remote and store locally
-        match remote_client.get_sad_object(said).await {
+        match remote_client.get_sad_object(said_str).await {
             Ok(object) => {
                 if let Err(e) = local_client.post_sad_object(&object).await {
                     warn!("Failed to store SAD object {} locally: {}", said, e);
@@ -468,9 +463,9 @@ impl SyncHandler {
     /// fetched (no delta) since repair truncates and replaces from the divergence point.
     async fn handle_sad_chain_announcement(
         &self,
-        chain_prefix: &str,
-        remote_said: &str,
-        origin: &str,
+        chain_prefix: &cesr::Digest,
+        remote_said: &cesr::Digest,
+        origin: &cesr::Digest,
         repair: bool,
     ) {
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
@@ -478,19 +473,11 @@ impl SyncHandler {
             return;
         };
 
-        let chain_prefix_digest = match cesr::Digest::from_qb64(chain_prefix) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Invalid chain prefix CESR {}: {}", chain_prefix, e);
-                return;
-            }
-        };
-
         let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
         let local_said = match local_client
-            .fetch_sad_pointer_effective_said(&chain_prefix_digest)
+            .fetch_sad_pointer_effective_said(chain_prefix)
             .await
         {
             Ok(Some((said, _))) => Some(said),
@@ -513,7 +500,7 @@ impl SyncHandler {
             "SAD chain announcement received"
         );
 
-        if local_said.as_deref() == Some(remote_said) {
+        if local_said.as_deref() == Some(remote_said.as_ref()) {
             debug!("SAD chain {} already in sync", chain_prefix);
             return;
         }
@@ -553,7 +540,7 @@ impl SyncHandler {
             }
         };
         let remote_is_real_pointer = local_client
-            .sad_pointer_exists(remote_said)
+            .sad_pointer_exists(remote_said.as_ref())
             .await
             .unwrap_or(false);
         let since_digest = if repair || !remote_is_real_pointer {
@@ -580,7 +567,7 @@ impl SyncHandler {
         );
 
         match kels_core::forward_sad_pointer(
-            &chain_prefix_digest,
+            chain_prefix,
             &source,
             &sink,
             kels_core::page_size(),
@@ -636,7 +623,7 @@ impl SyncHandler {
     }
 
     /// Derive a peer's SADStore URL from their base domain.
-    async fn get_peer_sadstore_url(&self, peer_prefix: &str) -> Option<String> {
+    async fn get_peer_sadstore_url(&self, peer_prefix: &cesr::Digest) -> Option<String> {
         let guard = self.allowlist.read().await;
         let peer = guard.get(peer_prefix)?;
         Some(format!("http://sadstore.{}", peer.base_domain))

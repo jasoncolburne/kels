@@ -234,6 +234,8 @@ impl<T: Claims> FromStr for Credential<T> {
 mod tests {
     use super::*;
 
+    use cesr::Matter;
+
     use crate::schema::SchemaField;
 
     /// A simple claims type for testing.
@@ -378,13 +380,8 @@ mod tests {
     async fn test_credential_with_edges() {
         use crate::edge::{Edge, Edges};
 
-        let edge = Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let edge =
+            Edge::create(cesr::Digest::blake3_256(b"test-schema"), None, None, None).unwrap();
 
         let mut edges_map = BTreeMap::new();
         edges_map.insert("license".to_string(), edge);
@@ -935,9 +932,9 @@ mod tests {
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
-            cred_a.schema.to_string(),
-            Some(policy_a.said.to_string()),
-            Some(compacted_said_a.clone()),
+            cred_a.schema.clone(),
+            Some(policy_a.said.clone()),
+            Some(cesr::Digest::from_qb64(&compacted_said_a).unwrap()),
             None,
         )
         .unwrap();
@@ -1172,9 +1169,9 @@ mod tests {
 
         // Intermediate credential with edge to root
         let edge_to_root = Edge::create(
-            cred_root.schema.to_string(),
-            Some(root_policy.said.to_string()),
-            Some(compacted_root.clone()),
+            cred_root.schema.clone(),
+            Some(root_policy.said.clone()),
+            Some(cesr::Digest::from_qb64(&compacted_root).unwrap()),
             None,
         )
         .unwrap();
@@ -1206,9 +1203,9 @@ mod tests {
 
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
-            cred_mid.schema.to_string(),
-            Some(mid_policy.said.to_string()),
-            Some(compacted_mid),
+            cred_mid.schema.clone(),
+            Some(mid_policy.said.clone()),
+            Some(cesr::Digest::from_qb64(&compacted_mid).unwrap()),
             None,
         )
         .unwrap();

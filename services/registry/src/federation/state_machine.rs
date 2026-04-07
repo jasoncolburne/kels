@@ -726,7 +726,7 @@ impl StateMachineStore {
         said: &cesr::Digest,
         member_prefix: &cesr::Digest,
     ) -> Result<(), String> {
-        if !self.config.is_trusted_prefix(member_prefix.as_ref()) {
+        if !self.config.is_trusted_prefix(member_prefix) {
             return Err(format!("Unknown member: {}", member_prefix));
         }
 

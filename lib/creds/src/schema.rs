@@ -217,11 +217,11 @@ impl Schema {
 
     /// Fetch a schema from a SAD store by its SAID.
     pub async fn fetch(
-        said: &str,
+        said: &cesr::Digest,
         sad_store: &dyn crate::store::SADStore,
     ) -> Result<Self, CredentialError> {
-        let chunk = sad_store.get_chunk(said).await?.ok_or_else(|| {
-            CredentialError::ExpansionError(format!("schema {said} not found in store"))
+        let chunk = sad_store.get_chunk(said.as_ref()).await?.ok_or_else(|| {
+            CredentialError::ExpansionError(format!("schema {} not found in store", said))
         })?;
         Ok(serde_json::from_value(chunk)?)
     }

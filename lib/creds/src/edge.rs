@@ -11,11 +11,11 @@ use crate::error::CredentialError;
 pub struct Edge {
     #[said]
     pub said: cesr::Digest,
-    pub schema: String,
+    pub schema: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
+    pub policy: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
+    pub credential: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 }
@@ -94,13 +94,7 @@ mod tests {
     use verifiable_storage::SelfAddressed;
 
     fn test_edge() -> Edge {
-        Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            None,
-            None,
-            None,
-        )
-        .unwrap()
+        Edge::create(cesr::Digest::blake3_256(b"test-schema"), None, None, None).unwrap()
     }
 
     #[test]
@@ -119,9 +113,9 @@ mod tests {
     #[test]
     fn test_edge_with_optional_fields() {
         let edge = Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            Some("KPolicy23456789012345678901234567890abcdefg".to_string()),
-            Some("KCred12345678901234567890123456789012abcdef".to_string()),
+            cesr::Digest::blake3_256(b"test-schema"),
+            Some(cesr::Digest::blake3_256(b"test-policy")),
+            Some(cesr::Digest::blake3_256(b"test-credential")),
             Some("KNonce12345678901234567890123456789012abcde".to_string()),
         )
         .unwrap();

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use kels_core::PagedKelSource;
 use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
-use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use crate::{
     compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
@@ -212,7 +212,8 @@ async fn verify_edges<T: Claims>(
         };
 
         // Look up the edge credential's schema
-        let edge_schema = edge_schemas.get(&edge.schema).ok_or_else(|| {
+        let schema_str: &str = edge.schema.as_ref();
+        let edge_schema = edge_schemas.get(schema_str).ok_or_else(|| {
             CredentialError::VerificationError(format!(
                 "edge '{label}': no schema provided for SAID {}",
                 edge.schema
@@ -220,11 +221,14 @@ async fn verify_edges<T: Claims>(
         })?;
 
         // Look up and expand the referenced credential from the SADStore
-        let root_chunk = sad_store.get_chunk(credential_said).await?.ok_or_else(|| {
-            CredentialError::VerificationError(format!(
-                "edge '{label}': referenced credential {credential_said} not found in store"
-            ))
-        })?;
+        let root_chunk = sad_store
+            .get_chunk(credential_said.as_ref())
+            .await?
+            .ok_or_else(|| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': referenced credential {credential_said} not found in store"
+                ))
+            })?;
 
         // Verify the edge credential references the expected schema before expanding
         let cred_schema_said = root_chunk
@@ -268,7 +272,7 @@ async fn verify_edges<T: Claims>(
                     "edge '{label}': failed to compact credential policy: {e}"
                 ))
             })?;
-            if expected_policy.as_str() != canonical.said.as_ref() {
+            if *expected_policy != canonical.said {
                 return Err(CredentialError::VerificationError(format!(
                     "edge '{label}': policy mismatch — edge declares {expected_policy}, \
                      credential's canonical policy is {}",
