@@ -6,6 +6,7 @@
 use std::{cmp::Ordering, collections::HashSet, future::Future, iter, time::Duration};
 use tracing::{debug, info, warn};
 
+use cesr::Matter;
 use futures::future::join_all;
 use rand::seq::SliceRandom;
 use verifiable_storage::StorageDatetime;
@@ -832,7 +833,6 @@ pub async fn peers_sorted_by_latency(
     // Fetch and verify registry member KELs to the local store
     let sink = crate::KelStoreSink(store);
     for prefix_str in &trusted {
-        use cesr::Matter;
         if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
             sync_member_kel(&prefix, urls, &sink).await;
         }
@@ -840,7 +840,6 @@ pub async fn peers_sorted_by_latency(
 
     // Verify each trusted prefix from store
     for prefix_str in &trusted {
-        use cesr::Matter;
         if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
             let mut loader = crate::StorePageLoader::new(store);
             let _ = crate::completed_verification(

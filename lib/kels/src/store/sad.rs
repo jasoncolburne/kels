@@ -1,6 +1,7 @@
 //! Self-Addressed Data storage trait and file-based implementation
 
 use async_trait::async_trait;
+use cesr::Matter;
 
 use crate::error::KelsError;
 
@@ -70,8 +71,6 @@ impl SadStore for FileSadStore {
         since: Option<&str>,
         limit: usize,
     ) -> Result<(Vec<cesr::Digest>, bool), KelsError> {
-        use cesr::Matter;
-
         let mut said_strings = Vec::new();
         let entries =
             std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;

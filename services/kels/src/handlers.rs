@@ -11,6 +11,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
@@ -534,7 +535,6 @@ pub(crate) async fn get_kel(
     }
 
     // Cache miss — parse prefix and since to typed CESR
-    use cesr::Matter;
     let prefix_digest = cesr::Digest::from_qb64(&prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let since_digest = params

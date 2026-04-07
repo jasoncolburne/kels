@@ -13,6 +13,8 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+use cesr::Matter;
+
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -468,10 +470,7 @@ pub extern "C" fn kels_init(
     };
 
     // Create builder
-    let prefix_digest = prefix_opt.as_ref().map(|p| {
-        use cesr::Matter;
-        cesr::Digest::from_qb64(p)
-    });
+    let prefix_digest = prefix_opt.as_deref().map(cesr::Digest::from_qb64);
     let prefix_digest = match prefix_digest {
         Some(Ok(d)) => Some(d),
         Some(Err(e)) => {

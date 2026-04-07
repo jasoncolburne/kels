@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
+use cesr::Matter;
 use kels_core::{IdentityClient, KelServer};
 
 use super::{FederationConfig, FederationNode};
@@ -212,10 +213,9 @@ async fn push_to_stale_members(
             };
 
         // Delta fetch with fallback: try since=member_said, fall back to full
-        let since_digest = member_said.as_ref().and_then(|s| {
-            use cesr::Matter;
-            cesr::Digest::from_qb64(s).ok()
-        });
+        let since_digest = member_said
+            .as_ref()
+            .and_then(|s| cesr::Digest::from_qb64(s).ok());
         let result = if since_digest.is_some() {
             match kels_core::forward_key_events(
                 &own_prefix,

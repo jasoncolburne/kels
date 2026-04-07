@@ -11,6 +11,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use cesr::Matter;
 use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
@@ -97,7 +98,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         event: KeyEvent,
     ) -> Result<SignedKeyEvent, KelsError> {
-        use cesr::Matter;
         let said_str = event.said.qb64();
         let query =
             Query::<EventSignature>::for_table(self.signatures_table).eq("event_said", &said_str);
@@ -114,13 +114,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if events.is_empty() {
             return Ok(vec![]);
         }
-        let saids: Vec<String> = events
-            .iter()
-            .map(|e| {
-                use cesr::Matter;
-                e.said.qb64()
-            })
-            .collect();
+        let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
         let query =
             Query::<EventSignature>::for_table(self.signatures_table).r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
@@ -171,13 +165,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if saids.is_empty() {
             return Ok(HashSet::new());
         }
-        let said_strings: Vec<String> = saids
-            .iter()
-            .map(|s| {
-                use cesr::Matter;
-                s.qb64()
-            })
-            .collect();
+        let said_strings: Vec<String> = saids.iter().map(|s| s.qb64()).collect();
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .r#in("said", said_strings);
@@ -190,7 +178,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         said: &cesr::Digest,
     ) -> Result<Option<SignedKeyEvent>, KelsError> {
-        use cesr::Matter;
         let said_str = said.qb64();
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
@@ -296,13 +283,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if saids.is_empty() {
             return Ok(0);
         }
-        let said_strings: Vec<String> = saids
-            .iter()
-            .map(|s| {
-                use cesr::Matter;
-                s.qb64()
-            })
-            .collect();
+        let said_strings: Vec<String> = saids.iter().map(|s| s.qb64()).collect();
         let delete = Delete::<KeyEvent>::for_table(self.events_table).r#in("said", said_strings);
         Ok(self.tx.delete(delete).await?)
     }
@@ -328,13 +309,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             return Ok(());
         }
 
-        let adversary_said_strings: Vec<String> = adversary_saids
-            .iter()
-            .map(|s| {
-                use cesr::Matter;
-                s.qb64()
-            })
-            .collect();
+        let adversary_said_strings: Vec<String> =
+            adversary_saids.iter().map(|s| s.qb64()).collect();
 
         // Fetch events and signatures to archive
         let event_query = Query::<KeyEvent>::for_table(self.events_table)
@@ -410,7 +386,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         diverged_at: u64,
         rec_previous: &cesr::Digest,
     ) -> Result<Vec<cesr::Digest>, KelsError> {
-        use cesr::Matter;
         // Build owner SAID set by walking backward from rec_previous.
         // Since rec/rot haven't been inserted yet, only pre-existing owner
         // events are in the DB.
@@ -455,7 +430,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         diverged_at: u64,
         rec_previous: &cesr::Digest,
     ) -> Result<Vec<cesr::Digest>, KelsError> {
-        use cesr::Matter;
         let (adversary, adversary_has_chain) =
             self.find_adversary_event(diverged_at, rec_previous).await?;
 
@@ -613,8 +587,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         } else if kel_verification.is_empty() && first_previous.is_none() {
             self.handle_new_kel(events).await
         } else {
-            self.handle_full_path(&kel_verification, events, prefix.as_ref())
-                .await
+            self.handle_full_path(&kel_verification, events).await
         }
     }
 
@@ -700,7 +673,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         events: &[SignedKeyEvent],
-        prefix: &str,
     ) -> Result<MergeOutcome, KelsError> {
         // Contested KELs reject all submissions
         if kel_verification.is_contested() {
@@ -771,7 +743,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let new_count = new_events.len();
         if kel_verification.is_divergent() {
             let (result, diverged_at) = self
-                .handle_divergent_submission(kel_verification, &new_events, prefix)
+                .handle_divergent_submission(kel_verification, &new_events)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -781,7 +753,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             })
         } else {
             let (result, diverged_at) = self
-                .handle_overlap_submission(kel_verification, &new_events, prefix)
+                .handle_overlap_submission(kel_verification, &new_events)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -799,7 +771,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
-        _prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
         let prefix_digest = self.prefix_digest()?;
         let Some(diverged_at) = kel_verification.diverged_at_serial() else {
@@ -994,7 +965,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
-        _prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
         let prefix_digest = self.prefix_digest()?;
         if kel_verification.is_divergent() || kel_verification.is_contested() {

@@ -11,6 +11,7 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 use anyhow::{anyhow, Result};
+use cesr::Matter;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
@@ -183,7 +184,6 @@ impl Stats {
 
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
-    use cesr::Matter;
     let prefix_digest = cesr::Digest::from_qb64(prefix)?;
     let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
     let events = kels_core::resolve_key_events(

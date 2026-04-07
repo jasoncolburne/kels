@@ -612,10 +612,7 @@ impl Hash for SignedKeyEvent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.event.said.hash(state);
         let mut sigs: Vec<_> = self.signatures.iter().map(|s| &s.signature).collect();
-        sigs.sort_unstable_by_key(|s| {
-            use cesr::Matter;
-            s.qb64()
-        });
+        sigs.sort_unstable();
         for sig in sigs {
             sig.hash(state);
         }

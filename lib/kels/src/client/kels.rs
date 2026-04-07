@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -248,10 +249,7 @@ impl KelsClient {
                 break;
             }
 
-            current_since = last_said.map(|d| {
-                use cesr::Matter;
-                d.qb64()
-            });
+            current_since = last_said.map(|d| d.qb64());
         }
 
         if !exhausted {
@@ -360,10 +358,7 @@ impl KelsClient {
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: {
-                use cesr::Matter;
-                crate::generate_nonce().qb64()
-            },
+            nonce: crate::generate_nonce().qb64(),
             cursor: cursor.map(|s| s.to_string()),
             limit: Some(limit),
         };

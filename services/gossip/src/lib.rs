@@ -46,6 +46,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
+use cesr::Matter;
 use redis::AsyncCommands;
 use thiserror::Error;
 
@@ -362,7 +363,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Transfer verified registry KELs to local store for anchoring checks
     {
-        use cesr::Matter;
         let registry_kel_store =
             kels_core::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
         for prefix_str in &registry_prefixes {

@@ -12,6 +12,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use dashmap::DashMap;
 use kels_core::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
@@ -495,11 +496,8 @@ pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_id): Path<String>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
-    let proposal_digest = {
-        use cesr::Matter;
-        cesr::Digest::from_qb64(&proposal_id)
-            .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?
-    };
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_id)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?;
 
     if let Some(addition) = state
         .node
@@ -773,11 +771,8 @@ pub async fn admin_vote_proposal(
     Path(proposal_id): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    let proposal_digest = {
-        use cesr::Matter;
-        cesr::Digest::from_qb64(&proposal_id)
-            .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?
-    };
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_id)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?;
 
     // 1. Verify vote SAID integrity
     vote.verify_said()
@@ -1272,7 +1267,6 @@ pub async fn get_member_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    use cesr::Matter;
     let prefix_digest = cesr::Digest::from_qb64(&prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let since_digest = query

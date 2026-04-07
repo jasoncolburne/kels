@@ -1,6 +1,7 @@
 //! Development and testing command handlers.
 
 use anyhow::{Result, anyhow, bail};
+use cesr::Matter;
 use colored::Colorize;
 use kels_core::{EventKind, KelStore, ProviderConfig};
 
@@ -8,7 +9,6 @@ use crate::Cli;
 use crate::helpers::*;
 
 pub(crate) async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> Result<()> {
-    use cesr::Matter;
     println!(
         "{}",
         format!("Truncating local KEL {} to {} events...", prefix, count).yellow()
@@ -50,7 +50,6 @@ pub(crate) async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> R
 }
 
 pub(crate) async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
-    use cesr::Matter;
     let prefix_digest = cesr::Digest::from_qb64(prefix).map_err(|e| anyhow!("{}", e))?;
     let kel_store = create_kel_store(cli, prefix)?;
     let source = kels_core::StoreKelSource::new(&kel_store);
@@ -75,7 +74,6 @@ pub(crate) async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &str) -> Result<()> {
-    use cesr::Matter;
     use kels_core::KeyEventBuilder;
 
     println!(

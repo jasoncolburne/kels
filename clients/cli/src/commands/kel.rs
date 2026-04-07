@@ -208,8 +208,6 @@ pub(crate) async fn cmd_rotate_recovery(
 }
 
 pub(crate) async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> {
-    use cesr::Matter;
-
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let sig = key_provider
         .sign(data.as_bytes())

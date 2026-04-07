@@ -833,7 +833,6 @@ impl SyncHandler {
         &self,
         prefix: &str,
     ) -> Result<Option<(String, bool)>, SyncError> {
-        use cesr::Matter;
         let prefix_digest = cesr::Digest::from_qb64(prefix).map_err(|e| {
             SyncError::Kels(KelsError::HttpError(format!("Invalid prefix CESR: {}", e)))
         })?;

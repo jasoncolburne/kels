@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
+use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
     FileKelStore, FileSadStore, KelsClient, SoftwareProviderConfig, VerificationKeyCode,
@@ -90,7 +91,6 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
 }
 
 pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
-    use cesr::Matter;
     let dir = kel_dir(cli)?;
     match cesr::Digest::from_qb64(prefix) {
         Ok(prefix_digest) => {

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cesr::Matter;
 use verifiable_storage::{Order, Query, TransactionExecutor};
 
 use crate::{
@@ -61,13 +62,7 @@ pub async fn load_signed_history(
         return Ok((vec![], false));
     }
 
-    let saids: Vec<String> = events
-        .iter()
-        .map(|e| {
-            use cesr::Matter;
-            e.said.qb64()
-        })
-        .collect();
+    let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
     let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
@@ -104,13 +99,7 @@ pub async fn load_signed_history_tail(
     // Reverse to serial-ascending order
     events.reverse();
 
-    let saids: Vec<String> = events
-        .iter()
-        .map(|e| {
-            use cesr::Matter;
-            e.said.qb64()
-        })
-        .collect();
+    let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
     let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();

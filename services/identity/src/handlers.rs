@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
     ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
@@ -163,10 +164,7 @@ pub async fn get_key_events(
     let since_digest = query
         .since
         .as_deref()
-        .map(|s| {
-            use cesr::Matter;
-            cesr::Digest::from_qb64(s)
-        })
+        .map(cesr::Digest::from_qb64)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(

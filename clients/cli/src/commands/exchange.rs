@@ -52,7 +52,6 @@ pub(crate) fn parse_kem_algorithm(
 }
 
 async fn current_establishment_serial(cli: &Cli, prefix: &str) -> Result<u64> {
-    use cesr::Matter;
     let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let kel_store = create_kel_store(cli, prefix)?;
     let verification = kels_core::completed_verification(
