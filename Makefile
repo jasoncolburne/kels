@@ -167,14 +167,7 @@ vote-nodes:
 	scripts/vote-nodes.sh registry-a registry-b registry-c -- node-a node-b node-c node-d node-e node-f
 
 restart-gossip-services:
-	@for node in a b c d e f; do \
-		echo "Restarting gossip on node-$$node..."; \
-		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
-	done
-	@for node in a b c d e f; do \
-		echo "Waiting for node-$$node..."; \
-		kubectl rollout status deployment/gossip -n kels-node-$$node; \
-	done
+	scripts/restart-gossip.sh
 
 restart-gossip-services-staggered:
 	@for node in a b c d e f; do \

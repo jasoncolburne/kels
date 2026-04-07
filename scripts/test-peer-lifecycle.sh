@@ -20,12 +20,15 @@ echo "  Node: $NODE"
 echo "  Registries: ${REGISTRIES[*]}"
 echo
 
+ALL_NODES=(node-a node-b node-c node-d node-e node-f)
+
 # --- Phase 1: Remove peer ---
 echo "--- Phase 1: Remove $NODE ---"
 PROPOSAL=$(propose_remove "$NODE")
 echo "Removal proposal: $PROPOSAL"
 vote_all "$PROPOSAL" "${REGISTRIES[@]}"
-restart_gossip "$NODE"
+"$SCRIPTS_DIR/restart-gossip.sh" "${ALL_NODES[@]}"
+wait_for_gossip 120 "${ALL_NODES[@]}"
 echo
 
 # --- Phase 2: Verify blackout ---
@@ -38,7 +41,8 @@ echo "--- Phase 3: Re-add $NODE ---"
 PROPOSAL=$(propose_add "$NODE")
 echo "Addition proposal: $PROPOSAL"
 vote_all "$PROPOSAL" "${REGISTRIES[@]}"
-restart_gossip "$NODE"
+"$SCRIPTS_DIR/restart-gossip.sh" "${ALL_NODES[@]}"
+wait_for_gossip 120 "${ALL_NODES[@]}"
 
 echo
 echo "=== Peer Lifecycle Test Complete ==="
