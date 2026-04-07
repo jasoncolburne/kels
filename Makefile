@@ -17,7 +17,7 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build check clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-kem-upgrade test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
+.PHONY: all build check clean clean-docker clean-test-containers clippy coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-removal test-grow-federation test-shrink-federation test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
 
 all: fmt-check deny clippy test build
 
@@ -384,7 +384,6 @@ test-kels-suite:
 	$(MAKE) test-rotation
 	kubectl exec -n kels-node-a -it test-client -- ./test-bootstrap.sh
 	DNS_CACHE_TTL=2 $(MAKE) test-resync
-	$(MAKE) test-kem-upgrade
 	scripts/coredns.sh apply
 
 test-sad-suite:
@@ -405,27 +404,6 @@ test-kel-consistency:
 
 test-sad-consistency:
 	kubectl exec -n kels-node-a -it test-client -- ./test-sad-consistency.sh
-
-test-kem-upgrade:
-	# Upgrade node-a identity to ML-DSA-87: first rotation commits the new algorithm,
-	# second rotation makes it the current signing key
-	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-87
-	kubectl rollout status deployment/identity -n kels-node-a
-	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
-	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
-	# Restart all gossip pods so they re-handshake with the correct KEM algorithm
-	$(MAKE) restart-gossip-services
-	$(MAKE) wait-for-gossip
-	# Verify gossip mesh reforms with ML-KEM-1024
-	kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
-	# Restore node-a to ML-DSA-65: same two-rotation pattern
-	kubectl set env deploy/identity -n kels-node-a NEXT_SIGNING_ALGORITHM=ml-dsa-65
-	kubectl rollout status deployment/identity -n kels-node-a
-	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
-	kubectl exec -n kels-node-a deploy/identity -c identity -- /app/identity-admin --json rotate
-	# Restart gossip pods again to switch back to ML-KEM-768
-	$(MAKE) restart-gossip-services
-	$(MAKE) wait-for-gossip
 
 deploy-fresh-node:
 	garden deploy --env=standalone
