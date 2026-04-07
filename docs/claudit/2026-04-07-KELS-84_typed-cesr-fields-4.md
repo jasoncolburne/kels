@@ -16,21 +16,21 @@ All 14 findings from rounds 1-3 are resolved. All 2 findings from round 4 are re
 
 ## Low Priority
 
-### 1. Inline `use http_body_util::BodyExt` in bench client
+### ~~1. Inline `use http_body_util::BodyExt` in bench client~~ — RESOLVED
 
 **File:** `clients/bench/src/main.rs:273`
 
-`use http_body_util::BodyExt;` is inside the `run_worker()` function body, which is not in a `#[cfg(test)]` or `#[cfg(feature = "...")]` block. CLAUDE.md states: "Never import inline within function bodies, unless inside a feature-gated block." This import was introduced in this branch as part of the bench rewrite.
+~~`use http_body_util::BodyExt;` is inside the `run_worker()` function body, which is not in a `#[cfg(test)]` or `#[cfg(feature = "...")]` block. CLAUDE.md states: "Never import inline within function bodies, unless inside a feature-gated block." This import was introduced in this branch as part of the bench rewrite.~~
 
-**Suggested fix:** Move `use http_body_util::BodyExt;` to file-level imports in the external crates group.
+**Resolution:** Moved `use http_body_util::BodyExt;` to file-level imports in the external crates group.
 
-### 2. `to_string()` instead of `qb64()` for signature verification in sadstore
+### ~~2. `to_string()` instead of `qb64()` for signature verification in sadstore~~ — RESOLVED
 
 **File:** `services/sadstore/src/handlers.rs:591`
 
-The signature verification uses `r.pointer.said.to_string().as_bytes()`, while every other signing/verification site in the codebase uses `.qb64().as_bytes()` (e.g., `verification.rs:108`, `verification.rs:813`, `builder.rs:672`, `essr.rs:118`, `repair_tests.rs:122`). Functionally identical since `Display` for `Digest` writes the qb64 field, but inconsistent with the established pattern. If the `Display` impl ever diverged from `qb64()`, this would silently break signature verification.
+~~The signature verification uses `r.pointer.said.to_string().as_bytes()`, while every other signing/verification site in the codebase uses `.qb64().as_bytes()` (e.g., `verification.rs:108`, `verification.rs:813`, `builder.rs:672`, `essr.rs:118`, `repair_tests.rs:122`). Functionally identical since `Display` for `Digest` writes the qb64 field, but inconsistent with the established pattern. If the `Display` impl ever diverged from `qb64()`, this would silently break signature verification.~~
 
-**Suggested fix:** Change to `r.pointer.said.qb64().as_bytes()` to match the rest of the codebase.
+**Resolution:** Changed to `r.pointer.said.qb64().as_bytes()` to match the rest of the codebase.
 
 ---
 
