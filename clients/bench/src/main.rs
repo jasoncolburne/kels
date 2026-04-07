@@ -215,7 +215,9 @@ async fn create_test_kel(
     let prefix = icp.event.prefix.clone();
 
     for i in 1..event_count {
-        if i % 5 == 0 {
+        if i == 32 {
+            builder.rotate_recovery().await?; // prevents an additional event at 64 events
+        } else if i % 5 == 0 {
             builder.rotate().await?;
         } else {
             let anchor = test_anchor(&format!("test_anchor_{}", i));
@@ -237,7 +239,7 @@ async fn setup_new_kels(
 ) -> Result<Vec<TestKelConfig>> {
     println!("{}", "Setting up test KELs...".green().bold());
 
-    let lengths = [1, 2, 4, 8, 16, 32];
+    let lengths = [1, 2, 4, 8, 16, 32, 64];
     let mut singular_kels = Vec::new();
     for &len in &lengths {
         println!("  Creating {}-event KEL...", len);
