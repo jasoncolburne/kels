@@ -453,7 +453,7 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
                 println!(
                     "  [{}] {} ({})",
                     i,
-                    &AsRef::<str>::as_ref(&record.said)[..16],
+                    &record.said.as_ref()[..16],
                     record.created_at
                 );
                 println!(

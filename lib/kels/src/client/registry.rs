@@ -724,7 +724,7 @@ async fn verify_proposal_dag_standalone<'a>(
 
     let eligible_votes: Vec<&Vote> = votes
         .iter()
-        .filter(|v| v.approve && member_prefixes.contains(AsRef::<str>::as_ref(&v.voter)))
+        .filter(|v| v.approve && member_prefixes.contains(v.voter.as_ref()))
         .collect();
 
     let mut proposer_voted = false;

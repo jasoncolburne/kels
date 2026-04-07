@@ -463,8 +463,8 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
     let source_peer = peers
         .iter()
         .find(|p| {
-            AsRef::<str>::as_ref(&p.peer_prefix)
-                == AsRef::<str>::as_ref(&message.source_node_prefix)
+            p.peer_prefix
+                == message.source_node_prefix
         })
         .ok_or_else(|| {
             anyhow!(

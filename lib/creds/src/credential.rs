@@ -871,7 +871,7 @@ mod tests {
             .find(|v| {
                 v.get("policy")
                     .and_then(|p| p.as_str())
-                    .is_some_and(|p| p == AsRef::<str>::as_ref(&policy.said))
+                    .is_some_and(|p| p == policy.said.as_ref())
             })
             .unwrap();
         let compacted_cred: Credential<TestClaims> =

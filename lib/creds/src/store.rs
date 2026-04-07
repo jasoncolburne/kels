@@ -44,7 +44,7 @@ pub async fn store_credentials(
             .ok_or_else(|| {
                 CredentialError::InvalidCredential("credential has no schema field".to_string())
             })?;
-        if cred_schema != AsRef::<str>::as_ref(&schema.said) {
+        if cred_schema != schema.said.as_ref() {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {cred_schema}, \
                  provided schema has {}",

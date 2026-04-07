@@ -143,7 +143,7 @@ async fn cmd_status(identity_client: &IdentityClient, json: bool) -> anyhow::Res
             println!(
                 "  {}: {}",
                 "Prefix".cyan(),
-                AsRef::<str>::as_ref(prefix).yellow()
+                prefix.as_ref().yellow()
             );
         }
         if let Some(ref said) = status.last_said {

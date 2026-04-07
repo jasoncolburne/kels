@@ -224,7 +224,7 @@ impl KeyEventRepository {
         // For divergent prefixes, replace the single tip SAID with a deterministic
         // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
-            if divergent_prefixes.contains(AsRef::<str>::as_ref(&state.prefix))
+            if divergent_prefixes.contains(state.prefix.as_ref())
                 && let Some((effective, _)) = self
                     .compute_prefix_effective_said(state.prefix.as_ref())
                     .await?
