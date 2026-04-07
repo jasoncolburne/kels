@@ -327,7 +327,7 @@ seed-kels:
 	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 500 5 ml-dsa-65 50 
 
 seed-sads:
-	kubectl exec -n kels-node-a -it test-client -- ./load-sads.sh 581 50
+	kubectl exec -n kels-node-a -it test-client -- ./load-sads.sh 560 50
 
 wait-for-gossip:
 	@echo "Waiting for all gossip nodes to be ready (timeout: 120s)..."
