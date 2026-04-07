@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# test-sad-consistency.sh - Deep SAD Chain Consistency Verification
-# Compares all SAD chain prefixes and chain contents across nodes.
+# test-sad-consistency.sh - Deep SAD Consistency Verification
+# Compares all SAD chain prefixes, chain contents, and SAD objects across nodes.
 #
-# For each node with test endpoints, fetches all chain prefixes, then for each
-# prefix fetches the full chain. Verifies:
+# For each node with test endpoints, fetches all chain prefixes and SAD object
+# SAIDs, then for each prefix/object compares across ALL nodes. Verifies:
 #   1. All nodes have the same set of chain prefixes
 #   2. All chains have the same number of pointers on each node
 #   3. A SHA-256 digest of each chain matches across all nodes
-#   4. SAD objects referenced by chains exist on all nodes
+#   4. All nodes have the same set of SAD objects
 #
 # Usage: test-sad-consistency.sh
 #
@@ -43,7 +43,7 @@ declare -a NODE_URLS=(
     "http://${NODE_F_SADSTORE_HOST}"
 )
 
-# Nodes with KELS_TEST_ENDPOINTS enabled (unauthenticated test prefixes endpoint)
+# Nodes with KELS_TEST_ENDPOINTS enabled (unauthenticated listing endpoints)
 declare -a PREFIX_NODE_NAMES=(a b d)
 declare -a PREFIX_NODE_URLS=(
     "http://${NODE_A_SADSTORE_HOST}"
@@ -56,12 +56,12 @@ init_temp_dir
 FAILURES=0
 
 echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}  SAD Chain Consistency Verification${NC}"
+echo -e "${CYAN}  SAD Consistency Verification${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo
 
-# --- Step 1: Fetch all chain prefixes from test-endpoint nodes ---
-echo -e "${YELLOW}Fetching SAD chain prefixes from test-endpoint nodes...${NC}"
+# --- Step 1: Fetch all chain prefixes and SAD object SAIDs from test-endpoint nodes ---
+echo -e "${YELLOW}Fetching chain prefixes and SAD object SAIDs from test-endpoint nodes...${NC}"
 
 declare -a REACHABLE_NAMES=()
 declare -a REACHABLE_URLS=()
@@ -70,10 +70,13 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     name="${PREFIX_NODE_NAMES[$i]}"
     url="${PREFIX_NODE_URLS[$i]}"
     prefix_file="$TEMP_DIR/sad_prefixes_${name}.txt"
+    objects_file="$TEMP_DIR/sad_objects_${name}.txt"
 
-    cursor=""
     > "$prefix_file"
+    > "$objects_file"
 
+    # Fetch chain prefixes
+    cursor=""
     reachable=true
     while true; do
         if [ -n "$cursor" ]; then
@@ -97,49 +100,12 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
         fi
     done
 
-    if $reachable; then
-        count=$(wc -l < "$prefix_file" | tr -d ' ')
-        echo -e "  node-${name}: ${GREEN}${count} chain prefixes${NC}"
-        REACHABLE_NAMES+=("$name")
-        REACHABLE_URLS+=("$url")
+    if ! $reachable; then
+        continue
     fi
-done
 
-echo
-
-if [ ${#REACHABLE_NAMES[@]} -lt 2 ]; then
-    echo -e "${RED}Fewer than 2 test-endpoint nodes reachable, cannot compare.${NC}"
-    exit 1
-fi
-
-# Build list of all reachable nodes for chain comparison
-declare -a ALL_REACHABLE_NAMES=()
-declare -a ALL_REACHABLE_URLS=()
-
-for i in "${!NODE_NAMES[@]}"; do
-    name="${NODE_NAMES[$i]}"
-    url="${NODE_URLS[$i]}"
-
-    if curl -sf "${url}/health" > /dev/null 2>&1; then
-        ALL_REACHABLE_NAMES+=("$name")
-        ALL_REACHABLE_URLS+=("$url")
-    fi
-done
-
-echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for comparison${NC}"
-echo
-
-# --- Step 1b: Fetch all SAD object SAIDs from test-endpoint nodes ---
-echo -e "${YELLOW}Fetching SAD object SAIDs from test-endpoint nodes...${NC}"
-
-for i in "${!REACHABLE_NAMES[@]}"; do
-    name="${REACHABLE_NAMES[$i]}"
-    url="${REACHABLE_URLS[$i]}"
-    objects_file="$TEMP_DIR/sad_objects_${name}.txt"
-
+    # Fetch SAD object SAIDs
     cursor=""
-    > "$objects_file"
-
     while true; do
         if [ -n "$cursor" ]; then
             body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
@@ -162,13 +128,39 @@ for i in "${!REACHABLE_NAMES[@]}"; do
 
     # Deduplicate (wrapping pagination may return objects from the beginning on the last page)
     sort -u -o "$objects_file" "$objects_file"
-    count=$(wc -l < "$objects_file" | tr -d ' ')
-    echo -e "  node-${name}: ${GREEN}${count} SAD objects${NC}"
+
+    prefix_count=$(wc -l < "$prefix_file" | tr -d ' ')
+    object_count=$(wc -l < "$objects_file" | tr -d ' ')
+    echo -e "  node-${name}: ${GREEN}${prefix_count} chain prefixes, ${object_count} SAD objects${NC}"
+    REACHABLE_NAMES+=("$name")
+    REACHABLE_URLS+=("$url")
 done
 
 echo
 
-# --- Step 2: Compare prefix sets ---
+if [ ${#REACHABLE_NAMES[@]} -lt 2 ]; then
+    echo -e "${RED}Fewer than 2 test-endpoint nodes reachable, cannot compare.${NC}"
+    exit 1
+fi
+
+# Build list of all reachable nodes for comparison
+declare -a ALL_REACHABLE_NAMES=()
+declare -a ALL_REACHABLE_URLS=()
+
+for i in "${!NODE_NAMES[@]}"; do
+    name="${NODE_NAMES[$i]}"
+    url="${NODE_URLS[$i]}"
+
+    if curl -sf "${url}/health" > /dev/null 2>&1; then
+        ALL_REACHABLE_NAMES+=("$name")
+        ALL_REACHABLE_URLS+=("$url")
+    fi
+done
+
+echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for comparison${NC}"
+echo
+
+# --- Step 2: Compare chain prefix sets ---
 echo -e "${YELLOW}Comparing chain prefix sets...${NC}"
 
 reference_name="${REACHABLE_NAMES[0]}"
@@ -236,43 +228,8 @@ fi
 
 echo
 
-# --- Step 2c: Verify SAD objects exist on all reachable nodes ---
-echo -e "${YELLOW}Verifying SAD objects across all nodes...${NC}"
-
-cat "$TEMP_DIR"/sad_objects_*.txt | sort -u > "$TEMP_DIR/all_sad_objects.txt"
-total_objects=$(wc -l < "$TEMP_DIR/all_sad_objects.txt" | tr -d ' ')
-obj_checked=0
-obj_missing=0
-
-while IFS= read -r said; do
-    ((obj_checked++))
-    printf "\r  Checking object %d/%d..." "$obj_checked" "$total_objects"
-
-    for i in "${!ALL_REACHABLE_NAMES[@]}"; do
-        name="${ALL_REACHABLE_NAMES[$i]}"
-        url="${ALL_REACHABLE_URLS[$i]}"
-
-        http_code=$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/${said}/exists")
-        if [ "$http_code" != "200" ]; then
-            echo
-            echo -e "  ${RED}MISSING object ${said} on node-${name} (HTTP ${http_code})${NC}"
-            ((obj_missing++))
-            ((FAILURES++))
-        fi
-    done
-done < "$TEMP_DIR/all_sad_objects.txt"
-
-echo
-if [ "$obj_missing" -eq 0 ]; then
-    echo -e "  ${GREEN}All ${total_objects} SAD objects present on all ${#ALL_REACHABLE_NAMES[@]} nodes${NC}"
-else
-    echo -e "  ${RED}${obj_missing} missing object(s) across nodes${NC}"
-fi
-
-echo
-
-# --- Step 3: For each prefix, compare pointer counts and chain digests ---
-echo -e "${YELLOW}Comparing SAD chains across nodes...${NC}"
+# --- Step 3: For each prefix, compare pointer counts and chain digests across ALL nodes ---
+echo -e "${YELLOW}Comparing SAD chains across all nodes...${NC}"
 
 cat "$TEMP_DIR"/sad_prefixes_*.txt | sort -u > "$TEMP_DIR/all_sad_prefixes.txt"
 total_prefixes=$(wc -l < "$TEMP_DIR/all_sad_prefixes.txt" | tr -d ' ')
@@ -421,6 +378,40 @@ else
     [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} pointer count mismatches${NC}"
     [ "$chain_mismatches" -gt 0 ] && echo -e "  ${RED}${chain_mismatches} chain digest mismatches${NC}"
     [ "$divergent_consistent" -gt 0 ] && echo -e "  ${YELLOW}${divergent_consistent} mismatched chain(s) with consistent divergent state${NC}"
+fi
+
+# --- Step 4: Verify SAD objects exist on all nodes ---
+echo
+echo -e "${YELLOW}Verifying SAD objects across all nodes...${NC}"
+
+cat "$TEMP_DIR"/sad_objects_*.txt | sort -u > "$TEMP_DIR/all_sad_objects.txt"
+total_objects=$(wc -l < "$TEMP_DIR/all_sad_objects.txt" | tr -d ' ')
+obj_checked=0
+obj_missing=0
+
+while IFS= read -r said; do
+    ((obj_checked++))
+    printf "\r  Checking object %d/%d..." "$obj_checked" "$total_objects"
+
+    for i in "${!ALL_REACHABLE_NAMES[@]}"; do
+        name="${ALL_REACHABLE_NAMES[$i]}"
+        url="${ALL_REACHABLE_URLS[$i]}"
+
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/${said}/exists")
+        if [ "$http_code" != "200" ]; then
+            echo
+            echo -e "  ${RED}MISSING object ${said} on node-${name} (HTTP ${http_code})${NC}"
+            ((obj_missing++))
+            ((FAILURES++))
+        fi
+    done
+done < "$TEMP_DIR/all_sad_objects.txt"
+
+echo
+if [ "$obj_missing" -eq 0 ]; then
+    echo -e "  ${GREEN}All ${total_objects} SAD objects present on all ${#ALL_REACHABLE_NAMES[@]} nodes${NC}"
+else
+    echo -e "  ${RED}${obj_missing} missing object(s) across nodes${NC}"
 fi
 
 # --- Summary ---
