@@ -10,12 +10,11 @@ PREFIX="$1"
 NODES=(a b c d e f)
 LOGS_DIR="$(cd "$(dirname "$0")/.." && pwd)/logs"
 
-mkdir -p "$LOGS_DIR"
+mkdir -p "$LOGS_DIR/$PREFIX"
 
 for node in "${NODES[@]}"; do
   echo "Fetching node-$node..."
-  curl -s "http://kels.node-$node.kels/api/v1/kels/kel/$PREFIX" | jq . > "$LOGS_DIR/node-$node.kel" &
-  kubectl logs -l app=gossip --tail 10000 -n "kels-node-$node" | grep -A2 -B2 "$PREFIX" > "$LOGS_DIR/node-$node.gossip" 2>&1 &
+  curl -s "http://kels.node-$node.kels/api/v1/kels/kel/$PREFIX" | jq . > "$LOGS_DIR/$PREFIX/node-$node.kel" &
 done
 
 wait
