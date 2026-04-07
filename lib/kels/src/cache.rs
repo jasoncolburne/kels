@@ -395,12 +395,28 @@ impl ServerKelCache {
         Ok(())
     }
 
+    /// Get full KEL as pre-serialized bytes using a raw string key (no CESR parsing).
+    /// Used on the hot path to avoid `from_qb64` overhead on every cached request.
+    pub async fn get_full_serialized_str(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
+        self.get_full_serialized_inner(prefix).await
+    }
+
     /// Get full KEL as pre-serialized bytes (for returning directly to client)
     pub async fn get_full_serialized(
         &self,
         prefix: &cesr::Digest,
     ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
         let prefix_str: &str = prefix.as_ref();
+        self.get_full_serialized_inner(prefix_str).await
+    }
+
+    async fn get_full_serialized_inner(
+        &self,
+        prefix_str: &str,
+    ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
         // Check local cache first
         {
             let mut local = self.local_cache.write().await;

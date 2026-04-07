@@ -11,7 +11,6 @@ use std::{
 use tokio::{sync::Mutex, task::JoinSet};
 
 use anyhow::{anyhow, Result};
-use cesr::Matter;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
@@ -90,7 +89,6 @@ struct Stats {
     histogram: Mutex<Histogram<u64>>,
     success_count: AtomicU64,
     error_count: AtomicU64,
-    bytes_received: AtomicU64,
     throughput_only: bool,
 }
 
@@ -118,17 +116,15 @@ impl Stats {
             ),
             success_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
-            bytes_received: AtomicU64::new(0),
             throughput_only,
         }
     }
 
-    async fn record_success(&self, latency_us: u64, bytes: u64) {
+    async fn record_success(&self, latency_us: u64) {
         if !self.throughput_only {
             self.histogram.lock().await.record(latency_us).unwrap_or(());
         }
         self.success_count.fetch_add(1, Ordering::Relaxed);
-        self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn record_error(&self) {
@@ -140,17 +136,15 @@ impl Stats {
         histogram.reset();
         self.success_count.store(0, Ordering::Relaxed);
         self.error_count.store(0, Ordering::Relaxed);
-        self.bytes_received.store(0, Ordering::Relaxed);
     }
 
-    async fn print_results(&self, elapsed: Duration, test_name: &str) {
+    async fn print_results(&self, elapsed: Duration, test_name: &str, bytes_per_request: u64) {
         let histogram = self.histogram.lock().await;
         let success = self.success_count.load(Ordering::Relaxed);
         let errors = self.error_count.load(Ordering::Relaxed);
         let total = success + errors;
         let throughput = success as f64 / elapsed.as_secs_f64();
-        let bytes = self.bytes_received.load(Ordering::Relaxed);
-        let bytes_per_sec = bytes as f64 / elapsed.as_secs_f64();
+        let bytes_per_sec = success as f64 * bytes_per_request as f64 / elapsed.as_secs_f64();
 
         println!();
         println!("{}", format!("=== {} Results ===", test_name).cyan().bold());
@@ -166,11 +160,7 @@ impl Stats {
         println!("  Data:        {:>10}", format_throughput(bytes_per_sec));
         println!();
 
-        if success == 0 {
-            println!(
-                "{}",
-                "No successful requests to report latency statistics.".red()
-            );
+        if success == 0 || self.throughput_only {
             return;
         }
 
@@ -267,75 +257,54 @@ async fn setup_existing_kels(url: &str, prefix: &str) -> Result<Vec<TestKelConfi
     Ok(vec![config])
 }
 
-#[derive(Clone)]
-enum BenchmarkType {
-    Health,
-    GetKel { prefix: String, kel_bytes: u64 },
-}
+type BenchClient = hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    http_body_util::Empty<hyper::body::Bytes>,
+>;
 
 async fn run_worker(
-    url: String,
+    client: BenchClient,
+    uri: hyper::Uri,
     stats: Arc<Stats>,
     running: Arc<AtomicBool>,
-    benchmark_type: BenchmarkType,
 ) {
-    let client = match KelsClient::new(&url) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to build HTTP client: {}", e);
-            return;
-        }
-    };
-    let source = match HttpKelSource::new(&url, "/api/v1/kels/kel/{prefix}") {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to build HTTP source: {}", e);
-            return;
-        }
-    };
-
-    // Pre-parse prefix digest if needed
-    let prefix_digest = match &benchmark_type {
-        BenchmarkType::GetKel { prefix, .. } => match cesr::Digest::from_qb64(prefix) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                eprintln!("Invalid prefix CESR: {}", e);
-                return;
-            }
-        },
-        _ => None,
-    };
+    use http_body_util::BodyExt;
 
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
-        let result: Result<u64, _> = match (&benchmark_type, &prefix_digest) {
-            (BenchmarkType::Health, _) => client.health().await.map(|_| 0),
-            (BenchmarkType::GetKel { kel_bytes, .. }, Some(pd)) => kels_core::benchmark_key_events(
-                pd,
-                &source,
-                kels_core::page_size(),
-                kels_core::max_pages(),
-                None,
-            )
-            .await
-            .map(|_| *kel_bytes),
-            _ => unreachable!(),
+        let ok = match client.get(uri.clone()).await {
+            Ok(resp) => {
+                // Drain body frame-by-frame without large allocations
+                let mut body = resp.into_body();
+                let mut success = true;
+                while let Some(frame) = body.frame().await {
+                    if frame.is_err() {
+                        success = false;
+                        break;
+                    }
+                }
+                success
+            }
+            Err(_) => false,
         };
 
         let latency_us = start.elapsed().as_micros() as u64;
 
-        match result {
-            Ok(bytes) => stats.record_success(latency_us, bytes).await,
-            Err(_) => stats.record_error(),
+        if ok {
+            stats.record_success(latency_us).await;
+        } else {
+            stats.record_error();
         }
     }
 }
 
 async fn run_benchmark(
     args: &Args,
+    hyper_client: &BenchClient,
     stats: Arc<Stats>,
-    benchmark_type: BenchmarkType,
+    uri: hyper::Uri,
     test_name: &str,
+    bytes_per_request: u64,
 ) -> Result<()> {
     println!(
         "{}",
@@ -353,13 +322,13 @@ async fn run_benchmark(
     let running = Arc::new(AtomicBool::new(true));
     let mut tasks = JoinSet::new();
     for _ in 0..args.concurrency {
-        let url = args.url.clone();
+        let client = hyper_client.clone();
+        let uri = uri.clone();
         let stats = stats.clone();
         let running = running.clone();
-        let benchmark_type = benchmark_type.clone();
 
         tasks.spawn(async move {
-            run_worker(url, stats, running, benchmark_type).await;
+            run_worker(client, uri, stats, running).await;
         });
     }
 
@@ -380,32 +349,49 @@ async fn run_benchmark(
     let elapsed = start.elapsed();
     running.store(false, Ordering::Relaxed);
     while (tasks.join_next().await).is_some() {}
-    stats.print_results(elapsed, test_name).await;
+    stats
+        .print_results(elapsed, test_name, bytes_per_request)
+        .await;
 
     Ok(())
 }
 
 async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<()> {
     let stats = Arc::new(Stats::new(args.throughput_only));
+    let hyper_client =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
 
+    let health_uri: hyper::Uri = format!("{}/api/v1/health", args.url)
+        .parse()
+        .expect("Invalid health URL");
     run_benchmark(
         args,
+        &hyper_client,
         stats.clone(),
-        BenchmarkType::Health,
+        health_uri,
         "health (baseline)",
+        0,
     )
     .await?;
     stats.reset().await;
 
     for config in singular_kels {
+        let kel_uri: hyper::Uri = format!(
+            "{}/api/v1/kels/kel/{}?limit={}",
+            args.url,
+            config.prefix,
+            kels_core::page_size()
+        )
+        .parse()
+        .expect("Invalid KEL URL");
         run_benchmark(
             args,
+            &hyper_client,
             stats.clone(),
-            BenchmarkType::GetKel {
-                prefix: config.prefix.clone(),
-                kel_bytes: config.kel_bytes,
-            },
+            kel_uri,
             &format!("get_kel ({} events)", config.event_count),
+            config.kel_bytes,
         )
         .await?;
         stats.reset().await;

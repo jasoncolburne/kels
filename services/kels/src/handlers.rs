@@ -506,39 +506,17 @@ pub(crate) async fn get_kel(
     Path(prefix): Path<String>,
     Query(params): Query<KeyEventsQuery>,
 ) -> Result<Response, ApiError> {
-    use cesr::Matter;
-
-    let prefix_digest = cesr::Digest::from_qb64(&prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let since_digest = params
-        .since
-        .as_deref()
-        .map(cesr::Digest::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
-
     let limit = params
         .limit
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
 
-    // Delta fetch path — canonical since-resolution
-    if since_digest.is_some() {
-        let page = kels_core::serve_kel_page(
-            &state.repo.key_events,
-            &prefix_digest,
-            since_digest.as_ref(),
-            limit,
-        )
-        .await?;
-        return Ok(Json(page).into_response());
-    }
-
-    // Full fetch path — try cache for default limit
-    if limit as usize == kels_core::page_size()
+    // Full fetch path — try cache first using raw string key (no CESR parsing)
+    if params.since.is_none()
+        && limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
-        match kel_cache.get_full_serialized(&prefix_digest).await {
+        match kel_cache.get_full_serialized_str(&prefix).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -555,12 +533,28 @@ pub(crate) async fn get_kel(
         }
     }
 
-    // Cache miss or non-default limit — canonical full fetch
-    let page =
-        kels_core::serve_kel_page(&state.repo.key_events, &prefix_digest, None, limit).await?;
+    // Cache miss — parse prefix and since to typed CESR
+    use cesr::Matter;
+    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
+    let since_digest = params
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
+
+    let page = kels_core::serve_kel_page(
+        &state.repo.key_events,
+        &prefix_digest,
+        since_digest.as_ref(),
+        limit,
+    )
+    .await?;
 
     // Store in cache (skips if too large per cache logic)
-    if !page.has_more
+    if since_digest.is_none()
+        && !page.has_more
         && let Some(ref kel_cache) = state.kel_cache
         && let Err(e) = kel_cache.store(&prefix_digest, &page.events).await
     {

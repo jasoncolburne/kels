@@ -764,19 +764,6 @@ pub async fn resolve_key_events(
     Ok(sink.into_events().await)
 }
 
-/// Benchmark: pages through source, discards events (no verification, no collection).
-///
-/// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
-pub async fn benchmark_key_events(
-    prefix: &cesr::Digest,
-    source: &(dyn PagedKelSource + Sync),
-    page_size: usize,
-    max_pages: usize,
-    since: Option<&cesr::Digest>,
-) -> Result<(), KelsError> {
-    transfer_key_events(prefix, source, &NoOpSink, None, page_size, max_pages, since).await
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
