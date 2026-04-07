@@ -61,7 +61,8 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Man-in-the-Middle (HTTP)
 
 **Attack:** Intercept HTTP traffic between gossip nodes and KELS services.
-- **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. All data is public by design (KELs must be accessible for verification) and end-verifiable (SAID chaining + cryptographic signatures). A MITM can observe public data or inject modified events that fail signature validation. TLS is not required because there is no confidential data to protect and integrity is already guaranteed at the application layer.
+- **Mitigation:** Events are signed at the application layer — modifying event data invalidates signatures. All data is public by design (KELs must be accessible for verification) and end-verifiable (SAID chaining + cryptographic signatures). A MITM can observe public data or inject modified events that fail signature validation. TLS is not required for integrity or confidentiality because all data is public and tamper-evident at the application layer.
+- **Residual risk:** Without TLS, an observer can correlate traffic patterns (which nodes communicate, request timing, payload sizes) to infer relationships between nodes and activity patterns. Deployments that require traffic analysis resistance should enable TLS on inter-service HTTP. TLS can be configured at the infrastructure layer (e.g., service mesh, reverse proxy) without affecting KELS operation.
 
 ### Man-in-the-Middle (Gossip)
 
@@ -119,7 +120,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ## Summary of Residual Risks
 
 1. ~~**No rate limiting on any endpoint**~~ — mitigated: per-IP rate limiting on write endpoints (token bucket), per-prefix rate limiting on `submit_events` (32/min), max 500 events per submission, 5 MiB body limit
-2. ~~**No TLS at application level**~~ — not required: all data is public by design and end-verifiable via signatures and SAID chaining. TLS would add confidentiality for non-confidential data and integrity for data that is already tamper-evident
+2. **Traffic correlation without TLS** — integrity and confidentiality are not at risk (application-layer signatures + public data), but traffic analysis can correlate node communication patterns. Enable TLS at the infrastructure layer for deployments requiring traffic analysis resistance
 3. ~~**Advisory lock contention under high concurrency**~~ — mitigated: per-prefix rate limiting (32/min) bounds contention
 4. ~~**Bootstrap peer can serve outdated snapshots**~~ — accepted risk: caught by resync, all data cryptographically verified, worst case is temporary delay
 5. ~~**60-second replay window on signed requests**~~ — mitigated: nonce-based deduplication within the 60s timestamp window eliminates replay
@@ -139,9 +140,9 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 - [x] Add per-peer rate limiting on gossip announcement processing (8192 fetches/min per peer)
 - [x] Add per-prefix submission throttle to `submit_events` (32 submissions/min per prefix, in-memory via DashMap)
 
-### ~~TLS between services (addresses residual risk 2)~~
+### TLS between services (addresses residual risk 2)
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption on the p2p transport.
+Not required for integrity or confidentiality — all inter-service data is public by design and end-verifiable (cryptographic signatures + SAID chaining). The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption on the p2p transport. However, without TLS on inter-service HTTP, traffic analysis (correlation of request timing, payload sizes, and communication partners) remains possible. Deployments that require traffic analysis resistance can enable TLS at the infrastructure layer (service mesh, reverse proxy) without any changes to KELS configuration or operation.
 
 ### ~~Gossip protocol hardening (addresses residual risks 8, 9)~~
 
