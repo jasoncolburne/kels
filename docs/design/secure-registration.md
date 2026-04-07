@@ -252,7 +252,7 @@ kubectl logs -n node-a deploy/gossip | grep PeerPrefix
 In addition to registry authentication, the gossip layer verifies connections during the handshake:
 
 1. Exchange 44-byte prefixes
-2. ML-KEM-768/1024 key exchange — initiator generates keypair and sends encapsulation key (qb64), acceptor encapsulates and sends ciphertext back (qb64), both derive shared secret
+2. ML-KEM-1024 key exchange — initiator generates keypair and sends encapsulation key (qb64), acceptor encapsulates and sends ciphertext back (qb64), both derive shared secret
 3. Mutual ML-DSA-65/87 signature exchange — each side signs JSON payload `{our_ek, their_ek, their_prefix}`
 4. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
 5. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
@@ -280,7 +280,7 @@ Nodes periodically refresh their allowlist from the registry's `/api/v1/peers` e
 ### Defense in Depth
 
 1. **Registry layer:** Signature verification + allowlist check
-2. **Gossip layer:** Connection filtering during ML-KEM-768/1024 + ML-DSA-65/87 handshake
+2. **Gossip layer:** Connection filtering during ML-KEM-1024 + ML-DSA-65/87 handshake
 3. **Admin access:** CLI requires kubectl exec (same trust as cluster admin)
 
 ### Signature Algorithm

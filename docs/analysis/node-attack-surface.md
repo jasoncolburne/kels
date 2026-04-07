@@ -66,7 +66,7 @@ The KELS service has no identity or signing authority. It stores and serves KELs
 ### Man-in-the-Middle (Gossip)
 
 **Attack:** Intercept gossip traffic between nodes.
-- **Mitigation:** The gossip protocol uses ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication with AES-GCM-256 authenticated encryption. Session keys are derived from the ML-KEM shared secret via BLAKE3 KDF. Each peer's handshake signature (ML-DSA-65/87) is verified against their KEL public key via the verified allowlist. Only ML-DSA-65/87 peers are accepted. Modifying messages invalidates the AES-GCM authentication tag. The protocol provides post-quantum security.
+- **Mitigation:** The gossip protocol uses ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication with AES-GCM-256 authenticated encryption. Session keys are derived from the ML-KEM shared secret via BLAKE3 KDF. Each peer's handshake signature (ML-DSA-65/87) is verified against their KEL public key via the verified allowlist. Only ML-DSA-65/87 peers are accepted. Modifying messages invalidates the AES-GCM authentication tag. The protocol provides post-quantum security.
 
 ### Replay Attack (Gossip)
 
@@ -141,7 +141,7 @@ No application-level rate limiting exists on any KELS endpoint. Advisory lock co
 
 ### ~~TLS between services (addresses residual risk 2)~~
 
-~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption on the p2p transport.
+~~No TLS at the application level.~~ Not required — all inter-service data is public by design (KELs must be accessible for verification) and end-verifiable (cryptographic signatures + SAID chaining). TLS would add confidentiality for non-confidential data and transport-level integrity for data whose integrity is already guaranteed at the application layer. The gossip layer uses ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 for authenticated encryption on the p2p transport.
 
 ### ~~Gossip protocol hardening (addresses residual risks 8, 9)~~
 
