@@ -235,7 +235,7 @@ async fn verify_edges<T: Claims>(
             .get("schema")
             .and_then(|s| s.as_str())
             .unwrap_or("");
-        if cred_schema_said != AsRef::<str>::as_ref(&edge_schema.said) {
+        if cred_schema_said != edge_schema.said.as_ref() {
             return Err(CredentialError::VerificationError(format!(
                 "edge '{label}': credential schema {cred_schema_said} does not match \
                  edge schema {}",

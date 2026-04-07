@@ -7,45 +7,37 @@ Branch replaces `String` fields with typed CESR types throughout the codebase an
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High     | 0    | 0        |
-| Medium   | 1    | 0        |
-| Low      | 1    | 0        |
+| Medium   | 0    | 1        |
+| Low      | 0    | 1        |
 
-All 20 findings from rounds 1-5 are resolved.
+All 20 findings from rounds 1-5 are resolved. Both findings from this round also resolved.
 
 ---
 
 ## Medium Priority
 
-### 1. Remaining `E`-prefix CESR test values should use `K`-prefix
+### ~~1. Remaining `E`-prefix CESR test values should use `K`-prefix~~ — RESOLVED
 
 **Files:**
 - `services/sadstore/tests/integration_tests.rs:306,329`
 - `services/sadstore/tests/repair_tests.rs:201,526`
 - `clients/test/scripts/test-sadstore.sh:181,193`
 
-Six test values still use `E`-prefix CESR strings (`Enonexistent...`, `Ewrong...`) while the rest of the branch has been updated to `K`-prefix (Blake3-256). The shell script was partially updated — line 197 uses `Knonexistent` but lines 181 and 193 still use `Enonexistent`. The Rust integration tests were not updated at all.
+~~Six test values still use `E`-prefix CESR strings (`Enonexistent...`, `Ewrong...`) while the rest of the branch has been updated to `K`-prefix (Blake3-256). The shell script was partially updated — line 197 uses `Knonexistent` but lines 181 and 193 still use `Enonexistent`. The Rust integration tests were not updated at all.~~
 
-Specific values to update:
-- `integration_tests.rs:306` — `"Ewrong_said_that_does_not_match_content_"` (40 chars, needs padding to 44 with `K` prefix)
-- `integration_tests.rs:329` — `"Enonexistent_said_should_return_404_______"` → `K` prefix
-- `repair_tests.rs:201` — `"Enonexistent_prefix_____________________________"` → `K` prefix
-- `repair_tests.rs:526` — `"Enonexistent_repair_said________________________"` → `K` prefix
-- `test-sadstore.sh:181` — `Enonexistent____________________________________` → `K` prefix
-- `test-sadstore.sh:193` — `Enonexistent____________________________________` → `K` prefix
-
-**Suggested fix:** Update all six values to use `K`-prefix with 44-character length, matching the convention used everywhere else in the branch.
+**Resolution:** All six values updated to `K`-prefix with 44-character length (e.g., `Kwrong_said_that_does_not_match_content_data`, `Knonexistent_said_should_return_404_______`, `Knonexistent_prefix_________________________`, `Knonexistent_repair_said____________________`).
 
 ---
 
 ## Low Priority
 
-### 2. `record_stale` and `record_stale_prefix` take `&str` instead of `&cesr::Digest`
+### ~~2. `record_stale` and `record_stale_prefix` take `&str` instead of `&cesr::Digest`~~ — RESOLVED
 
 **Files:** `services/gossip/src/sync.rs:335,999-1002`
 
-`SyncHandler::record_stale(&self, prefix: &str, source_node_prefix: &str)` and the public `record_stale_prefix(redis, kel_prefix: &str, source_node_prefix: &str)` both take raw string slices. All call sites convert typed digests via `.as_ref()` (lines 768, 804, 1445) or pass already-string variables from bootstrap (line 497-500). Since these write to Redis (which stores strings), the conversion is at an appropriate boundary, but accepting `&cesr::Digest` would be more consistent with the rest of the typed API and eliminate the `.as_ref()` calls at each call site.
+~~`SyncHandler::record_stale(&self, prefix: &str, source_node_prefix: &str)` and the public `record_stale_prefix(redis, kel_prefix: &str, source_node_prefix: &str)` both take raw string slices. All call sites convert typed digests via `.as_ref()`.~~
 
-**Suggested fix:** Change parameters to `&cesr::Digest` and call `.as_ref()` once inside the function body. Low priority since correctness is unaffected.
+**Resolution:** Both functions now accept `&cesr::Digest` parameters. The `.as_ref()` conversion to `&str` happens inside the function body at the Redis boundary, which is the correct pattern.
 
 ---
 
