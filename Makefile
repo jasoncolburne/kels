@@ -255,7 +255,6 @@ restart-gossip-services:
 	@for node in a b c d e f; do \
 		echo "Waiting for node-$$node..."; \
 		kubectl rollout status deployment/gossip -n kels-node-$$node; \
-		sleep 10; \
 	done
 
 restart-gossip-services-staggered:
