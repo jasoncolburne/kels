@@ -685,7 +685,7 @@ pub(crate) async fn get_effective_said(
 /// Shared query logic for listing prefixes.
 async fn query_prefixes(
     state: &AppState,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     let limit = limit.unwrap_or(100).clamp(1, 1000);
@@ -760,7 +760,7 @@ pub(crate) async fn list_prefixes(
 
     query_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -776,7 +776,7 @@ pub(crate) async fn test_list_prefixes(
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     query_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await

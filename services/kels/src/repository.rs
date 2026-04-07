@@ -152,7 +152,7 @@ impl KeyEventRepository {
     /// have the same divergent branches. See [`kels_core::compute_effective_said`] for details.
     pub async fn list_prefixes(
         &self,
-        since: Option<&str>,
+        since: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<PrefixListResponse, StorageError> {
         // DISTINCT ON (prefix) with secondary sort by serial DESC ensures we
@@ -164,10 +164,7 @@ impl KeyEventRepository {
             .limit(limit as u64 + 1);
 
         if let Some(cursor) = since {
-            query = query.filter(Filter::Gt(
-                "prefix".to_string(),
-                Value::String(cursor.to_string()),
-            ));
+            query = query.gt("prefix", cursor.as_ref());
         }
 
         let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
@@ -183,7 +180,7 @@ impl KeyEventRepository {
         // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.to_string())
+            prefix_states.last().map(|s| s.prefix.clone())
         } else if let Some(cursor) = since {
             // Wrap around: fill remaining slots from prefixes <= cursor
             // (the beginning of the prefix space). No duplicates because
@@ -194,7 +191,7 @@ impl KeyEventRepository {
                     .distinct_on("prefix")
                     .order_by("prefix", Order::Asc)
                     .order_by("serial", Order::Desc)
-                    .lte("prefix", cursor)
+                    .lte("prefix", cursor.as_ref())
                     .limit(remaining as u64);
                 let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {

@@ -125,13 +125,13 @@ impl SadStoreClient {
     pub async fn fetch_sad_objects(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<crate::SadObjectListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: crate::generate_nonce().to_string(),
-            cursor: cursor.map(|s| s.to_string()),
+            cursor: cursor.cloned(),
             limit: Some(limit),
         };
         let signed = crate::sign_request(signer, &request).await?;
@@ -248,13 +248,13 @@ impl SadStoreClient {
     pub async fn fetch_sad_pointer_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: crate::generate_nonce().to_string(),
-            cursor: cursor.map(|s| s.to_string()),
+            cursor: cursor.cloned(),
             limit: Some(limit),
         };
         let signed = crate::sign_request(signer, &request).await?;

@@ -17,7 +17,7 @@ use crate::{
 ///
 /// # Arguments
 /// * `kel_prefix` - The KEL prefix (owner of the pointer chain)
-/// * `kind` - The pointer kind (e.g., "kels/v1/mlkem-encap-key")
+/// * `kind` - The pointer kind (e.g., "kels/exchange/v1/keys/mlkem")
 ///
 /// # Returns
 /// The computed pointer prefix string, or NULL on error.
@@ -307,7 +307,7 @@ mod tests {
     fn test_compute_sad_pointer_prefix() {
         let digest = cesr::Digest::blake3_256(b"test-prefix");
         let prefix = CString::new(digest.as_ref()).expect("cstring");
-        let kind = CString::new("kels/v1/mlkem-encap-key").expect("cstring");
+        let kind = CString::new("kels/exchange/v1/keys/mlkem").expect("cstring");
 
         let result = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };
 

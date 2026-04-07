@@ -542,7 +542,7 @@ pub(crate) async fn perform_kel_operation(
     Ok(ManageKelResponse {
         prefix,
         said: event.event.said.clone(),
-        event_kind: event_kind.short_name().to_string(),
+        event_kind,
         rotation_number,
         current_key_handle: current_handle,
     })

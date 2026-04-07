@@ -16,7 +16,7 @@ use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};
 use crate::error::ExchangeError;
 
 /// Blake3 KDF context for ESSR key derivation.
-const ESSR_KDF_CONTEXT: &str = "kels/v1/essr";
+const ESSR_KDF_CONTEXT: &str = "kels/exchange/v1/protocols/essr";
 
 /// Inner payload (encrypted). Sender inside ciphertext provides RUF-PTXT.
 ///
@@ -27,7 +27,7 @@ const ESSR_KDF_CONTEXT: &str = "kels/v1/essr";
 pub struct EssrInner {
     /// Sender's KEL prefix (must match envelope sender for consistency).
     pub sender: cesr::Digest,
-    /// Topic for payload interpretation (e.g. `"kels/v1/exchange"`, `"kels/v1/document"`).
+    /// Topic for payload interpretation (e.g. `"kels/exchange/v1/topics/exchange"`).
     pub topic: String,
     /// Opaque content, interpretation determined by topic.
     pub payload: Vec<u8>,
@@ -222,7 +222,7 @@ mod tests {
 
         let inner = EssrInner {
             sender: sender_prefix.clone(),
-            topic: "kels/v1/exchange".to_string(),
+            topic: "kels/exchange/v1/topics/exchange".to_string(),
             payload: b"hello world".to_vec(),
         };
 

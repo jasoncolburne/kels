@@ -15,7 +15,7 @@ Four UnForgeability properties:
 SEAL(inner, sender_serial, recipient_prefix, recipient_encap_key, sender_signing_key):
   1. inner_json = serialize(EssrInner { sender, topic, payload })
   2. (kem_ciphertext, shared_secret) = recipient_encap_key.encapsulate()
-  3. aes_key = blake3::derive_key("kels/v1/essr", &shared_secret)
+  3. aes_key = blake3::derive_key("kels/exchange/v1/protocols/essr", &shared_secret)
   4. nonce = random_12_bytes()
   5. encrypted = AES-GCM-256-encrypt(aes_key, nonce, inner_json)
   6. envelope = EssrEnvelope { said, sender, sender_serial, recipient, kem_ciphertext, encrypted, nonce, created_at }
@@ -31,7 +31,7 @@ OPEN(signed_envelope, recipient_decap_key, sender_verification_key):
   1. verify envelope SAID
   2. ML-DSA-verify(sender_verification_key, envelope.said, signature)
   3. shared_secret = recipient_decap_key.decapsulate(kem_ciphertext)
-  4. aes_key = blake3::derive_key("kels/v1/essr", &shared_secret)
+  4. aes_key = blake3::derive_key("kels/exchange/v1/protocols/essr", &shared_secret)
   5. inner_json = AES-GCM-256-decrypt(aes_key, nonce, encrypted)
   6. inner = deserialize(inner_json)
   7. assert inner.sender == envelope.sender
@@ -47,7 +47,7 @@ The caller is responsible for verifying the sender's KEL and extracting the veri
 ```rust
 pub struct EssrInner {
     pub sender: String,    // sender KEL prefix (inside ciphertext = RUF-PTXT)
-    pub topic: String,     // e.g. "kels/v1/exchange" — tells recipient how to parse payload
+    pub topic: String,     // e.g. "kels/exchange/v1/topics/exchange" — tells recipient how to parse payload
     pub payload: Vec<u8>,  // opaque content
 }
 ```
@@ -80,7 +80,7 @@ pub struct SignedEssrEnvelope {
 
 ## Key Publication
 
-ML-KEM encapsulation keys are published as SADStore pointer chains with kind `kels/v1/mlkem-encap-key`. The SADStore replicates them network-wide via gossip.
+ML-KEM encapsulation keys are published as SADStore pointer chains with kind `kels/exchange/v1/keys/mlkem`. The SADStore replicates them network-wide via gossip.
 
 **Publication flow:**
 1. Generate ML-KEM keypair (768 or 1024, matched to signing key strength)
@@ -88,7 +88,7 @@ ML-KEM encapsulation keys are published as SADStore pointer chains with kind `ke
 3. Create `EncapsulationKeyPublication` SAD object, upload to SADStore
 4. Create `SadPointer` chain (v0 inception + v1 with content_said), submit signed
 
-**Discovery:** Anyone computes the pointer prefix offline via `compute_sad_pointer_prefix(kel_prefix, "kels/v1/mlkem-encap-key")`, then queries any SADStore node for the latest record.
+**Discovery:** Anyone computes the pointer prefix offline via `compute_sad_pointer_prefix(kel_prefix, "kels/exchange/v1/keys/mlkem")`, then queries any SADStore node for the latest record.
 
 **Rotation:** Append a new version to the pointer chain with updated content_said. The tip record is always the current key.
 
@@ -104,7 +104,7 @@ pub struct EncapsulationKeyPublication {
 
 ## Exchange Messages
 
-IPEX-style credential exchange layered on ESSR. All exchange messages use topic `kels/v1/exchange`.
+IPEX-style credential exchange layered on ESSR. All exchange messages use topic `kels/exchange/v1/topics/exchange`.
 
 ### Kinds
 
@@ -172,6 +172,6 @@ All cryptographic operations use post-quantum algorithms:
 - **ML-KEM-768/1024** — key encapsulation (via `cesr` crate)
 - **ML-DSA-65/87** — digital signatures (via `cesr` crate)
 - **AES-GCM-256** — authenticated encryption (via `kels_core::crypto::aead`)
-- **Blake3** — key derivation with context `"kels/v1/essr"` (via `kels_core::crypto::aead::derive_aes_key`)
+- **Blake3** — key derivation with context `"kels/exchange/v1/protocols/essr"` (via `kels_core::crypto::aead::derive_aes_key`)
 
 Algorithm strength pairing: ML-DSA-65 pairs with ML-KEM-768; ML-DSA-87 pairs with ML-KEM-1024.

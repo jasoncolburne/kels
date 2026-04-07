@@ -18,7 +18,7 @@ pub fn hash_effective_said(input: &str) -> cesr::Digest {
 pub struct PaginatedSelfAddressedRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub cursor: Option<String>,
+    pub cursor: Option<cesr::Digest>,
     pub limit: Option<usize>,
 }
 
@@ -38,7 +38,7 @@ pub struct AdminRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PrefixListResponse {
     pub prefixes: Vec<PrefixState>,
-    pub next_cursor: Option<String>,
+    pub next_cursor: Option<cesr::Digest>,
 }
 
 /// A prefix with its latest SAID, used for bootstrap sync

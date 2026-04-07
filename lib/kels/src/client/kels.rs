@@ -270,7 +270,7 @@ impl KelsClient {
     pub async fn fetch_effective_said(
         &self,
         prefix: &cesr::Digest,
-    ) -> Result<Option<(String, bool)>, KelsError> {
+    ) -> Result<Option<(cesr::Digest, bool)>, KelsError> {
         let resp = self
             .client
             .get(format!(
@@ -282,7 +282,12 @@ impl KelsClient {
 
         if resp.status().is_success() {
             let body: serde_json::Value = resp.json().await?;
-            let said = body.get("said").and_then(|s| s.as_str()).map(String::from);
+            let said = body
+                .get("said")
+                .and_then(|s| s.as_str())
+                .map(cesr::Digest::from_qb64)
+                .transpose()
+                .map_err(|e| KelsError::HttpError(format!("Invalid effective SAID CESR: {}", e)))?;
             let divergent = body
                 .get("divergent")
                 .and_then(|d| d.as_bool())
@@ -353,13 +358,13 @@ impl KelsClient {
     pub async fn fetch_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: crate::generate_nonce().qb64(),
-            cursor: cursor.map(|s| s.to_string()),
+            cursor: cursor.cloned(),
             limit: Some(limit),
         };
         let signed = crate::sign_request(signer, &request).await?;

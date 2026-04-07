@@ -63,7 +63,7 @@ while true; do
 done
 
 # Extract rotation event kinds in order (rot, ror)
-ROTATION_KINDS=$(echo "$ALL_EVENTS" | jq -r '[.[] | .event | select(.kind == "kels/v1/rot" or .kind == "kels/v1/ror") | .kind] | .[]')
+ROTATION_KINDS=$(echo "$ALL_EVENTS" | jq -r '[.[] | .event | select(.kind == "kels/events/v1/rot" or .kind == "kels/events/v1/ror") | .kind] | .[]')
 echo "Rotation event kinds:"
 echo "$ROTATION_KINDS" | nl
 echo ""
@@ -78,16 +78,16 @@ echo "Total rotation events: $ROTATION_COUNT"
 run_test "At least 4 rotation events" [ "$ROTATION_COUNT" -ge 4 ]
 
 # Verify 3rd rotation (index 2) is ROR
-run_test "3rd rotation is ROR" [ "${KINDS[2]}" = "kels/v1/ror" ]
+run_test "3rd rotation is ROR" [ "${KINDS[2]}" = "kels/events/v1/ror" ]
 
 # Verify 4th rotation (index 3) is ROT
-run_test "4th rotation is ROT" [ "${KINDS[3]}" = "kels/v1/rot" ]
+run_test "4th rotation is ROT" [ "${KINDS[3]}" = "kels/events/v1/rot" ]
 
 # Verify 1st rotation (index 0) is ROT
-run_test "1st rotation is ROT" [ "${KINDS[0]}" = "kels/v1/rot" ]
+run_test "1st rotation is ROT" [ "${KINDS[0]}" = "kels/events/v1/rot" ]
 
 # Verify 2nd rotation (index 1) is ROT
-run_test "2nd rotation is ROT" [ "${KINDS[1]}" = "kels/v1/rot" ]
+run_test "2nd rotation is ROT" [ "${KINDS[1]}" = "kels/events/v1/rot" ]
 
 echo ""
 

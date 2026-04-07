@@ -114,7 +114,7 @@ pub enum ExchangePayload {
 }
 
 /// ESSR topic for exchange protocol messages.
-pub const EXCHANGE_TOPIC: &str = "kels/v1/exchange";
+pub const EXCHANGE_TOPIC: &str = "kels/exchange/v1/topics/exchange";
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

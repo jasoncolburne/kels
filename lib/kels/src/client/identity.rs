@@ -56,7 +56,7 @@ pub struct ManageKelRequest {
 pub struct ManageKelResponse {
     pub prefix: cesr::Digest,
     pub said: cesr::Digest,
-    pub event_kind: String,
+    pub event_kind: crate::EventKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation_number: Option<usize>,
     pub current_key_handle: String,

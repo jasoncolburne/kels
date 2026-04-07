@@ -18,13 +18,13 @@ use kels_exchange::MailAnnouncement;
 use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
 
 /// Default gossip topic name for KEL announcements
-pub const DEFAULT_TOPIC: &str = "kels/events/v1";
+pub const DEFAULT_TOPIC: &str = "kels/gossip/v1/topics/events";
 
 /// Gossip topic name for SAD store announcements
-pub const SAD_TOPIC: &str = "kels/sad/v1";
+pub const SAD_TOPIC: &str = "kels/gossip/v1/topics/sad";
 
 /// Gossip topic name for mail announcements
-pub const MAIL_TOPIC: &str = "kels/mail/v1";
+pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
 
 #[derive(Error, Debug)]
 pub enum GossipError {
@@ -181,12 +181,12 @@ mod tests {
 
     #[test]
     fn test_default_topic_constant() {
-        assert_eq!(DEFAULT_TOPIC, "kels/events/v1");
+        assert_eq!(DEFAULT_TOPIC, "kels/gossip/v1/topics/events");
     }
 
     #[test]
     fn test_sad_topic_constant() {
-        assert_eq!(SAD_TOPIC, "kels/sad/v1");
+        assert_eq!(SAD_TOPIC, "kels/gossip/v1/topics/sad");
     }
 
     #[test]

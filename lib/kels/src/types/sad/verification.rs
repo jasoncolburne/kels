@@ -360,7 +360,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -390,13 +390,13 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
         let mut v1 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -422,7 +422,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -446,7 +446,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -474,7 +474,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -504,7 +504,7 @@ mod tests {
         let (_, other_sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -524,7 +524,7 @@ mod tests {
         let (_, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -544,7 +544,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -578,7 +578,7 @@ mod tests {
         let (_, bad_sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -612,7 +612,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -650,7 +650,7 @@ mod tests {
         let (vk, sk) = test_keys();
         let v0 = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();

@@ -634,7 +634,7 @@ impl SadPointerRepository {
     /// Divergent chains get a synthetic effective SAID.
     pub async fn list_prefixes(
         &self,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<kels_core::PrefixListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
@@ -647,7 +647,7 @@ impl SadPointerRepository {
                 .limit(limit as u64 + 1);
 
         if let Some(cursor) = cursor {
-            query = query.gt("prefix", cursor);
+            query = query.gt("prefix", cursor.as_ref());
         }
 
         let records: Vec<SadPointer> = self.pool.fetch(query).await?;
@@ -662,7 +662,7 @@ impl SadPointerRepository {
 
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.to_string())
+            prefix_states.last().map(|s| s.prefix.clone())
         } else if let Some(cursor) = cursor {
             // Wrap around: fill remaining slots from prefixes <= cursor
             let remaining = limit - prefix_states.len();
@@ -672,7 +672,7 @@ impl SadPointerRepository {
                         .distinct_on("prefix")
                         .order_by("prefix", verifiable_storage_postgres::Order::Asc)
                         .order_by("version", verifiable_storage_postgres::Order::Desc)
-                        .lte("prefix", cursor)
+                        .lte("prefix", cursor.as_ref())
                         .limit(remaining as u64);
                 let wrap_records: Vec<SadPointer> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_records.into_iter().map(|r| kels_core::PrefixState {
@@ -780,7 +780,7 @@ impl SadObjectIndex {
     /// space (SAIDs <= cursor). Ensures unbiased random sampling for anti-entropy.
     pub async fn list(
         &self,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<kels_core::SadObjectListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
@@ -792,7 +792,7 @@ impl SadObjectIndex {
         .limit(limit as u64 + 1);
 
         if let Some(cursor) = cursor {
-            query = query.gt("sad_said", cursor);
+            query = query.gt("sad_said", cursor.as_ref());
         }
 
         let entries: Vec<kels_core::SadObjectEntry> = self.pool.fetch(query).await?;
@@ -801,7 +801,7 @@ impl SadObjectIndex {
 
         let next_cursor = if saids.len() > limit {
             saids.pop();
-            saids.last().map(|s| s.to_string())
+            saids.last().cloned()
         } else if let Some(cursor) = cursor {
             // Wrap around: fill remaining slots from SAIDs <= cursor
             let remaining = limit - saids.len();
@@ -811,7 +811,7 @@ impl SadObjectIndex {
                         Self::TABLE_NAME,
                     )
                     .order_by("sad_said", verifiable_storage_postgres::Order::Asc)
-                    .lte("sad_said", cursor)
+                    .lte("sad_said", cursor.as_ref())
                     .limit(remaining as u64);
                 let wrap_entries: Vec<kels_core::SadObjectEntry> =
                     self.pool.fetch(wrap_query).await?;

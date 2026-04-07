@@ -300,7 +300,7 @@ node_is_divergent_or_has_ror() {
     if [ "$status" = "DIVERGENT" ]; then
         return 0
     fi
-    kel_has_event_kind "$url" "$prefix" "kels/v1/ror"
+    kel_has_event_kind "$url" "$prefix" "kels/events/v1/ror"
 }
 
 # Poll until all nodes are either DIVERGENT or have a ror event (or timeout).

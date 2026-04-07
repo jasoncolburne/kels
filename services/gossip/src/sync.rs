@@ -295,13 +295,13 @@ pub struct SyncHandler {
     mail_client: kels_exchange::MailClient,
     signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
-    local_saids: HashMap<String, String>,
+    local_saids: HashMap<cesr::Digest, cesr::Digest>,
     /// Shared allowlist for peer URL lookups
     allowlist: SharedAllowlist,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
     /// Per-peer fetch rate limiting: maps peer_prefix -> (count, window_start)
-    peer_fetch_counts: HashMap<String, (u32, Instant)>,
+    peer_fetch_counts: HashMap<cesr::Digest, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
 }
@@ -339,13 +339,13 @@ impl SyncHandler {
     }
 
     /// Get all peer KELS URLs from the allowlist
-    async fn get_peer_kels_urls(&self) -> Vec<(String, String)> {
+    async fn get_peer_kels_urls(&self) -> Vec<(cesr::Digest, String)> {
         let guard = self.allowlist.read().await;
         guard
             .values()
             .map(|peer| {
                 (
-                    peer.peer_prefix.to_string(),
+                    peer.peer_prefix.clone(),
                     format!("http://kels.{}", peer.base_domain),
                 )
             })
@@ -548,7 +548,13 @@ impl SyncHandler {
         } else {
             local_said
                 .as_deref()
-                .and_then(|s| cesr::Digest::from_qb64(s).ok())
+                .and_then(|s| match cesr::Digest::from_qb64(s) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                        None
+                    }
+                })
         };
 
         let source = match remote_client.as_sad_source() {
@@ -638,32 +644,30 @@ impl SyncHandler {
         &mut self,
         announcement: KelAnnouncement,
     ) -> Result<(), SyncError> {
-        let prefix_str: &str = announcement.prefix.as_ref();
-        let remote_effective_said: &str = announcement.said.as_ref();
-
         // Get our local effective SAID for this prefix
-        let local_effective_said = self.get_local_effective_said(prefix_str).await?;
+        let local_effective_said = self.get_local_effective_said(&announcement.prefix).await?;
 
         // If effective SAIDs match, we're in sync
         if let Some(ref local) = local_effective_said
-            && local.as_str() == remote_effective_said
+            && local == &announcement.said
         {
-            debug!("Already in sync for prefix {}", prefix_str);
+            debug!("Already in sync for prefix {}", announcement.prefix);
             return Ok(());
         }
 
         // Application-level deduplication: if we already have this SAID, skip.
-        if self.kels_client.event_exists(remote_effective_said).await? {
+        let remote_said_str: &str = announcement.said.as_ref();
+        if self.kels_client.event_exists(remote_said_str).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
-                remote_effective_said, prefix_str
+                announcement.said, announcement.prefix
             );
             return Ok(());
         }
 
         info!(
             "SAID mismatch for {}: local_effective={:?}, remote={}, origin={}. Fetching from peers.",
-            prefix_str, local_effective_said, remote_effective_said, announcement.origin,
+            announcement.prefix, local_effective_said, announcement.said, announcement.origin,
         );
 
         // Build peer list with origin first, then remaining peers
@@ -671,12 +675,11 @@ impl SyncHandler {
         let mut peers = Vec::with_capacity(all_peers.len());
 
         // Origin peer goes first — they definitely have the event
-        let origin_str = announcement.origin.to_string();
-        if let Some(origin_peer) = all_peers.iter().find(|(pp, _)| pp == &origin_str) {
+        if let Some(origin_peer) = all_peers.iter().find(|(pp, _)| pp == &announcement.origin) {
             peers.push(origin_peer.clone());
         }
         for peer in &all_peers {
-            if peer.0 != origin_str {
+            if peer.0 != announcement.origin {
                 peers.push(peer.clone());
             }
         }
@@ -713,7 +716,7 @@ impl SyncHandler {
             // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
             // The KELS service publishes {prefix}:{effective_said} to kel_updates,
             // which matches this key for both divergent and non-divergent KELs.
-            let key = format!("{}:{}", prefix_str, remote_effective_said);
+            let key = format!("{}:{}", announcement.prefix, announcement.said);
             self.recently_stored
                 .write()
                 .await
@@ -726,11 +729,11 @@ impl SyncHandler {
             // reach events on other branches. Use full fetch instead.
             let remote_is_real_event = self
                 .kels_client
-                .event_exists(remote_effective_said)
+                .event_exists(remote_said_str)
                 .await
                 .unwrap_or(false);
             let since = if remote_is_real_event {
-                local_effective_said.as_deref()
+                local_effective_said.as_ref()
             } else {
                 None
             };
@@ -745,12 +748,13 @@ impl SyncHandler {
 
             match result {
                 Ok(()) => {
-                    self.refresh_local_effective_said(prefix_str).await;
-                    let new_said = self.local_saids.get(prefix_str).cloned();
+                    self.refresh_local_effective_said(&announcement.prefix)
+                        .await;
+                    let new_said = self.local_saids.get(&announcement.prefix).cloned();
                     if new_said != local_effective_said {
                         info!(
                             "Forwarded events for prefix {} from {}",
-                            prefix_str, kels_url
+                            announcement.prefix, kels_url
                         );
                         return Ok(());
                     }
@@ -759,39 +763,45 @@ impl SyncHandler {
                     // systematically from all peers later.
                     debug!(
                         "Forward from {} succeeded but no state change for {}",
-                        kels_url, prefix_str
+                        kels_url, announcement.prefix
                     );
-                    self.record_stale(prefix_str, announcement.origin.as_ref())
+                    self.record_stale(announcement.prefix.as_ref(), announcement.origin.as_ref())
                         .await;
                     return Ok(());
                 }
                 Err(KelsError::NotFound(_)) => {
-                    warn!("KEL not found on remote {} for {}", kels_url, prefix_str);
+                    warn!(
+                        "KEL not found on remote {} for {}",
+                        kels_url, announcement.prefix
+                    );
                     continue;
                 }
                 Err(KelsError::ContestedKel(_)) => {
                     debug!(
                         "KEL {} is already contested locally, skipping sync",
-                        prefix_str
+                        announcement.prefix
                     );
                     return Ok(());
                 }
                 Err(KelsError::ContestRequired) => {
                     debug!(
                         "KEL {} requires contest, cannot accept forwarded events from {}",
-                        prefix_str, kels_url
+                        announcement.prefix, kels_url
                     );
                     continue;
                 }
                 Err(e) => {
-                    warn!("Forward from {} failed for {}: {}", kels_url, prefix_str, e);
+                    warn!(
+                        "Forward from {} failed for {}: {}",
+                        kels_url, announcement.prefix, e
+                    );
                     continue;
                 }
             }
         }
 
         // No peer had the events — record as stale for anti-entropy repair
-        self.record_stale(prefix_str, announcement.origin.as_ref())
+        self.record_stale(announcement.prefix.as_ref(), announcement.origin.as_ref())
             .await;
         Ok(())
     }
@@ -802,8 +812,8 @@ impl SyncHandler {
     /// real event SAID for non-divergent). Cached to avoid repeated DB round-trips.
     async fn get_local_effective_said(
         &mut self,
-        prefix: &str,
-    ) -> Result<Option<String>, SyncError> {
+        prefix: &cesr::Digest,
+    ) -> Result<Option<cesr::Digest>, SyncError> {
         // Check our cache first
         if let Some(said) = self.local_saids.get(prefix) {
             return Ok(Some(said.clone()));
@@ -815,15 +825,15 @@ impl SyncHandler {
             .await?
             .map(|(said, _)| said);
         if let Some(ref said) = effective {
-            self.local_saids.insert(prefix.to_string(), said.clone());
+            self.local_saids.insert(prefix.clone(), said.clone());
         }
         Ok(effective)
     }
 
     /// Re-fetch effective tail SAID from local KELS and update cache.
-    async fn refresh_local_effective_said(&mut self, prefix: &str) {
+    async fn refresh_local_effective_said(&mut self, prefix: &cesr::Digest) {
         if let Ok(Some((effective, _))) = self.fetch_local_effective_said(prefix).await {
-            self.local_saids.insert(prefix.to_string(), effective);
+            self.local_saids.insert(prefix.clone(), effective);
         }
     }
 
@@ -831,13 +841,10 @@ impl SyncHandler {
     /// A wrong answer just triggers an unnecessary sync (which itself verifies).
     async fn fetch_local_effective_said(
         &self,
-        prefix: &str,
-    ) -> Result<Option<(String, bool)>, SyncError> {
-        let prefix_digest = cesr::Digest::from_qb64(prefix).map_err(|e| {
-            SyncError::Kels(KelsError::HttpError(format!("Invalid prefix CESR: {}", e)))
-        })?;
+        prefix: &cesr::Digest,
+    ) -> Result<Option<(cesr::Digest, bool)>, SyncError> {
         self.kels_client
-            .fetch_effective_said(&prefix_digest)
+            .fetch_effective_said(prefix)
             .await
             .map_err(SyncError::Kels)
     }
@@ -913,19 +920,17 @@ async fn forward_with_fallback(
     prefix: &cesr::Digest,
     source: &kels_core::HttpKelSource,
     sink: &kels_core::HttpKelSink,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
     max_pages: usize,
 ) -> Result<(), KelsError> {
-    if let Some(since_said) = since {
-        let since_digest = cesr::Digest::from_qb64(since_said)
-            .map_err(|e| KelsError::HttpError(format!("Invalid since SAID CESR: {}", e)))?;
+    if let Some(since_digest) = since {
         match kels_core::forward_key_events(
             prefix,
             source,
             sink,
             kels_core::page_size(),
             max_pages,
-            Some(&since_digest),
+            Some(since_digest),
         )
         .await
         {
@@ -1064,7 +1069,7 @@ pub(crate) async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
     prefix: &cesr::Digest,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
 ) -> RepairResult {
     let remote_source = match source.as_kel_source() {
         Ok(s) => s,
@@ -1275,11 +1280,11 @@ pub async fn run_anti_entropy_loop(
                             .await
                             .ok()
                             .flatten();
-                        let remote_said = remote_effective.as_ref().map(|(s, _)| s.as_ref());
+                        let remote_said = remote_effective.as_ref().map(|(s, _)| s);
                         let remote_is_divergent =
                             remote_effective.as_ref().map(|(_, d)| *d).unwrap_or(false);
 
-                        if remote_said == local_said.as_deref() {
+                        if remote_said == local_said.as_ref() {
                             continue;
                         }
                         any_peer_differs = true;
@@ -1290,7 +1295,7 @@ pub async fn run_anti_entropy_loop(
                         let since_for_sync = if remote_is_divergent {
                             None
                         } else {
-                            local_said.as_deref()
+                            local_said.as_ref()
                         };
                         let result =
                             sync_prefix(&remote, &local, &prefix_digest, since_for_sync).await;
@@ -1368,7 +1373,7 @@ pub async fn run_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce().to_string();
+        let random_cursor = kels_core::generate_nonce();
         let local_page = local_client
             .fetch_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1425,7 +1430,7 @@ pub async fn run_anti_entropy_loop(
                     let prefix = state.prefix.clone();
                     let since = local_said.clone();
                     async move {
-                        let result = sync_prefix(&remote, &local, &prefix, since.as_deref()).await;
+                        let result = sync_prefix(&remote, &local, &prefix, since.as_ref()).await;
                         (prefix, result)
                     }
                 })
@@ -1457,13 +1462,8 @@ pub async fn run_anti_entropy_loop(
                 .flatten()
                 .map(|(said, _)| said);
 
-            if let RepairResult::Repaired = sync_prefix(
-                &local_client,
-                &remote_client,
-                &state.prefix,
-                since.as_deref(),
-            )
-            .await
+            if let RepairResult::Repaired =
+                sync_prefix(&local_client, &remote_client, &state.prefix, since.as_ref()).await
             {
                 info!("Anti-entropy: pushed {} to remote", state.prefix);
             }
@@ -1627,9 +1627,18 @@ pub async fn run_sad_anti_entropy_loop(
                             let since_digest = if use_repair || local_divergent {
                                 None
                             } else {
-                                remote_said
-                                    .as_deref()
-                                    .and_then(|s| cesr::Digest::from_qb64(s).ok())
+                                remote_said.as_deref().and_then(|s| {
+                                    match cesr::Digest::from_qb64(s) {
+                                        Ok(d) => Some(d),
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to parse SAID for delta sync: {}: {}",
+                                                s, e
+                                            );
+                                            None
+                                        }
+                                    }
+                                })
                             };
                             if kels_core::forward_sad_pointer(
                                 &prefix_digest,
@@ -1661,9 +1670,18 @@ pub async fn run_sad_anti_entropy_loop(
                             let since_digest = if use_repair {
                                 None
                             } else {
-                                local_said
-                                    .as_deref()
-                                    .and_then(|s| cesr::Digest::from_qb64(s).ok())
+                                local_said.as_deref().and_then(|s| {
+                                    match cesr::Digest::from_qb64(s) {
+                                        Ok(d) => Some(d),
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to parse SAID for delta sync: {}: {}",
+                                                s, e
+                                            );
+                                            None
+                                        }
+                                    }
+                                })
                             };
                             if kels_core::forward_sad_pointer(
                                 &prefix_digest,
@@ -1725,7 +1743,7 @@ pub async fn run_sad_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce().to_string();
+        let random_cursor = kels_core::generate_nonce();
         let local_page = local_client
             .fetch_sad_pointer_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1832,7 +1850,13 @@ pub async fn run_sad_anti_entropy_loop(
                 } else {
                     remote_said
                         .as_deref()
-                        .and_then(|s| cesr::Digest::from_qb64(s).ok())
+                        .and_then(|s| match cesr::Digest::from_qb64(s) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                None
+                            }
+                        })
                 };
                 let prefix_str = prefix.to_string();
                 let prefix_d = prefix_digest.clone();
@@ -1868,7 +1892,13 @@ pub async fn run_sad_anti_entropy_loop(
                 } else {
                     local_said
                         .as_deref()
-                        .and_then(|s| cesr::Digest::from_qb64(s).ok())
+                        .and_then(|s| match cesr::Digest::from_qb64(s) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                None
+                            }
+                        })
                 };
                 let prefix_str = prefix.to_string();
                 let prefix_d = prefix_digest.clone();
@@ -1908,7 +1938,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         // Phase 3: Object comparison — compare SAD object sets with the same random peer
-        let obj_cursor = kels_core::generate_nonce().to_string();
+        let obj_cursor = kels_core::generate_nonce();
         let local_objects = local_client
             .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
             .await;

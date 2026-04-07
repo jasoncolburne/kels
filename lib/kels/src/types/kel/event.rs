@@ -15,35 +15,35 @@ use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
-    #[serde(rename = "kels/v1/icp")]
+    #[serde(rename = "kels/events/v1/icp")]
     Icp, // Inception
-    #[serde(rename = "kels/v1/dip")]
+    #[serde(rename = "kels/events/v1/dip")]
     Dip, // Delegated inception
-    #[serde(rename = "kels/v1/rot")]
+    #[serde(rename = "kels/events/v1/rot")]
     Rot, // Rotation
-    #[serde(rename = "kels/v1/ixn")]
+    #[serde(rename = "kels/events/v1/ixn")]
     Ixn, // Interaction (anchor)
-    #[serde(rename = "kels/v1/rec")]
+    #[serde(rename = "kels/events/v1/rec")]
     Rec, // Recovery (dual-signed)
-    #[serde(rename = "kels/v1/ror")]
+    #[serde(rename = "kels/events/v1/ror")]
     Ror, // Recovery rotation (dual-signed)
-    #[serde(rename = "kels/v1/dec")]
+    #[serde(rename = "kels/events/v1/dec")]
     Dec, // Decommission (dual-signed)
-    #[serde(rename = "kels/v1/cnt")]
+    #[serde(rename = "kels/events/v1/cnt")]
     Cnt, // Contest (dual-signed, freezes KEL)
 }
 
 impl EventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Icp => "kels/v1/icp",
-            Self::Dip => "kels/v1/dip",
-            Self::Rot => "kels/v1/rot",
-            Self::Ixn => "kels/v1/ixn",
-            Self::Rec => "kels/v1/rec",
-            Self::Ror => "kels/v1/ror",
-            Self::Dec => "kels/v1/dec",
-            Self::Cnt => "kels/v1/cnt",
+            Self::Icp => "kels/events/v1/icp",
+            Self::Dip => "kels/events/v1/dip",
+            Self::Rot => "kels/events/v1/rot",
+            Self::Ixn => "kels/events/v1/ixn",
+            Self::Rec => "kels/events/v1/rec",
+            Self::Ror => "kels/events/v1/ror",
+            Self::Dec => "kels/events/v1/dec",
+            Self::Cnt => "kels/events/v1/cnt",
         }
     }
 
@@ -171,14 +171,14 @@ impl FromStr for EventKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "kels/v1/icp" => Ok(Self::Icp),
-            "kels/v1/dip" => Ok(Self::Dip),
-            "kels/v1/rot" => Ok(Self::Rot),
-            "kels/v1/ixn" => Ok(Self::Ixn),
-            "kels/v1/rec" => Ok(Self::Rec),
-            "kels/v1/ror" => Ok(Self::Ror),
-            "kels/v1/dec" => Ok(Self::Dec),
-            "kels/v1/cnt" => Ok(Self::Cnt),
+            "kels/events/v1/icp" => Ok(Self::Icp),
+            "kels/events/v1/dip" => Ok(Self::Dip),
+            "kels/events/v1/rot" => Ok(Self::Rot),
+            "kels/events/v1/ixn" => Ok(Self::Ixn),
+            "kels/events/v1/rec" => Ok(Self::Rec),
+            "kels/events/v1/ror" => Ok(Self::Ror),
+            "kels/events/v1/dec" => Ok(Self::Dec),
+            "kels/events/v1/cnt" => Ok(Self::Cnt),
             _ => Err(KelsError::InvalidKeyEvent(format!(
                 "Unknown event kind: {}",
                 s

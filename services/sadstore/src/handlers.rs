@@ -802,7 +802,7 @@ const MAX_PREFIX_PAGE_SIZE: usize = 100;
 /// Shared query logic for listing SAD objects.
 async fn query_sad_objects(
     state: &AppState,
-    cursor: Option<&str>,
+    cursor: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit
@@ -821,7 +821,7 @@ async fn query_sad_objects(
 /// Shared query logic for listing SAD chain prefixes.
 async fn query_sad_prefixes(
     state: &AppState,
-    cursor: Option<&str>,
+    cursor: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit
@@ -860,7 +860,7 @@ pub async fn list_sad_objects(
 
     query_sad_objects(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -890,7 +890,7 @@ pub async fn list_sad_pointer_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -976,7 +976,7 @@ pub async fn test_list_sad_objects(
 
     query_sad_objects(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -996,7 +996,7 @@ pub async fn test_list_sad_pointer_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await

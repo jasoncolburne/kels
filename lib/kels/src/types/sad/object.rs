@@ -21,5 +21,5 @@ pub struct SadObjectEntry {
 #[serde(rename_all = "camelCase")]
 pub struct SadObjectListResponse {
     pub saids: Vec<cesr::Digest>,
-    pub next_cursor: Option<String>,
+    pub next_cursor: Option<cesr::Digest>,
 }

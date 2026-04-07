@@ -241,7 +241,7 @@ pub unsafe extern "C" fn kels_encap_key_publication_create(
 /// * `sender_prefix` - Sender's KEL prefix
 /// * `sender_serial` - Sender's latest establishment event serial
 /// * `recipient_prefix` - Recipient's KEL prefix
-/// * `topic` - Message topic (e.g., "kels/v1/exchange")
+/// * `topic` - Message topic (e.g., "kels/exchange/v1/topics/exchange")
 /// * `payload` - Raw payload bytes
 /// * `payload_len` - Length of payload
 /// * `recipient_encap_key_qb64` - Recipient's CESR-encoded encapsulation key
@@ -478,13 +478,13 @@ pub unsafe extern "C" fn kels_essr_open_result_free(result: *mut KelsEssrOpenRes
 /// Return the ENCAP_KEY_KIND constant for SADStore pointer chain lookups.
 ///
 /// # Returns
-/// Static string "kels/v1/mlkem-encap-key". Do NOT free this string.
+/// Static string "kels/exchange/v1/keys/mlkem". Do NOT free this string.
 #[unsafe(no_mangle)]
 pub extern "C" fn kels_encap_key_kind() -> *const c_char {
     // Static CString to ensure null-terminated lifetime
     static KIND: std::sync::LazyLock<CString> = std::sync::LazyLock::new(|| {
         CString::new(kels_exchange::ENCAP_KEY_KIND)
-            .unwrap_or_else(|_| CString::new("kels/v1/mlkem-encap-key").unwrap_or_default())
+            .unwrap_or_else(|_| CString::new("kels/exchange/v1/keys/mlkem").unwrap_or_default())
     });
     KIND.as_ptr()
 }
@@ -785,7 +785,7 @@ mod tests {
         assert!(!kind.is_null());
 
         let kind_str = crate::from_c_string(kind);
-        assert_eq!(kind_str, Some("kels/v1/mlkem-encap-key".to_string()));
+        assert_eq!(kind_str, Some("kels/exchange/v1/keys/mlkem".to_string()));
         // Do NOT free -- it's a static string
     }
 

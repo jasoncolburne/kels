@@ -23,7 +23,7 @@ Fields:
 - `previous` — SAID of previous record (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
 - `kel_prefix` — The owning KEL's prefix
-- `kind` — Record type (e.g., `kels/v1/mlkem-pubkey`)
+- `kind` — Record type (e.g., `kels/exchange/v1/keys/mlkem`)
 - `content_said` — SAID of the content object in MinIO (None for v0)
 
 ### Deterministic Prefix

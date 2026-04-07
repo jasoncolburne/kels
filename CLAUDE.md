@@ -50,7 +50,7 @@ Note: some older files may not follow this convention perfectly. When touching a
 - No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
 - This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
-- Never hardcode event kind strings (`"icp"`, `"kels/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
+- Never hardcode event kind strings (`"icp"`, `"kels/events/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 
 ## Core Concepts
 

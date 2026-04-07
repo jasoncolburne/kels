@@ -37,7 +37,7 @@ pub struct SadPointer {
     pub version: u64,
     /// The owning KEL's prefix.
     pub kel_prefix: cesr::Digest,
-    /// The pointer kind (e.g., `"kels/v1/mlkem-pubkey"`).
+    /// The pointer kind (e.g., `"kels/exchange/v1/keys/mlkem"`).
     pub kind: String,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,17 +159,20 @@ mod tests {
     #[test]
     fn test_compute_sad_pointer_prefix_deterministic() {
         let kel = test_digest(b"kel123");
-        let prefix1 = compute_sad_pointer_prefix(kel.clone(), "kels/v1/mlkem-pubkey").unwrap();
-        let prefix2 = compute_sad_pointer_prefix(kel, "kels/v1/mlkem-pubkey").unwrap();
+        let prefix1 =
+            compute_sad_pointer_prefix(kel.clone(), "kels/exchange/v1/keys/mlkem").unwrap();
+        let prefix2 = compute_sad_pointer_prefix(kel, "kels/exchange/v1/keys/mlkem").unwrap();
         assert_eq!(prefix1, prefix2);
     }
 
     #[test]
     fn test_compute_sad_pointer_prefix_different_inputs() {
         let prefix1 =
-            compute_sad_pointer_prefix(test_digest(b"kel123"), "kels/v1/mlkem-pubkey").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"kel123"), "kels/exchange/v1/keys/mlkem")
+                .unwrap();
         let prefix2 =
-            compute_sad_pointer_prefix(test_digest(b"kel456"), "kels/v1/mlkem-pubkey").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"kel456"), "kels/exchange/v1/keys/mlkem")
+                .unwrap();
         assert_ne!(prefix1, prefix2);
 
         let prefix3 =
@@ -181,7 +184,7 @@ mod tests {
     fn test_sad_record_inception_no_content() {
         let pointer = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -194,7 +197,7 @@ mod tests {
     fn test_sad_record_chain_increment() {
         let mut pointer = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -215,7 +218,7 @@ mod tests {
     fn test_signed_sad_record_serialization() {
         let pointer = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -236,7 +239,7 @@ mod tests {
     fn test_sad_record_verify_said() {
         let pointer = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();
@@ -252,7 +255,7 @@ mod tests {
     fn test_sad_record_verify_prefix() {
         let pointer = SadPointer::create(
             test_digest(b"kel123"),
-            "kels/v1/mlkem-pubkey".to_string(),
+            "kels/exchange/v1/keys/mlkem".to_string(),
             None,
         )
         .unwrap();

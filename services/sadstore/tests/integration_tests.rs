@@ -355,18 +355,22 @@ async fn test_post_sad_object_invalid_json_rejected() {
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_deterministic() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+            .unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+            .unwrap();
     assert_eq!(p1, p2);
 }
 
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_different_inputs() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/mlkem-pubkey").unwrap();
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+            .unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_b"), "kels/v1/mlkem-pubkey").unwrap();
+        compute_sad_pointer_prefix(test_digest(b"kel_prefix_b"), "kels/exchange/v1/keys/mlkem")
+            .unwrap();
     let p3 =
         compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);

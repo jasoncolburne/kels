@@ -174,14 +174,10 @@ impl BootstrapSync {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
-            let mut cursor: Option<String> = None;
+            let mut cursor: Option<cesr::Digest> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_objects(
-                        self.signer.as_ref(),
-                        cursor.as_deref(),
-                        self.config.page_size,
-                    )
+                    .fetch_sad_objects(self.signer.as_ref(), cursor.as_ref(), self.config.page_size)
                     .await
                 {
                     Ok(p) => p,
@@ -256,12 +252,12 @@ impl BootstrapSync {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
-            let mut cursor: Option<String> = None;
+            let mut cursor: Option<cesr::Digest> = None;
             loop {
                 let page = match remote_client
                     .fetch_sad_pointer_prefixes(
                         self.signer.as_ref(),
-                        cursor.as_deref(),
+                        cursor.as_ref(),
                         self.config.page_size,
                     )
                     .await
@@ -411,20 +407,17 @@ impl BootstrapSync {
         // Step 1: Collect all unique prefixes from all peers that need syncing.
         // Track (since_said, source_kels_url, source_peer_prefix) per kel prefix.
         info!("Collecting prefixes from {} peer(s)...", peers.len());
-        let mut all_prefixes: HashMap<String, (Option<String>, String, String)> = HashMap::new();
+        let mut all_prefixes: HashMap<String, (Option<cesr::Digest>, String, String)> =
+            HashMap::new();
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
             let peer_client = KelsClient::new(&peer_url)?;
-            let mut cursor: Option<String> = None;
+            let mut cursor: Option<cesr::Digest> = None;
 
             loop {
                 match peer_client
-                    .fetch_prefixes(
-                        self.signer.as_ref(),
-                        cursor.as_deref(),
-                        self.config.page_size,
-                    )
+                    .fetch_prefixes(self.signer.as_ref(), cursor.as_ref(), self.config.page_size)
                     .await
                 {
                     Ok(page) => {
@@ -476,7 +469,7 @@ impl BootstrapSync {
                         Err(_) => return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed),
                     };
                     let result =
-                        crate::sync::sync_prefix(&remote, &local, &prefix_digest, since.as_deref()).await;
+                        crate::sync::sync_prefix(&remote, &local, &prefix_digest, since.as_ref()).await;
                     (prefix, source_peer_prefix, result)
                 }
             })
@@ -533,13 +526,13 @@ impl BootstrapSync {
         &self,
         remote_state: &PrefixState,
         local_client: &KelsClient,
-    ) -> Option<Option<String>> {
+    ) -> Option<Option<cesr::Digest>> {
         match local_client
             .fetch_effective_said(&remote_state.prefix)
             .await
         {
             Ok(Some((local_effective, _))) => {
-                if local_effective.as_str() == remote_state.said.as_ref() {
+                if local_effective.as_ref() == remote_state.said.as_ref() {
                     None // In sync
                 } else {
                     Some(Some(local_effective)) // Delta fetch from this SAID
