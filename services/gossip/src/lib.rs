@@ -427,14 +427,26 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
                 // Wait 5 minutes before checking again
                 info!("Sleeping 5 minutes before rechecking allowlist...");
-                tokio::time::sleep(Duration::from_secs(300)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+                    _ = kels_core::shutdown_signal() => {
+                        info!("Shutdown signal received during allowlist wait");
+                        std::process::exit(0);
+                    }
+                }
             }
             Err(e) => {
                 warn!(
                     "Failed to check allowlist: {}. Retrying in 30 seconds...",
                     e
                 );
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                    _ = kels_core::shutdown_signal() => {
+                        info!("Shutdown signal received during allowlist wait");
+                        std::process::exit(0);
+                    }
+                }
             }
         }
     }
