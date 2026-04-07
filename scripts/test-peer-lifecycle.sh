@@ -21,6 +21,10 @@ echo "  Registries: ${REGISTRIES[*]}"
 echo
 
 ALL_NODES=(node-a node-b node-c node-d node-e node-f)
+ACTIVE_NODES=()
+for n in "${ALL_NODES[@]}"; do
+    [ "$n" != "$NODE" ] && ACTIVE_NODES+=("$n")
+done
 
 # --- Phase 1: Remove peer ---
 echo "--- Phase 1: Remove $NODE ---"
@@ -28,7 +32,7 @@ PROPOSAL=$(propose_remove "$NODE")
 echo "Removal proposal: $PROPOSAL"
 vote_all "$PROPOSAL" "${REGISTRIES[@]}"
 "$SCRIPTS_DIR/restart-gossip.sh" "${ALL_NODES[@]}"
-wait_for_gossip 120 "${ALL_NODES[@]}"
+wait_for_gossip 120 "${ACTIVE_NODES[@]}"
 echo
 
 # --- Phase 2: Verify blackout ---
