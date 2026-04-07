@@ -588,7 +588,7 @@ pub async fn submit_sad_pointer(
         };
 
         if verification_key
-            .verify(r.pointer.said.to_string().as_bytes(), &r.signature)
+            .verify(r.pointer.said.qb64().as_bytes(), &r.signature)
             .is_err()
         {
             return (

@@ -15,6 +15,7 @@ use cesr::Matter;
 use clap::Parser;
 use colored::Colorize;
 use hdrhistogram::Histogram;
+use http_body_util::BodyExt;
 use kels_core::{
     HttpKelSource, KelsClient, KeyEventBuilder, SoftwareKeyProvider, VerificationKeyCode,
 };
@@ -270,8 +271,6 @@ async fn run_worker(
     stats: Arc<Stats>,
     running: Arc<AtomicBool>,
 ) {
-    use http_body_util::BodyExt;
-
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
         let ok = match client.get(uri.clone()).await {
