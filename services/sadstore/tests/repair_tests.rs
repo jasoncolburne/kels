@@ -198,7 +198,7 @@ async fn test_get_repairs_empty() {
 
     let (repairs, has_more) = repo
         .sad_records
-        .get_repairs("Enonexistent_prefix_____________________________", 10, 0)
+        .get_repairs("Knonexistent_prefix_________________________", 10, 0)
         .await
         .unwrap();
 
@@ -523,7 +523,7 @@ async fn test_get_repair_records_nonexistent() {
 
     let (records, has_more) = repo
         .sad_records
-        .get_repair_records("Enonexistent_repair_said________________________", 10, 0)
+        .get_repair_records("Knonexistent_repair_said____________________", 10, 0)
         .await
         .unwrap();
     assert!(records.is_empty());

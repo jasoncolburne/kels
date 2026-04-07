@@ -178,7 +178,7 @@ run_test "POST mismatched SAID rejected" \
 
 # GET non-existent object
 run_test "GET non-existent object returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/Enonexistent____________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/Knonexistent________________________________') = '404' ]"
 
 echo ""
 
@@ -190,7 +190,7 @@ echo ""
 
 # GET non-existent chain
 run_test "GET non-existent chain returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Knonexistent________________________________') = '404' ]"
 
 # Effective SAID non-existent
 run_test "Effective SAID non-existent returns 404" \

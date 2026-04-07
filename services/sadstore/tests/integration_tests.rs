@@ -303,7 +303,7 @@ async fn test_post_sad_object_wrong_said_rejected() {
 
     // Object with a tampered SAID that won't verify
     let object = serde_json::json!({
-        "said": "Ewrong_said_that_does_not_match_content_",
+        "said": "Kwrong_said_that_does_not_match_content_data",
         "data": "wrong-said-test"
     });
 
@@ -326,7 +326,7 @@ async fn test_get_sad_object_not_found() {
 
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/Enonexistent_said_should_return_404_______"))
+        .get(harness.url("/api/v1/sad/Knonexistent_said_should_return_404_______"))
         .send()
         .await
         .unwrap();

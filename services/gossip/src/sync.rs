@@ -332,7 +332,7 @@ impl SyncHandler {
     }
 
     /// Record a prefix as stale for anti-entropy repair.
-    async fn record_stale(&self, prefix: &str, source_node_prefix: &str) {
+    async fn record_stale(&self, prefix: &cesr::Digest, source_node_prefix: &cesr::Digest) {
         if let Some(ref redis) = self.redis {
             record_stale_prefix(redis.as_ref(), prefix, source_node_prefix).await;
         }
@@ -765,7 +765,7 @@ impl SyncHandler {
                         "Forward from {} succeeded but no state change for {}",
                         kels_url, announcement.prefix
                     );
-                    self.record_stale(announcement.prefix.as_ref(), announcement.origin.as_ref())
+                    self.record_stale(&announcement.prefix, &announcement.origin)
                         .await;
                     return Ok(());
                 }
@@ -801,7 +801,7 @@ impl SyncHandler {
         }
 
         // No peer had the events — record as stale for anti-entropy repair
-        self.record_stale(announcement.prefix.as_ref(), announcement.origin.as_ref())
+        self.record_stale(&announcement.prefix, &announcement.origin)
             .await;
         Ok(())
     }
@@ -998,10 +998,17 @@ fn decode_stale_value(value: &str) -> (String, u32, u64) {
 /// Record a stale prefix for anti-entropy repair (first occurrence).
 pub async fn record_stale_prefix(
     redis: &redis::aio::ConnectionManager,
-    kel_prefix: &str,
-    source_node_prefix: &str,
+    kel_prefix: &cesr::Digest,
+    source_node_prefix: &cesr::Digest,
 ) {
-    record_stale_entry(redis, STALE_PREFIX_KEY, kel_prefix, source_node_prefix, 0).await;
+    record_stale_entry(
+        redis,
+        STALE_PREFIX_KEY,
+        kel_prefix.as_ref(),
+        source_node_prefix.as_ref(),
+        0,
+    )
+    .await;
 }
 
 /// Re-queue a stale prefix with incremented retry count and exponential backoff.
@@ -1194,13 +1201,13 @@ pub async fn run_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(String, String)> = {
+        let peers: Vec<(cesr::Digest, String)> = {
             let guard = allowlist.read().await;
             guard
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.to_string(),
+                        p.peer_prefix.clone(),
                         format!("http://kels.{}", p.base_domain),
                     )
                 })
@@ -1232,12 +1239,12 @@ pub async fn run_anti_entropy_loop(
             let mut tasks = Vec::new();
             for (kel_prefix, entry) in &stale_entries {
                 // Build ordered peer list: source peer first, then others
-                let mut ordered_peers: Vec<(String, String)> = Vec::new();
-                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
+                let mut ordered_peers: Vec<(cesr::Digest, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp.as_ref() == entry.source) {
                     ordered_peers.push(source.clone());
                 }
                 for peer in &peers {
-                    if peer.0 != entry.source {
+                    if peer.0.as_ref() != entry.source {
                         ordered_peers.push(peer.clone());
                     }
                 }
@@ -1442,7 +1449,7 @@ pub async fn run_anti_entropy_loop(
                         info!("Anti-entropy: repaired {} from remote", prefix);
                     }
                     RepairResult::Failed => {
-                        record_stale_prefix(redis.as_ref(), prefix.as_ref(), &peer_prefix).await;
+                        record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
                     }
                     _ => {}
                 }
@@ -1479,14 +1486,14 @@ const SAD_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sad_chain_stale";
 /// Record a SAD chain prefix as stale for anti-entropy repair (first occurrence).
 pub async fn record_sad_stale_prefix(
     redis: &redis::aio::ConnectionManager,
-    chain_prefix: &str,
-    source_node_prefix: &str,
+    chain_prefix: &cesr::Digest,
+    source_node_prefix: &cesr::Digest,
 ) {
     record_stale_entry(
         redis,
         SAD_STALE_PREFIX_KEY,
-        chain_prefix,
-        source_node_prefix,
+        chain_prefix.as_ref(),
+        source_node_prefix.as_ref(),
         0,
     )
     .await;
@@ -1515,13 +1522,13 @@ pub async fn run_sad_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(String, String)> = {
+        let peers: Vec<(cesr::Digest, String)> = {
             let guard = allowlist.read().await;
             guard
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.to_string(),
+                        p.peer_prefix.clone(),
                         format!("http://sadstore.{}", p.base_domain),
                     )
                 })
@@ -1550,12 +1557,12 @@ pub async fn run_sad_anti_entropy_loop(
 
             let mut tasks = Vec::new();
             for (chain_prefix, entry) in &stale_entries {
-                let mut ordered_peers: Vec<(String, String)> = Vec::new();
-                if let Some(source) = peers.iter().find(|(pp, _)| pp == &entry.source) {
+                let mut ordered_peers: Vec<(cesr::Digest, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| pp.as_ref() == entry.source) {
                     ordered_peers.push(source.clone());
                 }
                 for peer in &peers {
-                    if peer.0 != entry.source {
+                    if peer.0.as_ref() != entry.source {
                         ordered_peers.push(peer.clone());
                     }
                 }
@@ -1786,8 +1793,8 @@ pub async fn run_sad_anti_entropy_loop(
             Box<
                 dyn Future<
                         Output = (
-                            String,
-                            String,
+                            cesr::Digest,
+                            cesr::Digest,
                             &'static str,
                             Result<(), kels_core::KelsError>,
                         ),
@@ -1858,7 +1865,6 @@ pub async fn run_sad_anti_entropy_loop(
                             }
                         })
                 };
-                let prefix_str = prefix.to_string();
                 let prefix_d = prefix_digest.clone();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
@@ -1871,7 +1877,7 @@ pub async fn run_sad_anti_entropy_loop(
                         since.as_ref(),
                     )
                     .await;
-                    (prefix_str, peer, "pushed", result)
+                    (prefix_d, peer, "pushed", result)
                 }));
             } else {
                 // Remote is ahead — pull from remote
@@ -1900,7 +1906,6 @@ pub async fn run_sad_anti_entropy_loop(
                             }
                         })
                 };
-                let prefix_str = prefix.to_string();
                 let prefix_d = prefix_digest.clone();
                 let peer = peer_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
@@ -1913,7 +1918,7 @@ pub async fn run_sad_anti_entropy_loop(
                         since.as_ref(),
                     )
                     .await;
-                    (prefix_str, peer, "pulled", result)
+                    (prefix_d, peer, "pulled", result)
                 }));
             }
         }

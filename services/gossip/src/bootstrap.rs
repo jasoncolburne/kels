@@ -407,7 +407,7 @@ impl BootstrapSync {
         // Step 1: Collect all unique prefixes from all peers that need syncing.
         // Track (since_said, source_kels_url, source_peer_prefix) per kel prefix.
         info!("Collecting prefixes from {} peer(s)...", peers.len());
-        let mut all_prefixes: HashMap<String, (Option<cesr::Digest>, String, String)> =
+        let mut all_prefixes: HashMap<cesr::Digest, (Option<cesr::Digest>, String, cesr::Digest)> =
             HashMap::new();
 
         for peer in peers {
@@ -423,10 +423,10 @@ impl BootstrapSync {
                     Ok(page) => {
                         for state in &page.prefixes {
                             if let Some(since) = self.sync_check(state, &local_client).await {
-                                all_prefixes.entry(state.prefix.to_string()).or_insert((
+                                all_prefixes.entry(state.prefix.clone()).or_insert((
                                     since,
                                     peer_url.to_string(),
-                                    peer.peer_prefix.to_string(),
+                                    peer.peer_prefix.clone(),
                                 ));
                             }
                         }
@@ -464,12 +464,8 @@ impl BootstrapSync {
                             return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed);
                         }
                     };
-                    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
-                        Ok(d) => d,
-                        Err(_) => return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed),
-                    };
                     let result =
-                        crate::sync::sync_prefix(&remote, &local, &prefix_digest, since.as_ref()).await;
+                        crate::sync::sync_prefix(&remote, &local, &prefix, since.as_ref()).await;
                     (prefix, source_peer_prefix, result)
                 }
             })
