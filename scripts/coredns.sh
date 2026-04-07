@@ -79,6 +79,10 @@ ${REWRITE_RULES}        prometheus :9153
     }
 EOF
 
+# Kubernetes rejects rollout restart within 1s of the previous one.
+# Wait for any in-progress rollout to finish before triggering a new one.
+kubectl rollout status -n kube-system deploy/coredns 2>/dev/null || true
+sleep 1
 kubectl rollout restart -n kube-system deploy/coredns
 kubectl rollout status -n kube-system deploy/coredns
 
