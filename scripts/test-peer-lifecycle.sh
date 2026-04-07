@@ -48,7 +48,9 @@ vote_all "$PROPOSAL" "${REGISTRIES[@]}"
 "$SCRIPTS_DIR/restart-gossip.sh" "${ALL_NODES[@]}"
 wait_for_gossip 120 "${ALL_NODES[@]}"
 
+# --- Phase 4: Verify gossip works after re-join ---
+echo "--- Phase 4: Verify gossip mesh ---"
+kubectl exec -n kels-node-a -it test-client -- ./test-gossip.sh
+
 echo
 echo "=== Peer Lifecycle Test Complete ==="
-echo "  $NODE removed, blackout verified, re-added."
-echo "  Run consistency tests to verify full recovery."
