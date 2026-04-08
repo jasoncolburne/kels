@@ -769,12 +769,9 @@ mod impl_log_store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
     use kels_core::{Peer, RaftLogEntry};
     use openraft::EntryPayload;
-
-    fn digest(name: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(name.as_bytes())
-    }
 
     #[test]
     fn test_range_to_bounds_included_excluded() {
@@ -835,9 +832,9 @@ mod tests {
     #[test]
     fn test_raft_entry_to_log_entry_normal() {
         let peer = Peer::create(
-            digest("12D3KooWTest"),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -873,9 +870,9 @@ mod tests {
     #[test]
     fn test_log_entry_to_raft_entry_normal() {
         let peer = Peer::create(
-            digest("12D3KooWTest"),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -895,7 +892,7 @@ mod tests {
         assert!(
             matches!(
                 raft_entry.payload,
-                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.kel_prefix == digest("12D3KooWTest")
+                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.kel_prefix == test_digest("12D3KooWTest")
             ),
             "Expected Normal payload with AddPeer and matching peer_prefix"
         );
@@ -922,9 +919,9 @@ mod tests {
         let mut log_entry = RaftLogEntry::create(1, 0, 0, 0, "blank".to_string(), None).unwrap();
 
         let peer = Peer::create(
-            digest("12D3KooWTest"),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -976,9 +973,9 @@ mod tests {
     #[test]
     fn test_roundtrip_normal_entry() {
         let peer = Peer::create(
-            digest("12D3KooWRoundtrip"),
+            test_digest("12D3KooWRoundtrip"),
             "node-roundtrip".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-roundtrip:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -1009,7 +1006,7 @@ mod tests {
         assert!(
             matches!(
                 recovered.payload,
-                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.kel_prefix == digest("12D3KooWRoundtrip")
+                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.kel_prefix == test_digest("12D3KooWRoundtrip")
             ),
             "Expected Normal payload with RemovePeer and matching peer_prefix"
         );

@@ -1284,14 +1284,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
     use openraft::{SnapshotMeta, StoredMembership};
     use verifiable_storage::{Chained, StorageDatetime};
 
     const TEST_THRESHOLD: usize = 2;
-
-    fn digest(name: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(name.as_bytes())
-    }
 
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
@@ -1299,9 +1296,9 @@ mod tests {
 
     fn make_test_peer(peer_kel_prefix: &str, node_id: &str) -> Peer {
         Peer::create(
-            digest(peer_kel_prefix),
+            test_digest(peer_kel_prefix),
             node_id.to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             format!("http://{}:8080", node_id),
             format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_kel_prefix),
@@ -1311,9 +1308,9 @@ mod tests {
 
     fn make_inactive_peer(peer_kel_prefix: &str, node_id: &str) -> Peer {
         Peer::create(
-            digest(peer_kel_prefix),
+            test_digest(peer_kel_prefix),
             node_id.to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             false,
             format!("http://{}:8080", node_id),
             format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_kel_prefix),
@@ -1322,7 +1319,7 @@ mod tests {
     }
 
     fn make_test_vote(proposal: &cesr::Digest, voter: &str, approve: bool) -> Vote {
-        Vote::create(*proposal, digest(voter), approve).unwrap()
+        Vote::create(*proposal, test_digest(voter), approve).unwrap()
     }
 
     fn make_test_proposal(
@@ -1331,11 +1328,11 @@ mod tests {
         proposer: &str,
     ) -> PeerAdditionProposal {
         PeerAdditionProposal::empty(
-            digest(peer_kel_prefix),
+            test_digest(peer_kel_prefix),
             node_id,
             &format!("http://{}:8080", node_id),
             &format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", peer_kel_prefix),
-            digest(proposer),
+            test_digest(proposer),
             TEST_THRESHOLD,
             &test_expires_at(),
         )
@@ -1387,7 +1384,7 @@ mod tests {
     fn trusted_member_digests() -> Vec<cesr::Digest> {
         ["KRegistryA", "KRegistryB", "KRegistryC"]
             .into_iter()
-            .map(digest)
+            .map(test_digest)
             .collect()
     }
 
@@ -1404,7 +1401,7 @@ mod tests {
         let response = sm.apply(FederationRequest::AddPeer(peer));
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
         assert_eq!(sm.peers().len(), 1);
-        assert!(sm.get_peer(&digest("peer-1")).is_some());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_some());
     }
 
     #[test]
@@ -1428,11 +1425,17 @@ mod tests {
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-1",
         )));
-        assert_eq!(sm.get_peer(&digest("peer-1")).unwrap().node_id, "node-1");
+        assert_eq!(
+            sm.get_peer(&test_digest("peer-1")).unwrap().node_id,
+            "node-1"
+        );
         sm.apply(FederationRequest::AddPeer(make_test_peer(
             "peer-1", "node-2",
         )));
-        assert_eq!(sm.get_peer(&digest("peer-1")).unwrap().node_id, "node-2");
+        assert_eq!(
+            sm.get_peer(&test_digest("peer-1")).unwrap().node_id,
+            "node-2"
+        );
         assert_eq!(sm.peers().len(), 1);
     }
 
@@ -1443,15 +1446,15 @@ mod tests {
             "peer-1", "node-1",
         )));
         let peer = sm
-            .get_peer(&digest("peer-1"))
+            .get_peer(&test_digest("peer-1"))
             .unwrap()
             .deactivate()
             .unwrap();
         let response = sm.apply(FederationRequest::RemovePeer(peer));
         assert!(matches!(response, FederationResponse::PeerRemoved(_)));
         assert!(sm.peers().is_empty()); // No active peers
-        assert!(sm.get_peer(&digest("peer-1")).is_some()); // Still in inactive
-        assert!(!sm.get_peer(&digest("peer-1")).unwrap().active);
+        assert!(sm.get_peer(&test_digest("peer-1")).is_some()); // Still in inactive
+        assert!(!sm.get_peer(&test_digest("peer-1")).unwrap().active);
     }
 
     #[test]
@@ -1461,7 +1464,7 @@ mod tests {
             "peer-1", "node-1",
         )));
         // Try to remove with an active peer — should be rejected
-        let active_peer = sm.get_peer(&digest("peer-1")).unwrap().clone();
+        let active_peer = sm.get_peer(&test_digest("peer-1")).unwrap().clone();
         let response = sm.apply(FederationRequest::RemovePeer(active_peer));
         assert!(matches!(response, FederationResponse::NotAuthorized(_)));
         assert_eq!(sm.peers().len(), 1); // Still active
@@ -1480,16 +1483,16 @@ mod tests {
             "peer-3", "node-3",
         )));
         let peer2 = sm
-            .get_peer(&digest("peer-2"))
+            .get_peer(&test_digest("peer-2"))
             .unwrap()
             .deactivate()
             .unwrap();
         sm.apply(FederationRequest::RemovePeer(peer2));
         assert_eq!(sm.peers().len(), 2); // 2 active
         assert_eq!(sm.all_peers().len(), 3); // 3 total
-        assert!(sm.get_peer(&digest("peer-1")).unwrap().active);
-        assert!(!sm.get_peer(&digest("peer-2")).unwrap().active); // deactivated, still findable
-        assert!(sm.get_peer(&digest("peer-3")).unwrap().active);
+        assert!(sm.get_peer(&test_digest("peer-1")).unwrap().active);
+        assert!(!sm.get_peer(&test_digest("peer-2")).unwrap().active); // deactivated, still findable
+        assert!(sm.get_peer(&test_digest("peer-3")).unwrap().active);
     }
 
     #[test]
@@ -1499,7 +1502,7 @@ mod tests {
             "peer-1", "node-1",
         )));
         let peer = sm
-            .get_peer(&digest("peer-1"))
+            .get_peer(&test_digest("peer-1"))
             .unwrap()
             .deactivate()
             .unwrap();
@@ -1518,7 +1521,7 @@ mod tests {
     #[test]
     fn test_get_peer_not_found() {
         let sm = StateMachineData::new();
-        assert!(sm.get_peer(&digest("nonexistent")).is_none());
+        assert!(sm.get_peer(&test_digest("nonexistent")).is_none());
     }
 
     #[test]
@@ -1528,7 +1531,7 @@ mod tests {
             "peer-1", "node-1",
         )));
         assert!(matches!(response, FederationResponse::PeerAdded(_)));
-        assert!(!sm.get_peer(&digest("peer-1")).unwrap().active);
+        assert!(!sm.get_peer(&test_digest("peer-1")).unwrap().active);
     }
 
     #[test]
@@ -1570,8 +1573,8 @@ mod tests {
         let mut sm2 = StateMachineData::new();
         sm2.restore(snapshot, &meta);
         assert_eq!(sm2.peers().len(), 2);
-        assert!(sm2.get_peer(&digest("peer-1")).is_some());
-        assert!(sm2.get_peer(&digest("peer-2")).is_some());
+        assert!(sm2.get_peer(&test_digest("peer-1")).is_some());
+        assert!(sm2.get_peer(&test_digest("peer-2")).is_some());
     }
 
     #[test]
@@ -1582,7 +1585,7 @@ mod tests {
         )));
         let peers = sm.peers();
         assert_eq!(peers.len(), 1);
-        assert!(sm.get_peer(&digest("peer-1")).is_some());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_some());
     }
 
     // ==================== Proposal Tests ====================
@@ -1593,7 +1596,7 @@ mod tests {
         let proposal = make_test_proposal("peer-1", "node-1", "KRegistryA");
         let proposal_prefix = submit_proposal(&mut sm, proposal);
 
-        assert!(sm.get_peer(&digest("peer-1")).is_none());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_none());
         assert!(sm.get_proposal(&proposal_prefix).is_some());
     }
 
@@ -1633,7 +1636,7 @@ mod tests {
         }
 
         // Peer is NOT in state machine yet — leader must create and submit AddPeer
-        assert!(sm.get_peer(&digest("peer-1")).is_none());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_none());
         assert!(sm.get_proposal(&proposal_prefix).is_none());
         assert_eq!(sm.completed_addition_proposals.len(), 1);
     }
@@ -1696,7 +1699,7 @@ mod tests {
 
         let current = sm.get_proposal(&proposal_prefix).unwrap().clone();
         let mut withdrawal = current.clone();
-        withdrawal.proposer = digest("KRegistryB");
+        withdrawal.proposer = test_digest("KRegistryB");
         withdrawal.withdrawn_at = Some(StorageDatetime::now());
         let _ = withdrawal.increment();
 
@@ -1731,7 +1734,7 @@ mod tests {
     #[test]
     fn test_vote_on_nonexistent_proposal() {
         let mut sm = StateMachineData::new();
-        let nonexistent = digest("nonexistent");
+        let nonexistent = test_digest("nonexistent");
         let vote = make_test_vote(&nonexistent, "KRegistryA", true);
         let response = sm.apply(FederationRequest::VotePeer {
             proposal_prefix: nonexistent,
@@ -1769,7 +1772,7 @@ mod tests {
             }
             _ => panic!("Expected VoteRecorded"),
         }
-        assert!(sm.get_peer(&digest("peer-1")).is_none());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_none());
     }
 
     #[test]
@@ -1799,7 +1802,7 @@ mod tests {
         );
 
         // Peer was NOT added
-        assert!(sm.get_peer(&digest("peer-1")).is_none());
+        assert!(sm.get_peer(&test_digest("peer-1")).is_none());
 
         // Proposal moved to completed, no longer pending
         assert!(sm.pending_addition_proposals.is_empty());
@@ -1851,10 +1854,10 @@ mod tests {
         let members = trusted_members(&member_digests);
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert_eq!(voters.len(), 2);
-        assert!(voters.contains(&digest("KRegistryA")));
-        assert!(voters.contains(&digest("KRegistryB")));
+        assert!(voters.contains(&test_digest("KRegistryA")));
+        assert!(voters.contains(&test_digest("KRegistryB")));
     }
 
     #[test]
@@ -1862,7 +1865,7 @@ mod tests {
         let sm = StateMachineData::new();
         let member_digests = trusted_member_digests();
         let members = trusted_members(&member_digests);
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 
@@ -1875,8 +1878,8 @@ mod tests {
             "rogue-peer",
             "rogue-node",
         )));
-        assert!(sm.get_peer(&digest("rogue-peer")).is_some());
-        let voters = sm.verified_voters_for_peer(&digest("rogue-peer"), &members);
+        assert!(sm.get_peer(&test_digest("rogue-peer")).is_some());
+        let voters = sm.verified_voters_for_peer(&test_digest("rogue-peer"), &members);
         assert!(voters.is_empty());
     }
 
@@ -1894,7 +1897,7 @@ mod tests {
             vote: vote_a,
         });
 
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 
@@ -1903,7 +1906,7 @@ mod tests {
         let mut sm = StateMachineData::new();
         let member_digests: Vec<cesr::Digest> = ["KRegistryA", "KRegistryB"]
             .into_iter()
-            .map(digest)
+            .map(test_digest)
             .collect();
         let members: std::collections::HashSet<&cesr::Digest> = member_digests.iter().collect();
 
@@ -1922,9 +1925,9 @@ mod tests {
             vote: vote_c,
         });
 
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert_eq!(voters.len(), 1);
-        assert!(voters.contains(&digest("KRegistryA")));
+        assert!(voters.contains(&test_digest("KRegistryA")));
     }
 
     #[test]
@@ -1934,7 +1937,7 @@ mod tests {
         let members = trusted_members(&member_digests);
         approve_peer(&mut sm, "peer-1", "node-1");
 
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert_eq!(voters.len(), 2);
     }
 
@@ -1951,7 +1954,7 @@ mod tests {
         let withdrawal = make_withdrawal(&current);
         sm.apply(FederationRequest::SubmitAdditionProposal(withdrawal));
 
-        let voters = sm.verified_voters_for_peer(&digest("peer-1"), &members);
+        let voters = sm.verified_voters_for_peer(&test_digest("peer-1"), &members);
         assert!(voters.is_empty());
     }
 }

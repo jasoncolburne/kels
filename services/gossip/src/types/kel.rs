@@ -44,35 +44,32 @@ impl KelAnnouncement {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn digest(name: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(name.as_bytes())
-    }
+    use cesr::test_digest;
 
     fn make_qb64_msg() -> (String, String, String) {
-        let prefix = digest("prefix1");
-        let said = digest("said1");
-        let origin = digest("origin1");
+        let prefix = test_digest("prefix1");
+        let said = test_digest("said1");
+        let origin = test_digest("origin1");
         (prefix.to_string(), said.to_string(), origin.to_string())
     }
 
     #[test]
     fn test_announcement_from_pubsub() {
         let (prefix_str, said_str, _) = make_qb64_msg();
-        let origin_digest = digest("origin1");
+        let origin_digest = test_digest("origin1");
         let msg = format!("{}:{}", prefix_str, said_str);
         let ann = KelAnnouncement::from_pubsub_message(&msg, &origin_digest);
         assert!(ann.is_some());
         let ann = ann.unwrap();
-        assert_eq!(ann.prefix, digest("prefix1"));
-        assert_eq!(ann.said, digest("said1"));
-        assert_eq!(ann.origin, digest("origin1"));
+        assert_eq!(ann.prefix, test_digest("prefix1"));
+        assert_eq!(ann.said, test_digest("said1"));
+        assert_eq!(ann.origin, test_digest("origin1"));
     }
 
     #[test]
     fn test_announcement_from_pubsub_empty_said() {
         let (prefix_str, _, _) = make_qb64_msg();
-        let origin_digest = digest("origin1");
+        let origin_digest = test_digest("origin1");
         let msg = format!("{}:", prefix_str);
         let ann = KelAnnouncement::from_pubsub_message(&msg, &origin_digest);
         assert!(ann.is_none());
@@ -81,9 +78,9 @@ mod tests {
     #[test]
     fn test_announcement_serialization() {
         let ann = KelAnnouncement {
-            prefix: digest("prefix"),
-            said: digest("said"),
-            origin: digest("origin"),
+            prefix: test_digest("prefix"),
+            said: test_digest("said"),
+            origin: test_digest("origin"),
         };
         let json = serde_json::to_string(&ann).unwrap();
         let parsed: KelAnnouncement = serde_json::from_str(&json).unwrap();
@@ -95,7 +92,7 @@ mod tests {
     #[test]
     fn test_announcement_from_pubsub_no_colon() {
         let msg = "prefixonly";
-        let origin = digest("origin");
+        let origin = test_digest("origin");
         let ann = KelAnnouncement::from_pubsub_message(msg, &origin);
         assert!(ann.is_none());
     }
@@ -104,7 +101,7 @@ mod tests {
     fn test_announcement_from_pubsub_invalid_cesr() {
         // Invalid CESR strings should return None
         let msg = "notcesr:alsonotcesr";
-        let origin = digest("origin");
+        let origin = test_digest("origin");
         let ann = KelAnnouncement::from_pubsub_message(msg, &origin);
         assert!(ann.is_none());
     }
@@ -112,9 +109,9 @@ mod tests {
     #[test]
     fn test_kel_announcement_clone() {
         let ann = KelAnnouncement {
-            prefix: digest("CLONE"),
-            said: digest("SAID"),
-            origin: digest("ORIGIN"),
+            prefix: test_digest("CLONE"),
+            said: test_digest("SAID"),
+            origin: test_digest("ORIGIN"),
         };
         let cloned = ann.clone();
         assert_eq!(ann.prefix, cloned.prefix);
@@ -125,9 +122,9 @@ mod tests {
     #[test]
     fn test_kel_announcement_debug() {
         let ann = KelAnnouncement {
-            prefix: digest("DEBUG"),
-            said: digest("SAID"),
-            origin: digest("ORIGIN"),
+            prefix: test_digest("DEBUG"),
+            said: test_digest("SAID"),
+            origin: test_digest("ORIGIN"),
         };
         let debug_str = format!("{:?}", ann);
         assert!(debug_str.contains("Digest"));

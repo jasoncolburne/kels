@@ -274,17 +274,14 @@ pub struct MemberSnapshot {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-
-    fn digest(name: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(name.as_bytes())
-    }
+    use cesr::test_digest;
 
     #[test]
     fn test_federation_request_serialization() {
         let peer = Peer::create(
-            digest("12D3KooWExample"),
+            test_digest("12D3KooWExample"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -297,7 +294,7 @@ mod tests {
 
         match parsed {
             FederationRequest::AddPeer(p) => {
-                assert_eq!(p.kel_prefix, digest("12D3KooWExample"));
+                assert_eq!(p.kel_prefix, test_digest("12D3KooWExample"));
             }
             _ => panic!("Expected AddPeer"),
         }
@@ -318,9 +315,9 @@ mod tests {
     #[test]
     fn test_federation_request_display() {
         let peer = Peer::create(
-            digest("12D3KooWExample"),
+            test_digest("12D3KooWExample"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -332,9 +329,9 @@ mod tests {
         assert!(display.starts_with("AddPeer("));
 
         let deactivated = Peer::create(
-            digest("peer-123"),
+            test_digest("peer-123"),
             "node-test".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             false,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -401,9 +398,9 @@ mod tests {
     #[test]
     fn test_federation_request_equality() {
         let peer = Peer::create(
-            digest("peer-1"),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -416,9 +413,9 @@ mod tests {
         assert_eq!(req1, req2);
 
         let deactivated1 = Peer::create(
-            digest("peer-1"),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             false,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -455,9 +452,9 @@ mod tests {
     #[test]
     fn test_peer_snapshot_serialization() {
         let peer = Peer::create(
-            digest("peer-1"),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            digest("EAuthorizingKel"),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -477,7 +474,7 @@ mod tests {
         let parsed: MemberSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.active_peers.len(), 1);
-        assert_eq!(parsed.active_peers[0].kel_prefix, digest("peer-1"));
+        assert_eq!(parsed.active_peers[0].kel_prefix, test_digest("peer-1"));
         assert!(parsed.inactive_peers.is_empty());
         assert!(parsed.pending_addition_proposals.is_empty());
         assert!(parsed.completed_addition_proposals.is_empty());

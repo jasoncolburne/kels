@@ -551,11 +551,8 @@ pub struct CompletedProposalsResponse {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
     use verifiable_storage::{Chained, SelfAddressed};
-
-    fn digest(name: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(name.as_bytes())
-    }
 
     fn test_expires_at() -> StorageDatetime {
         (chrono::Utc::now() + chrono::Duration::days(7)).into()
@@ -566,11 +563,11 @@ mod tests {
     #[test]
     fn test_addition_history_valid_timestamps() {
         let v0 = PeerAdditionProposal::empty(
-            digest("peer-1"),
+            test_digest("peer-1"),
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            digest("KRegistryA"),
+            test_digest("KRegistryA"),
             2,
             &test_expires_at(),
         )
@@ -590,11 +587,11 @@ mod tests {
     #[test]
     fn test_addition_history_non_monotonic_timestamp_fails() {
         let v0 = PeerAdditionProposal::empty(
-            digest("peer-1"),
+            test_digest("peer-1"),
             "node-1",
             "http://node-1:8080",
             "127.0.0.1:4001",
-            digest("KRegistryA"),
+            test_digest("KRegistryA"),
             2,
             &test_expires_at(),
         )
@@ -624,8 +621,8 @@ mod tests {
     #[test]
     fn test_removal_history_valid_timestamps() {
         let v0 = PeerRemovalProposal::empty(
-            digest("peer-1"),
-            digest("KRegistryA"),
+            test_digest("peer-1"),
+            test_digest("KRegistryA"),
             2,
             &test_expires_at(),
         )
@@ -645,8 +642,8 @@ mod tests {
     #[test]
     fn test_removal_history_non_monotonic_timestamp_fails() {
         let v0 = PeerRemovalProposal::empty(
-            digest("peer-1"),
-            digest("KRegistryA"),
+            test_digest("peer-1"),
+            test_digest("KRegistryA"),
             2,
             &test_expires_at(),
         )

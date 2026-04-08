@@ -78,141 +78,96 @@ impl fmt::Display for PolicyNode {
 
 #[cfg(test)]
 mod tests {
-    use cesr::Matter;
+    use cesr::test_digest;
 
     use super::*;
 
-    fn digest(s: &str) -> cesr::Digest {
-        cesr::Digest::from_qb64(s).unwrap()
-    }
-
     #[test]
     fn test_display_endorse() {
-        let node = PolicyNode::Endorse(digest("KBfd1234567890123456789012345678901234567890"));
-        assert_eq!(
-            node.to_string(),
-            "endorse(KBfd1234567890123456789012345678901234567890)"
-        );
+        let a = test_digest("prefix-a");
+        let node = PolicyNode::Endorse(a);
+        assert_eq!(node.to_string(), format!("endorse({a})"));
     }
 
     #[test]
     fn test_display_delegate() {
-        let node = PolicyNode::Delegate(
-            digest("KBfd1234567890123456789012345678901234567890"),
-            digest("KAbc5678901234567890123456789012345678901234"),
-        );
-        assert_eq!(
-            node.to_string(),
-            "delegate(KBfd1234567890123456789012345678901234567890, KAbc5678901234567890123456789012345678901234)"
-        );
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let node = PolicyNode::Delegate(a, b);
+        assert_eq!(node.to_string(), format!("delegate({a}, {b})"));
     }
 
     #[test]
     fn test_display_delegate_compacted() {
-        let node = PolicyNode::Delegate(
-            digest("KBfd1234567890123456789012345678901234567890"),
-            cesr::Digest::default(),
-        );
-        assert_eq!(
-            node.to_string(),
-            "delegate(KBfd1234567890123456789012345678901234567890)"
-        );
+        let a = test_digest("prefix-a");
+        let node = PolicyNode::Delegate(a, cesr::Digest::default());
+        assert_eq!(node.to_string(), format!("delegate({a})"));
     }
 
     #[test]
     fn test_display_threshold() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let c = test_digest("prefix-c");
         let node = PolicyNode::Weighted(
             2,
             vec![
-                (
-                    PolicyNode::Endorse(digest("KBfd1234567890123456789012345678901234567890")),
-                    1,
-                ),
-                (
-                    PolicyNode::Endorse(digest("KAbc5678901234567890123456789012345678901234")),
-                    1,
-                ),
-                (
-                    PolicyNode::Endorse(digest("KCde9012345678901234567890123456789012345678")),
-                    1,
-                ),
+                (PolicyNode::Endorse(a), 1),
+                (PolicyNode::Endorse(b), 1),
+                (PolicyNode::Endorse(c), 1),
             ],
         );
         assert_eq!(
             node.to_string(),
-            "threshold(2, [endorse(KBfd1234567890123456789012345678901234567890), endorse(KAbc5678901234567890123456789012345678901234), endorse(KCde9012345678901234567890123456789012345678)])"
+            format!("threshold(2, [endorse({a}), endorse({b}), endorse({c})])")
         );
     }
 
     #[test]
     fn test_display_weighted() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let node = PolicyNode::Weighted(
             5,
-            vec![
-                (
-                    PolicyNode::Endorse(digest("KBfd1234567890123456789012345678901234567890")),
-                    3,
-                ),
-                (
-                    PolicyNode::Endorse(digest("KAbc5678901234567890123456789012345678901234")),
-                    2,
-                ),
-            ],
+            vec![(PolicyNode::Endorse(a), 3), (PolicyNode::Endorse(b), 2)],
         );
         assert_eq!(
             node.to_string(),
-            "weighted(5, [endorse(KBfd1234567890123456789012345678901234567890):3, endorse(KAbc5678901234567890123456789012345678901234):2])"
+            format!("weighted(5, [endorse({a}):3, endorse({b}):2])")
         );
     }
 
     #[test]
     fn test_display_policy() {
-        let node = PolicyNode::Policy(digest("KHij3456789012345678901234567890123456789012"));
-        assert_eq!(
-            node.to_string(),
-            "policy(KHij3456789012345678901234567890123456789012)"
-        );
+        let s = test_digest("said-a");
+        let node = PolicyNode::Policy(s);
+        assert_eq!(node.to_string(), format!("policy({s})"));
     }
 
     #[test]
     fn test_compact_strips_delegate() {
-        let node = PolicyNode::Delegate(
-            digest("KBfd1234567890123456789012345678901234567890"),
-            digest("KAbc5678901234567890123456789012345678901234"),
-        );
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let node = PolicyNode::Delegate(a, b);
         let compacted = node.compact();
-        assert_eq!(
-            compacted,
-            PolicyNode::Delegate(
-                digest("KBfd1234567890123456789012345678901234567890"),
-                cesr::Digest::default()
-            )
-        );
+        assert_eq!(compacted, PolicyNode::Delegate(a, cesr::Digest::default()));
     }
 
     #[test]
     fn test_compact_preserves_endorse() {
-        let node = PolicyNode::Endorse(digest("KBfd1234567890123456789012345678901234567890"));
+        let a = test_digest("prefix-a");
+        let node = PolicyNode::Endorse(a);
         assert_eq!(node.compact(), node);
     }
 
     #[test]
     fn test_compact_recursive() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let c = test_digest("prefix-c");
         let node = PolicyNode::Weighted(
             1,
-            vec![
-                (
-                    PolicyNode::Delegate(
-                        digest("KBfd1234567890123456789012345678901234567890"),
-                        digest("KAbc5678901234567890123456789012345678901234"),
-                    ),
-                    1,
-                ),
-                (
-                    PolicyNode::Endorse(digest("KCde9012345678901234567890123456789012345678")),
-                    1,
-                ),
-            ],
+            vec![(PolicyNode::Delegate(a, b), 1), (PolicyNode::Endorse(c), 1)],
         );
         let compacted = node.compact();
         assert_eq!(
@@ -220,17 +175,8 @@ mod tests {
             PolicyNode::Weighted(
                 1,
                 vec![
-                    (
-                        PolicyNode::Delegate(
-                            digest("KBfd1234567890123456789012345678901234567890"),
-                            cesr::Digest::default()
-                        ),
-                        1
-                    ),
-                    (
-                        PolicyNode::Endorse(digest("KCde9012345678901234567890123456789012345678")),
-                        1
-                    ),
+                    (PolicyNode::Delegate(a, cesr::Digest::default()), 1),
+                    (PolicyNode::Endorse(c), 1),
                 ]
             )
         );
