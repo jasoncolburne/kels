@@ -71,7 +71,7 @@ impl SadStore for FileSadStore {
         since: Option<&str>,
         limit: usize,
     ) -> Result<(Vec<cesr::Digest>, bool), KelsError> {
-        let mut said_strings = Vec::new();
+        let mut saids = Vec::new();
         let entries =
             std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
         for entry in entries {
@@ -79,22 +79,19 @@ impl SadStore for FileSadStore {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json")
                 && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(digest) = cesr::Digest::from_qb64(stem)
             {
-                said_strings.push(stem.to_string());
+                saids.push(digest);
             }
         }
-        said_strings.sort();
+        saids.sort();
 
         if let Some(cursor) = since {
-            said_strings.retain(|s| s.as_str() > cursor);
+            saids.retain(|s| s.as_ref() > cursor);
         }
 
-        let has_more = said_strings.len() > limit;
-        said_strings.truncate(limit);
-        let saids = said_strings
-            .into_iter()
-            .map(|s| cesr::Digest::from_qb64(&s).map_err(|e| KelsError::CryptoError(e.to_string())))
-            .collect::<Result<Vec<_>, _>>()?;
+        let has_more = saids.len() > limit;
+        saids.truncate(limit);
         Ok((saids, has_more))
     }
 
