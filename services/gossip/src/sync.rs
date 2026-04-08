@@ -414,8 +414,7 @@ impl SyncHandler {
         };
 
         // Check if we already have it locally (HEAD check, no data transfer)
-        let said_str: &str = said.as_ref();
-        match local_client.sad_object_exists(said_str).await {
+        match local_client.sad_object_exists(said).await {
             Ok(true) => {
                 debug!("SAD object {} already exists locally", said);
                 return;
@@ -439,7 +438,7 @@ impl SyncHandler {
         }
 
         // Fetch from remote and store locally
-        match remote_client.get_sad_object(said_str).await {
+        match remote_client.get_sad_object(said.as_ref()).await {
             Ok(object) => {
                 if let Err(e) = local_client.post_sad_object(&object).await {
                     warn!("Failed to store SAD object {} locally: {}", said, e);
@@ -535,7 +534,7 @@ impl SyncHandler {
             }
         };
         let remote_is_real_pointer = local_client
-            .sad_pointer_exists(remote_said.as_ref())
+            .sad_pointer_exists(remote_said)
             .await
             .unwrap_or(false);
         let since_digest = if repair || !remote_is_real_pointer {
@@ -651,8 +650,7 @@ impl SyncHandler {
         }
 
         // Application-level deduplication: if we already have this SAID, skip.
-        let remote_said_str: &str = announcement.said.as_ref();
-        if self.kels_client.event_exists(remote_said_str).await? {
+        if self.kels_client.event_exists(&announcement.said).await? {
             debug!(
                 "Already have announced SAID {} for prefix {}",
                 announcement.said, announcement.prefix
@@ -724,7 +722,7 @@ impl SyncHandler {
             // reach events on other branches. Use full fetch instead.
             let remote_is_real_event = self
                 .kels_client
-                .event_exists(remote_said_str)
+                .event_exists(&announcement.said)
                 .await
                 .unwrap_or(false);
             let since = if remote_is_real_event {
@@ -1587,12 +1585,15 @@ pub async fn run_sad_anti_entropy_loop(
                         // Determine sync direction: check if the remote's SAID
                         // exists in our local chain. If yes, we're ahead → push.
                         // If no, remote is ahead → pull.
-                        let remote_said_ref = match &remote_said {
-                            Some(s) => s.as_ref(),
+                        let remote_said_digest = match &remote_said {
+                            Some(s) => match cesr::Digest::from_qb64(s) {
+                                Ok(d) => d,
+                                Err(_) => continue,
+                            },
                             None => continue,
                         };
                         let we_have_remote = local
-                            .sad_pointer_exists(remote_said_ref)
+                            .sad_pointer_exists(&remote_said_digest)
                             .await
                             .unwrap_or(false);
 
@@ -1798,8 +1799,10 @@ pub async fn run_sad_anti_entropy_loop(
             };
 
             // Determine direction: check if remote's SAID exists locally
-            let we_have_remote = if let Some(said) = remote_said_str {
-                local_client.sad_pointer_exists(said).await.unwrap_or(false)
+            let we_have_remote = if let Some(said) = remote_said_str
+                && let Ok(digest) = cesr::Digest::from_qb64(said)
+            {
+                local_client.sad_pointer_exists(&digest).await.unwrap_or(false)
             } else {
                 // Remote doesn't have it at all — we're ahead
                 true

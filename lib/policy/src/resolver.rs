@@ -7,20 +7,17 @@ use crate::{Policy, error::PolicyError};
 /// Trait for resolving nested policy references by SAID.
 #[async_trait]
 pub trait PolicyResolver: Sync {
-    async fn resolve_policy(&self, said: &str) -> Result<Policy, PolicyError>;
+    async fn resolve_policy(&self, said: &cesr::Digest) -> Result<Policy, PolicyError>;
 }
 
 /// In-memory policy resolver backed by a BTreeMap.
 pub struct InMemoryPolicyResolver {
-    policies: BTreeMap<String, Policy>,
+    policies: BTreeMap<cesr::Digest, Policy>,
 }
 
 impl InMemoryPolicyResolver {
     pub fn new(policies: Vec<Policy>) -> Self {
-        let map = policies
-            .into_iter()
-            .map(|p| (p.said.to_string(), p))
-            .collect();
+        let map = policies.into_iter().map(|p| (p.said, p)).collect();
         Self { policies: map }
     }
 
@@ -33,7 +30,7 @@ impl InMemoryPolicyResolver {
 
 #[async_trait]
 impl PolicyResolver for InMemoryPolicyResolver {
-    async fn resolve_policy(&self, said: &str) -> Result<Policy, PolicyError> {
+    async fn resolve_policy(&self, said: &cesr::Digest) -> Result<Policy, PolicyError> {
         self.policies
             .get(said)
             .cloned()
@@ -47,8 +44,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_resolver() {
+        use cesr::test_digest;
         let resolver = InMemoryPolicyResolver::empty();
-        let result = resolver.resolve_policy("nonexistent").await;
+        let result = resolver.resolve_policy(&test_digest("nonexistent")).await;
         assert!(result.is_err());
     }
 
@@ -60,9 +58,9 @@ mod tests {
             false,
         )
         .unwrap();
-        let said = policy.said.to_string();
+        let said = policy.said;
         let resolver = InMemoryPolicyResolver::new(vec![policy]);
         let resolved = resolver.resolve_policy(&said).await.unwrap();
-        assert_eq!(resolved.said.to_string(), said);
+        assert_eq!(resolved.said, said);
     }
 }

@@ -336,13 +336,13 @@ pub trait KeyProvider: Send + Sync {
     // ==================== State Persistence ====================
 
     /// Save provider state to an opaque store. Each provider encodes its own format.
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError>;
+    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError>;
 
     /// Restore provider state from an opaque store. Returns true if state was found.
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<bool, KelsError>;
 }
 
@@ -662,7 +662,7 @@ impl KeyProvider for SoftwareKeyProvider {
         Ok(())
     }
 
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError> {
+    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError> {
         let state = SoftwareKeyState {
             signing_algorithm: Some(self.signing_algorithm),
             recovery_algorithm: Some(self.recovery_algorithm),
@@ -671,15 +671,15 @@ impl KeyProvider for SoftwareKeyProvider {
         };
         let data =
             serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        store.save(prefix, &data)
+        store.save(prefix.as_ref(), &data)
     }
 
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<bool, KelsError> {
-        let Some(data) = store.load(prefix)? else {
+        let Some(data) = store.load(prefix.as_ref())? else {
             return Ok(false);
         };
 

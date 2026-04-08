@@ -558,7 +558,7 @@ impl KeyProvider for HsmKeyProvider {
     async fn save_state(
         &self,
         _store: &dyn kels_core::KeyStateStore,
-        _prefix: &str,
+        _prefix: &cesr::Digest,
     ) -> Result<(), KelsError> {
         // HSM keys persist in the hardware module; state is managed externally
         Ok(())
@@ -567,7 +567,7 @@ impl KeyProvider for HsmKeyProvider {
     async fn restore_state(
         &mut self,
         _store: &dyn kels_core::KeyStateStore,
-        _prefix: &str,
+        _prefix: &cesr::Digest,
     ) -> Result<bool, KelsError> {
         // HSM keys persist in the hardware module; state is managed externally
         Ok(false)

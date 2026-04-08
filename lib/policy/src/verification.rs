@@ -20,9 +20,9 @@ pub enum EndorsementStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyVerification {
-    pub policy: String,
+    pub policy: cesr::Digest,
     pub is_satisfied: bool,
-    pub endorsements: BTreeMap<String, EndorsementStatus>,
+    pub endorsements: BTreeMap<cesr::Digest, EndorsementStatus>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub nested_verifications: BTreeMap<String, PolicyVerification>,
+    pub nested_verifications: BTreeMap<cesr::Digest, PolicyVerification>,
 }

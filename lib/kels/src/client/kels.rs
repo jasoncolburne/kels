@@ -384,7 +384,7 @@ impl KelsClient {
     }
 
     /// Check if an event SAID exists on the server.
-    pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
+    pub async fn event_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
         let resp = self
             .client
             .get(format!(

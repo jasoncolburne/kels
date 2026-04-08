@@ -108,7 +108,7 @@ impl Policy {
 
     /// Collect all endorser prefixes referenced in the expression.
     /// Includes both `endorse(PREFIX)` prefixes and `delegate(_, DELEGATE)` prefixes.
-    pub fn endorser_prefixes(&self) -> Result<BTreeSet<String>, PolicyError> {
+    pub fn endorser_prefixes(&self) -> Result<BTreeSet<cesr::Digest>, PolicyError> {
         let ast = self.parse()?;
         let mut prefixes = BTreeSet::new();
         collect_endorser_prefixes(&ast, &mut prefixes);
@@ -119,7 +119,7 @@ impl Policy {
     }
 
     /// Collect all nested policy SAIDs referenced in the expression.
-    pub fn referenced_policy_saids(&self) -> Result<BTreeSet<String>, PolicyError> {
+    pub fn referenced_policy_saids(&self) -> Result<BTreeSet<cesr::Digest>, PolicyError> {
         let ast = self.parse()?;
         let mut saids = BTreeSet::new();
         collect_policy_saids(&ast, &mut saids);
@@ -148,15 +148,15 @@ impl Policy {
     }
 }
 
-fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<String>) {
+fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest>) {
     match node {
         PolicyNode::Endorse(prefix) => {
-            prefixes.insert(prefix.clone());
+            prefixes.insert(*prefix);
         }
         PolicyNode::Delegate(delegator, delegate) => {
-            prefixes.insert(delegator.clone());
-            if !delegate.is_empty() {
-                prefixes.insert(delegate.clone());
+            prefixes.insert(*delegator);
+            if *delegate != cesr::Digest::default() {
+                prefixes.insert(*delegate);
             }
         }
         PolicyNode::Weighted(_, pairs) => {
@@ -168,7 +168,7 @@ fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<String>)
     }
 }
 
-fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<String>) {
+fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<cesr::Digest>) {
     match node {
         PolicyNode::Endorse(_) | PolicyNode::Delegate(_, _) => {}
         PolicyNode::Weighted(_, pairs) => {
@@ -177,41 +177,42 @@ fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<String>) {
             }
         }
         PolicyNode::Policy(said) => {
-            saids.insert(said.clone());
+            saids.insert(*said);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use cesr::test_digest;
 
-    const PREFIX_A: &str = "KBfd1234567890123456789012345678901234567890";
-    const PREFIX_B: &str = "KAbc5678901234567890123456789012345678901234";
-    const PREFIX_C: &str = "KCde9012345678901234567890123456789012345678";
-    const SAID_A: &str = "KHij3456789012345678901234567890123456789012";
+    use super::*;
 
     #[test]
     fn test_create_simple() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         assert_eq!(policy.said.to_string().len(), 44);
-        assert_eq!(policy.expression, format!("endorse({PREFIX_A})"));
+        assert_eq!(policy.expression, format!("endorse({a})"));
         assert!(policy.immune.is_none());
         assert!(policy.poison.is_none());
     }
 
     #[test]
     fn test_create_immune() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, true).unwrap();
+        let a = test_digest("prefix-a");
+        let policy = Policy::build(&format!("endorse({a})"), None, true).unwrap();
         assert!(policy.is_immune());
         assert!(!policy.is_poisonable());
     }
 
     #[test]
     fn test_create_poisonable() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({PREFIX_A})"),
-            Some(&format!("endorse({PREFIX_B})")),
+            &format!("endorse({a})"),
+            Some(&format!("endorse({b})")),
             false,
         )
         .unwrap();
@@ -227,9 +228,11 @@ mod tests {
 
     #[test]
     fn test_create_immune_with_poison_rejected() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let result = Policy::build(
-            &format!("endorse({PREFIX_A})"),
-            Some(&format!("endorse({PREFIX_B})")),
+            &format!("endorse({a})"),
+            Some(&format!("endorse({b})")),
             true,
         );
         assert!(result.is_err());
@@ -237,25 +240,29 @@ mod tests {
 
     #[test]
     fn test_create_with_poison() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({PREFIX_A})"),
-            Some(&format!("endorse({PREFIX_B})")),
+            &format!("endorse({a})"),
+            Some(&format!("endorse({b})")),
             false,
         )
         .unwrap();
         assert!(policy.poison.is_some());
         assert_eq!(
             policy.poison.as_deref(),
-            Some(format!("endorse({PREFIX_B})").as_str())
+            Some(format!("endorse({b})").as_str())
         );
     }
 
     #[test]
     fn test_said_differs_by_poison() {
-        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         let p2 = Policy::build(
-            &format!("endorse({PREFIX_A})"),
-            Some(&format!("endorse({PREFIX_B})")),
+            &format!("endorse({a})"),
+            Some(&format!("endorse({b})")),
             false,
         )
         .unwrap();
@@ -264,30 +271,37 @@ mod tests {
 
     #[test]
     fn test_said_differs_by_immune() {
-        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, true).unwrap();
+        let a = test_digest("prefix-a");
+        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let p2 = Policy::build(&format!("endorse({a})"), None, true).unwrap();
         assert_ne!(p1.said, p2.said);
     }
 
     #[test]
     fn test_said_deterministic() {
-        let p1 = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let p2 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
     #[test]
     fn test_said_canonicalization() {
-        let p1 = Policy::build(&format!("endorse( {PREFIX_A} )"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let p1 = Policy::build(&format!("endorse( {a} )"), None, false).unwrap();
+        let p2 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
     #[test]
     fn test_endorser_prefixes() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let c = test_digest("prefix-c");
+        let s = test_digest("said-a");
         let policy = Policy::build(
             &format!(
-                "threshold(2, [endorse({PREFIX_A}), delegate({PREFIX_B}, {PREFIX_C}), policy({SAID_A})])"
+                "threshold(2, [endorse({a}), delegate({b}, {c}), policy({s})])"
             ),
             None,
             false,
@@ -295,37 +309,44 @@ mod tests {
         .unwrap();
         let prefixes = policy.endorser_prefixes().unwrap();
         assert_eq!(prefixes.len(), 3);
-        assert!(prefixes.contains(PREFIX_A));
-        assert!(prefixes.contains(PREFIX_B));
-        assert!(prefixes.contains(PREFIX_C));
+        assert!(prefixes.contains(&a));
+        assert!(prefixes.contains(&b));
+        assert!(prefixes.contains(&c));
     }
 
     #[test]
     fn test_referenced_policy_saids() {
+        let a = test_digest("prefix-a");
+        let s = test_digest("said-a");
         let policy = Policy::build(
-            &format!("threshold(1, [endorse({PREFIX_A}), policy({SAID_A})])"),
+            &format!("threshold(1, [endorse({a}), policy({s})])"),
             None,
             false,
         )
         .unwrap();
         let saids = policy.referenced_policy_saids().unwrap();
         assert_eq!(saids.len(), 1);
-        assert!(saids.contains(SAID_A));
+        assert!(saids.contains(&s));
     }
 
     #[test]
     fn test_compact() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let policy =
-            Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None, false).unwrap();
+            Policy::build(&format!("delegate({a}, {b})"), None, false).unwrap();
         let compacted = policy.compact().unwrap();
-        assert_eq!(compacted.expression, format!("delegate({PREFIX_A})"));
+        assert_eq!(compacted.expression, format!("delegate({a})"));
         assert_ne!(compacted.said, policy.said);
     }
 
     #[test]
     fn test_compact_stable_said() {
-        let p1 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_B})"), None, false).unwrap();
-        let p2 = Policy::build(&format!("delegate({PREFIX_A}, {PREFIX_C})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let c = test_digest("prefix-c");
+        let p1 = Policy::build(&format!("delegate({a}, {b})"), None, false).unwrap();
+        let p2 = Policy::build(&format!("delegate({a}, {c})"), None, false).unwrap();
         let c1 = p1.compact().unwrap();
         let c2 = p2.compact().unwrap();
         assert_eq!(c1.said, c2.said);
@@ -333,9 +354,12 @@ mod tests {
 
     #[test]
     fn test_parse_roundtrip() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
+        let c = test_digest("prefix-c");
         let policy = Policy::build(
             &format!(
-                "threshold(2, [endorse({PREFIX_A}), weighted(3, [endorse({PREFIX_B}):2, endorse({PREFIX_C}):1])])"
+                "threshold(2, [endorse({a}), weighted(3, [endorse({b}):2, endorse({c}):1])])"
             ),
             None,
             false,
@@ -348,7 +372,8 @@ mod tests {
 
     #[test]
     fn test_serialization_roundtrip() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.said, deserialized.said);
@@ -358,7 +383,8 @@ mod tests {
 
     #[test]
     fn test_serialization_omits_defaults() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, false).unwrap();
+        let a = test_digest("prefix-a");
+        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(!json.contains("immune"));
         assert!(!json.contains("poison"));
@@ -366,16 +392,19 @@ mod tests {
 
     #[test]
     fn test_serialization_includes_immune() {
-        let policy = Policy::build(&format!("endorse({PREFIX_A})"), None, true).unwrap();
+        let a = test_digest("prefix-a");
+        let policy = Policy::build(&format!("endorse({a})"), None, true).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(json.contains("immune"));
     }
 
     #[test]
     fn test_serialization_includes_poison() {
+        let a = test_digest("prefix-a");
+        let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({PREFIX_A})"),
-            Some(&format!("endorse({PREFIX_B})")),
+            &format!("endorse({a})"),
+            Some(&format!("endorse({b})")),
             false,
         )
         .unwrap();

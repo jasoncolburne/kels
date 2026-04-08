@@ -482,7 +482,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         // The first event the server has marks the boundary.
         let mut missing: Vec<SignedKeyEvent> = Vec::new();
         for event in tail.iter().rev() {
-            if client.event_exists(&event.event.said.qb64()).await? {
+            if client.event_exists(&event.event.said).await? {
                 break;
             }
             missing.push(event.clone());

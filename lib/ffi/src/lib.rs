@@ -323,11 +323,11 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
 pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     key_state_store: &FileKeyStateStore,
-    prefix: impl AsRef<str>,
+    prefix: &cesr::Digest,
 ) -> Result<(), KelsError> {
     builder
         .key_provider()
-        .save_state(key_state_store, prefix.as_ref())
+        .save_state(key_state_store, prefix)
         .await
 }
 
@@ -424,8 +424,10 @@ pub extern "C" fn kels_init(
         };
 
         // Restore persisted state if a prefix exists
-        if let Some(ref pfx) = prefix_opt {
-            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+        if let Some(ref pfx) = prefix_opt
+            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+        {
+            match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
                 Ok(false) => {} // No saved state, fresh provider
                 Err(e) => {
@@ -446,8 +448,10 @@ pub extern "C" fn kels_init(
         let mut provider = SoftwareKeyProvider::new(signing_algo, recovery_algo);
 
         // Restore persisted state if a prefix exists
-        if let Some(ref pfx) = prefix_opt {
-            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+        if let Some(ref pfx) = prefix_opt
+            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+        {
+            match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
                 Ok(false) => {} // No saved state, fresh provider
                 Err(e) => {

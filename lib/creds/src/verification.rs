@@ -259,7 +259,7 @@ async fn verify_edges<T: Claims>(
         // but the same canonical SAID).
         if let Some(ref expected_policy) = edge.policy {
             let edge_cred_policy = resolver
-                .resolve_policy(edge_credential.policy.as_ref())
+                .resolve_policy(&edge_credential.policy)
                 .await
                 .map_err(|e| {
                     CredentialError::VerificationError(format!(
@@ -284,7 +284,7 @@ async fn verify_edges<T: Claims>(
         // Resolve the edge credential's policy for verification
         let edge_policy_said = &edge_credential.policy;
         let edge_policy = resolver
-            .resolve_policy(edge_policy_said.as_ref())
+            .resolve_policy(edge_policy_said)
             .await
             .map_err(|e| {
                 CredentialError::VerificationError(format!(

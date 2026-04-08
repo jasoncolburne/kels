@@ -100,7 +100,7 @@ impl SadStoreClient {
     }
 
     /// Check if a self-addressed object exists by SAID (HEAD check, no data transfer).
-    pub async fn sad_object_exists(&self, said: &str) -> Result<bool, KelsError> {
+    pub async fn sad_object_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/{}/exists", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
         Ok(resp.status().is_success())
@@ -238,7 +238,7 @@ impl SadStoreClient {
     }
 
     /// Check if a pointer with the given SAID exists on this SADStore.
-    pub async fn sad_pointer_exists(&self, said: &str) -> Result<bool, KelsError> {
+    pub async fn sad_pointer_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/exists/{}", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
         Ok(resp.status().is_success())

@@ -3,6 +3,7 @@ use std::{
     str::FromStr,
 };
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kels_core::{PagedKelSource, generate_nonce};
@@ -22,14 +23,14 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Compactable<T> {
-    Said(String),
+    Said(cesr::Digest),
     Expanded(T),
 }
 
 impl<T> Compactable<T> {
-    pub fn as_said(&self) -> Option<&str> {
+    pub fn as_said(&self) -> Option<cesr::Digest> {
         match self {
-            Compactable::Said(s) => Some(s),
+            Compactable::Said(s) => Some(*s),
             Compactable::Expanded(_) => None,
         }
     }
@@ -142,7 +143,8 @@ impl<T: Claims> Credential<T> {
         let temp_store = InMemorySADStore::new();
         temp_store.store_chunks(&chunks).await?;
 
-        let root_chunk = chunks.get(&compacted_said).ok_or_else(|| {
+        let said_str: &str = compacted_said.as_ref();
+        let root_chunk = chunks.get(said_str).ok_or_else(|| {
             CredentialError::CompactionError(
                 "compacted credential not found in accumulator".to_string(),
             )
@@ -161,7 +163,7 @@ impl<T: Claims> Credential<T> {
         &self,
         schema: &Schema,
         sad_store: &dyn SADStore,
-    ) -> Result<String, CredentialError> {
+    ) -> Result<cesr::Digest, CredentialError> {
         let (compacted_said, chunks) = self.compact(schema)?;
         sad_store.store_chunks(&chunks).await?;
         Ok(compacted_said)
@@ -173,7 +175,7 @@ impl<T: Claims> Credential<T> {
     pub fn compact(
         &self,
         schema: &Schema,
-    ) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
+    ) -> Result<(cesr::Digest, HashMap<String, serde_json::Value>), CredentialError> {
         if self.schema != schema.said {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
@@ -182,7 +184,7 @@ impl<T: Claims> Credential<T> {
         }
         let mut value = serde_json::to_value(self)?;
         let accumulator = compact_with_schema(&mut value, schema)?;
-        let compacted_said = Self::string_from_value(value)?;
+        let compacted_said = Self::said_from_value(value)?;
         Ok((compacted_said, accumulator))
     }
 
@@ -210,15 +212,15 @@ impl<T: Claims> Credential<T> {
         .await
     }
 
-    fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
-        Ok(value
-            .as_str()
-            .ok_or_else(|| {
-                CredentialError::CompactionError(
-                    "compact_value did not produce a SAID string".to_string(),
-                )
-            })?
-            .to_string())
+    fn said_from_value(value: serde_json::Value) -> Result<cesr::Digest, CredentialError> {
+        let s = value.as_str().ok_or_else(|| {
+            CredentialError::CompactionError(
+                "compact_value did not produce a SAID string".to_string(),
+            )
+        })?;
+        cesr::Digest::from_qb64(s).map_err(|e| {
+            CredentialError::CompactionError(format!("invalid CESR SAID from compaction: {e}"))
+        })
     }
 }
 
@@ -323,8 +325,8 @@ mod tests {
         let (cred, _) = test_credential().await;
         let (compacted_said, chunks) = cred.compact(&test_schema()).unwrap();
         // Compacted credential is in the accumulator keyed by compacted SAID
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         // schema is always a SAID string
@@ -451,13 +453,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.edges.is_some());
         let edges_said = compacted_cred.edges.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(edges_said));
+        assert!(chunks.contains_key(edges_said.as_ref()));
     }
 
     #[tokio::test]
@@ -527,13 +529,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.rules.is_some());
         let rules_said = compacted_cred.rules.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(rules_said));
+        assert!(chunks.contains_key(rules_said.as_ref()));
     }
 
     #[tokio::test]

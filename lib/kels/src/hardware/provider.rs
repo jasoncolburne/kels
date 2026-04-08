@@ -397,7 +397,7 @@ impl KeyProvider for HardwareKeyProvider {
         Ok(())
     }
 
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError> {
+    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError> {
         let key_handles = self.key_handles.read().await;
         let recovery_handles = self.recovery_handles.read().await;
 
@@ -419,15 +419,15 @@ impl KeyProvider for HardwareKeyProvider {
 
         let data =
             serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        store.save(prefix, &data)
+        store.save(prefix.as_ref(), &data)
     }
 
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<bool, KelsError> {
-        let Some(data) = store.load(prefix)? else {
+        let Some(data) = store.load(prefix.as_ref())? else {
             return Ok(false);
         };
 

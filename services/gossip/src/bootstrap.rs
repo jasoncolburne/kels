@@ -188,9 +188,8 @@ impl BootstrapSync {
                 };
 
                 for said in &page.saids {
-                    let said_str: &str = said.as_ref();
                     // Check if we already have it locally
-                    match local_client.sad_object_exists(said_str).await {
+                    match local_client.sad_object_exists(said).await {
                         Ok(true) => continue,
                         Ok(false) => {}
                         Err(e) => {
@@ -200,7 +199,7 @@ impl BootstrapSync {
                     }
 
                     // Fetch from remote and store locally
-                    match remote_client.get_sad_object(said_str).await {
+                    match remote_client.get_sad_object(said.as_ref()).await {
                         Ok(object) => {
                             if let Err(e) = local_client.post_sad_object(&object).await {
                                 debug!("Failed to store SAD object {}: {}", said, e);
