@@ -163,7 +163,7 @@ fn build_replacement(
 
     let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
-        said: cesr::Digest::blake3_256(b"placeholder"),
+        said: cesr::Digest::default(),
         prefix: prefix.clone(),
         previous: Some(previous_said.clone()),
         version: from_version,

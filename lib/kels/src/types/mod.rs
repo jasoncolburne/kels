@@ -18,6 +18,7 @@ pub use sync::*;
 
 #[cfg(test)]
 mod tests {
+    use cesr::{test_digest, test_signature};
     use verifiable_storage::Chained;
 
     use super::*;
@@ -82,9 +83,9 @@ mod tests {
     #[test]
     fn test_peer_creation() {
         let peer = Peer::create(
-            cesr::Digest::blake3_256(b"12D3KooWExample"),
+            test_digest("12D3KooWExample"),
             "node-a".to_string(),
-            cesr::Digest::blake3_256(b"KAuthorizingKel"),
+            test_digest("KAuthorizingKel"),
             true,
             "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -104,9 +105,9 @@ mod tests {
     #[test]
     fn test_peer_deactivation() {
         let peer = Peer::create(
-            cesr::Digest::blake3_256(b"12D3KooWExample"),
+            test_digest("12D3KooWExample"),
             "node-a".to_string(),
-            cesr::Digest::blake3_256(b"KAuthorizingKel"),
+            test_digest("KAuthorizingKel"),
             true,
             "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -137,17 +138,6 @@ mod tests {
             0x1d, 0x1e, 0x1f, 0x20,
         ];
         cesr::VerificationKey::from_raw(VerificationKeyCode::Secp256r1, key_bytes.to_vec()).unwrap()
-    }
-
-    fn make_test_signature(label: &str) -> cesr::Signature {
-        // Generate a unique deterministic signature for testing.
-        // Use secp256r1 signature code with 64 bytes of deterministic data.
-        let data: Vec<u8> = label
-            .bytes()
-            .chain(std::iter::repeat(0u8))
-            .take(64)
-            .collect();
-        cesr::Signature::from_raw(cesr::SignatureCode::Secp256r1, data).unwrap()
     }
 
     fn make_valid_icp() -> KeyEvent {
@@ -418,11 +408,11 @@ mod tests {
         let event = make_valid_icp();
         let sig1 = KeyEventSignature {
             label: "key1".to_string(),
-            signature: make_test_signature("sig1"),
+            signature: test_signature("sig1"),
         };
         let sig2 = KeyEventSignature {
             label: "key2".to_string(),
-            signature: make_test_signature("sig2"),
+            signature: test_signature("sig2"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -446,7 +436,7 @@ mod tests {
 
         let sig = KeyEventSignature {
             label: "key".to_string(),
-            signature: make_test_signature("sig"),
+            signature: test_signature("sig"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -464,8 +454,8 @@ mod tests {
     #[test]
     fn test_signed_key_event_signature_lookup() {
         let event = make_valid_icp();
-        let test_sig1 = make_test_signature("sig1");
-        let test_sig2 = make_test_signature("sig2");
+        let test_sig1 = test_signature("sig1");
+        let test_sig2 = test_signature("sig2");
         let sig1 = KeyEventSignature {
             label: "key1".to_string(),
             signature: test_sig1.clone(),
@@ -845,7 +835,7 @@ mod tests {
     #[test]
     fn test_signed_key_event_new() {
         let event = make_valid_icp();
-        let sig = make_test_signature("sig");
+        let sig = test_signature("sig");
         let signed = SignedKeyEvent::new(event.clone(), "signing".to_string(), sig.clone());
         assert_eq!(signed.event.said, event.said);
         assert_eq!(signed.signatures.len(), 1);
@@ -858,8 +848,8 @@ mod tests {
         let event = make_valid_icp();
         let signed = SignedKeyEvent::new_recovery(
             event.clone(),
-            make_test_signature("primary_sig"),
-            make_test_signature("recovery_sig"),
+            test_signature("primary_sig"),
+            test_signature("recovery_sig"),
         );
         assert_eq!(signed.signatures.len(), 2);
         assert_eq!(signed.signatures[0].label, "signing");
@@ -869,9 +859,9 @@ mod tests {
     #[test]
     fn test_signed_key_event_from_signatures() {
         let event = make_valid_icp();
-        let sig2 = make_test_signature("sig2");
+        let sig2 = test_signature("sig2");
         let sigs = vec![
-            ("key1".to_string(), make_test_signature("sig1")),
+            ("key1".to_string(), test_signature("sig1")),
             ("key2".to_string(), sig2.clone()),
         ];
         let signed = SignedKeyEvent::from_signatures(event, sigs);
@@ -886,7 +876,7 @@ mod tests {
         use std::hash::{Hash, Hasher};
 
         let event = make_valid_icp();
-        let signed = SignedKeyEvent::new(event, "key".to_string(), make_test_signature("sig"));
+        let signed = SignedKeyEvent::new(event, "key".to_string(), test_signature("sig"));
 
         let mut hasher = DefaultHasher::new();
         signed.hash(&mut hasher);
@@ -906,7 +896,7 @@ mod tests {
         let event = make_valid_icp();
         let sig = KeyEventSignature {
             label: "key".to_string(),
-            signature: make_test_signature("sig"),
+            signature: test_signature("sig"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -929,14 +919,14 @@ mod tests {
             event: event.clone(),
             signatures: vec![KeyEventSignature {
                 label: "key".to_string(),
-                signature: make_test_signature("sig1"),
+                signature: test_signature("sig1"),
             }],
         };
         let signed2 = SignedKeyEvent {
             event,
             signatures: vec![KeyEventSignature {
                 label: "key".to_string(),
-                signature: make_test_signature("sig2"),
+                signature: test_signature("sig2"),
             }],
         };
 

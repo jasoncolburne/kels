@@ -362,6 +362,7 @@ impl kels_core::PeerSigner for IdentitySigner {
 mod tests {
     use std::sync::Arc;
 
+    use cesr::test_digest;
     use tokio::sync::RwLock;
 
     use super::*;
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_identity_registry_signer_new() {
-        let peer_prefix = cesr::Digest::blake3_256(b"test-peer-prefix");
+        let peer_prefix = test_digest("test-peer-prefix");
         let signer = IdentitySigner::new("http://identity:80", peer_prefix.clone()).unwrap();
         assert_eq!(signer.peer_prefix, peer_prefix);
     }

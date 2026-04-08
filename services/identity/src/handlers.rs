@@ -339,6 +339,8 @@ pub async fn manage_kel(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     // ==================== ApiError Tests ====================
@@ -376,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_anchor_request_deserialization() {
-        let digest = cesr::Digest::blake3_256(b"test_anchor");
+        let digest = test_digest("test-anchor");
         let json = serde_json::to_string(&AnchorRequest {
             said: digest.clone(),
         })
@@ -387,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_anchor_response_serialization() {
-        let digest = cesr::Digest::blake3_256(b"NEWEVENT789");
+        let digest = test_digest("new-event-789");
         let response = AnchorResponse {
             event_said: digest.clone(),
         };
@@ -398,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_identity_info_serialization() {
-        let prefix = cesr::Digest::blake3_256(b"EPREFIX123");
+        let prefix = test_digest("prefix-123");
         let info = IdentityInfo {
             prefix: prefix.clone(),
         };
@@ -455,7 +457,7 @@ mod tests {
     #[test]
     fn test_anchor_request_roundtrip() {
         let original = AnchorRequest {
-            said: cesr::Digest::blake3_256(b"SAID123"),
+            said: test_digest("said-123"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorRequest = serde_json::from_str(&json).unwrap();
@@ -465,7 +467,7 @@ mod tests {
     #[test]
     fn test_anchor_response_roundtrip() {
         let original = AnchorResponse {
-            event_said: cesr::Digest::blake3_256(b"EVENT456"),
+            event_said: test_digest("event-456"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorResponse = serde_json::from_str(&json).unwrap();
@@ -475,7 +477,7 @@ mod tests {
     #[test]
     fn test_identity_info_roundtrip() {
         let original = IdentityInfo {
-            prefix: cesr::Digest::blake3_256(b"EPREFIX"),
+            prefix: test_digest("prefix"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();

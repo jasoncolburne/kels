@@ -188,8 +188,9 @@ pub struct IdentityRepository {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
-    use cesr::Digest;
     use ctor::dtor;
     use std::sync::OnceLock;
     use testcontainers::{ContainerAsync, core::ImageExt, runners::AsyncRunner};
@@ -215,10 +216,6 @@ mod tests {
             });
     }
 
-    /// Generate a valid 44-char SAID from a readable name
-    fn said(name: &str) -> Digest {
-        Digest::blake3_256(name.as_bytes())
-    }
 
     /// Shared test harness - initialized once, used by all tests.
     /// Cleaned up automatically at program exit via #[dtor].
@@ -343,10 +340,10 @@ mod tests {
 
     #[test]
     fn test_hsm_key_binding_struct() {
-        let kel_prefix = said("key_binding_kel_test_prefix");
+        let kel_prefix = test_digest("key-binding-kel-test-prefix");
         let binding = HsmKeyBinding {
-            said: said("key_binding_test_said"),
-            prefix: said("key_binding_test_prefix"),
+            said: test_digest("key-binding-test-said"),
+            prefix: test_digest("key-binding-test-prefix"),
             previous: None,
             version: 0,
             kel_prefix: kel_prefix.clone(),
@@ -366,15 +363,15 @@ mod tests {
 
     #[test]
     fn test_authority_mapping_struct() {
-        let kel_prefix = said("auth_mapping_kel");
+        let kel_prefix = test_digest("auth-mapping-kel");
         let mapping = AuthorityMapping {
-            said: said("auth_mapping_said"),
-            prefix: said("auth_mapping_prefix"),
+            said: test_digest("auth-mapping-said"),
+            prefix: test_digest("auth-mapping-prefix"),
             previous: None,
             version: 0,
             name: "auth_mapping_authority".to_string(),
             kel_prefix: kel_prefix.clone(),
-            last_said: said("auth_mapping_last_event_said"),
+            last_said: test_digest("auth-mapping-last-event-said"),
             created_at: StorageDatetime::now(),
         };
 
@@ -385,11 +382,11 @@ mod tests {
     #[test]
     fn test_hsm_key_binding_serialization_camel_case() {
         let binding = HsmKeyBinding {
-            said: said("ser_said"),
-            prefix: said("ser_prefix"),
+            said: test_digest("ser-said"),
+            prefix: test_digest("ser-prefix"),
             previous: None,
             version: 0,
-            kel_prefix: said("ser_kel"),
+            kel_prefix: test_digest("ser-kel"),
             current_key_handle: "ser_cur".to_string(),
             next_key_handle: "ser_nxt".to_string(),
             recovery_key_handle: "ser_rec".to_string(),
@@ -411,13 +408,13 @@ mod tests {
     #[test]
     fn test_authority_mapping_serialization_camel_case() {
         let mapping = AuthorityMapping {
-            said: said("ser_auth"),
-            prefix: said("ser_auth_prefix"),
+            said: test_digest("ser-auth"),
+            prefix: test_digest("ser-auth-prefix"),
             previous: None,
             version: 0,
             name: "ser_authority".to_string(),
-            kel_prefix: said("ser_auth_kel"),
-            last_said: said("ser_last"),
+            kel_prefix: test_digest("ser-auth-kel"),
+            last_said: test_digest("ser-last"),
             created_at: StorageDatetime::now(),
         };
 
@@ -436,7 +433,7 @@ mod tests {
 
         let result = repo
             .hsm_bindings
-            .get_latest_by_kel_prefix(&cesr::Digest::blake3_256(b"nonexistent_prefix_empty"))
+            .get_latest_by_kel_prefix(&test_digest("nonexistent-prefix-empty"))
             .await
             .expect("Query failed");
 
@@ -450,10 +447,10 @@ mod tests {
         };
         let repo = harness.repo().await;
 
-        let kel_prefix = said("hsm_store_kel");
-        let cur = said("hsm_store_cur").to_string();
-        let nxt = said("hsm_store_nxt").to_string();
-        let rec = said("hsm_store_rec").to_string();
+        let kel_prefix = test_digest("hsm-store-kel");
+        let cur = test_digest("hsm-store-cur").to_string();
+        let nxt = test_digest("hsm-store-nxt").to_string();
+        let rec = test_digest("hsm-store-rec").to_string();
 
         let binding =
             HsmKeyBinding::create(kel_prefix.clone(), cur.clone(), nxt, rec, 0, 0).unwrap();
@@ -482,12 +479,12 @@ mod tests {
         };
         let repo = harness.repo().await;
 
-        let kel_prefix = said("hsm_ver_kel");
-        let cur_v0 = said("hsm_ver_cur_v0").to_string();
-        let nxt_v0 = said("hsm_ver_nxt_v0").to_string();
-        let rec_v0 = said("hsm_ver_rec_v0").to_string();
-        let cur_v1 = said("hsm_ver_cur_v1").to_string();
-        let nxt_v1 = said("hsm_ver_nxt_v1").to_string();
+        let kel_prefix = test_digest("hsm-ver-kel");
+        let cur_v0 = test_digest("hsm-ver-cur-v0").to_string();
+        let nxt_v0 = test_digest("hsm-ver-nxt-v0").to_string();
+        let rec_v0 = test_digest("hsm-ver-rec-v0").to_string();
+        let cur_v1 = test_digest("hsm-ver-cur-v1").to_string();
+        let nxt_v1 = test_digest("hsm-ver-nxt-v1").to_string();
 
         let binding_v0 =
             HsmKeyBinding::create(kel_prefix.clone(), cur_v0, nxt_v0, rec_v0, 0, 0).unwrap();
@@ -543,8 +540,8 @@ mod tests {
         let repo = harness.repo().await;
 
         let name = "auth_store_test";
-        let kel_prefix = said("auth_store_kel");
-        let last_said = said("auth_store_last");
+        let kel_prefix = test_digest("auth-store-kel");
+        let last_said = test_digest("auth-store-last");
 
         let mapping =
             AuthorityMapping::create(name.to_string(), kel_prefix.clone(), last_said.clone())
@@ -575,10 +572,10 @@ mod tests {
         let repo = harness.repo().await;
 
         let name = "auth_versioned_test";
-        let kel_prefix_v0 = said("auth_ver_kel_v0");
-        let last_said_v0 = said("auth_ver_last_v0");
-        let kel_prefix_v1 = said("auth_ver_kel_v1");
-        let last_said_v1 = said("auth_ver_last_v1");
+        let kel_prefix_v0 = test_digest("auth-ver-kel-v0");
+        let last_said_v0 = test_digest("auth-ver-last-v0");
+        let kel_prefix_v1 = test_digest("auth-ver-kel-v1");
+        let last_said_v1 = test_digest("auth-ver-last-v1");
 
         let mapping_v0 = AuthorityMapping::create(
             name.to_string(),

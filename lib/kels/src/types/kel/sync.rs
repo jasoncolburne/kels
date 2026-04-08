@@ -773,7 +773,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cesr::{Digest, Matter, SigningKey, VerificationKeyCode};
+    use cesr::{Digest, Matter, SigningKey, VerificationKeyCode, test_digest};
     use verifiable_storage::Chained;
 
     use super::super::verification::*;
@@ -991,7 +991,7 @@ mod tests {
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         builder1.incept().await.unwrap();
         builder1
-            .interact(&Digest::blake3_256(b"anchor-1"))
+            .interact(&test_digest("anchor-1"))
             .await
             .unwrap();
 
@@ -1013,7 +1013,7 @@ mod tests {
 
         // Adversary injects one event at serial 2 (divergence)
         let adversary_ixn = builder2
-            .interact(&Digest::blake3_256(b"adversary-anchor"))
+            .interact(&test_digest("adversary-anchor"))
             .await
             .unwrap();
         assert_eq!(adversary_ixn.event.serial, 2);
@@ -1045,8 +1045,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_completed_verification_with_anchor_checking() {
-        let target_anchor = cesr::Digest::blake3_256(b"target-anchor");
-        let missing_anchor = cesr::Digest::blake3_256(b"missing-anchor");
+        let target_anchor = test_digest("target-anchor");
+        let missing_anchor = test_digest("missing-anchor");
 
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
@@ -1128,7 +1128,7 @@ mod tests {
     async fn test_truncate_incomplete_generation_basic() {
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         let icp = builder1.incept().await.unwrap();
-        let ixn1 = builder1.interact(&Digest::blake3_256(b"a1")).await.unwrap();
+        let ixn1 = builder1.interact(&test_digest("a1")).await.unwrap();
 
         // Create adversary builder with same keys, reset to icp state
         let mut builder2 = KeyEventBuilder::with_events(
@@ -1137,7 +1137,7 @@ mod tests {
             None,
             vec![icp.clone()],
         );
-        let ixn2 = builder2.interact(&Digest::blake3_256(b"a2")).await.unwrap();
+        let ixn2 = builder2.interact(&test_digest("a2")).await.unwrap();
 
         // Two events at serial 1, simulating divergence
         // If a page ends with only one of them, truncate should remove it
@@ -2664,7 +2664,7 @@ mod tests {
         let store = MemoryStore::new();
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
-            &Digest::blake3_256(b"nonexistent_prefix"),
+            &test_digest("nonexistent-prefix"),
             crate::page_size(),
             10,
             iter::empty(),

@@ -100,7 +100,7 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     // Build EncapsulationKeyPublication SAD object
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: cesr::Digest::blake3_256(b"placeholder"),
+        said: cesr::Digest::default(),
         algorithm: kem_algo.to_string(),
         encapsulation_key: encap_key.clone(),
     };
@@ -194,7 +194,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     // Build new publication
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: cesr::Digest::blake3_256(b"placeholder"),
+        said: cesr::Digest::default(),
         algorithm: kem_algo.to_string(),
         encapsulation_key: encap_key.clone(),
     };

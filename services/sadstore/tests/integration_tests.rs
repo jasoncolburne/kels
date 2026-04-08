@@ -18,18 +18,8 @@ use testcontainers::{
     runners::AsyncRunner,
 };
 use testcontainers_modules::postgres::Postgres;
+use cesr::{test_digest, test_signature};
 use verifiable_storage::SelfAddressed;
-
-fn test_digest(label: &[u8]) -> cesr::Digest {
-    cesr::Digest::blake3_256(label)
-}
-
-fn test_signature(label: &[u8]) -> cesr::Signature {
-    // Create a minimal valid CESR signature for test purposes.
-    // We use a real key pair to produce a genuine signature.
-    let (_, sk) = cesr::generate_secp256r1().unwrap();
-    sk.sign(label).unwrap()
-}
 
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
 
@@ -355,10 +345,10 @@ async fn test_post_sad_object_invalid_json_rejected() {
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_deterministic() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
             .unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
             .unwrap();
     assert_eq!(p1, p2);
 }
@@ -366,13 +356,13 @@ async fn test_compute_sad_pointer_prefix_deterministic() {
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_different_inputs() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/exchange/v1/keys/mlkem")
+        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
             .unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_b"), "kels/exchange/v1/keys/mlkem")
+        compute_sad_pointer_prefix(test_digest("kel-prefix-b"), "kels/exchange/v1/keys/mlkem")
             .unwrap();
     let p3 =
-        compute_sad_pointer_prefix(test_digest(b"kel_prefix_a"), "kels/v1/other-kind").unwrap();
+        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p1, p3);
 }
@@ -385,7 +375,7 @@ async fn test_chain_fetch_not_found() {
         return;
     };
 
-    let nonexistent = test_digest(b"nonexistent_chain_prefix");
+    let nonexistent = test_digest("nonexistent-chain-prefix");
     let resp = harness
         .client()
         .get(harness.url(&format!("/api/v1/sad/pointers/{}", nonexistent)))
@@ -401,7 +391,7 @@ async fn test_effective_said_not_found() {
         return;
     };
 
-    let nonexistent = test_digest(b"nonexistent_chain_prefix");
+    let nonexistent = test_digest("nonexistent-chain-prefix");
     let resp = harness
         .client()
         .get(harness.url(&format!(
@@ -422,7 +412,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     // Create a record but tamper with the SAID
     let mut pointer = SadPointer::create(
-        test_digest(b"kel_test_prefix"),
+        test_digest("kel-test-prefix"),
         "kels/v1/test-kind".to_string(),
         None,
     )
@@ -431,7 +421,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     let records = vec![kels_core::SignedSadPointer {
         pointer,
-        signature: test_signature(b"fake_sig"),
+        signature: test_signature("fake-sig"),
         establishment_serial: 0,
     }];
 
@@ -460,8 +450,8 @@ async fn test_list_prefixes_empty() {
             cursor: None,
             limit: None,
         },
-        prefix: test_digest(b"test"),
-        signature: test_signature(b"test"),
+        prefix: test_digest("test"),
+        signature: test_signature("test"),
     };
 
     let resp = harness
@@ -491,8 +481,8 @@ async fn test_list_objects_empty() {
             cursor: None,
             limit: None,
         },
-        prefix: test_digest(b"test"),
-        signature: test_signature(b"test"),
+        prefix: test_digest("test"),
+        signature: test_signature("test"),
     };
 
     let resp = harness

@@ -542,6 +542,8 @@ impl BootstrapSync {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     #[test]
@@ -601,14 +603,14 @@ mod tests {
     #[test]
     fn test_get_sync_url() {
         let peer = kels_core::Peer {
-            said: cesr::Digest::blake3_256(b"test-said"),
-            prefix: cesr::Digest::blake3_256(b"test-prefix"),
+            said: test_digest("test-said"),
+            prefix: test_digest("test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: cesr::Digest::blake3_256(b"test-peer"),
+            peer_prefix: test_digest("test-peer"),
             node_id: "node-1".to_string(),
-            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
+            authorizing_kel: test_digest("authorizing-kel"),
             active: true,
             base_domain: "node-1.kels".to_string(),
             gossip_addr: "/ip4/127.0.0.1/tcp/4001".to_string(),

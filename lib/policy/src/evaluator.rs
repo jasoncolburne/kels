@@ -365,6 +365,7 @@ async fn verify_delegation(
 mod tests {
     use std::sync::Arc;
 
+    use cesr::test_digest;
     use kels_core::{
         FileKelStore, KelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource,
         VerificationKeyCode, forward_key_events,
@@ -649,7 +650,7 @@ mod tests {
         // We can't actually create a real cycle since SAIDs are content-addressed,
         // but we can test that the visited set catches it by using a resolver
         // that returns a policy referencing itself.
-        let fake_said = Digest::blake3_256(b"cycle-test");
+        let fake_said = test_digest("cycle-test");
         let self_ref_expr = format!("policy({})", fake_said);
         let policy = Policy {
             said: fake_said,

@@ -174,6 +174,7 @@ impl KelStore for FileKelStore {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
     use tempfile::TempDir;
 
     use super::*;
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn test_with_owner_sets_prefix() {
         let temp = TempDir::new().unwrap();
-        let d = cesr::Digest::blake3_256(b"my_prefix");
+        let d = test_digest("my-prefix");
         let store = FileKelStore::with_owner(temp.path(), d.clone()).unwrap();
         assert_eq!(store.owner_prefix(), Some(d));
     }
@@ -215,7 +216,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let d = cesr::Digest::blake3_256(b"new_owner");
+        let d = test_digest("new-owner");
         store.set_owner_prefix(Some(&d));
         assert_eq!(store.owner_prefix(), Some(d));
 
@@ -228,7 +229,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
 
-        let nonexistent = cesr::Digest::blake3_256(b"nonexistent");
+        let nonexistent = test_digest("nonexistent");
         let (events, has_more) = store.load(&nonexistent, crate::LOAD_ALL, 0).await.unwrap();
         assert!(events.is_empty());
         assert!(!has_more);
@@ -291,7 +292,7 @@ mod tests {
         let store = FileKelStore::new(temp.path()).unwrap();
 
         // Write invalid JSONL — use a known digest and its string form for the filename
-        let bad_prefix = cesr::Digest::blake3_256(b"bad");
+        let bad_prefix = test_digest("bad");
         let path = temp.path().join(format!("{}.kel.jsonl", bad_prefix));
         std::fs::write(&path, "not valid json\n").unwrap();
 
@@ -344,7 +345,7 @@ mod tests {
         let (prefix, events) = crate::store::create_test_events().await;
 
         // Set a different owner prefix
-        store.set_owner_prefix(Some(&cesr::Digest::blake3_256(b"different_prefix")));
+        store.set_owner_prefix(Some(&test_digest("different-prefix")));
 
         // Cache should save because it's not the owner's KEL
         store.cache(&prefix, &events).await.unwrap();

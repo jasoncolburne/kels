@@ -59,23 +59,21 @@ pub struct RecoveryRecordPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
 
     #[test]
     fn test_recovery_record_create() {
         let record = RecoveryRecord::create(
-            cesr::Digest::blake3_256(b"prefix_example"),
+            test_digest("prefix-example"),
             3,
             2,
-            cesr::Digest::blake3_256(b"rec_previous"),
+            test_digest("rec-previous"),
             1,
         )
         .unwrap();
 
         assert_eq!(record.said.to_string().len(), 44);
-        assert_eq!(
-            record.kel_prefix,
-            cesr::Digest::blake3_256(b"prefix_example")
-        );
+        assert_eq!(record.kel_prefix, test_digest("prefix-example"));
         assert_eq!(record.recovery_serial, 3);
         assert_eq!(record.diverged_at, 2);
     }
@@ -83,10 +81,10 @@ mod tests {
     #[test]
     fn test_recovery_record_json_roundtrip() {
         let record = RecoveryRecord::create(
-            cesr::Digest::blake3_256(b"prefix_example"),
+            test_digest("prefix-example"),
             3,
             2,
-            cesr::Digest::blake3_256(b"rec_previous"),
+            test_digest("rec-previous"),
             1,
         )
         .unwrap();

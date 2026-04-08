@@ -1994,6 +1994,8 @@ pub async fn run_sad_anti_entropy_loop(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -2006,7 +2008,7 @@ mod tests {
             Ok(kels_core::SignResult {
                 signature: cesr::Signature::from_raw(cesr::SignatureCode::MlDsa65, vec![0u8; 3309])
                     .unwrap(),
-                peer_prefix: cesr::Digest::blake3_256(b"test-prefix"),
+                peer_prefix: test_digest("test-prefix"),
             })
         }
     }

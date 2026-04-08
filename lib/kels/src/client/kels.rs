@@ -442,6 +442,8 @@ mod tests {
     // ==================== HTTP Client Tests with Mock Server ====================
 
     mod http_tests {
+        use cesr::test_digest;
+
         use super::*;
         use crate::types::{ErrorCode, ErrorResponse, SubmitEventsResponse};
         use wiremock::matchers::{method, path, path_regex};
@@ -556,11 +558,11 @@ mod tests {
             );
             let icp = builder.incept().await.unwrap();
             let ixn1 = builder
-                .interact(&cesr::Digest::blake3_256(b"anchor1"))
+                .interact(&test_digest("anchor1"))
                 .await
                 .unwrap();
             let ixn2 = builder
-                .interact(&cesr::Digest::blake3_256(b"anchor2"))
+                .interact(&test_digest("anchor2"))
                 .await
                 .unwrap();
 

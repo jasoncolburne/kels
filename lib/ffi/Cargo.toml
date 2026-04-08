@@ -29,6 +29,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 
 [dev-dependencies]
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 tempfile = "3"
 
 [build-dependencies]

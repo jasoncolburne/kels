@@ -518,6 +518,8 @@ pub unsafe extern "C" fn kels_compute_blob_digest(data: *const u8, data_len: usi
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use crate::{KelsStatus, kels_free_string};
 
@@ -648,8 +650,8 @@ mod tests {
         // Generate recipient KEM keys
         let (recipient_ek, recipient_dk) = cesr::generate_ml_kem_768().expect("keygen");
 
-        let sender_digest = cesr::Digest::blake3_256(b"sender-prefix-ffi");
-        let recipient_digest = cesr::Digest::blake3_256(b"recipient-prefix-ffi");
+        let sender_digest = test_digest("sender-prefix-ffi");
+        let recipient_digest = test_digest("recipient-prefix-ffi");
         let sender_prefix = CString::new(sender_digest.as_ref()).expect("cstring");
         let recipient_prefix = CString::new(recipient_digest.as_ref()).expect("cstring");
         let topic = CString::new("test/v1/roundtrip").expect("cstring");
@@ -716,8 +718,8 @@ mod tests {
         let (_, wrong_dk) = cesr::generate_ml_kem_768().expect("keygen");
         let (wrong_vk, _) = cesr::generate_ml_dsa_65().expect("keygen");
 
-        let sender_digest = cesr::Digest::blake3_256(b"sender");
-        let recipient_digest = cesr::Digest::blake3_256(b"recipient");
+        let sender_digest = test_digest("sender");
+        let recipient_digest = test_digest("recipient");
         let sender_prefix = CString::new(sender_digest.as_ref()).expect("cstring");
         let recipient_prefix = CString::new(recipient_digest.as_ref()).expect("cstring");
         let topic = CString::new("test").expect("cstring");

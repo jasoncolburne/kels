@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cesr::Digest;
+use cesr::{Digest, test_digest, test_signature};
 use chrono::Utc;
 use ctor::dtor;
 use kels_core::{
@@ -246,15 +246,6 @@ fn make_anchor(data: &str) -> Digest {
     Digest::blake3_256(data.as_bytes())
 }
 
-fn test_digest(label: &[u8]) -> Digest {
-    Digest::blake3_256(label)
-}
-
-fn test_signature(label: &[u8]) -> cesr::Signature {
-    let (_, sk) = cesr::generate_secp256r1().unwrap();
-    sk.sign(label).unwrap()
-}
-
 /// Helper to create a signed interaction event.
 async fn create_interaction(
     builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
@@ -368,7 +359,7 @@ async fn test_get_nonexistent_kel() {
         .client()
         .get(harness.url(&format!(
             "/api/v1/kels/kel/{}",
-            cesr::Digest::blake3_256(b"nonexistent_prefix")
+            test_digest("nonexistent-prefix")
         )))
         .send()
         .await
@@ -401,8 +392,8 @@ async fn test_list_prefixes() {
             cursor: None,
             limit: None,
         },
-        prefix: test_digest(b"mock"),
-        signature: test_signature(b"mock"),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -545,8 +536,8 @@ async fn test_list_prefixes_with_limit() {
             cursor: None,
             limit: Some(2),
         },
-        prefix: test_digest(b"mock"),
-        signature: test_signature(b"mock"),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -682,8 +673,8 @@ async fn test_list_prefixes_pagination_with_cursor() {
             cursor: None,
             limit: Some(1),
         },
-        prefix: test_digest(b"mock"),
-        signature: test_signature(b"mock"),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -707,8 +698,8 @@ async fn test_list_prefixes_pagination_with_cursor() {
                 cursor: Some(cursor.clone()),
                 limit: Some(1),
             },
-            prefix: test_digest(b"mock"),
-            signature: test_signature(b"mock"),
+            prefix: test_digest("mock"),
+            signature: test_signature("mock"),
         };
 
         let response = harness
@@ -789,7 +780,7 @@ async fn test_get_kel_not_found_with_audit() {
         .client()
         .get(harness.url(&format!(
             "/api/v1/kels/kel/{}?audit=true",
-            cesr::Digest::blake3_256(b"nonexistent_prefix_for_audit")
+            test_digest("nonexistent-prefix-for-audit")
         )))
         .send()
         .await

@@ -53,6 +53,7 @@ impl<T: Serialize> SignedRequest<T> {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
 
     // ==================== validate_timestamp Tests ====================
 
@@ -107,7 +108,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_signature_rejects_divergent_kel() {
         use crate::{KelVerifier, KeyEventBuilder, SoftwareKeyProvider};
-        use cesr::{Digest, VerificationKeyCode};
+        use cesr::VerificationKeyCode;
 
         let mut builder1 = KeyEventBuilder::new(
             SoftwareKeyProvider::new(
@@ -119,8 +120,8 @@ mod tests {
         let icp = builder1.incept().await.unwrap();
         let prefix = icp.event.prefix.clone();
         let mut builder2 = builder1.clone();
-        let anchor1 = Digest::blake3_256(b"anchor1");
-        let anchor2 = Digest::blake3_256(b"anchor2");
+        let anchor1 = test_digest("anchor1");
+        let anchor2 = test_digest("anchor2");
         let ixn1 = builder1.interact(&anchor1).await.unwrap();
         let ixn2 = builder2.interact(&anchor2).await.unwrap();
 
@@ -146,7 +147,7 @@ mod tests {
 
         let signed = SignedRequest {
             payload: "test".to_string(),
-            prefix: Digest::blake3_256(b"test_prefix"),
+            prefix: test_digest("test-prefix"),
             signature: {
                 // Generate a dummy signature for the test — the test only checks
                 // that divergent KELs are rejected, not signature correctness.

@@ -259,6 +259,8 @@ pub fn parse_rules(json: &str) -> Result<Rules, CredentialError> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -357,9 +359,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_edges() {
-        let schema_said = cesr::Digest::blake3_256(b"test-schema").to_string();
-        let policy_said = cesr::Digest::blake3_256(b"test-policy").to_string();
-        let cred_said = cesr::Digest::blake3_256(b"test-credential").to_string();
+        let schema_said = test_digest("test-schema").to_string();
+        let policy_said = test_digest("test-policy").to_string();
+        let cred_said = test_digest("test-credential").to_string();
         let json = serde_json::json!({
             "license": {
                 "schema": schema_said,

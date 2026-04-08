@@ -204,18 +204,20 @@ pub async fn run_allowlist_refresh_loop(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     fn _create_test_peer(peer_prefix: &str) -> kels_core::Peer {
         kels_core::Peer {
-            said: cesr::Digest::blake3_256(b"test-said"),
-            prefix: cesr::Digest::blake3_256(b"test-prefix"),
+            said: test_digest("test-said"),
+            prefix: test_digest("test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
             peer_prefix: cesr::Digest::blake3_256(peer_prefix.as_bytes()),
             node_id: "test-node".to_string(),
-            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
+            authorizing_kel: test_digest("authorizing-kel"),
             active: true,
             base_domain: "test.kels".to_string(),
             gossip_addr: "127.0.0.1:4001".to_string(),

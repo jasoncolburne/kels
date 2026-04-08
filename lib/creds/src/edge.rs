@@ -89,12 +89,14 @@ impl Edges {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     use verifiable_storage::SelfAddressed;
 
     fn test_edge() -> Edge {
-        Edge::create(cesr::Digest::blake3_256(b"test-schema"), None, None, None).unwrap()
+        Edge::create(test_digest("test-schema"), None, None, None).unwrap()
     }
 
     #[test]
@@ -113,9 +115,9 @@ mod tests {
     #[test]
     fn test_edge_with_optional_fields() {
         let edge = Edge::create(
-            cesr::Digest::blake3_256(b"test-schema"),
-            Some(cesr::Digest::blake3_256(b"test-policy")),
-            Some(cesr::Digest::blake3_256(b"test-credential")),
+            test_digest("test-schema"),
+            Some(test_digest("test-policy")),
+            Some(test_digest("test-credential")),
             Some("KNonce12345678901234567890123456789012abcde".to_string()),
         )
         .unwrap();
@@ -207,7 +209,7 @@ mod tests {
     #[test]
     fn test_edges_try_from_rejects_reserved_label() {
         let raw = super::RawEdges {
-            said: cesr::Digest::blake3_256(b"reserved_label_test"),
+            said: test_digest("reserved-label-test"),
             edges: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_edge());

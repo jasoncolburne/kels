@@ -83,6 +83,8 @@ impl Rules {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     use verifiable_storage::SelfAddressed;
@@ -182,7 +184,7 @@ mod tests {
     #[test]
     fn test_rules_try_from_rejects_reserved_label() {
         let raw = super::RawRules {
-            said: cesr::Digest::blake3_256(b"reserved_label_test"),
+            said: test_digest("reserved-label-test"),
             rules: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_rule());

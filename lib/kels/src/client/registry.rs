@@ -957,6 +957,8 @@ pub async fn peers_sorted_by_latency(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use crate::types::{Peer, PeerHistory};
     use wiremock::matchers::{method, path};
@@ -975,14 +977,14 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         let peer = Peer {
-            said: cesr::Digest::blake3_256(b"test_peer_said"),
-            prefix: cesr::Digest::blake3_256(b"test_peer_prefix"),
+            said: test_digest("test-peer-said"),
+            prefix: test_digest("test-peer-prefix"),
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),
-            peer_prefix: cesr::Digest::blake3_256(b"EPeer1Prefix"),
+            peer_prefix: test_digest("peer1-prefix"),
             node_id: "node-1".to_string(),
-            authorizing_kel: cesr::Digest::blake3_256(b"EAuthorizingKel"),
+            authorizing_kel: test_digest("authorizing-kel"),
             active: true,
             base_domain: "node-1.kels".to_string(),
             gossip_addr: "10.0.0.1:9000".to_string(),
@@ -1015,7 +1017,7 @@ mod tests {
         Peer::create(
             cesr::Digest::blake3_256(peer_prefix.as_bytes()),
             node_id.to_string(),
-            cesr::Digest::blake3_256(b"EAuthorizingKel"),
+            test_digest("authorizing-kel"),
             active,
             format!("http://{}:8080", node_id),
             "127.0.0.1:4001".to_string(),

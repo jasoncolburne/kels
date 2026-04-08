@@ -298,6 +298,8 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use crate::kels_free_string;
 
@@ -305,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_compute_sad_pointer_prefix() {
-        let digest = cesr::Digest::blake3_256(b"test-prefix");
+        let digest = test_digest("test-prefix");
         let prefix = CString::new(digest.as_ref()).expect("cstring");
         let kind = CString::new("kels/exchange/v1/keys/mlkem").expect("cstring");
 

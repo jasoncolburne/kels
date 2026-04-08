@@ -85,13 +85,11 @@ pub(crate) async fn cmd_cred_issue(
     // Store credential, schema, and policy locally
     let sad_store = create_sad_store(cli)?;
     let cred_value = serde_json::to_value(&credential)?;
-    sad_store
-        .store(credential.said.as_ref(), &cred_value)
-        .await?;
+    sad_store.store(&credential.said, &cred_value).await?;
     let schema_value = serde_json::to_value(&schema)?;
-    sad_store.store(schema.said.as_ref(), &schema_value).await?;
+    sad_store.store(&schema.said, &schema_value).await?;
     let policy_value = serde_json::to_value(&policy)?;
-    sad_store.store(policy.said.as_ref(), &policy_value).await?;
+    sad_store.store(&policy.said, &policy_value).await?;
 
     println!(
         "{}",
@@ -122,7 +120,7 @@ pub(crate) async fn cmd_cred_store(
 
     // Store credential and schema
     let sad_store = create_sad_store(cli)?;
-    sad_store.store(said.as_ref(), &value).await?;
+    sad_store.store(&said, &value).await?;
 
     let schema_data = std::fs::read_to_string(schema_path)
         .with_context(|| format!("Failed to read schema: {}", schema_path.display()))?;
@@ -130,7 +128,7 @@ pub(crate) async fn cmd_cred_store(
         serde_json::from_str(&schema_data).context("Failed to parse schema")?;
     let schema_said = schema_value.get_said();
     if !schema_said.as_ref().is_empty() {
-        sad_store.store(schema_said.as_ref(), &schema_value).await?;
+        sad_store.store(&schema_said, &schema_value).await?;
     }
 
     println!("{}", format!("Credential stored: {}", said).green().bold());
@@ -142,15 +140,14 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
 
     let mut count = 0;
-    let mut since: Option<String> = None;
+    let mut since: Option<cesr::Digest> = None;
     loop {
         let (saids, has_more) = sad_store
-            .list(since.as_deref(), kels_core::page_size())
+            .list(since.as_ref(), kels_core::page_size())
             .await?;
 
         for said in &saids {
-            let said_str: &str = said.as_ref();
-            if let Ok(value) = sad_store.load(said_str).await
+            if let Ok(value) = sad_store.load(said).await
                 && value.get("schema").is_some()
                 && value.get("policy").is_some()
             {
@@ -164,7 +161,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
         if !has_more {
             break;
         }
-        since = saids.last().map(|s| s.to_string());
+        since = saids.last().cloned();
     }
 
     if count == 0 {
@@ -178,7 +175,8 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
-    let value = sad_store.load(said).await?;
+    let said = cesr::Digest::from_qb64(said).context("Invalid SAID")?;
+    let value = sad_store.load(&said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }

@@ -35,22 +35,24 @@ pub(crate) enum SadAnnouncement {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     #[test]
     fn test_sad_gossip_message_serialization() {
         let object_msg = SadAnnouncement::Object {
-            said: cesr::Digest::blake3_256(b"said123"),
-            origin: cesr::Digest::blake3_256(b"origin"),
+            said: test_digest("said123"),
+            origin: test_digest("origin"),
         };
         let json = serde_json::to_string(&object_msg).unwrap();
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, SadAnnouncement::Object { .. }));
 
         let chain_msg = SadAnnouncement::Pointer {
-            chain_prefix: cesr::Digest::blake3_256(b"prefix"),
-            said: cesr::Digest::blake3_256(b"said456"),
-            origin: cesr::Digest::blake3_256(b"origin"),
+            chain_prefix: test_digest("prefix"),
+            said: test_digest("said456"),
+            origin: test_digest("origin"),
             repair: false,
         };
         let json = serde_json::to_string(&chain_msg).unwrap();
@@ -62,9 +64,9 @@ mod tests {
 
         // Repair messages round-trip correctly
         let repair_msg = SadAnnouncement::Pointer {
-            chain_prefix: cesr::Digest::blake3_256(b"prefix"),
-            said: cesr::Digest::blake3_256(b"said789"),
-            origin: cesr::Digest::blake3_256(b"origin"),
+            chain_prefix: test_digest("prefix"),
+            said: test_digest("said789"),
+            origin: test_digest("origin"),
             repair: true,
         };
         let json = serde_json::to_string(&repair_msg).unwrap();
@@ -76,9 +78,9 @@ mod tests {
 
         // Backwards compatibility: messages without repair field default to false
         let without_repair = serde_json::to_string(&SadAnnouncement::Pointer {
-            chain_prefix: cesr::Digest::blake3_256(b"p"),
-            said: cesr::Digest::blake3_256(b"s"),
-            origin: cesr::Digest::blake3_256(b"o"),
+            chain_prefix: test_digest("p"),
+            said: test_digest("s"),
+            origin: test_digest("o"),
             repair: false,
         })
         .unwrap();

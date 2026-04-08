@@ -81,6 +81,7 @@ uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
 
 [dev-dependencies]
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 tokio-test = "0.4"
 
 [lints.clippy]

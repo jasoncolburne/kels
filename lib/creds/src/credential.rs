@@ -232,6 +232,8 @@ impl<T: Claims> FromStr for Credential<T> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     use cesr::Matter;
@@ -295,7 +297,7 @@ mod tests {
         Credential::build(
             &test_schema(),
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -381,7 +383,7 @@ mod tests {
         use crate::edge::{Edge, Edges};
 
         let edge =
-            Edge::create(cesr::Digest::blake3_256(b"test-schema"), None, None, None).unwrap();
+            Edge::create(test_digest("test-schema"), None, None, None).unwrap();
 
         let mut edges_map = BTreeMap::new();
         edges_map.insert("license".to_string(), edge);
@@ -583,7 +585,7 @@ mod tests {
         let (cred, said) = Credential::build(
             &test_schema(),
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -604,7 +606,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -668,7 +670,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -802,7 +804,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -847,7 +849,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -909,7 +911,7 @@ mod tests {
         let (cred_a, compacted_said_a) = Credential::build(
             &schema_a,
             &policy_a,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -994,7 +996,7 @@ mod tests {
         let (cred_b, compacted_said_b) = Credential::build(
             &schema_b,
             &policy_b,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             Some(edges),
@@ -1100,7 +1102,7 @@ mod tests {
         let (cred_root, compacted_root) = Credential::build(
             &root_schema,
             &root_policy,
-            Some(cesr::Digest::blake3_256(b"test-subject")),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,

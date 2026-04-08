@@ -265,6 +265,8 @@ impl RaftNetworkFactory<TypeConfig> for FederationNetwork {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use openraft::Vote;
 
@@ -300,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_signed_federation_rpc_serialization() {
-        let sender_prefix = cesr::Digest::blake3_256(b"test");
+        let sender_prefix = test_digest("test");
         let signature =
             cesr::Signature::from_raw(cesr::SignatureCode::Secp256r1, vec![0u8; 64]).unwrap();
         let signed_rpc = SignedFederationRpc {
