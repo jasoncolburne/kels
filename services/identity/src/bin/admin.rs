@@ -140,11 +140,7 @@ async fn cmd_status(identity_client: &IdentityClient, json: bool) -> anyhow::Res
         println!("{}", "Registry Identity Status".cyan().bold());
         println!("{}", "=".repeat(60));
         if let Some(ref prefix) = status.prefix {
-            println!(
-                "  {}: {}",
-                "Prefix".cyan(),
-                prefix.as_ref().yellow()
-            );
+            println!("  {}: {}", "Prefix".cyan(), prefix.as_ref().yellow());
         }
         if let Some(ref said) = status.last_said {
             println!("  {}: {}", "Last SAID".cyan(), said);

@@ -1158,7 +1158,10 @@ async fn drain_due_stale_entries(
             let source = match cesr::Digest::from_qb64(&source_str) {
                 Ok(d) => d,
                 Err(e) => {
-                    warn!("Invalid CESR source in stale entry for {}: {}", prefix_str, e);
+                    warn!(
+                        "Invalid CESR source in stale entry for {}: {}",
+                        prefix_str, e
+                    );
                     continue;
                 }
             };
@@ -1286,11 +1289,8 @@ pub async fn run_anti_entropy_loop(
                                 continue;
                             }
                         };
-                        let remote_effective = remote
-                            .fetch_effective_said(&prefix)
-                            .await
-                            .ok()
-                            .flatten();
+                        let remote_effective =
+                            remote.fetch_effective_said(&prefix).await.ok().flatten();
                         let remote_said = remote_effective.as_ref().map(|(s, _)| s);
                         let remote_is_divergent =
                             remote_effective.as_ref().map(|(_, d)| *d).unwrap_or(false);
@@ -1308,8 +1308,7 @@ pub async fn run_anti_entropy_loop(
                         } else {
                             local_said.as_ref()
                         };
-                        let result =
-                            sync_prefix(&remote, &local, &prefix, since_for_sync).await;
+                        let result = sync_prefix(&remote, &local, &prefix, since_for_sync).await;
                         if matches!(result, RepairResult::Contested) {
                             return (prefix, source, retries, RepairResult::Contested);
                         }
@@ -1493,7 +1492,14 @@ pub async fn record_sad_stale_prefix(
     chain_prefix: &cesr::Digest,
     source_node_prefix: &cesr::Digest,
 ) {
-    record_stale_entry(redis, SAD_STALE_PREFIX_KEY, chain_prefix, source_node_prefix, 0).await;
+    record_stale_entry(
+        redis,
+        SAD_STALE_PREFIX_KEY,
+        chain_prefix,
+        source_node_prefix,
+        0,
+    )
+    .await;
 }
 
 /// Periodically runs anti-entropy repair for SAD chain data.
@@ -1583,13 +1589,11 @@ pub async fn run_sad_anti_entropy_loop(
                             Ok(c) => c,
                             Err(_) => continue,
                         };
-                        let (remote_said, remote_divergent) = match remote
-                            .fetch_sad_pointer_effective_said(&prefix)
-                            .await
-                        {
-                            Ok(Some((said, div))) => (Some(said), div),
-                            _ => (None, false),
-                        };
+                        let (remote_said, remote_divergent) =
+                            match remote.fetch_sad_pointer_effective_said(&prefix).await {
+                                Ok(Some((said, div))) => (Some(said), div),
+                                _ => (None, false),
+                            };
 
                         if remote_said == local_said {
                             continue;
