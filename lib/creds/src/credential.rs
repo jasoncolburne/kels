@@ -286,7 +286,7 @@ mod tests {
         .unwrap()
     }
 
-    fn test_policy(prefix: &str) -> Policy {
+    fn test_policy(prefix: cesr::Digest) -> Policy {
         Policy::build(&format!("endorse({prefix})"), None, false).unwrap()
     }
 
@@ -295,7 +295,7 @@ mod tests {
     }
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         Credential::build(
             &test_schema(),
             &policy,
@@ -344,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unique_credential() {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &test_schema(),
             &policy,
@@ -363,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deterministic_credential() {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &test_schema(),
             &policy,
@@ -438,7 +438,7 @@ mod tests {
             .unwrap()
         };
 
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &schema,
             &policy,
@@ -514,7 +514,7 @@ mod tests {
             .unwrap()
         };
 
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &schema,
             &policy,
@@ -582,7 +582,7 @@ mod tests {
     async fn credential_for_prefix(
         prefix: &cesr::Digest,
     ) -> (Credential<TestClaims>, String, Policy) {
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(*prefix);
         let (cred, said) = Credential::build(
             &test_schema(),
             &policy,
@@ -602,7 +602,7 @@ mod tests {
     async fn test_verify_issued_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
         let (cred, compacted_said) = Credential::build(
             &schema,
@@ -665,7 +665,7 @@ mod tests {
     async fn test_verify_poisoned_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::build(
@@ -758,7 +758,7 @@ mod tests {
 
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
@@ -800,7 +800,7 @@ mod tests {
     async fn test_verify_schema_validation_expanded() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
         let (cred, compacted_said) = Credential::build(
             &schema,
@@ -840,7 +840,7 @@ mod tests {
     async fn test_verify_schema_validation_compacted() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(prefix.as_ref());
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         // Build via the expanded API — Credential::build() takes expanded types
@@ -906,7 +906,7 @@ mod tests {
         let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
 
         let schema_a = test_schema();
-        let policy_a = test_policy(prefix_a.as_ref());
+        let policy_a = test_policy(prefix_a);
 
         // Issuer A issues a base credential
         let (cred_a, compacted_said_a) = Credential::build(
@@ -993,7 +993,7 @@ mod tests {
         )
         .unwrap();
 
-        let policy_b = test_policy(prefix_b.as_ref());
+        let policy_b = test_policy(prefix_b);
         let (cred_b, compacted_said_b) = Credential::build(
             &schema_b,
             &policy_b,
@@ -1097,7 +1097,7 @@ mod tests {
 
         let sad_store = InMemorySADStore::new();
         let root_schema = test_schema();
-        let root_policy = test_policy(prefix_root.as_ref());
+        let root_policy = test_policy(prefix_root);
 
         // Root credential (no edges)
         let (cred_root, compacted_root) = Credential::build(
@@ -1182,7 +1182,7 @@ mod tests {
         mid_edges.insert("root".to_string(), edge_to_root);
 
         let mid_schema = make_edge_schema("root");
-        let mid_policy = test_policy(prefix_mid.as_ref());
+        let mid_policy = test_policy(prefix_mid);
         let (cred_mid, compacted_mid) = Credential::build(
             &mid_schema,
             &mid_policy,
@@ -1216,7 +1216,7 @@ mod tests {
         leaf_edges.insert("authority".to_string(), edge_to_mid);
 
         let leaf_schema = make_edge_schema("authority");
-        let leaf_policy = test_policy(prefix_leaf.as_ref());
+        let leaf_policy = test_policy(prefix_leaf);
         let (cred_leaf, compacted_leaf) = Credential::build(
             &leaf_schema,
             &leaf_policy,

@@ -111,7 +111,7 @@ pub unsafe extern "C" fn kels_sad_post_object(
     };
 
     match runtime.block_on(client.post_sad_object(&object)) {
-        Ok(said) => to_c_string(&said),
+        Ok(said) => to_c_string(said.as_ref()),
         Err(e) => {
             set_last_error(&e.to_string());
             std::ptr::null_mut()
