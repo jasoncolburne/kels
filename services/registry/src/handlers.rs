@@ -620,10 +620,9 @@ pub async fn admin_submit_addition_proposal(
             current_votes: 0,
             message: "Proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerAlreadyExists(peer_kel_prefix) => Err(ApiError::bad_request(format!(
-            "Peer already exists: {}",
-            peer_kel_prefix
-        ))),
+        FederationResponse::PeerAlreadyExists(peer_kel_prefix) => Err(ApiError::bad_request(
+            format!("Peer already exists: {}", peer_kel_prefix),
+        )),
         FederationResponse::ProposalAlreadyExists(proposal_prefix) => Err(ApiError::bad_request(
             format!("Proposal already exists: {}", proposal_prefix),
         )),

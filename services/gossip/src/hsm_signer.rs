@@ -281,10 +281,7 @@ impl PeerVerifier for KelsPeerVerifier {
             self.try_verify_refreshed(&peer, data, signature),
         )
         .map_err(|e| {
-            GossipError::VerificationFailed(format!(
-                "KEL verification for {}: {}",
-                peer, e
-            ))
+            GossipError::VerificationFailed(format!("KEL verification for {}: {}", peer, e))
         })?;
 
         match verified {

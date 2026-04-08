@@ -461,7 +461,13 @@ impl PeerRemovalProposal {
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
-        Self::create(peer_kel_prefix, proposer, threshold, expires_at.clone(), None)
+        Self::create(
+            peer_kel_prefix,
+            proposer,
+            threshold,
+            expires_at.clone(),
+            None,
+        )
     }
 }
 

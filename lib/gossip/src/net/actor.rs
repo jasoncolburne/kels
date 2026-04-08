@@ -356,7 +356,10 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         match result {
             DialResult::Success(conn) => {
                 let peer_kel_prefix = conn.peer_kel_prefix;
-                let queued = self.pending_dials.remove(&peer_kel_prefix).unwrap_or_default();
+                let queued = self
+                    .pending_dials
+                    .remove(&peer_kel_prefix)
+                    .unwrap_or_default();
 
                 if self.peers.contains_key(&peer_kel_prefix) {
                     if self
@@ -380,7 +383,10 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                 debug!(%peer_kel_prefix, queued = queued.len(), "on-demand dial succeeded");
                 self.drain_queued_messages(peer_kel_prefix, queued);
             }
-            DialResult::Failure { peer_kel_prefix, error } => {
+            DialResult::Failure {
+                peer_kel_prefix,
+                error,
+            } => {
                 let queued_count = self
                     .pending_dials
                     .remove(&peer_kel_prefix)

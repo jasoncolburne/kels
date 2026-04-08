@@ -327,7 +327,9 @@ impl StateMachineData {
                         .active_peers_by_kel_prefix
                         .contains_key(&submitted.peer_kel_prefix)
                     {
-                        return FederationResponse::PeerNotFound(submitted.peer_kel_prefix.to_string());
+                        return FederationResponse::PeerNotFound(
+                            submitted.peer_kel_prefix.to_string(),
+                        );
                     }
 
                     for proposal in self.pending_removal_proposals.values() {
@@ -1390,7 +1392,11 @@ mod tests {
     }
 
     /// Helper: run a full proposal through to approval, returning the proposal_prefix
-    fn approve_peer(sm: &mut StateMachineData, peer_kel_prefix: &str, node_id: &str) -> cesr::Digest {
+    fn approve_peer(
+        sm: &mut StateMachineData,
+        peer_kel_prefix: &str,
+        node_id: &str,
+    ) -> cesr::Digest {
         let proposal = make_test_proposal(peer_kel_prefix, node_id, "KRegistryA");
         let proposal_prefix = submit_proposal(sm, proposal);
 

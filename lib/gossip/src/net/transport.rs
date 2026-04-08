@@ -84,8 +84,12 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     debug!(peer = %their_id, "peer authenticated");
 
     // Step 5: Derive session keys from ML-KEM shared secret.
-    let (send_cipher, recv_cipher) =
-        derive_session_keys(&shared_secret, our_id.qb64b(), their_id.qb64b(), is_initiator)?;
+    let (send_cipher, recv_cipher) = derive_session_keys(
+        &shared_secret,
+        our_id.qb64b(),
+        their_id.qb64b(),
+        is_initiator,
+    )?;
     let encrypted = EncryptedStream::new(stream, send_cipher, recv_cipher);
 
     Ok(PeerConnection {

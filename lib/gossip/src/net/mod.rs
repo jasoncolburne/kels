@@ -28,7 +28,6 @@ pub mod transport;
 
 use std::future::Future;
 
-
 /// Error type for networking and gossip operations.
 #[derive(Debug)]
 pub enum Error {
