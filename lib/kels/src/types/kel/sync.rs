@@ -926,10 +926,7 @@ mod tests {
             Ok(())
         }
 
-        async fn delete(&self, prefix: &cesr::Digest) -> Result<(), crate::error::KelsError> {
-            self.kels.write().unwrap().remove(prefix.as_ref());
-            Ok(())
-        }
+
     }
 
     #[tokio::test]

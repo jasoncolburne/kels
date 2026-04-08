@@ -169,13 +169,7 @@ impl KelStore for FileKelStore {
         Ok(())
     }
 
-    async fn delete(&self, prefix: &cesr::Digest) -> Result<(), KelsError> {
-        let path = self.kel_path(prefix.as_ref());
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        Ok(())
-    }
+
 }
 
 #[cfg(test)]
@@ -292,32 +286,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_removes_file() {
-        let temp = TempDir::new().unwrap();
-        let store = FileKelStore::new(temp.path()).unwrap();
-
-        let (prefix, events) = crate::store::create_test_events().await;
-
-        store.overwrite(&prefix, &events).await.unwrap();
-
-        let path = temp.path().join(format!("{}.kel.jsonl", prefix));
-        assert!(path.exists());
-
-        store.delete(&prefix).await.unwrap();
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_delete_nonexistent_succeeds() {
-        let temp = TempDir::new().unwrap();
-        let store = FileKelStore::new(temp.path()).unwrap();
-
-        // Should not error when deleting non-existent
-        let nonexistent = cesr::Digest::blake3_256(b"nonexistent");
-        store.delete(&nonexistent).await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_load_invalid_json_returns_error() {
         let temp = TempDir::new().unwrap();
         let store = FileKelStore::new(temp.path()).unwrap();
@@ -348,13 +316,6 @@ mod tests {
 
         assert!(!loaded1.is_empty());
         assert!(!loaded2.is_empty());
-
-        // Delete one shouldn't affect the other
-        store.delete(&prefix1).await.unwrap();
-        let (e1, _) = store.load(&prefix1, crate::LOAD_ALL, 0).await.unwrap();
-        let (e2, _) = store.load(&prefix2, crate::LOAD_ALL, 0).await.unwrap();
-        assert!(e1.is_empty());
-        assert!(!e2.is_empty());
     }
 
     #[tokio::test]

@@ -70,9 +70,6 @@ pub trait KelStore: Send + Sync {
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError>;
 
-    /// Delete a KEL by prefix. No-op if not found.
-    async fn delete(&self, prefix: &cesr::Digest) -> Result<(), KelsError>;
-
     /// Cache server-fetched events. Skips owner prefix to protect authoritative local state.
     async fn cache(
         &self,
@@ -204,12 +201,7 @@ mod tests {
             Ok(())
         }
 
-        async fn delete(&self, prefix: &cesr::Digest) -> Result<(), KelsError> {
-            if let Ok(mut guard) = self.kels.write() {
-                guard.remove(prefix.as_ref());
-            }
-            Ok(())
-        }
+
     }
 
     #[tokio::test]

@@ -61,9 +61,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         Ok(())
     }
 
-    async fn delete(&self, _prefix: &cesr::Digest) -> Result<(), KelsError> {
-        Ok(())
-    }
+
 }
 
 #[async_trait]
