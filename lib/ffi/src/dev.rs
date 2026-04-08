@@ -87,7 +87,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
         let adversary_keys = builder_guard.key_provider().clone();
 
         let prefix = match builder_guard.prefix() {
-            Some(p) => p.clone(),
+            Some(p) => *p,
             None => {
                 set_last_error("No KEL incepted");
                 return -1;
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn kels_dump_local_kel(ctx: *mut KelsContext) -> *mut c_ch
     };
 
     let prefix = match builder_guard.prefix() {
-        Some(p) => p.clone(),
+        Some(p) => *p,
         None => {
             set_last_error("No KEL prefix available");
             return std::ptr::null_mut();

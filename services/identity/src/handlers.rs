@@ -101,9 +101,7 @@ pub async fn get_identity(
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    Ok(Json(IdentityInfo {
-        prefix: prefix.clone(),
-    }))
+    Ok(Json(IdentityInfo { prefix: *prefix }))
 }
 
 pub async fn get_status(
@@ -111,7 +109,7 @@ pub async fn get_status(
 ) -> Result<Json<kels_core::IdentityStatus>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = match builder.prefix() {
-        Some(p) => p.clone(),
+        Some(p) => *p,
         None => {
             return Ok(Json(kels_core::IdentityStatus {
                 initialized: false,
@@ -230,10 +228,9 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
-    let prefix = builder
+    let prefix = *builder
         .prefix()
-        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-        .clone();
+        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
     let ixn = builder
         .interact(&request.said)
@@ -253,7 +250,7 @@ pub async fn anchor(
     forward_kel(&state, &prefix).await;
 
     Ok(Json(AnchorResponse {
-        event_said: ixn.event.said.clone(),
+        event_said: ixn.event.said,
     }))
 }
 
@@ -284,10 +281,9 @@ pub async fn manage_kel(
 ) -> Result<Json<ManageKelResponse>, ApiError> {
     let prefix = {
         let builder = state.builder.read().await;
-        builder
+        *builder
             .prefix()
             .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-            .clone()
     };
 
     if signed.payload.prefix != prefix {
@@ -379,10 +375,7 @@ mod tests {
     #[test]
     fn test_anchor_request_deserialization() {
         let digest = test_digest("test-anchor");
-        let json = serde_json::to_string(&AnchorRequest {
-            said: digest.clone(),
-        })
-        .unwrap();
+        let json = serde_json::to_string(&AnchorRequest { said: digest }).unwrap();
         let request: AnchorRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request.said, digest);
     }
@@ -390,9 +383,7 @@ mod tests {
     #[test]
     fn test_anchor_response_serialization() {
         let digest = test_digest("new-event-789");
-        let response = AnchorResponse {
-            event_said: digest.clone(),
-        };
+        let response = AnchorResponse { event_said: digest };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("eventSaid")); // camelCase
         assert!(json.contains(digest.as_ref()));
@@ -401,9 +392,7 @@ mod tests {
     #[test]
     fn test_identity_info_serialization() {
         let prefix = test_digest("prefix-123");
-        let info = IdentityInfo {
-            prefix: prefix.clone(),
-        };
+        let info = IdentityInfo { prefix };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("prefix"));
         assert!(json.contains(prefix.as_ref()));

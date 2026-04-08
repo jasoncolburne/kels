@@ -118,7 +118,7 @@ mod tests {
 
         assert!(!deactivated.active);
         assert_eq!(deactivated.version, 1);
-        assert_eq!(deactivated.previous, Some(peer.said.clone()));
+        assert_eq!(deactivated.previous, Some(peer.said));
         assert_eq!(deactivated.prefix, peer.prefix);
     }
 
@@ -382,7 +382,7 @@ mod tests {
         let said = make_blake3_digest("said");
         let event = KeyEvent {
             kind: EventKind::Rot,
-            said: said.clone(),
+            said,
             prefix: make_blake3_digest("prefix"),
             previous: Some(said), // Same as said - circular!
             serial: 0,
@@ -1055,8 +1055,8 @@ mod tests {
     #[test]
     fn test_raft_vote_increment() {
         let mut vote = RaftVote::create(1, 5, Some(2), false).unwrap();
-        let original_said = vote.said.clone();
-        let original_prefix = vote.prefix.clone();
+        let original_said = vote.said;
+        let original_prefix = vote.prefix;
         let original_version = vote.version;
 
         vote.term = 6;
@@ -1120,7 +1120,7 @@ mod tests {
         let mut entry =
             RaftLogEntry::create(1, 10, 5, 2, "normal".to_string(), Some("data".to_string()))
                 .unwrap();
-        let original_said = entry.said.clone();
+        let original_said = entry.said;
 
         entry.log_index = 11;
         entry.term = 6;
@@ -1179,7 +1179,7 @@ mod tests {
     #[test]
     fn test_raft_state_increment() {
         let mut state = RaftState::create(1, None, None, None, None, None, None).unwrap();
-        let original_said = state.said.clone();
+        let original_said = state.said;
 
         state.last_purged_index = Some(3);
         state.last_purged_term = Some(2);

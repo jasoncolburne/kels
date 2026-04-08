@@ -128,7 +128,7 @@ impl KeyEventRepository {
         tx.acquire_advisory_lock(prefix.as_ref()).await?;
         Ok(LockedKelTransaction {
             tx,
-            prefix: prefix.clone(),
+            prefix: *prefix,
         })
     }
 }
@@ -345,7 +345,7 @@ mod tests {
             prefix: test_digest("key-binding-test-prefix"),
             previous: None,
             version: 0,
-            kel_prefix: kel_prefix.clone(),
+            kel_prefix,
             current_key_handle: "current_handle".to_string(),
             next_key_handle: "next_handle".to_string(),
             recovery_key_handle: "recovery_handle".to_string(),
@@ -369,7 +369,7 @@ mod tests {
             previous: None,
             version: 0,
             name: "auth_mapping_authority".to_string(),
-            kel_prefix: kel_prefix.clone(),
+            kel_prefix,
             last_said: test_digest("auth-mapping-last-event-said"),
             created_at: StorageDatetime::now(),
         };
@@ -451,8 +451,7 @@ mod tests {
         let nxt = test_digest("hsm-store-nxt").to_string();
         let rec = test_digest("hsm-store-rec").to_string();
 
-        let binding =
-            HsmKeyBinding::create(kel_prefix.clone(), cur.clone(), nxt, rec, 0, 0).unwrap();
+        let binding = HsmKeyBinding::create(kel_prefix, cur.clone(), nxt, rec, 0, 0).unwrap();
 
         repo.hsm_bindings
             .insert(binding.clone())
@@ -485,8 +484,7 @@ mod tests {
         let cur_v1 = test_digest("hsm-ver-cur-v1").to_string();
         let nxt_v1 = test_digest("hsm-ver-nxt-v1").to_string();
 
-        let binding_v0 =
-            HsmKeyBinding::create(kel_prefix.clone(), cur_v0, nxt_v0, rec_v0, 0, 0).unwrap();
+        let binding_v0 = HsmKeyBinding::create(kel_prefix, cur_v0, nxt_v0, rec_v0, 0, 0).unwrap();
 
         repo.hsm_bindings
             .insert(binding_v0.clone())
@@ -542,9 +540,7 @@ mod tests {
         let kel_prefix = test_digest("auth-store-kel");
         let last_said = test_digest("auth-store-last");
 
-        let mapping =
-            AuthorityMapping::create(name.to_string(), kel_prefix.clone(), last_said.clone())
-                .unwrap();
+        let mapping = AuthorityMapping::create(name.to_string(), kel_prefix, last_said).unwrap();
 
         repo.authority
             .insert(mapping.clone())
@@ -576,12 +572,8 @@ mod tests {
         let kel_prefix_v1 = test_digest("auth-ver-kel-v1");
         let last_said_v1 = test_digest("auth-ver-last-v1");
 
-        let mapping_v0 = AuthorityMapping::create(
-            name.to_string(),
-            kel_prefix_v0.clone(),
-            last_said_v0.clone(),
-        )
-        .unwrap();
+        let mapping_v0 =
+            AuthorityMapping::create(name.to_string(), kel_prefix_v0, last_said_v0).unwrap();
 
         repo.authority
             .insert(mapping_v0.clone())
@@ -589,8 +581,8 @@ mod tests {
             .expect("Failed to store v0");
 
         let mut mapping_v1 = mapping_v0.clone();
-        mapping_v1.kel_prefix = kel_prefix_v1.clone();
-        mapping_v1.last_said = last_said_v1.clone();
+        mapping_v1.kel_prefix = kel_prefix_v1;
+        mapping_v1.last_said = last_said_v1;
 
         repo.authority
             .update(mapping_v1)

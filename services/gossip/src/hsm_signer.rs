@@ -276,9 +276,9 @@ impl PeerVerifier for KelsPeerVerifier {
 
         // Authentication: verify against local KEL, refresh from peer on mismatch
         let verified = kels_core::retry_once!(
-            self.try_verify(&peer, data, signature),
+            self.try_verify(peer, data, signature),
             |ok: &bool| *ok,
-            self.try_verify_refreshed(&peer, data, signature),
+            self.try_verify_refreshed(peer, data, signature),
         )
         .map_err(|e| {
             GossipError::VerificationFailed(format!("KEL verification for {}: {}", peer, e))
@@ -334,7 +334,7 @@ impl kels_core::PeerSigner for IdentitySigner {
 
         Ok(kels_core::SignResult {
             signature: result.signature,
-            peer_kel_prefix: self.peer_kel_prefix.clone(),
+            peer_kel_prefix: self.peer_kel_prefix,
         })
     }
 }
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_identity_registry_signer_new() {
         let peer_kel_prefix = test_digest("test-peer-prefix");
-        let signer = IdentitySigner::new("http://identity:80", peer_kel_prefix.clone()).unwrap();
+        let signer = IdentitySigner::new("http://identity:80", peer_kel_prefix).unwrap();
         assert_eq!(signer.peer_kel_prefix, peer_kel_prefix);
     }
 

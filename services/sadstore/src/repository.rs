@@ -38,7 +38,7 @@ impl SadPointerRepository {
             return Ok(0);
         }
 
-        let prefix_digest = records[0].0.prefix.clone();
+        let prefix_digest = records[0].0.prefix;
         let prefix = prefix_digest.to_string();
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(&prefix).await?;
@@ -188,7 +188,7 @@ impl SadPointerRepository {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
 
-        let prefix_digest = records[0].0.prefix.clone();
+        let prefix_digest = records[0].0.prefix;
         let prefix = prefix_digest.to_string();
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(&prefix).await?;
@@ -248,9 +248,9 @@ impl SadPointerRepository {
             let repair_said_ref = match &repair_said {
                 Some(said) => said,
                 None => {
-                    let repair = SadPointerRepair::create(prefix_digest.clone(), from_version)?;
+                    let repair = SadPointerRepair::create(prefix_digest, from_version)?;
                     tx.insert(&repair).await?;
-                    repair_said = Some(repair.said.clone());
+                    repair_said = Some(repair.said);
                     repair_said.as_ref().ok_or_else(|| {
                         StorageError::StorageError("repair SAID missing".to_string())
                     })?
@@ -267,8 +267,7 @@ impl SadPointerRepository {
             for record in &page {
                 tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
                     .await?;
-                let repair_record =
-                    SadPointerRepairRecord::create(repair_said_ref.clone(), record.said.clone())?;
+                let repair_record = SadPointerRepairRecord::create(*repair_said_ref, record.said)?;
                 tx.insert(&repair_record).await?;
             }
             for sig in &sigs {
@@ -662,7 +661,7 @@ impl SadPointerRepository {
 
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.clone())
+            prefix_states.last().map(|s| s.prefix)
         } else if let Some(cursor) = cursor {
             // Wrap around: fill remaining slots from prefixes <= cursor
             let remaining = limit - prefix_states.len();

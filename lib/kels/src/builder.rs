@@ -550,7 +550,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         }
 
-        let prefix = self.prefix().ok_or(KelsError::NotIncepted)?.clone();
+        let prefix = *self.prefix().ok_or(KelsError::NotIncepted)?;
 
         let mut verifier = if let Some(ref v) = self.kel_verification {
             crate::KelVerifier::resume(&prefix, v)?
@@ -685,7 +685,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             current_key,
             rotation_hash,
             recovery_hash,
-            delegating_prefix.clone(),
+            *delegating_prefix,
         )?;
         let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
@@ -697,7 +697,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         base_event: &KeyEvent,
         anchor: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
-        let event = KeyEvent::create_interaction(base_event, anchor.clone())?;
+        let event = KeyEvent::create_interaction(base_event, *anchor)?;
         let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
         Ok(SignedKeyEvent::new(event, "signing".to_string(), signature))

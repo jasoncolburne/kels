@@ -241,7 +241,7 @@ impl KelsClient {
                 break;
             }
 
-            let last_said = page.events.last().map(|e| e.event.said.clone());
+            let last_said = page.events.last().map(|e| e.event.said);
             all_events.extend(page.events);
 
             if !page.has_more {
@@ -673,7 +673,7 @@ mod tests {
                 None,
             );
             let icp = builder.incept().await.unwrap();
-            let prefix = icp.event.prefix.clone();
+            let prefix = icp.event.prefix;
 
             let response = SignedKeyEventPage {
                 events: vec![icp],

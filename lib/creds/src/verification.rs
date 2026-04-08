@@ -175,9 +175,9 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential: credential.said.clone(),
-            policy: policy.said.clone(),
-            subject: credential.subject.clone(),
+            credential: credential.said,
+            policy: policy.said,
+            subject: credential.subject,
             is_expired,
             policy_verification,
             schema_validation,

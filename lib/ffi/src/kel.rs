@@ -711,7 +711,7 @@ pub unsafe extern "C" fn kels_get_kel(
         || prefix_str.as_deref() == builder_guard.prefix().map(|p| p.as_ref())
     {
         match builder_guard.prefix() {
-            Some(p) => p.clone(),
+            Some(p) => *p,
             None => {
                 crate::set_last_error("No KEL prefix available");
                 return std::ptr::null_mut();

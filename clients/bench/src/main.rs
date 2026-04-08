@@ -213,7 +213,7 @@ async fn create_test_kel(
     // Build events offline (no client) then batch-submit to avoid per-event rate limits.
     let mut builder = KeyEventBuilder::new(SoftwareKeyProvider::new(algorithm, algorithm), None);
     let icp = builder.incept().await?;
-    let prefix = icp.event.prefix.clone();
+    let prefix = icp.event.prefix;
 
     for i in 1..event_count {
         if i == 33 {

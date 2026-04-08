@@ -117,7 +117,7 @@ impl FederationConfig {
 
         // Collect all trusted prefixes (active + inactive)
         let trusted_prefixes: Vec<cesr::Digest> =
-            trusted_members.iter().map(|m| m.prefix.clone()).collect();
+            trusted_members.iter().map(|m| m.prefix).collect();
 
         // Parse runtime URLs
         let urls_str = match std::env::var("FEDERATION_URLS") {
@@ -142,7 +142,7 @@ impl FederationConfig {
             })?;
             members.push(FederationMember {
                 id: tm.id,
-                prefix: tm.prefix.clone(),
+                prefix: tm.prefix,
                 url: url.clone(),
             });
         }
@@ -206,7 +206,7 @@ impl FederationConfig {
 
     /// Get all member prefixes.
     pub fn member_prefixes(&self) -> Vec<cesr::Digest> {
-        self.members.iter().map(|m| m.prefix.clone()).collect()
+        self.members.iter().map(|m| m.prefix).collect()
     }
 }
 
@@ -244,7 +244,7 @@ mod tests {
 
     /// Helper to build a config where all members are also trusted prefixes.
     fn make_config(self_prefix: &str, members: Vec<FederationMember>) -> FederationConfig {
-        let trusted_prefixes = members.iter().map(|m| m.prefix.clone()).collect();
+        let trusted_prefixes = members.iter().map(|m| m.prefix).collect();
         FederationConfig::new(digest(self_prefix), members, trusted_prefixes)
     }
 

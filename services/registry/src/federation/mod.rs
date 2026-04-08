@@ -213,7 +213,7 @@ impl FederationNode {
     pub async fn leader_prefix(&self) -> Option<cesr::Digest> {
         self.leader()
             .await
-            .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix.clone()))
+            .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix))
     }
 
     /// Get the current leader's URL, if known.
@@ -373,7 +373,7 @@ impl FederationNode {
                     .collect();
                 AdditionWithVotes {
                     history: AdditionHistory {
-                        prefix: p.prefix.clone(),
+                        prefix: p.prefix,
                         records: vec![p.clone()],
                     },
                     votes,
@@ -396,7 +396,7 @@ impl FederationNode {
                     .collect();
                 RemovalWithVotes {
                     history: RemovalHistory {
-                        prefix: p.prefix.clone(),
+                        prefix: p.prefix,
                         records: vec![p.clone()],
                     },
                     votes,
@@ -450,7 +450,7 @@ impl FederationNode {
                 .collect();
             return Some(AdditionWithVotes {
                 history: AdditionHistory {
-                    prefix: p.prefix.clone(),
+                    prefix: p.prefix,
                     records: vec![p.clone()],
                 },
                 votes,
@@ -462,7 +462,7 @@ impl FederationNode {
             .iter()
             .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
-                let prefix = chain[0].prefix.clone();
+                let prefix = chain[0].prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -496,7 +496,7 @@ impl FederationNode {
                 .collect();
             return Some(RemovalWithVotes {
                 history: RemovalHistory {
-                    prefix: p.prefix.clone(),
+                    prefix: p.prefix,
                     records: vec![p.clone()],
                 },
                 votes,
@@ -508,7 +508,7 @@ impl FederationNode {
             .iter()
             .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
-                let prefix = chain[0].prefix.clone();
+                let prefix = chain[0].prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -546,7 +546,7 @@ impl FederationNode {
         sm.completed_addition_proposals
             .iter()
             .filter_map(|chain| {
-                let prefix = chain.first()?.prefix.clone();
+                let prefix = chain.first()?.prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -570,7 +570,7 @@ impl FederationNode {
         sm.completed_removal_proposals
             .iter()
             .filter_map(|chain| {
-                let prefix = chain.first()?.prefix.clone();
+                let prefix = chain.first()?.prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -604,7 +604,7 @@ impl FederationNode {
     pub async fn status(&self) -> FederationStatus {
         FederationStatus {
             node_id: self.config.self_node_id().unwrap_or(0),
-            self_prefix: self.config.self_prefix.clone(),
+            self_prefix: self.config.self_prefix,
             is_leader: self.is_leader().await,
             leader_id: self.leader().await,
             leader_prefix: self.leader_prefix().await,
@@ -612,12 +612,7 @@ impl FederationNode {
             term: 0,           // TODO: Get from metrics when API is understood
             last_log_index: 0, // TODO: Get from metrics when API is understood
             last_applied: 0,   // TODO: Get from metrics when API is understood
-            members: self
-                .config
-                .members
-                .iter()
-                .map(|m| m.prefix.clone())
-                .collect(),
+            members: self.config.members.iter().map(|m| m.prefix).collect(),
         }
     }
 }

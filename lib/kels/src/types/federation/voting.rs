@@ -167,7 +167,7 @@ pub trait ProposalHistory {
                 )));
             }
 
-            last_said = Some(record.proposal_said().clone());
+            last_said = Some(*record.proposal_said());
         }
 
         if self.records().len() == 2 && !self.records()[1].is_withdrawn() {
@@ -581,7 +581,7 @@ mod tests {
         v1.increment().unwrap();
 
         let history = AdditionHistory {
-            prefix: v0.prefix.clone(),
+            prefix: v0.prefix,
             records: vec![v0, v1],
         };
         assert!(history.verify().is_ok());
@@ -608,7 +608,7 @@ mod tests {
         v1.derive_said().unwrap();
 
         let history = AdditionHistory {
-            prefix: v0.prefix.clone(),
+            prefix: v0.prefix,
             records: vec![v0, v1],
         };
         let err = history.verify().unwrap_err();
@@ -636,7 +636,7 @@ mod tests {
         v1.increment().unwrap();
 
         let history = RemovalHistory {
-            prefix: v0.prefix.clone(),
+            prefix: v0.prefix,
             records: vec![v0, v1],
         };
         assert!(history.verify().is_ok());
@@ -660,7 +660,7 @@ mod tests {
         v1.derive_said().unwrap();
 
         let history = RemovalHistory {
-            prefix: v0.prefix.clone(),
+            prefix: v0.prefix,
             records: vec![v0, v1],
         };
         let err = history.verify().unwrap_err();

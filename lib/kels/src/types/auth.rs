@@ -118,7 +118,7 @@ mod tests {
             None,
         );
         let icp = builder1.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         let mut builder2 = builder1.clone();
         let anchor1 = test_digest("anchor1");
         let anchor2 = test_digest("anchor2");

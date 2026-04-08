@@ -36,7 +36,7 @@ impl KelAnnouncement {
         Some(Self {
             prefix,
             said,
-            origin: origin.clone(),
+            origin: *origin,
         })
     }
 }

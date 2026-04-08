@@ -204,9 +204,7 @@ mod tests {
                 .lock()
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             match map.get(&prefix_str) {
-                Some(events) if !events.is_empty() => {
-                    Ok(Some(events.last().unwrap().event.said.clone()))
-                }
+                Some(events) if !events.is_empty() => Ok(Some(events.last().unwrap().event.said)),
                 _ => Ok(None),
             }
         }
@@ -221,7 +219,7 @@ mod tests {
                 .map_err(|e| KelsError::StorageError(format!("lock error: {}", e)))?;
             for (_prefix_str, events) in map.iter() {
                 if let Some(event) = events.iter().find(|e| e.event.said == *said) {
-                    return Ok(Some(event.event.prefix.clone()));
+                    return Ok(Some(event.event.prefix));
                 }
             }
             Ok(None)

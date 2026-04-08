@@ -664,13 +664,7 @@ impl SignedKeyEvent {
     pub fn event_signatures(&self) -> Vec<EventSignature> {
         self.signatures
             .iter()
-            .map(|s| {
-                EventSignature::new(
-                    self.event.said.clone(),
-                    s.label.clone(),
-                    s.signature.clone(),
-                )
-            })
+            .map(|s| EventSignature::new(self.event.said, s.label.clone(), s.signature.clone()))
             .collect()
     }
 }

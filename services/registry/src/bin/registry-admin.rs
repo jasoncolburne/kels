@@ -688,7 +688,7 @@ async fn show_federation_status(ctx: &AdminContext, json: bool) -> anyhow::Resul
                 println!();
                 println!("Federation Members:");
                 for member in &status.members {
-                    let marker = if Some(member.clone()) == status.leader_prefix {
+                    let marker = if Some(*member) == status.leader_prefix {
                         " (leader)"
                     } else {
                         ""
@@ -739,7 +739,7 @@ async fn show_identity_status(
         }
     }
     let event_count = all_events.len();
-    let prefix_digest = prefix.clone();
+    let prefix_digest = prefix;
     let mut verifier = kels_core::KelVerifier::new(&prefix_digest);
     let verification = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()

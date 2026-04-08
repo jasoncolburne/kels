@@ -131,7 +131,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                 // Store the signatures
                 for signature in &signatures {
                     let sig = kels_core::EventSignature::create(
-                        item.said.clone(),
+                        item.said,
                         signature.label.clone(),
                         signature.signature.clone(),
                     ).map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;
@@ -335,7 +335,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
                 match tips.as_slice() {
                     [] => Ok(None),
-                    [tip] => Ok(Some((tip.said.clone(), false))),
+                    [tip] => Ok(Some((tip.said, false))),
                     _ => {
                         // Contested KELs return a fixed effective SAID so all
                         // nodes agree regardless of archival progress.
@@ -382,7 +382,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     // Store the signatures
                     for signature in &signatures {
                         let sig = kels_core::EventSignature::create(
-                            item.said.clone(),
+                            item.said,
                             signature.label.clone(),
                             signature.signature.clone(),
                         ).map_err(|e| verifiable_storage::StorageError::StorageError(e.to_string()))?;

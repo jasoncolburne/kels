@@ -280,7 +280,7 @@ async fn test_submit_and_get_kel() {
 
     // Create an inception event
     let (inception, _builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit the event
     let response = harness
@@ -319,7 +319,7 @@ async fn test_submit_multiple_events() {
 
     // Create inception + interactions
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
     let ixn1 = create_interaction(&mut builder, &make_anchor("credential1")).await;
     let ixn2 = create_interaction(&mut builder, &make_anchor("credential2")).await;
 
@@ -417,7 +417,7 @@ async fn test_idempotent_submit() {
     };
 
     let (inception, _) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit the same event twice
     for _ in 0..2 {
@@ -472,7 +472,7 @@ async fn test_get_kel_with_audit() {
     };
 
     let (inception, _) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit
     harness
@@ -606,7 +606,7 @@ async fn test_submit_rotation_event() {
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit inception
     harness
@@ -655,7 +655,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
     let mut prefixes = Vec::new();
     for _ in 0..3 {
         let (inception, _) = create_inception().await;
-        prefixes.push(inception.event.prefix.clone());
+        prefixes.push(inception.event.prefix);
         harness
             .client()
             .post(harness.url("/api/v1/kels/events"))
@@ -695,7 +695,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
             payload: kels_core::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
                 nonce: kels_core::generate_nonce().to_string(),
-                cursor: Some(cursor.clone()),
+                cursor: Some(*cursor),
                 limit: Some(1),
             },
             prefix: test_digest("mock"),
@@ -727,7 +727,7 @@ async fn test_submit_decommission_event() {
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit inception
     harness
@@ -842,7 +842,7 @@ async fn test_divergence_creation() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("ixn2")).await;
@@ -919,7 +919,7 @@ async fn test_recovery_from_divergence() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("rec-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("rec-ixn2")).await;
@@ -1047,7 +1047,7 @@ async fn test_contest_freezes_kel() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn2")).await;
@@ -1136,7 +1136,7 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
 
     // Step 1: Create KEL: icp + ixn1 + ixn2
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn2")).await;
@@ -1243,7 +1243,7 @@ async fn test_contest_creates_divergence_on_linear_kel() {
 
     // Step 1: Create KEL: icp + ixn1 + ixn2
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn2")).await;
@@ -1334,7 +1334,7 @@ async fn test_overlap_submission_creates_divergence() {
 
     // Create KEL: icp + 2 interactions, then fork
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn2")).await;

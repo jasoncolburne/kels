@@ -85,7 +85,7 @@ impl MailClient {
         let payload = RemoveRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: kels_core::crypto::generate_nonce().to_string(),
-            said: said.clone(),
+            said: *said,
         };
         let signed = sign_request(signer, &payload)
             .await
@@ -131,7 +131,7 @@ impl MailClient {
         let send_request = crate::SendRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: kels_core::crypto::generate_nonce().to_string(),
-            recipient_kel_prefix: recipient.clone(),
+            recipient_kel_prefix: *recipient,
             blob: base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
         };
 
@@ -144,7 +144,7 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: send_request,
-            prefix: prefix.clone(),
+            prefix: *prefix,
             signature,
         };
 
@@ -187,7 +187,7 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: inbox_request,
-            prefix: prefix.clone(),
+            prefix: *prefix,
             signature,
         };
 
@@ -218,7 +218,7 @@ impl MailClient {
         let fetch_request = crate::FetchRequest {
             timestamp: chrono::Utc::now().timestamp(),
             nonce: kels_core::crypto::generate_nonce().to_string(),
-            mail_said: mail_said.clone(),
+            mail_said: *mail_said,
         };
 
         let request_json = serde_json::to_vec(&fetch_request)
@@ -230,7 +230,7 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: fetch_request,
-            prefix: prefix.clone(),
+            prefix: *prefix,
             signature,
         };
 
@@ -273,7 +273,7 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: ack_request,
-            prefix: prefix.clone(),
+            prefix: *prefix,
             signature,
         };
 

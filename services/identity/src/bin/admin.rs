@@ -85,7 +85,7 @@ async fn manage_kel(
     operation: kels_core::ManageKelOperation,
 ) -> anyhow::Result<kels_core::ManageKelResponse> {
     let request = kels_core::ManageKelRequest {
-        prefix: prefix.clone(),
+        prefix: *prefix,
         operation,
     };
     identity_client

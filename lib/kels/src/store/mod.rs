@@ -22,7 +22,7 @@ pub(crate) async fn create_test_events() -> (cesr::Digest, Vec<SignedKeyEvent>) 
         None,
     );
     let icp = builder.incept().await.unwrap();
-    let prefix = icp.event.prefix.clone();
+    let prefix = icp.event.prefix;
     (prefix, vec![icp])
 }
 
@@ -124,7 +124,7 @@ mod tests {
     #[async_trait]
     impl KelStore for MemoryStore {
         fn owner_prefix(&self) -> Option<cesr::Digest> {
-            self.owner.read().ok().and_then(|g| g.clone())
+            self.owner.read().ok().and_then(|g| *g)
         }
 
         fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {

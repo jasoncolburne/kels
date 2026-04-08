@@ -67,7 +67,7 @@ pub async fn load_signed_history(
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
     let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
-        sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        sig_map.entry(sig.event_said).or_default().push(sig);
     }
 
     let result = zip_events_with_signatures(events, &sig_map)?;
@@ -104,7 +104,7 @@ pub async fn load_signed_history_tail(
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
     let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
-        sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+        sig_map.entry(sig.event_said).or_default().push(sig);
     }
 
     zip_events_with_signatures(events, &sig_map)

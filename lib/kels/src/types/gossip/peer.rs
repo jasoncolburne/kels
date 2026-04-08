@@ -96,7 +96,7 @@ impl PeerHistory {
                 )));
             }
 
-            last_said = Some(peer_record.said.clone());
+            last_said = Some(peer_record.said);
         }
 
         Ok(())

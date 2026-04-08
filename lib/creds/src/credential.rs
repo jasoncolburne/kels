@@ -111,8 +111,8 @@ impl<T: Claims> Credential<T> {
 
         let credential = Self {
             said: cesr::Digest::default(),
-            schema: schema.said.clone(),
-            policy: policy.said.clone(),
+            schema: schema.said,
+            policy: policy.said,
             subject,
             issued_at,
             nonce,
@@ -573,7 +573,7 @@ mod tests {
         .await
         .unwrap();
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         (builder, prefix, kel_store, temp_dir)
     }
 
@@ -933,8 +933,8 @@ mod tests {
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
-            cred_a.schema.clone(),
-            Some(policy_a.said.clone()),
+            cred_a.schema,
+            Some(policy_a.said),
             Some(cesr::Digest::from_qb64(&compacted_said_a).unwrap()),
             None,
         )
@@ -1170,8 +1170,8 @@ mod tests {
 
         // Intermediate credential with edge to root
         let edge_to_root = Edge::create(
-            cred_root.schema.clone(),
-            Some(root_policy.said.clone()),
+            cred_root.schema,
+            Some(root_policy.said),
             Some(cesr::Digest::from_qb64(&compacted_root).unwrap()),
             None,
         )
@@ -1204,8 +1204,8 @@ mod tests {
 
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
-            cred_mid.schema.clone(),
-            Some(mid_policy.said.clone()),
+            cred_mid.schema,
+            Some(mid_policy.said),
             Some(cesr::Digest::from_qb64(&compacted_mid).unwrap()),
             None,
         )

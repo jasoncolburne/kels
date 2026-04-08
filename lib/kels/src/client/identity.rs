@@ -164,7 +164,7 @@ impl IdentityClient {
         let response = self
             .client
             .post(&url)
-            .json(&AnchorRequest { said: said.clone() })
+            .json(&AnchorRequest { said: *said })
             .send()
             .await?;
 

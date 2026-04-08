@@ -100,9 +100,9 @@ pub fn seal(
     // 5. Build envelope with SAID
     let mut envelope = EssrEnvelope {
         said: cesr::Digest::default(),
-        sender: inner.sender.clone(),
+        sender: inner.sender,
         sender_serial,
-        recipient: recipient_prefix.clone(),
+        recipient: *recipient_prefix,
         kem_ciphertext,
         encrypted_payload: base64_encode(&ciphertext),
         nonce,
@@ -221,7 +221,7 @@ mod tests {
         let recipient_prefix = test_digest("recipient-prefix-xyz");
 
         let inner = EssrInner {
-            sender: sender_prefix.clone(),
+            sender: sender_prefix,
             topic: "kels/exchange/v1/topics/exchange".to_string(),
             payload: b"hello world".to_vec(),
         };

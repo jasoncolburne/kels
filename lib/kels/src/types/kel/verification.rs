@@ -147,7 +147,7 @@ impl KelVerification {
             return None;
         }
         if self.branch_tips.len() == 1 {
-            return Some(self.branch_tips[0].tip.event.said.clone());
+            return Some(self.branch_tips[0].tip.event.said);
         }
         if self.is_contested {
             let input = format!("contested:{}", self.prefix);
@@ -218,13 +218,13 @@ fn branch_state_from_tip(
         })?;
 
     Ok((
-        tip.tip.event.said.clone(),
+        tip.tip.event.said,
         BranchState {
             tip: Arc::new(tip.tip.clone()),
             establishment_tip: Arc::new(tip.establishment_tip.clone()),
             current_public_key: pk.clone(),
-            pending_rotation_hash: tip.establishment_tip.event.rotation_hash.clone(),
-            pending_recovery_hash: tip.establishment_tip.event.recovery_hash.clone(),
+            pending_rotation_hash: tip.establishment_tip.event.rotation_hash,
+            pending_recovery_hash: tip.establishment_tip.event.recovery_hash,
             events_since_last_revealing,
         },
     ))
@@ -279,7 +279,7 @@ impl KelVerifier {
     /// Start from inception. Used for full verification (e.g., streaming a peer's KEL).
     pub fn new(prefix: &cesr::Digest) -> Self {
         Self {
-            prefix: prefix.clone(),
+            prefix: *prefix,
             delegating_prefix: None,
             branches: HashMap::new(),
             last_verified_serial: None,
@@ -339,7 +339,7 @@ impl KelVerifier {
         let last_verified_serial = Some(tip.tip.event.serial);
 
         Ok(Self {
-            prefix: prefix.clone(),
+            prefix: *prefix,
             delegating_prefix: None,
             branches,
             last_verified_serial,
@@ -376,7 +376,7 @@ impl KelVerifier {
             .max();
 
         Ok(Self {
-            prefix: prefix.clone(),
+            prefix: *prefix,
             delegating_prefix: kel_verification.delegating_prefix().cloned(),
             branches,
             last_verified_serial,
@@ -613,7 +613,7 @@ impl KelVerifier {
                 && let Some(ref anchor) = event.event.anchor
                 && self.queried_saids.contains(anchor)
             {
-                self.anchored_saids.insert(anchor.clone());
+                self.anchored_saids.insert(*anchor);
             }
 
             // Track contested
@@ -631,7 +631,7 @@ impl KelVerifier {
                 self.proactive_ror_compliant = false;
             }
 
-            new_branches.insert(event.event.said.clone(), new_state);
+            new_branches.insert(event.event.said, new_state);
         }
 
         // In a divergent KEL, one branch may be shorter than the other.
@@ -643,7 +643,7 @@ impl KelVerifier {
             {
                 continue;
             }
-            new_branches.insert(said.clone(), state.clone());
+            new_branches.insert(*said, state.clone());
         }
 
         self.branches = new_branches;
@@ -680,18 +680,18 @@ impl KelVerifier {
         Self::verify_signatures(signed_event, public_key)?;
 
         // Capture delegating prefix from dip events
-        self.delegating_prefix = event.delegating_prefix.clone();
+        self.delegating_prefix = event.delegating_prefix;
 
         // Initialize branch
         let arc_event = Arc::new(signed_event.clone());
         self.branches.insert(
-            event.said.clone(),
+            event.said,
             BranchState {
                 tip: Arc::clone(&arc_event),
                 establishment_tip: arc_event,
                 current_public_key: public_key.clone(),
-                pending_rotation_hash: event.rotation_hash.clone(),
-                pending_recovery_hash: event.recovery_hash.clone(),
+                pending_rotation_hash: event.rotation_hash,
+                pending_recovery_hash: event.recovery_hash,
                 events_since_last_revealing: 0,
             },
         );
@@ -759,8 +759,8 @@ impl KelVerifier {
                 tip: Arc::clone(&arc_event),
                 establishment_tip: arc_event,
                 current_public_key: public_key.clone(),
-                pending_rotation_hash: event.rotation_hash.clone(),
-                pending_recovery_hash: event.recovery_hash.clone(),
+                pending_rotation_hash: event.rotation_hash,
+                pending_recovery_hash: event.recovery_hash,
                 events_since_last_revealing,
             })
         } else {
@@ -771,8 +771,8 @@ impl KelVerifier {
                 tip: Arc::new(signed_event.clone()),
                 establishment_tip: Arc::clone(&branch.establishment_tip),
                 current_public_key: branch.current_public_key.clone(),
-                pending_rotation_hash: branch.pending_rotation_hash.clone(),
-                pending_recovery_hash: branch.pending_recovery_hash.clone(),
+                pending_rotation_hash: branch.pending_rotation_hash,
+                pending_recovery_hash: branch.pending_recovery_hash,
                 events_since_last_revealing: branch.events_since_last_revealing + 1,
             })
         }

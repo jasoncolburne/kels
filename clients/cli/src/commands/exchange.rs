@@ -127,7 +127,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     .context("Failed to create inception pointer")?;
 
     let mut v1 = v0.clone();
-    v1.content_said = Some(publication.said.clone());
+    v1.content_said = Some(publication.said);
     v1.increment().context("Failed to increment pointer")?;
 
     // Sign both records (signature is over the SAID qb64 bytes)
@@ -222,7 +222,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .ok_or_else(|| anyhow!("No existing key chain found — use publish-key first"))?;
 
     let mut next = tip.pointer.clone();
-    next.content_said = Some(publication.said.clone());
+    next.content_said = Some(publication.said);
     next.increment().context("Failed to increment pointer")?;
 
     let sig = provider.sign(next.said.qb64().as_bytes()).await?;
@@ -306,10 +306,8 @@ pub(crate) async fn cmd_exchange_send(
     // Look up recipient's encapsulation key
     let recipient_digest =
         cesr::Digest::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
-    let chain_prefix = kels_core::compute_sad_pointer_prefix(
-        recipient_digest.clone(),
-        kels_exchange::ENCAP_KEY_KIND,
-    )?;
+    let chain_prefix =
+        kels_core::compute_sad_pointer_prefix(recipient_digest, kels_exchange::ENCAP_KEY_KIND)?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
         .fetch_sad_pointer(chain_prefix.as_ref(), None)
@@ -358,7 +356,7 @@ pub(crate) async fn cmd_exchange_send(
     // ESSR seal
     let sender_digest = cesr::Digest::from_qb64(prefix).context("Invalid sender prefix CESR")?;
     let inner = kels_exchange::EssrInner {
-        sender: sender_digest.clone(),
+        sender: sender_digest,
         topic: topic.to_string(),
         payload,
     };

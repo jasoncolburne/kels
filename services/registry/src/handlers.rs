@@ -215,7 +215,7 @@ pub struct FederationState {
 ///
 /// Best-effort: logs warnings on failure. AE loop handles any gaps.
 async fn push_own_kel_to_members(state: &FederationState) {
-    let self_prefix = state.node.config().self_prefix.clone();
+    let self_prefix = state.node.config().self_prefix;
 
     // Fetch own events from identity service (source of truth)
     let identity_source = match kels_core::HttpKelSource::new(
@@ -256,8 +256,7 @@ async fn push_own_kel_to_members(state: &FederationState) {
         .iter()
         .filter(|m| m.prefix != self_prefix)
         .map(|member| {
-            let self_prefix = self_prefix.clone();
-            let member_prefix = member.prefix.clone();
+            let member_prefix = member.prefix;
             let pool = state.member_kel_repo.pool.clone();
             let member_url = member.url.clone();
             async move {
@@ -568,7 +567,7 @@ pub async fn admin_submit_addition_proposal(
     };
 
     let history = AdditionHistory {
-        prefix: proposal.prefix.clone(),
+        prefix: proposal.prefix,
         records,
     };
 
@@ -682,7 +681,7 @@ pub async fn admin_submit_removal_proposal(
     };
 
     let history = RemovalHistory {
-        prefix: proposal.prefix.clone(),
+        prefix: proposal.prefix,
         records,
     };
 
@@ -797,7 +796,7 @@ pub async fn admin_vote_proposal(
     //    Check both addition and removal proposals
     if let Some(addition) = state.node.get_addition_proposal(&proposal_digest).await {
         let history = AdditionHistory {
-            prefix: addition.prefix.clone(),
+            prefix: addition.prefix,
             records: vec![addition],
         };
         history.verify().map_err(|e| {
@@ -811,7 +810,7 @@ pub async fn admin_vote_proposal(
         }
     } else if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await {
         let history = RemovalHistory {
-            prefix: removal.prefix.clone(),
+            prefix: removal.prefix,
             records: vec![removal],
         };
         history.verify().map_err(|e| {
@@ -884,7 +883,7 @@ pub async fn admin_vote_proposal(
         } => {
             if approved {
                 if let Some(v0) = proposal {
-                    let self_prefix = state.node.config().self_prefix.clone();
+                    let self_prefix = state.node.config().self_prefix;
 
                     // Idempotency: if peer is already active, skip create/anchor/submit.
                     // Note: get_peer() checks both active and inactive — we must only
@@ -900,9 +899,9 @@ pub async fn admin_vote_proposal(
 
                     if !already_active {
                         let peer = Peer::create(
-                            v0.peer_kel_prefix.clone(),
+                            v0.peer_kel_prefix,
                             v0.node_id.clone(),
-                            self_prefix.clone(),
+                            self_prefix,
                             true,
                             v0.base_domain.clone(),
                             v0.gossip_addr.clone(),
@@ -969,7 +968,7 @@ pub async fn admin_vote_proposal(
             proposal,
         } => {
             if let Some(_removal_proposal) = proposal {
-                let self_prefix = state.node.config().self_prefix.clone();
+                let self_prefix = state.node.config().self_prefix;
 
                 // Idempotency: if peer is already inactive, skip deactivate/anchor/submit
                 let current_peer = state
@@ -994,7 +993,7 @@ pub async fn admin_vote_proposal(
                     // Set authorizing_kel before deactivate() so the SAID
                     // is derived over the correct content
                     let mut to_deactivate = active_peer.clone();
-                    to_deactivate.authorizing_kel = self_prefix.clone();
+                    to_deactivate.authorizing_kel = self_prefix;
                     let deactivated = to_deactivate.deactivate().map_err(|e| {
                         ApiError::internal_error(format!("Failed to deactivate peer: {}", e))
                     })?;
@@ -1080,7 +1079,7 @@ pub async fn list_peers_federated(
         .into_iter()
         .filter(|p| query.all || p.active)
         .map(|peer| PeerHistory {
-            prefix: peer.prefix.clone(),
+            prefix: peer.prefix,
             records: vec![peer],
         })
         .collect();
@@ -1109,7 +1108,7 @@ pub async fn submit_member_key_events(
     }
 
     // Extract prefix from first event, validate all events share the same prefix
-    let prefix = events[0].event.prefix.clone();
+    let prefix = events[0].event.prefix;
     for event in &events {
         if event.event.prefix != prefix {
             return Err(ApiError::bad_request(
@@ -1185,7 +1184,7 @@ pub async fn submit_member_key_events(
     let config = state.node.config();
     let propagate = prefix == config.self_prefix;
     if propagate && applied {
-        let self_prefix = config.self_prefix.clone();
+        let self_prefix = config.self_prefix;
         let futures: Vec<_> = config
             .members
             .iter()
@@ -1193,7 +1192,7 @@ pub async fn submit_member_key_events(
             .map(|member| {
                 let events = events.clone();
                 let url = member.url.clone();
-                let member_prefix = member.prefix.clone();
+                let member_prefix = member.prefix;
                 async move {
                     let client = match kels_core::KelsClient::with_path_prefix(
                         &url,

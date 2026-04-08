@@ -172,15 +172,15 @@ impl KeyEventRepository {
         let mut prefix_states: Vec<PrefixState> = events
             .into_iter()
             .map(|e| PrefixState {
-                prefix: e.prefix.clone(),
-                said: e.said.clone(),
+                prefix: e.prefix,
+                said: e.said,
             })
             .collect();
 
         // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.clone())
+            prefix_states.last().map(|s| s.prefix)
         } else if let Some(cursor) = since {
             // Wrap around: fill remaining slots from prefixes <= cursor
             // (the beginning of the prefix space). No duplicates because
@@ -195,8 +195,8 @@ impl KeyEventRepository {
                     .limit(remaining as u64);
                 let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {
-                    prefix: e.prefix.clone(),
-                    said: e.said.clone(),
+                    prefix: e.prefix,
+                    said: e.said,
                 }));
             }
             None

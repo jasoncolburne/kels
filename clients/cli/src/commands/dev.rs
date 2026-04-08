@@ -142,7 +142,7 @@ pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &s
                 );
             }
         };
-        saids.push(signed.event.said.clone());
+        saids.push(signed.event.said);
     }
 
     println!(

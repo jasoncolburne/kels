@@ -127,7 +127,7 @@ mod tests {
     fn mail_announcement_serialization() {
         let test_said = test_digest("test-said");
         let msg = MailMessage {
-            said: test_said.clone(),
+            said: test_said,
             sender_kel_prefix: test_digest("sender"),
             source_node_prefix: test_digest("node"),
             recipient_kel_prefix: test_digest("recipient"),
@@ -146,9 +146,7 @@ mod tests {
         }
 
         let remove_said = test_digest("remove-said");
-        let removal = MailAnnouncement::Removal {
-            said: remove_said.clone(),
-        };
+        let removal = MailAnnouncement::Removal { said: remove_said };
         let json = serde_json::to_string(&removal).unwrap();
         let deserialized: MailAnnouncement = serde_json::from_str(&json).unwrap();
         match deserialized {

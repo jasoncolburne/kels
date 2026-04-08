@@ -45,7 +45,7 @@ impl FileKelStore {
 #[async_trait]
 impl KelStore for FileKelStore {
     fn owner_prefix(&self) -> Option<cesr::Digest> {
-        self.owner_prefix.read().ok().and_then(|g| g.clone())
+        self.owner_prefix.read().ok().and_then(|g| *g)
     }
     fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {
         if let Ok(mut guard) = self.owner_prefix.write() {
@@ -198,7 +198,7 @@ mod tests {
     fn test_with_owner_sets_prefix() {
         let temp = TempDir::new().unwrap();
         let d = test_digest("my-prefix");
-        let store = FileKelStore::with_owner(temp.path(), d.clone()).unwrap();
+        let store = FileKelStore::with_owner(temp.path(), d).unwrap();
         assert_eq!(store.owner_prefix(), Some(d));
     }
 

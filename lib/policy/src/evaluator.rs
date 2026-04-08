@@ -61,7 +61,7 @@ async fn evaluate_policy_inner(
     let effective_policy_for_main = if use_immune_for_main {
         // Create a temporary immune view for the main expression evaluation
         Policy {
-            said: policy.said.clone(),
+            said: policy.said,
             expression: policy.expression.clone(),
             poison: None,
             immune: Some(true),
@@ -276,9 +276,9 @@ async fn evaluate_endorser(
     })?;
 
     let mut verifier = KelVerifier::new(&prefix_digest);
-    let mut saids_to_check = vec![credential_digest.clone()];
+    let mut saids_to_check = vec![credential_digest];
     if let Some(ref ph) = p_hash {
-        saids_to_check.push(ph.clone());
+        saids_to_check.push(*ph);
     }
     verifier.check_anchors(saids_to_check);
 
@@ -345,7 +345,7 @@ async fn verify_delegation(
 
     // Verify the delegator's KEL anchors the delegate's prefix
     let mut delegator_verifier = KelVerifier::new(&delegator_digest);
-    delegator_verifier.check_anchors(vec![delegate_digest.clone()]);
+    delegator_verifier.check_anchors(vec![delegate_digest]);
 
     match verify_key_events(
         &delegator_digest,

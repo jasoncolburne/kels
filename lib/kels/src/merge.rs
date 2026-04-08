@@ -88,7 +88,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     fn prefix_digest(&self) -> Result<cesr::Digest, KelsError> {
-        Ok(self.prefix.clone())
+        Ok(self.prefix)
     }
 
     // ==================== Assembly helpers ====================
@@ -102,7 +102,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let query =
             Query::<EventSignature>::for_table(self.signatures_table).eq("event_said", &said_str);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_map = HashMap::from([(event.said.clone(), signatures)]);
+        let sig_map = HashMap::from([(event.said, signatures)]);
         zip_events_with_signatures(vec![event], &sig_map).map(|mut v| v.remove(0))
     }
 
@@ -120,7 +120,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
         let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+            sig_map.entry(sig.event_said).or_default().push(sig);
         }
         zip_events_with_signatures(events, &sig_map)
     }
@@ -327,9 +327,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             self.tx
                 .insert_with_table(event, self.archived_events_table)
                 .await?;
-            let recovery_event =
-                KelRecoveryEvent::create(recovery_said.clone(), event.said.clone())
-                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            let recovery_event = KelRecoveryEvent::create(*recovery_said, event.said)
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.tx
                 .insert_with_table(&recovery_event, self.recovery_events_table)
                 .await?;
@@ -390,7 +389,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         // Since rec/rot haven't been inserted yet, only pre-existing owner
         // events are in the DB.
         let mut owner_saids: HashSet<cesr::Digest> = HashSet::new();
-        let mut walk: Option<cesr::Digest> = Some(rec_previous.clone());
+        let mut walk: Option<cesr::Digest> = Some(*rec_previous);
         for _ in 0..crate::MINIMUM_PAGE_SIZE {
             let Some(said) = walk.take() else { break };
             let said_str = said.qb64();
@@ -405,7 +404,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             if event.serial < diverged_at {
                 break;
             }
-            owner_saids.insert(event.said.clone());
+            owner_saids.insert(event.said);
             walk = event.previous;
         }
 
@@ -433,11 +432,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let (adversary, adversary_has_chain) =
             self.find_adversary_event(diverged_at, rec_previous).await?;
 
-        let mut saids = vec![adversary.event.said.clone()];
+        let mut saids = vec![adversary.event.said];
 
         if adversary_has_chain {
             // Walk forward from adversary event to collect the chain
-            let mut current_said = adversary.event.said.clone();
+            let mut current_said = adversary.event.said;
             for _ in 0..crate::MINIMUM_PAGE_SIZE {
                 let current_said_str = current_said.qb64();
                 let child_query = Query::<KeyEvent>::for_table(self.events_table)
@@ -448,8 +447,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 match children.len() {
                     0 => break,
                     1 => {
-                        current_said = children[0].said.clone();
-                        saids.push(current_said.clone());
+                        current_said = children[0].said;
+                        saids.push(current_said);
                     }
                     _ => {
                         return Err(KelsError::StorageError(format!(
@@ -540,7 +539,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Re-verify the entire KEL on every submission. We cannot cache KelVerification
         // tokens because the DB cannot be trusted (verification invariant).
-        let prefix = self.prefix.clone();
+        let prefix = self.prefix;
         let kel_verification = completed_verification(
             self,
             &prefix,
@@ -577,7 +576,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Route based on verified context
-        let first_previous = events[0].event.previous.clone();
+        let first_previous = events[0].event.previous;
         let is_normal_append = kel_verification.branch_tips().len() == 1
             && first_previous.as_ref() == Some(&kel_verification.branch_tips()[0].tip.event.said)
             && !kel_verification.is_contested();
@@ -623,7 +622,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         }
 
-        let tip = events.last().map(|e| e.event.said.clone());
+        let tip = events.last().map(|e| e.event.said);
         let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
@@ -654,7 +653,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         }
 
-        let tip = events.last().map(|e| e.event.said.clone());
+        let tip = events.last().map(|e| e.event.said);
         let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
@@ -682,8 +681,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Filter duplicates
-        let submitted_saids: Vec<cesr::Digest> =
-            events.iter().map(|e| e.event.said.clone()).collect();
+        let submitted_saids: Vec<cesr::Digest> = events.iter().map(|e| e.event.said).collect();
         let existing = self.existing_saids(&submitted_saids).await?;
         let new_events: Vec<SignedKeyEvent> = events
             .iter()
@@ -727,7 +725,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                     "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
                 ));
             }
-            let tip = new_events.last().map(|e| e.event.said.clone());
+            let tip = new_events.last().map(|e| e.event.said);
             let count = new_events.len();
             for event in &new_events {
                 self.insert_signed_event(event).await?;
@@ -929,10 +927,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             // Create the recovery audit record first so we have its SAID for
             // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
-                prefix_digest.clone(),
+                prefix_digest,
                 rec_event.event.serial,
                 diverged_at,
-                rec_previous.clone(),
+                *rec_previous,
                 first_serial,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -1054,10 +1052,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             // Create the recovery audit record first so we have its SAID for
             // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
-                prefix_digest.clone(),
+                prefix_digest,
                 rec_event.event.serial,
                 diverged_at,
-                rec_previous.clone(),
+                *rec_previous,
                 first_serial,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -1233,7 +1231,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         start_said: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
         let max_steps = crate::max_pages() * crate::page_size();
-        let mut current_said: Option<cesr::Digest> = Some(start_said.clone());
+        let mut current_said: Option<cesr::Digest> = Some(*start_said);
 
         for _ in 0..max_steps {
             let Some(said) = current_said.take() else {
@@ -1248,7 +1246,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             if event.event.is_establishment() {
                 return Ok(event);
             }
-            current_said = event.event.previous.clone();
+            current_said = event.event.previous;
         }
 
         Err(KelsError::StorageError(

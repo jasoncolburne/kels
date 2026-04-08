@@ -617,7 +617,7 @@ pub async fn submit_sad_pointer(
     let mut pairs = Vec::with_capacity(records.len());
     for r in &records {
         let sig_record = match kels_core::SadPointerSignature::create(
-            r.pointer.said.clone(),
+            r.pointer.said,
             r.signature.clone(),
             r.establishment_serial,
         ) {

@@ -49,7 +49,7 @@ pub struct SadChainVerifier {
 impl SadChainVerifier {
     pub fn new(prefix: &cesr::Digest, establishment_keys: HashMap<u64, VerificationKey>) -> Self {
         Self {
-            prefix: prefix.clone(),
+            prefix: *prefix,
             kel_prefix: None,
             kind: None,
             branches: HashMap::new(),
@@ -151,7 +151,7 @@ impl SadChainVerifier {
             record.verify_prefix()?;
 
             self.branches.insert(
-                record.said.clone(),
+                record.said,
                 SadBranchState {
                     tip: stored.clone(),
                 },
@@ -198,7 +198,7 @@ impl SadChainVerifier {
             }
 
             new_branches.insert(
-                record.said.clone(),
+                record.said,
                 SadBranchState {
                     tip: stored.clone(),
                 },
@@ -211,7 +211,7 @@ impl SadChainVerifier {
                 .iter()
                 .any(|r| r.pointer.previous.as_ref() == Some(said))
             {
-                new_branches.insert(said.clone(), state.clone());
+                new_branches.insert(*said, state.clone());
             }
         }
 
@@ -231,7 +231,7 @@ impl SadChainVerifier {
 
             // First record establishes chain invariants
             if self.kel_prefix.is_none() {
-                self.kel_prefix = Some(record.kel_prefix.clone());
+                self.kel_prefix = Some(record.kel_prefix);
             }
             if self.kind.is_none() {
                 self.kind = Some(record.kind.clone());
@@ -306,11 +306,11 @@ pub async fn collect_establishment_serials(
         for stored in &records {
             serials.insert(stored.establishment_serial);
             if kel_prefix.is_none() {
-                kel_prefix = Some(stored.pointer.kel_prefix.clone());
+                kel_prefix = Some(stored.pointer.kel_prefix);
             }
         }
 
-        since = records.last().map(|r| r.pointer.said.clone());
+        since = records.last().map(|r| r.pointer.said);
 
         if !has_more {
             break;

@@ -120,7 +120,7 @@ fn sign_pointer(
     establishment_serial: u64,
 ) -> SadPointerSignature {
     let sig = sk.sign(pointer.said.qb64().as_bytes()).unwrap();
-    SadPointerSignature::create(pointer.said.clone(), sig, establishment_serial).unwrap()
+    SadPointerSignature::create(pointer.said, sig, establishment_serial).unwrap()
 }
 
 /// Build a chain of v0..v(count-1) with valid signatures.
@@ -164,8 +164,8 @@ fn build_replacement(
     let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
         said: cesr::Digest::default(),
-        prefix: prefix.clone(),
-        previous: Some(previous_said.clone()),
+        prefix: *prefix,
+        previous: Some(*previous_said),
         version: from_version,
         kel_prefix: kel_digest,
         kind: kind.to_string(),
@@ -227,7 +227,7 @@ async fn test_save_batch_and_truncate_and_replace() {
         .unwrap();
     assert_eq!(count, 5);
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
@@ -340,7 +340,7 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Build replacement signed with the wrong key
     let replacement = build_replacement(
@@ -398,7 +398,7 @@ async fn test_get_repairs_pagination() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // First repair: replace from v4
     let r1 = build_replacement(
@@ -472,7 +472,7 @@ async fn test_get_repair_records_pagination() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
     let replacement = build_replacement(
         &chain[0].0.said,
         &prefix,
@@ -549,7 +549,7 @@ async fn test_truncate_and_replace_from_v0() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Replace the entire chain from v0
     // For v0 replacement, the record needs no previous and must re-derive the prefix

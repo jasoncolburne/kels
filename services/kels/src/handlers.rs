@@ -386,7 +386,7 @@ pub(crate) async fn submit_events(
     }
 
     // Get prefix from first event
-    let prefix_digest = events[0].event.prefix.clone();
+    let prefix_digest = events[0].event.prefix;
     let prefix = prefix_digest.to_string();
 
     // Per-prefix daily rate limiting (counts events, not submissions)

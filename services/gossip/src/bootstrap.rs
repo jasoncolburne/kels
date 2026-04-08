@@ -423,10 +423,10 @@ impl BootstrapSync {
                     Ok(page) => {
                         for state in &page.prefixes {
                             if let Some(since) = self.sync_check(state, &local_client).await {
-                                all_prefixes.entry(state.prefix.clone()).or_insert((
+                                all_prefixes.entry(state.prefix).or_insert((
                                     since,
                                     peer_url.to_string(),
-                                    peer.kel_prefix.clone(),
+                                    peer.kel_prefix,
                                 ));
                             }
                         }

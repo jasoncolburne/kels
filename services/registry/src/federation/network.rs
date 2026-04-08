@@ -126,7 +126,7 @@ impl FederationNetwork {
         // Wrap in signed envelope
         let signed_rpc = SignedFederationRpc {
             payload,
-            sender_prefix: self.config.self_prefix.clone(),
+            sender_prefix: self.config.self_prefix,
             signature: sign_result.signature,
         };
 
@@ -307,7 +307,7 @@ mod tests {
             cesr::Signature::from_raw(cesr::SignatureCode::Secp256r1, vec![0u8; 64]).unwrap();
         let signed_rpc = SignedFederationRpc {
             payload: r#"{"type":"vote","data":{"vote":{"leader_id":{"term":1,"node_id":0},"committed":false},"last_log_id":null}}"#.to_string(),
-            sender_prefix: sender_prefix.clone(),
+            sender_prefix,
             signature: signature.clone(),
         };
 

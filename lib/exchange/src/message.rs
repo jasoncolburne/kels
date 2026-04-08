@@ -155,8 +155,8 @@ mod tests {
 
         let mut thread = ExchangeMessage::create(
             ExchangeKind::Apply,
-            sender.clone(),
-            recipient.clone(),
+            sender,
+            recipient,
             test_digest("nonce-0"),
             ExchangePayload::Apply {
                 schema: test_digest("schema"),
@@ -166,7 +166,7 @@ mod tests {
         )
         .unwrap();
 
-        let thread_prefix = thread.prefix.clone();
+        let thread_prefix = thread.prefix;
 
         // Update fields for the reply, then increment
         thread.kind = ExchangeKind::Offer;

@@ -41,7 +41,7 @@ pub async fn refresh_allowlist(
     exclude_node_id: Option<&str>,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
-    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
+    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said).collect();
     drop(original_peers);
 
     let trusted = kels_core::trusted_prefixes();
@@ -136,7 +136,7 @@ pub async fn refresh_allowlist(
             );
 
             if latest.active {
-                authorized_peers.insert(latest.kel_prefix.clone(), latest.clone());
+                authorized_peers.insert(latest.kel_prefix, latest.clone());
             }
         }
     }

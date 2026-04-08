@@ -189,7 +189,7 @@ async fn transfer_sad_pointer(
             return Ok(());
         }
 
-        since = pointers.last().map(|r| r.pointer.said.clone());
+        since = pointers.last().map(|r| r.pointer.said);
 
         if let Some(ref mut v) = verifier {
             v.verify_page(&pointers)?;

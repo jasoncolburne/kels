@@ -478,7 +478,7 @@ pub async fn verify_peer_anchoring(
     peer: &Peer,
     registry_urls: &[String],
 ) -> Result<bool, KelsError> {
-    let saids = || iter::once(peer.said.clone());
+    let saids = || iter::once(peer.said);
 
     // First try from local store
     let authorizing_kel = &peer.authorizing_kel;
@@ -730,7 +730,7 @@ async fn verify_proposal_dag_standalone<'a>(
     let mut proposer_voted = false;
     for vote in &eligible_votes {
         if vote.voter == *proposer {
-            proposer_saids.push(vote.said.clone());
+            proposer_saids.push(vote.said);
             proposer_voted = true;
         }
     }
@@ -766,7 +766,7 @@ async fn verify_proposal_dag_standalone<'a>(
 
     let mut verified_voters: HashSet<cesr::Digest> = HashSet::new();
     if proposer_voted {
-        verified_voters.insert(proposer.clone());
+        verified_voters.insert(*proposer);
     }
 
     for vote in &eligible_votes {
@@ -781,12 +781,10 @@ async fn verify_proposal_dag_standalone<'a>(
             "verify_proposal_dag: checking vote anchoring"
         );
 
-        match verify_anchors_from_store(store, &vote.voter, vec![vote.said.clone()], registry_urls)
-            .await
-        {
+        match verify_anchors_from_store(store, &vote.voter, vec![vote.said], registry_urls).await {
             Ok(Some(_)) => {
                 debug!(voter = %vote.voter, "verify_proposal_dag: vote anchor OK");
-                verified_voters.insert(vote.voter.clone());
+                verified_voters.insert(vote.voter);
             }
             Ok(None) => {
                 warn!(
@@ -984,7 +982,7 @@ mod tests {
 
         let response = PeersResponse {
             peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
+                prefix: peer.prefix,
                 records: vec![peer],
             }],
         };
@@ -1007,7 +1005,7 @@ mod tests {
 
     fn make_test_peer(peer_kel_prefix: &cesr::Digest, node_id: &str, active: bool) -> Peer {
         Peer::create(
-            peer_kel_prefix.clone(),
+            *peer_kel_prefix,
             node_id.to_string(),
             test_digest("authorizing-kel"),
             active,
@@ -1024,7 +1022,7 @@ mod tests {
         let peer = make_test_peer(&test_digest("peer-1-prefix"), "node-1", true);
         let response = PeersResponse {
             peers: vec![PeerHistory {
-                prefix: peer.prefix.clone(),
+                prefix: peer.prefix,
                 records: vec![peer],
             }],
         };

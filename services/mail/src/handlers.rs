@@ -355,10 +355,10 @@ pub async fn send_mail(
 
     let mut mail_message = MailMessage {
         said: cesr::Digest::default(),
-        sender_kel_prefix: sender.clone(),
-        source_node_prefix: state.node_prefix.clone(),
-        recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
-        blob_digest: blob_digest.clone(),
+        sender_kel_prefix: *sender,
+        source_node_prefix: state.node_prefix,
+        recipient_kel_prefix: payload.recipient_kel_prefix,
+        blob_digest,
         blob_size: blob.len() as i64,
         created_at: now,
         expires_at,
@@ -535,7 +535,7 @@ pub async fn ack(
 
         // Gossip removal
         if let Some(ref redis) = state.redis_conn {
-            let announcement = MailAnnouncement::Removal { said: said.clone() };
+            let announcement = MailAnnouncement::Removal { said: *said };
             if let Ok(json) = serde_json::to_string(&announcement) {
                 let mut conn = redis.clone();
                 let _: Result<(), _> = conn.publish("mail_updates", &json).await;

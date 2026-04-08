@@ -159,8 +159,7 @@ mod tests {
     #[test]
     fn test_compute_sad_pointer_prefix_deterministic() {
         let kel = test_digest(b"kel123");
-        let prefix1 =
-            compute_sad_pointer_prefix(kel.clone(), "kels/exchange/v1/keys/mlkem").unwrap();
+        let prefix1 = compute_sad_pointer_prefix(kel, "kels/exchange/v1/keys/mlkem").unwrap();
         let prefix2 = compute_sad_pointer_prefix(kel, "kels/exchange/v1/keys/mlkem").unwrap();
         assert_eq!(prefix1, prefix2);
     }
@@ -202,8 +201,8 @@ mod tests {
         )
         .unwrap();
 
-        let v0_said = pointer.said.clone();
-        let prefix = pointer.prefix.clone();
+        let v0_said = pointer.said;
+        let prefix = pointer.prefix;
 
         pointer.content_said = Some(test_digest(b"content_said_abc"));
         pointer.increment().unwrap();

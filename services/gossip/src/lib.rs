@@ -301,7 +301,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix.clone())
+    let registry_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
     let registry_signer: Arc<dyn kels_core::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
@@ -549,12 +549,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
-    let redis_local_kel_prefix = local_kel_prefix.clone();
+    let redis_local_kel_prefix = local_kel_prefix;
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
                 &redis_url,
-                redis_local_kel_prefix.clone(),
+                redis_local_kel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
             )
@@ -572,12 +572,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
-    let sad_redis_local_kel_prefix = local_kel_prefix.clone();
+    let sad_redis_local_kel_prefix = local_kel_prefix;
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
                 &sad_redis_url,
-                sad_redis_local_kel_prefix.clone(),
+                sad_redis_local_kel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
             )
