@@ -6,7 +6,6 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use cesr::Matter;
 use kels_core::shutdown_signal;
 use tracing::info;
 use verifiable_storage_postgres::RepositoryConnection;
@@ -34,7 +33,7 @@ pub async fn run(
     database_url: &str,
     redis_url: Option<&str>,
     kels_url: &str,
-    node_prefix: &str,
+    node_prefix: &cesr::Digest,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to database");
     let repo = MailRepository::connect(database_url)
@@ -90,8 +89,7 @@ pub async fn run(
         blob_store: Arc::new(blob_store),
         kels_client,
         redis_conn,
-        node_prefix: cesr::Digest::from_qb64(node_prefix)
-            .map_err(|e| format!("Invalid node prefix: {}", e))?,
+        node_prefix: *node_prefix,
         sender_rate_limits: dashmap::DashMap::new(),
         ip_rate_limits: dashmap::DashMap::new(),
         nonce_cache: dashmap::DashMap::new(),
