@@ -107,7 +107,7 @@ impl SadStoreClient {
     }
 
     /// Retrieve a self-addressed JSON object by SAID.
-    pub async fn get_sad_object(&self, said: &str) -> Result<serde_json::Value, KelsError> {
+    pub async fn get_sad_object(&self, said: &cesr::Digest) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/{}", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
 

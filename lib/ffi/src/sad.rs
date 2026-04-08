@@ -146,6 +146,13 @@ pub unsafe extern "C" fn kels_sad_get_object(
         set_last_error("Invalid SAID");
         return std::ptr::null_mut();
     };
+    let said_digest = match cesr::Digest::from_qb64(&said_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid SAID CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
 
     let Ok(runtime) = Runtime::new() else {
         set_last_error("Failed to create async runtime");
@@ -160,7 +167,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
         }
     };
 
-    match runtime.block_on(client.get_sad_object(&said_str)) {
+    match runtime.block_on(client.get_sad_object(&said_digest)) {
         Ok(value) => match serde_json::to_string(&value) {
             Ok(json) => to_c_string(&json),
             Err(e) => {

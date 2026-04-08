@@ -438,7 +438,7 @@ impl SyncHandler {
         }
 
         // Fetch from remote and store locally
-        match remote_client.get_sad_object(said.as_ref()).await {
+        match remote_client.get_sad_object(said).await {
             Ok(object) => {
                 if let Err(e) = local_client.post_sad_object(&object).await {
                     warn!("Failed to store SAD object {} locally: {}", said, e);
@@ -1941,10 +1941,10 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         };
 
-        let local_obj_set: std::collections::HashSet<&str> =
-            local_objects.saids.iter().map(|s| s.as_ref()).collect();
-        let remote_obj_set: std::collections::HashSet<&str> =
-            remote_objects.saids.iter().map(|s| s.as_ref()).collect();
+        let local_obj_set: std::collections::HashSet<cesr::Digest> =
+            local_objects.saids.iter().copied().collect();
+        let remote_obj_set: std::collections::HashSet<cesr::Digest> =
+            remote_objects.saids.iter().copied().collect();
 
         if local_obj_set == remote_obj_set {
             debug!("SAD anti-entropy: object sample matched");

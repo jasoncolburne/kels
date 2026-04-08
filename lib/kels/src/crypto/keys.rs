@@ -133,9 +133,9 @@ impl ProviderConfig for HardwareProviderConfig {
 /// Implementors choose where to persist key state (filesystem, Keychain, CoreData, etc.).
 /// The provider decides the encoding — the store just handles opaque bytes.
 pub trait KeyStateStore: Send + Sync {
-    fn save(&self, key: &str, data: &[u8]) -> Result<(), KelsError>;
-    fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KelsError>;
-    fn delete(&self, key: &str) -> Result<(), KelsError>;
+    fn save(&self, key: &cesr::Digest, data: &[u8]) -> Result<(), KelsError>;
+    fn load(&self, key: &cesr::Digest) -> Result<Option<Vec<u8>>, KelsError>;
+    fn delete(&self, key: &cesr::Digest) -> Result<(), KelsError>;
 }
 
 /// Write a file and restrict its permissions to owner-only (0o600 on Unix).
@@ -180,7 +180,7 @@ impl FileKeyStateStore {
 }
 
 impl KeyStateStore for FileKeyStateStore {
-    fn save(&self, key: &str, data: &[u8]) -> Result<(), KelsError> {
+    fn save(&self, key: &cesr::Digest, data: &[u8]) -> Result<(), KelsError> {
         ensure_private_dir(&self.dir)?;
         let path = self.dir.join(format!("{}.keys.json", key));
         std::fs::write(&path, data)
@@ -195,7 +195,7 @@ impl KeyStateStore for FileKeyStateStore {
         Ok(())
     }
 
-    fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KelsError> {
+    fn load(&self, key: &cesr::Digest) -> Result<Option<Vec<u8>>, KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
         match std::fs::read(&path) {
             Ok(data) => Ok(Some(data)),
@@ -207,7 +207,7 @@ impl KeyStateStore for FileKeyStateStore {
         }
     }
 
-    fn delete(&self, key: &str) -> Result<(), KelsError> {
+    fn delete(&self, key: &cesr::Digest) -> Result<(), KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -671,7 +671,7 @@ impl KeyProvider for SoftwareKeyProvider {
         };
         let data =
             serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        store.save(prefix.as_ref(), &data)
+        store.save(prefix, &data)
     }
 
     async fn restore_state(
@@ -679,7 +679,7 @@ impl KeyProvider for SoftwareKeyProvider {
         store: &dyn KeyStateStore,
         prefix: &cesr::Digest,
     ) -> Result<bool, KelsError> {
-        let Some(data) = store.load(prefix.as_ref())? else {
+        let Some(data) = store.load(prefix)? else {
             return Ok(false);
         };
 

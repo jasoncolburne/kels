@@ -48,9 +48,10 @@ pub(crate) async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 pub(crate) async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
+    let said = cesr::Digest::from_qb64(said).context("Invalid SAID")?;
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let value = client
-        .get_sad_object(said)
+        .get_sad_object(&said)
         .await
         .context("Failed to retrieve SAD object")?;
 

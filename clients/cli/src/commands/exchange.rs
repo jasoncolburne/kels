@@ -265,7 +265,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
         .ok_or_else(|| anyhow!("Tip record has no content"))?;
 
     let value = sad_client
-        .get_sad_object(content_said.as_ref())
+        .get_sad_object(content_said)
         .await
         .context("Failed to fetch key publication object")?;
 
@@ -321,7 +321,7 @@ pub(crate) async fn cmd_exchange_send(
         .content_said
         .as_ref()
         .ok_or_else(|| anyhow!("Recipient key chain has no content"))?;
-    let value = sad_client.get_sad_object(content_said.as_ref()).await?;
+    let value = sad_client.get_sad_object(content_said).await?;
     let publication: kels_exchange::EncapsulationKeyPublication = serde_json::from_value(value)?;
     let encap_key = publication.encapsulation_key;
 
