@@ -1029,7 +1029,7 @@ mod tests {
     async fn test_fetch_peers_success() {
         let mock_server = MockServer::start().await;
 
-        let peer = make_test_peer(&test_digest("peer-1"), "node-1", true);
+        let peer = make_test_peer(&test_digest("peer-1-prefix"), "node-1", true);
         let response = PeersResponse {
             peers: vec![PeerHistory {
                 prefix: peer.prefix.clone(),
