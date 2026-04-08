@@ -228,9 +228,7 @@ mod tests {
                         1
                     ),
                     (
-                        PolicyNode::Endorse(
-                            digest("KCde9012345678901234567890123456789012345678")
-                        ),
+                        PolicyNode::Endorse(digest("KCde9012345678901234567890123456789012345678")),
                         1
                     ),
                 ]

@@ -397,7 +397,11 @@ impl KeyProvider for HardwareKeyProvider {
         Ok(())
     }
 
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError> {
+    async fn save_state(
+        &self,
+        store: &dyn KeyStateStore,
+        prefix: &cesr::Digest,
+    ) -> Result<(), KelsError> {
         let key_handles = self.key_handles.read().await;
         let recovery_handles = self.recovery_handles.read().await;
 

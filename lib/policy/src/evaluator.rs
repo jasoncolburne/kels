@@ -624,11 +624,7 @@ mod tests {
             .unwrap();
 
         assert!(result.is_satisfied);
-        assert!(
-            result
-                .nested_verifications
-                .contains_key(&inner_policy.said)
-        );
+        assert!(result.nested_verifications.contains_key(&inner_policy.said));
     }
 
     #[tokio::test]
@@ -650,13 +646,7 @@ mod tests {
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
 
-        let result = evaluate_policy(
-            &policy,
-            &test_digest("cycle-test"),
-            &source,
-            &resolver,
-        )
-        .await;
+        let result = evaluate_policy(&policy, &test_digest("cycle-test"), &source, &resolver).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();

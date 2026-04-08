@@ -336,7 +336,11 @@ pub trait KeyProvider: Send + Sync {
     // ==================== State Persistence ====================
 
     /// Save provider state to an opaque store. Each provider encodes its own format.
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError>;
+    async fn save_state(
+        &self,
+        store: &dyn KeyStateStore,
+        prefix: &cesr::Digest,
+    ) -> Result<(), KelsError>;
 
     /// Restore provider state from an opaque store. Returns true if state was found.
     async fn restore_state(
@@ -662,7 +666,11 @@ impl KeyProvider for SoftwareKeyProvider {
         Ok(())
     }
 
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &cesr::Digest) -> Result<(), KelsError> {
+    async fn save_state(
+        &self,
+        store: &dyn KeyStateStore,
+        prefix: &cesr::Digest,
+    ) -> Result<(), KelsError> {
         let state = SoftwareKeyState {
             signing_algorithm: Some(self.signing_algorithm),
             recovery_algorithm: Some(self.recovery_algorithm),

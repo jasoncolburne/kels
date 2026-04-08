@@ -300,9 +300,7 @@ mod tests {
         let c = test_digest("prefix-c");
         let s = test_digest("said-a");
         let policy = Policy::build(
-            &format!(
-                "threshold(2, [endorse({a}), delegate({b}, {c}), policy({s})])"
-            ),
+            &format!("threshold(2, [endorse({a}), delegate({b}, {c}), policy({s})])"),
             None,
             false,
         )
@@ -333,8 +331,7 @@ mod tests {
     fn test_compact() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let policy =
-            Policy::build(&format!("delegate({a}, {b})"), None, false).unwrap();
+        let policy = Policy::build(&format!("delegate({a}, {b})"), None, false).unwrap();
         let compacted = policy.compact().unwrap();
         assert_eq!(compacted.expression, format!("delegate({a})"));
         assert_ne!(compacted.said, policy.said);
@@ -358,9 +355,7 @@ mod tests {
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
         let policy = Policy::build(
-            &format!(
-                "threshold(2, [endorse({a}), weighted(3, [endorse({b}):2, endorse({c}):1])])"
-            ),
+            &format!("threshold(2, [endorse({a}), weighted(3, [endorse({b}):2, endorse({c}):1])])"),
             None,
             false,
         )

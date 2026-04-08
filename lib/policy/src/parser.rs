@@ -136,9 +136,8 @@ fn consume_keyword(input: &str, pos: &mut usize, keyword: &str) -> Result<(), Po
 
 fn parse_digest(input: &str, pos: &mut usize) -> Result<cesr::Digest, PolicyError> {
     let ident = parse_identifier(input, pos)?;
-    cesr::Digest::from_qb64(&ident).map_err(|e| {
-        PolicyError::ParseError(format!("invalid CESR digest '{}': {}", ident, e))
-    })
+    cesr::Digest::from_qb64(&ident)
+        .map_err(|e| PolicyError::ParseError(format!("invalid CESR digest '{}': {}", ident, e)))
 }
 
 fn parse_endorse(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyError> {
@@ -343,18 +342,12 @@ mod tests {
     fn test_parse_weighted() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let node = parse(&format!(
-            "weighted(5, [endorse({a}):3, endorse({b}):2])"
-        ))
-        .unwrap();
+        let node = parse(&format!("weighted(5, [endorse({a}):3, endorse({b}):2])")).unwrap();
         assert_eq!(
             node,
             PolicyNode::Weighted(
                 5,
-                vec![
-                    (PolicyNode::Endorse(a), 3),
-                    (PolicyNode::Endorse(b), 2),
-                ]
+                vec![(PolicyNode::Endorse(a), 3), (PolicyNode::Endorse(b), 2),]
             )
         );
     }
@@ -385,10 +378,7 @@ mod tests {
                     (
                         PolicyNode::Weighted(
                             3,
-                            vec![
-                                (PolicyNode::Endorse(b), 2),
-                                (PolicyNode::Endorse(c), 1),
-                            ]
+                            vec![(PolicyNode::Endorse(b), 2), (PolicyNode::Endorse(c), 1),]
                         ),
                         1
                     ),
@@ -403,9 +393,7 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
-        let expr = format!(
-            "threshold( 2 , [ endorse( {a} ) , endorse( {b} ) , endorse( {c} ) ] )"
-        );
+        let expr = format!("threshold( 2 , [ endorse( {a} ) , endorse( {b} ) , endorse( {c} ) ] )");
         let canonical = canonicalize(&expr).unwrap();
         let canonical2 = canonicalize(&canonical).unwrap();
         assert_eq!(canonical, canonical2);
@@ -415,18 +403,13 @@ mod tests {
     fn test_parse_whitespace_tolerance() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let expr = format!(
-            "  threshold(  2  ,  [  endorse( {a} )  ,  endorse( {b} )  ]  )  "
-        );
+        let expr = format!("  threshold(  2  ,  [  endorse( {a} )  ,  endorse( {b} )  ]  )  ");
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
             PolicyNode::Weighted(
                 2,
-                vec![
-                    (PolicyNode::Endorse(a), 1),
-                    (PolicyNode::Endorse(b), 1),
-                ]
+                vec![(PolicyNode::Endorse(a), 1), (PolicyNode::Endorse(b), 1),]
             )
         );
     }
@@ -502,10 +485,7 @@ mod tests {
                 (
                     PolicyNode::Weighted(
                         3,
-                        vec![
-                            (PolicyNode::Endorse(b), 2),
-                            (PolicyNode::Endorse(c), 1),
-                        ],
+                        vec![(PolicyNode::Endorse(b), 2), (PolicyNode::Endorse(c), 1)],
                     ),
                     1,
                 ),
@@ -521,10 +501,7 @@ mod tests {
     fn test_parse_delegate_compacted() {
         let a = test_digest("prefix-a");
         let node = parse(&format!("delegate({a})")).unwrap();
-        assert_eq!(
-            node,
-            PolicyNode::Delegate(a, cesr::Digest::default())
-        );
+        assert_eq!(node, PolicyNode::Delegate(a, cesr::Digest::default()));
     }
 
     #[test]
@@ -543,9 +520,8 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
-        let expr = format!(
-            "weighted(3, [threshold(1, [endorse({a}), endorse({b})]):2, endorse({c}):1])"
-        );
+        let expr =
+            format!("weighted(3, [threshold(1, [endorse({a}), endorse({b})]):2, endorse({c}):1])");
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
@@ -555,10 +531,7 @@ mod tests {
                     (
                         PolicyNode::Weighted(
                             1,
-                            vec![
-                                (PolicyNode::Endorse(a), 1),
-                                (PolicyNode::Endorse(b), 1),
-                            ]
+                            vec![(PolicyNode::Endorse(a), 1), (PolicyNode::Endorse(b), 1),]
                         ),
                         2
                     ),

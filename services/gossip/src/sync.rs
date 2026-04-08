@@ -1802,7 +1802,10 @@ pub async fn run_sad_anti_entropy_loop(
             let we_have_remote = if let Some(said) = remote_said_str
                 && let Ok(digest) = cesr::Digest::from_qb64(said)
             {
-                local_client.sad_pointer_exists(&digest).await.unwrap_or(false)
+                local_client
+                    .sad_pointer_exists(&digest)
+                    .await
+                    .unwrap_or(false)
             } else {
                 // Remote doesn't have it at all — we're ahead
                 true
