@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cesr::Matter;
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -40,7 +41,7 @@ impl KeyEventRepository {
     /// Paginated query of archived adversary events for a prefix.
     pub async fn get_archived_events(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -214,20 +215,20 @@ impl KeyEventRepository {
             .group_by("prefix")
             .group_by("serial")
             .having_count_gt(1);
-        let divergent_prefixes: HashSet<String> = self
+        let divergent_prefixes: HashSet<cesr::Digest> = self
             .pool
-            .fetch_column(divergent_query)
+            .fetch_column::<String>(divergent_query)
             .await?
-            .into_iter()
+            .iter()
+            .filter_map(|s| cesr::Digest::from_qb64(s).ok())
             .collect();
 
         // For divergent prefixes, replace the single tip SAID with a deterministic
         // composite hash of all sorted tip SAIDs.
         for state in &mut prefix_states {
-            if divergent_prefixes.contains(state.prefix.as_ref())
-                && let Some((effective, _)) = self
-                    .compute_prefix_effective_said(state.prefix.as_ref())
-                    .await?
+            if divergent_prefixes.contains(&state.prefix)
+                && let Some((effective, _)) =
+                    self.compute_prefix_effective_said(&state.prefix).await?
             {
                 state.said = effective;
             }

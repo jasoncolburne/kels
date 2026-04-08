@@ -151,7 +151,7 @@ impl LockedKelTransaction {
             &mut self.tx,
             KeyEventRepository::TABLE_NAME,
             KeyEventRepository::SIGNATURES_TABLE_NAME,
-            self.prefix.as_ref(),
+            &self.prefix,
             limit,
             offset,
         )

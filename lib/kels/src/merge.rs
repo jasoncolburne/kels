@@ -473,7 +473,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             &mut self.tx,
             self.events_table,
             self.signatures_table,
-            self.prefix.as_ref(),
+            &self.prefix,
             limit,
             offset,
         )

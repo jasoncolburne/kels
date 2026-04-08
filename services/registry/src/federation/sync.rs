@@ -162,7 +162,7 @@ async fn push_to_stale_members(
     let config = node.config();
 
     let local_said = member_kel_repo
-        .compute_prefix_effective_said(own_prefix.as_ref())
+        .compute_prefix_effective_said(&own_prefix)
         .await?;
 
     let local_said = match local_said {

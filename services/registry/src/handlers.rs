@@ -1152,7 +1152,7 @@ pub async fn submit_member_key_events(
     // Full merge: verification, divergence detection, recovery.
     let outcome = state
         .member_kel_repo
-        .save_with_merge(prefix.as_ref(), &events)
+        .save_with_merge(&prefix, &events)
         .await
         .map_err(|e| match e {
             kels_core::KelsError::VerificationFailed(msg) => ApiError::unauthorized(msg),
@@ -1237,8 +1237,10 @@ pub async fn submit_member_key_events(
 /// A wrong value triggers an unnecessary sync, not a security hole.
 pub async fn get_member_effective_said(
     State(state): State<Arc<FederationState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     match state
         .member_kel_repo
         .compute_prefix_effective_said(&prefix)

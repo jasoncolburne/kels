@@ -84,13 +84,13 @@ pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     event_count: u32,
     max_events: u32,
 ) -> Result<(), ApiError> {
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
@@ -108,15 +108,15 @@ fn check_prefix_rate_limit(
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     new_event_count: u32,
 ) {
     if new_event_count == 0 {
         return;
     }
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
         entry.1 = now;
@@ -131,7 +131,7 @@ pub(crate) struct AppState {
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix daily rate limiting: counts events (not submissions).
-    pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    pub(crate) prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
@@ -386,8 +386,7 @@ pub(crate) async fn submit_events(
     }
 
     // Get prefix from first event
-    let prefix_digest = events[0].event.prefix;
-    let prefix = prefix_digest.to_string();
+    let prefix = events[0].event.prefix;
 
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
@@ -461,16 +460,16 @@ pub(crate) async fn submit_events(
         {
             Ok((events, has_more)) => {
                 if !has_more {
-                    if let Err(e) = kel_cache.store(&prefix_digest, &events).await {
+                    if let Err(e) = kel_cache.store(&prefix, &events).await {
                         warn!("Failed to cache KEL: {}", e);
                     }
-                } else if let Err(e) = kel_cache.invalidate(&prefix_digest).await {
+                } else if let Err(e) = kel_cache.invalidate(&prefix).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
             Err(e) => {
                 warn!("Failed to rebuild cache for {}: {}", prefix, e);
-                if let Err(e) = kel_cache.invalidate(&prefix_digest).await {
+                if let Err(e) = kel_cache.invalidate(&prefix).await {
                     warn!("Failed to invalidate cache: {}", e);
                 }
             }
@@ -490,7 +489,7 @@ pub(crate) async fn submit_events(
             }
         };
         if let Some(ref said) = effective_said
-            && let Err(e) = kel_cache.publish_update(&prefix_digest, said).await
+            && let Err(e) = kel_cache.publish_update(&prefix, said).await
         {
             warn!("Failed to publish cache update: {}", e);
         }
@@ -624,7 +623,7 @@ pub(crate) struct ArchivedEventsQuery {
 /// `?offset=N` skips the first N events.
 pub(crate) async fn get_kel_archived(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
     Query(params): Query<ArchivedEventsQuery>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = params
@@ -633,6 +632,8 @@ pub(crate) async fn get_kel_archived(
         .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let (events, has_more) = state
         .repo
         .key_events
@@ -666,8 +667,10 @@ pub(crate) async fn event_exists(
 /// not a security hole.
 pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let effective = state
         .repo
         .key_events

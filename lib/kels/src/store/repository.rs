@@ -28,9 +28,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        self.repo
-            .get_signed_history(prefix.as_ref(), limit, offset)
-            .await
+        self.repo.get_signed_history(prefix, limit, offset).await
     }
 
     async fn load_tail(
@@ -38,9 +36,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         prefix: &cesr::Digest,
         limit: u64,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
-        self.repo
-            .get_signed_history_tail(prefix.as_ref(), limit)
-            .await
+        self.repo.get_signed_history_tail(prefix, limit).await
     }
 
     async fn append(
@@ -48,7 +44,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         prefix: &cesr::Digest,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
-        self.repo.save_with_merge(prefix.as_ref(), events).await?;
+        self.repo.save_with_merge(prefix, events).await?;
         Ok(())
     }
 
@@ -57,7 +53,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         prefix: &cesr::Digest,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
-        self.repo.save_with_merge(prefix.as_ref(), events).await?;
+        self.repo.save_with_merge(prefix, events).await?;
         Ok(())
     }
 }

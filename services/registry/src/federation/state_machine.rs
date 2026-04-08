@@ -709,27 +709,6 @@ impl StateMachineStore {
         &self.inner
     }
 
-    /// Read a member's KEL page from the MemberKelRepository (DB).
-    /// Does NOT acquire the inner lock.
-    pub async fn read_member_kel_page(
-        &self,
-        prefix: &str,
-        limit: u64,
-        offset: u64,
-    ) -> Result<kels_core::SignedKeyEventPage, String> {
-        let repo = self
-            .member_kel_repo
-            .as_ref()
-            .ok_or_else(|| "Member KEL repository not configured".to_string())?;
-
-        let (events, has_more) = repo
-            .get_signed_history(prefix, limit, offset)
-            .await
-            .map_err(|e| format!("Failed to read member KEL: {}", e))?;
-
-        Ok(kels_core::SignedKeyEventPage { events, has_more })
-    }
-
     /// Verify a SAID is anchored in a federation member's KEL.
     /// Consuming: reads from MemberKelRepository (DB), verifies with KelVerifier,
     /// checks anchor inline. Does NOT acquire the inner lock.

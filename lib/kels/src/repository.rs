@@ -39,13 +39,13 @@ pub async fn load_signed_history(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
     signatures_table: &str,
-    prefix: &str,
+    prefix: &cesr::Digest,
     limit: u64,
     offset: u64,
 ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
     let clamped_limit = limit.min(crate::page_size() as u64);
     let query = Query::<KeyEvent>::for_table(events_table)
-        .eq("prefix", prefix)
+        .eq("prefix", prefix.as_ref())
         .order_by("serial", Order::Asc)
         .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
         .order_by("said", Order::Asc)
@@ -81,7 +81,7 @@ pub async fn load_signed_history_tail(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
     signatures_table: &str,
-    prefix: &str,
+    prefix: &cesr::Digest,
     limit: u64,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let query = Query::<KeyEvent>::for_table(events_table)
@@ -118,7 +118,7 @@ pub trait SignedEventRepository: Send + Sync {
     /// Returns `(events, has_more)`.
     async fn get_signed_history(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<crate::SignedKeyEvent>, bool), KelsError>;
@@ -126,13 +126,13 @@ pub trait SignedEventRepository: Send + Sync {
     /// Get the last `limit` signed events for a prefix, in serial-ascending order.
     async fn get_signed_history_tail(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
     ) -> Result<Vec<crate::SignedKeyEvent>, KelsError>;
 
     async fn get_signature_by_said(
         &self,
-        said: &str,
+        said: &cesr::Digest,
     ) -> Result<Option<crate::EventSignature>, KelsError>;
     async fn create_with_signatures(
         &self,
@@ -151,7 +151,7 @@ pub trait SignedEventRepository: Send + Sync {
     /// Uses an advisory lock on the prefix to serialize operations.
     async fn save_with_merge(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         events: &[crate::SignedKeyEvent],
     ) -> Result<MergeOutcome, KelsError>;
 }
