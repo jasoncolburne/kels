@@ -54,7 +54,7 @@ pub enum SyncError {
 /// and broadcasts them to the gossip network.
 pub async fn run_redis_subscriber(
     redis_url: &str,
-    local_peer_prefix: cesr::Digest,
+    local_kel_prefix: cesr::Digest,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -91,7 +91,7 @@ pub async fn run_redis_subscriber(
             }
         }
 
-        if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_peer_prefix) {
+        if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
             debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
             if command_tx.send(GossipCommand::Kel(ann)).await.is_err() {
                 error!("Failed to send announce command - channel closed");
@@ -114,7 +114,7 @@ const SAD_CHAIN_PUBSUB_CHANNEL: &str = "sad_chain_updates";
 /// Broadcasts announcements to the gossip network on the SAD topic.
 pub async fn run_sad_redis_subscriber(
     redis_url: &str,
-    local_peer_prefix: cesr::Digest,
+    local_kel_prefix: cesr::Digest,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -175,7 +175,7 @@ pub async fn run_sad_redis_subscriber(
             };
             SadAnnouncement::Object {
                 said: said_digest,
-                origin: local_peer_prefix.clone(),
+                origin: local_kel_prefix.clone(),
             }
         } else if channel == SAD_CHAIN_PUBSUB_CHANNEL {
             // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
@@ -185,11 +185,11 @@ pub async fn run_sad_redis_subscriber(
             } else {
                 &payload
             };
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_peer_prefix) {
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_kel_prefix) {
                 SadAnnouncement::Pointer {
                     chain_prefix: ann.prefix.clone(),
                     said: ann.said.clone(),
-                    origin: local_peer_prefix.clone(),
+                    origin: local_kel_prefix.clone(),
                     repair,
                 }
             } else {
@@ -300,7 +300,7 @@ pub struct SyncHandler {
     allowlist: SharedAllowlist,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
-    /// Per-peer fetch rate limiting: maps peer_prefix -> (count, window_start)
+    /// Per-peer fetch rate limiting: maps peer_kel_prefix -> (count, window_start)
     peer_fetch_counts: HashMap<cesr::Digest, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
@@ -345,7 +345,7 @@ impl SyncHandler {
             .values()
             .map(|peer| {
                 (
-                    peer.peer_prefix.clone(),
+                    peer.kel_prefix.clone(),
                     format!("http://kels.{}", peer.base_domain),
                 )
             })
@@ -370,11 +370,11 @@ impl SyncHandler {
             GossipEvent::MailAnnouncementReceived { announcement } => {
                 self.handle_mail_announcement(announcement).await;
             }
-            GossipEvent::PeerConnected(peer_prefix) => {
-                debug!("Peer connected: {}", peer_prefix);
+            GossipEvent::PeerConnected(peer_kel_prefix) => {
+                debug!("Peer connected: {}", peer_kel_prefix);
             }
-            GossipEvent::PeerDisconnected(peer_prefix) => {
-                debug!("Peer disconnected: {}", peer_prefix);
+            GossipEvent::PeerDisconnected(peer_kel_prefix) => {
+                debug!("Peer disconnected: {}", peer_kel_prefix);
             }
         }
         Ok(())
@@ -629,9 +629,9 @@ impl SyncHandler {
     }
 
     /// Derive a peer's SADStore URL from their base domain.
-    async fn get_peer_sadstore_url(&self, peer_prefix: &cesr::Digest) -> Option<String> {
+    async fn get_peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest) -> Option<String> {
         let guard = self.allowlist.read().await;
-        let peer = guard.get(peer_prefix)?;
+        let peer = guard.get(peer_kel_prefix)?;
         Some(format!("http://sadstore.{}", peer.base_domain))
     }
 
@@ -687,13 +687,13 @@ impl SyncHandler {
         let max_pages = kels_core::max_pages();
         let local_sink = self.kels_client.as_kel_sink()?;
 
-        for (peer_prefix, kels_url) in &peers {
+        for (peer_kel_prefix, kels_url) in &peers {
             // Per-peer rate limiting
             {
                 let now = Instant::now();
                 let entry = self
                     .peer_fetch_counts
-                    .entry(peer_prefix.clone())
+                    .entry(peer_kel_prefix.clone())
                     .or_insert((0, now));
                 if now.duration_since(entry.1) >= Duration::from_secs(60) {
                     entry.0 = 1;
@@ -703,7 +703,7 @@ impl SyncHandler {
                     if entry.0 > max_fetches_per_peer_per_minute() {
                         debug!(
                             "Rate limiting peer {}: {} fetches/min exceeded",
-                            peer_prefix,
+                            peer_kel_prefix,
                             max_fetches_per_peer_per_minute()
                         );
                         continue;
@@ -1218,7 +1218,7 @@ pub async fn run_anti_entropy_loop(
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.clone(),
+                        p.kel_prefix.clone(),
                         format!("http://kels.{}", p.base_domain),
                     )
                 })
@@ -1364,7 +1364,7 @@ pub async fn run_anti_entropy_loop(
         }
 
         // Phase 2: Random sampling
-        let (peer_prefix, peer_kels_url) = {
+        let (peer_kel_prefix, peer_kels_url) = {
             let mut rng = rand::thread_rng();
             match peers.choose(&mut rng) {
                 Some((pp, url)) => (pp.clone(), url.clone()),
@@ -1452,7 +1452,7 @@ pub async fn run_anti_entropy_loop(
                         info!("Anti-entropy: repaired {} from remote", prefix);
                     }
                     RepairResult::Failed => {
-                        record_stale_prefix(redis.as_ref(), &prefix, &peer_prefix).await;
+                        record_stale_prefix(redis.as_ref(), &prefix, &peer_kel_prefix).await;
                     }
                     _ => {}
                 }
@@ -1531,7 +1531,7 @@ pub async fn run_sad_anti_entropy_loop(
                 .values()
                 .map(|p| {
                     (
-                        p.peer_prefix.clone(),
+                        p.kel_prefix.clone(),
                         format!("http://sadstore.{}", p.base_domain),
                     )
                 })
@@ -1728,7 +1728,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         // Phase 2: Random sampling — compare chain effective SAIDs with a random peer
-        let (peer_prefix, peer_sadstore_url) = {
+        let (peer_kel_prefix, peer_sadstore_url) = {
             let mut rng = rand::thread_rng();
             match peers.choose(&mut rng) {
                 Some(p) => p.clone(),
@@ -1863,7 +1863,7 @@ pub async fn run_sad_anti_entropy_loop(
                         })
                 };
                 let prefix_d = prefix_digest.clone();
-                let peer = peer_prefix.clone();
+                let peer = peer_kel_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
                     let result = kels_core::forward_sad_pointer(
                         &prefix_d,
@@ -1904,7 +1904,7 @@ pub async fn run_sad_anti_entropy_loop(
                         })
                 };
                 let prefix_d = prefix_digest.clone();
-                let peer = peer_prefix.clone();
+                let peer = peer_kel_prefix.clone();
                 sync_tasks.push(Box::pin(async move {
                     let result = kels_core::forward_sad_pointer(
                         &prefix_d,
@@ -2008,7 +2008,7 @@ mod tests {
             Ok(kels_core::SignResult {
                 signature: cesr::Signature::from_raw(cesr::SignatureCode::MlDsa65, vec![0u8; 3309])
                     .unwrap(),
-                peer_prefix: test_digest("test-prefix"),
+                peer_kel_prefix: test_digest("test-prefix"),
             })
         }
     }
@@ -2080,8 +2080,8 @@ mod tests {
         let mut handler = create_test_handler();
         let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
 
-        let peer_prefix = "test-peer-prefix".to_string();
-        let event = GossipEvent::PeerConnected(peer_prefix);
+        let peer_kel_prefix = test_digest("test-peer-prefix");
+        let event = GossipEvent::PeerConnected(peer_kel_prefix);
 
         // Should not error
         let result = handler.handle_event(event, &command_tx).await;

@@ -55,7 +55,6 @@
 //! ```
 
 pub mod addr;
-pub mod identity;
 pub mod net;
 pub mod proto;
 

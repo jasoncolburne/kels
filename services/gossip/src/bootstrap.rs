@@ -332,7 +332,7 @@ impl BootstrapSync {
     }
 
     /// Check if a peer is authorized in the allowlist.
-    pub async fn is_peer_authorized(&self, peer_prefix: &str) -> Result<bool, BootstrapError> {
+    pub async fn is_peer_authorized(&self, peer_kel_prefix: &str) -> Result<bool, BootstrapError> {
         // Try each registry URL until one succeeds
         for url in &self.urls {
             let client = KelsRegistryClient::new(url)?;
@@ -342,7 +342,7 @@ impl BootstrapSync {
                         history
                             .records
                             .last()
-                            .map(|peer| peer.peer_prefix.as_ref() == peer_prefix && peer.active)
+                            .map(|peer| peer.kel_prefix.as_ref() == peer_kel_prefix && peer.active)
                             .unwrap_or(false)
                     }));
                 }
@@ -381,7 +381,7 @@ impl BootstrapSync {
         match self.http_client.get(&url).send().await {
             Ok(response) => response.status().is_success(),
             Err(e) => {
-                debug!("Peer {} not ready: {}", peer.peer_prefix, e);
+                debug!("Peer {} not ready: {}", peer.kel_prefix, e);
                 false
             }
         }
@@ -405,7 +405,7 @@ impl BootstrapSync {
         let local_client = KelsClient::new(&self.config.kels_url)?;
 
         // Step 1: Collect all unique prefixes from all peers that need syncing.
-        // Track (since_said, source_kels_url, source_peer_prefix) per kel prefix.
+        // Track (since_said, source_kels_url, source_peer_kel_prefix) per kel prefix.
         info!("Collecting prefixes from {} peer(s)...", peers.len());
         let mut all_prefixes: HashMap<cesr::Digest, (Option<cesr::Digest>, String, cesr::Digest)> =
             HashMap::new();
@@ -426,7 +426,7 @@ impl BootstrapSync {
                                 all_prefixes.entry(state.prefix.clone()).or_insert((
                                     since,
                                     peer_url.to_string(),
-                                    peer.peer_prefix.clone(),
+                                    peer.kel_prefix.clone(),
                                 ));
                             }
                         }
@@ -454,19 +454,19 @@ impl BootstrapSync {
         // Step 2: Sync all prefixes concurrently using forward_key_events
         let tasks: Vec<_> = all_prefixes
             .into_iter()
-            .map(|(prefix, (since, source_url, source_peer_prefix))| {
+            .map(|(prefix, (since, source_url, source_peer_kel_prefix))| {
                 let local = local_client.clone();
                 async move {
                     let remote = match KelsClient::new(&source_url) {
                         Ok(c) => c,
                         Err(e) => {
                             warn!(prefix = %prefix, error = %e, "Failed to build HTTP client for KEL sync");
-                            return (prefix, source_peer_prefix, crate::sync::RepairResult::Failed);
+                            return (prefix, source_peer_kel_prefix, crate::sync::RepairResult::Failed);
                         }
                     };
                     let result =
                         crate::sync::sync_prefix(&remote, &local, &prefix, since.as_ref()).await;
-                    (prefix, source_peer_prefix, result)
+                    (prefix, source_peer_kel_prefix, result)
                 }
             })
             .collect();
@@ -476,7 +476,7 @@ impl BootstrapSync {
         let mut total_synced = 0;
         let mut total_errors = 0;
 
-        for (prefix, source_peer_prefix, result) in results {
+        for (prefix, source_peer_kel_prefix, result) in results {
             match result {
                 crate::sync::RepairResult::Repaired => {
                     debug!("Synced KEL for {}", prefix);
@@ -493,7 +493,7 @@ impl BootstrapSync {
                         crate::sync::record_stale_prefix(
                             redis.as_ref(),
                             &prefix,
-                            &source_peer_prefix,
+                            &source_peer_kel_prefix,
                         )
                         .await;
                     }
@@ -608,7 +608,7 @@ mod tests {
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: test_digest("test-peer"),
+            kel_prefix: test_digest("test-peer"),
             node_id: "node-1".to_string(),
             authorizing_kel: test_digest("authorizing-kel"),
             active: true,

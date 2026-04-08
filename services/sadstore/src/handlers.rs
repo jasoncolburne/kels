@@ -144,11 +144,11 @@ pub struct AppState {
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_prefix: &str,
+    peer_kel_prefix: &str,
 ) -> Result<Option<kels_core::Peer>, (StatusCode, String)> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
-        .get(format!("kels:verified-peer:{}", peer_prefix))
+        .get(format!("kels:verified-peer:{}", peer_kel_prefix))
         .await
         .map_err(|e| {
             (
@@ -205,7 +205,7 @@ async fn refresh_verified_peers(
                 )
             })?;
             conn.set_ex::<_, _, ()>(
-                format!("kels:verified-peer:{}", peer.peer_prefix),
+                format!("kels:verified-peer:{}", peer.kel_prefix),
                 peer_json,
                 3600,
             )

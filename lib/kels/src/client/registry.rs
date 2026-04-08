@@ -51,7 +51,7 @@ pub struct SignResult {
     /// CESR qb64 encoded signature
     pub signature: cesr::Signature,
     /// The signer's peer identity (KELS prefix)
-    pub peer_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest,
 }
 
 /// Trait for signing requests.
@@ -82,7 +82,7 @@ where
 
     Ok(SignedRequest {
         payload: payload.clone(),
-        prefix: sign_result.peer_prefix,
+        prefix: sign_result.peer_kel_prefix,
         signature: sign_result.signature,
     })
 }
@@ -162,7 +162,7 @@ impl KelsRegistryClient {
 
     pub async fn is_peer_authorized(
         &self,
-        peer_prefix: &str,
+        peer_kel_prefix: &str,
         trusted_prefixes: &HashSet<&'static str>,
         kel_verifications: &[&KelVerification],
     ) -> Result<bool, KelsError> {
@@ -171,12 +171,12 @@ impl KelsRegistryClient {
             history
                 .records
                 .last()
-                .map(|peer| peer.peer_prefix.as_ref() == peer_prefix)
+                .map(|peer| peer.kel_prefix.as_ref() == peer_kel_prefix)
                 .unwrap_or(false)
         }) {
             return Err(KelsError::RegistryFailure(format!(
                 "Peer {} not found in peers list",
-                peer_prefix
+                peer_kel_prefix
             )));
         }
 
@@ -363,14 +363,14 @@ impl KelsRegistryClient {
     /// Submit a vote on a proposal.
     pub async fn submit_vote(
         &self,
-        proposal_id: &str,
+        proposal_prefix: &str,
         vote: &crate::Vote,
     ) -> Result<crate::ProposalResponse, KelsError> {
         let response = self
             .client
             .post(format!(
                 "{}/api/v1/admin/proposals/{}/vote",
-                self.base_url, proposal_id
+                self.base_url, proposal_prefix
             ))
             .json(vote)
             .send()
@@ -387,13 +387,13 @@ impl KelsRegistryClient {
     /// Fetch a specific proposal by ID.
     pub async fn fetch_proposal(
         &self,
-        proposal_id: &str,
+        proposal_prefix: &str,
     ) -> Result<crate::ProposalWithVotes, KelsError> {
         let response = self
             .client
             .get(format!(
                 "{}/api/v1/federation/proposals/{}",
-                self.base_url, proposal_id
+                self.base_url, proposal_prefix
             ))
             .send()
             .await?;
@@ -526,13 +526,13 @@ enum ProposalCandidateRef<'a> {
 /// Uses a `KelStore` for anchor verification, with HTTP re-sync on cache miss.
 pub async fn verify_peer_votes(
     store: &(dyn crate::KelStore + Sync),
-    peer_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest,
     proposals_response: &Option<CompletedProposalsResponse>,
     trusted_prefixes: &HashSet<&str>,
     registry_urls: &[String],
 ) -> bool {
     let Some(response) = proposals_response else {
-        warn!(peer_prefix = %peer_prefix, "No proposals available for peer vote verification");
+        warn!(peer_kel_prefix = %peer_kel_prefix, "No proposals available for peer vote verification");
         return false;
     };
 
@@ -546,7 +546,7 @@ pub async fn verify_peer_votes(
             || awv
                 .history
                 .inception()
-                .is_none_or(|p| &p.peer_prefix != peer_prefix)
+                .is_none_or(|p| &p.peer_kel_prefix != peer_kel_prefix)
             || awv.status(last.threshold) != ProposalStatus::Approved
         {
             continue;
@@ -562,7 +562,7 @@ pub async fn verify_peer_votes(
             || rwv
                 .history
                 .inception()
-                .is_none_or(|p| &p.peer_prefix != peer_prefix)
+                .is_none_or(|p| &p.peer_kel_prefix != peer_kel_prefix)
             || rwv.status(last.threshold) != ProposalStatus::Approved
         {
             continue;
@@ -571,7 +571,7 @@ pub async fn verify_peer_votes(
     }
 
     if candidates.is_empty() {
-        info!(peer_prefix = %peer_prefix, "No approved proposal found for peer");
+        info!(peer_kel_prefix = %peer_kel_prefix, "No approved proposal found for peer");
         return false;
     }
 
@@ -615,7 +615,7 @@ pub async fn verify_peer_votes(
 
         if verify_proposal_dag_standalone(
             store,
-            peer_prefix,
+            peer_kel_prefix,
             kind,
             verify_result,
             proposer,
@@ -630,15 +630,15 @@ pub async fn verify_peer_votes(
             if *is_addition {
                 return true;
             } else {
-                info!(peer_prefix = %peer_prefix, "Verified removal — peer excluded");
+                info!(peer_kel_prefix = %peer_kel_prefix, "Verified removal — peer excluded");
                 return false;
             }
         }
 
-        warn!(peer_prefix = %peer_prefix, kind = kind, "Proposal failed verification, trying next");
+        warn!(peer_kel_prefix = %peer_kel_prefix, kind = kind, "Proposal failed verification, trying next");
     }
 
-    warn!(peer_prefix = %peer_prefix, "No proposal passed verification for peer");
+    warn!(peer_kel_prefix = %peer_kel_prefix, "No proposal passed verification for peer");
     false
 }
 
@@ -691,7 +691,7 @@ async fn verify_anchors_from_store(
 #[allow(clippy::too_many_arguments)]
 async fn verify_proposal_dag_standalone<'a>(
     store: &(dyn crate::KelStore + Sync),
-    peer_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest,
     kind: &str,
     structural_result: Result<(), KelsError>,
     proposer: Option<&cesr::Digest>,
@@ -702,21 +702,21 @@ async fn verify_proposal_dag_standalone<'a>(
     registry_urls: &[String],
 ) -> bool {
     if let Err(e) = structural_result {
-        warn!(peer_prefix = %peer_prefix, error = %e, "{} proposal DAG verification failed", kind);
+        warn!(peer_kel_prefix = %peer_kel_prefix, error = %e, "{} proposal DAG verification failed", kind);
         return false;
     }
 
     let proposer = match proposer {
         Some(p) => p,
         None => {
-            warn!(peer_prefix = %peer_prefix, "{} proposal has no proposer", kind);
+            warn!(peer_kel_prefix = %peer_kel_prefix, "{} proposal has no proposer", kind);
             return false;
         }
     };
     let proposer_str: &str = proposer.as_ref();
 
     if !member_prefixes.contains(proposer_str) {
-        warn!(peer_prefix = %peer_prefix, proposer = %proposer, "{} proposer is not a federation member", kind);
+        warn!(peer_kel_prefix = %peer_kel_prefix, proposer = %proposer, "{} proposer is not a federation member", kind);
         return false;
     }
 
@@ -736,7 +736,7 @@ async fn verify_proposal_dag_standalone<'a>(
     }
 
     debug!(
-        peer_prefix = %peer_prefix,
+        peer_kel_prefix = %peer_kel_prefix,
         proposer = %proposer,
         saids = proposer_saids.len(),
         "verify_proposal_dag: checking proposer anchoring (records + vote)"
@@ -748,7 +748,7 @@ async fn verify_proposal_dag_standalone<'a>(
         }
         Ok(None) => {
             warn!(
-                peer_prefix = %peer_prefix,
+                peer_kel_prefix = %peer_kel_prefix,
                 proposer = %proposer,
                 "{} proposal/vote SAIDs not all anchored in proposer's KEL", kind
             );
@@ -756,7 +756,7 @@ async fn verify_proposal_dag_standalone<'a>(
         }
         Err(e) => {
             warn!(
-                peer_prefix = %peer_prefix,
+                peer_kel_prefix = %peer_kel_prefix,
                 error = %e,
                 "Failed to fetch proposer's KEL for {} anchoring", kind
             );
@@ -775,7 +775,7 @@ async fn verify_proposal_dag_standalone<'a>(
         }
 
         debug!(
-            peer_prefix = %peer_prefix,
+            peer_kel_prefix = %peer_kel_prefix,
             vote_said = %vote.said,
             voter = %vote.voter,
             "verify_proposal_dag: checking vote anchoring"
@@ -807,7 +807,7 @@ async fn verify_proposal_dag_standalone<'a>(
 
     if verified_voters.len() < threshold {
         warn!(
-            peer_prefix = %peer_prefix,
+            peer_kel_prefix = %peer_kel_prefix,
             verified = verified_voters.len(),
             threshold = threshold,
             "Insufficient verified votes for {} of peer", kind
@@ -877,25 +877,17 @@ pub async fn peers_sorted_by_latency(
         match verify_peer_anchoring(store, peer, urls).await {
             Ok(true) => {}
             Ok(false) => {
-                warn!(peer_prefix = %peer.peer_prefix, "Peer SAID not anchored, skipping");
+                warn!(peer_kel_prefix = %peer.kel_prefix, "Peer SAID not anchored, skipping");
                 continue;
             }
             Err(e) => {
-                warn!(peer_prefix = %peer.peer_prefix, error = %e, "Failed to verify peer anchoring");
+                warn!(peer_kel_prefix = %peer.kel_prefix, error = %e, "Failed to verify peer anchoring");
                 continue;
             }
         }
 
-        if !verify_peer_votes(
-            store,
-            &peer.peer_prefix,
-            &proposals_response,
-            &trusted,
-            urls,
-        )
-        .await
-        {
-            warn!(peer_prefix = %peer.peer_prefix, "Peer votes not verified, skipping");
+        if !verify_peer_votes(store, &peer.kel_prefix, &proposals_response, &trusted, urls).await {
+            warn!(peer_kel_prefix = %peer.kel_prefix, "Peer votes not verified, skipping");
             continue;
         }
 
@@ -982,7 +974,7 @@ mod tests {
             previous: None,
             version: 1,
             created_at: chrono::Utc::now().into(),
-            peer_prefix: test_digest("peer1-prefix"),
+            kel_prefix: test_digest("peer1-prefix"),
             node_id: "node-1".to_string(),
             authorizing_kel: test_digest("authorizing-kel"),
             active: true,
@@ -1013,9 +1005,9 @@ mod tests {
 
     // ==================== Peers Tests ====================
 
-    fn make_test_peer(peer_prefix: &cesr::Digest, node_id: &str, active: bool) -> Peer {
+    fn make_test_peer(peer_kel_prefix: &cesr::Digest, node_id: &str, active: bool) -> Peer {
         Peer::create(
-            peer_prefix.clone(),
+            peer_kel_prefix.clone(),
             node_id.to_string(),
             test_digest("authorizing-kel"),
             active,

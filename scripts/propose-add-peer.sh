@@ -6,7 +6,7 @@ NODE_NAME="$1"
 if [ -z "$NODE_NAME" ]; then
     echo "Usage: propose-add-peer.sh <node-name>"
     echo "  Proposes a peer for the given node."
-    echo "  Outputs the proposal ID on success."
+    echo "  Outputs the proposal prefix on success."
     exit 1
 fi
 
@@ -43,13 +43,13 @@ PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -
 
 echo "$PROPOSE_OUTPUT" >&2
 
-# Extract proposal ID from "Proposal created: <id>" line
-PROPOSAL_ID=$(echo "$PROPOSE_OUTPUT" | grep "Proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')
+# Extract proposal prefix from "Proposal created: <id>" line
+PROPOSAL_PREFIX=$(echo "$PROPOSE_OUTPUT" | grep "Proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')
 
-if [ -z "$PROPOSAL_ID" ]; then
-    echo "Error: Could not extract proposal ID from output" >&2
+if [ -z "$PROPOSAL_PREFIX" ]; then
+    echo "Error: Could not extract proposal prefix from output" >&2
     exit 1
 fi
 
-# Output just the proposal ID to stdout for piping
-echo "$PROPOSAL_ID"
+# Output just the proposal prefix to stdout for piping
+echo "$PROPOSAL_PREFIX"

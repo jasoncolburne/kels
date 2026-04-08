@@ -323,7 +323,7 @@ impl FederationNode {
     /// Vote on a peer proposal (leader only).
     pub async fn vote_peer(
         &self,
-        proposal_id: cesr::Digest,
+        proposal_prefix: cesr::Digest,
         vote: Vote,
     ) -> Result<FederationResponse, FederationError> {
         if !self.is_leader().await {
@@ -333,7 +333,10 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::VotePeer { proposal_id, vote };
+        let request = FederationRequest::VotePeer {
+            proposal_prefix,
+            vote,
+        };
 
         let result = self
             .raft
@@ -405,40 +408,40 @@ impl FederationNode {
     /// Get a specific addition proposal by ID (raw, for chain building).
     pub async fn get_addition_proposal(
         &self,
-        proposal_id: &cesr::Digest,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<PeerAdditionProposal> {
         self.state_machine
             .inner()
             .lock()
             .await
             .pending_addition_proposals
-            .get(proposal_id)
+            .get(proposal_prefix)
             .cloned()
     }
 
     /// Get a specific removal proposal by ID (raw, for chain building).
     pub async fn get_removal_proposal(
         &self,
-        proposal_id: &cesr::Digest,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<PeerRemovalProposal> {
         self.state_machine
             .inner()
             .lock()
             .await
             .pending_removal_proposals
-            .get(proposal_id)
+            .get(proposal_prefix)
             .cloned()
     }
 
     /// Get a specific addition proposal with its votes (searches pending and completed).
     pub async fn get_addition_proposal_with_votes(
         &self,
-        proposal_id: &cesr::Digest,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
         // Check pending first
-        if let Some(p) = sm.pending_addition_proposals.get(proposal_id) {
+        if let Some(p) = sm.pending_addition_proposals.get(proposal_prefix) {
             let votes: Vec<Vote> = sm
                 .votes
                 .values()
@@ -457,7 +460,7 @@ impl FederationNode {
         // Check completed
         sm.completed_addition_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
                 let prefix = chain[0].prefix.clone();
                 let votes: Vec<Vote> = sm
@@ -479,12 +482,12 @@ impl FederationNode {
     /// Get a specific removal proposal with its votes (searches pending and completed).
     pub async fn get_removal_proposal_with_votes(
         &self,
-        proposal_id: &cesr::Digest,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<RemovalWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
         // Check pending first
-        if let Some(p) = sm.pending_removal_proposals.get(proposal_id) {
+        if let Some(p) = sm.pending_removal_proposals.get(proposal_prefix) {
             let votes: Vec<Vote> = sm
                 .votes
                 .values()
@@ -503,7 +506,7 @@ impl FederationNode {
         // Check completed
         sm.completed_removal_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
                 let prefix = chain[0].prefix.clone();
                 let votes: Vec<Vote> = sm

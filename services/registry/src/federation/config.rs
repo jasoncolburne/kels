@@ -250,23 +250,23 @@ mod tests {
 
     #[test]
     fn test_parse_urls() {
-        let urls = parse_urls("ERegistryA=https://a.example.com,ERegistryB=https://b.example.com")
+        let urls = parse_urls("KRegistryA=https://a.example.com,KRegistryB=https://b.example.com")
             .unwrap();
 
         assert_eq!(urls.len(), 2);
-        assert_eq!(urls.get("ERegistryA").unwrap(), "https://a.example.com");
-        assert_eq!(urls.get("ERegistryB").unwrap(), "https://b.example.com");
+        assert_eq!(urls.get("KRegistryA").unwrap(), "https://a.example.com");
+        assert_eq!(urls.get("KRegistryB").unwrap(), "https://b.example.com");
     }
 
     #[test]
     fn test_parse_urls_with_spaces() {
         let urls =
-            parse_urls(" ERegistryA = https://a.example.com , ERegistryB = https://b.example.com ")
+            parse_urls(" KRegistryA = https://a.example.com , KRegistryB = https://b.example.com ")
                 .unwrap();
 
         assert_eq!(urls.len(), 2);
-        assert!(urls.contains_key("ERegistryA"));
-        assert!(urls.contains_key("ERegistryB"));
+        assert!(urls.contains_key("KRegistryA"));
+        assert!(urls.contains_key("KRegistryB"));
     }
 
     #[test]
@@ -278,21 +278,21 @@ mod tests {
     #[test]
     fn test_config_self_node_id() {
         let config = make_config(
-            "ERegistryB",
+            "KRegistryB",
             vec![
                 FederationMember {
                     id: 0,
-                    prefix: digest("ERegistryA"),
+                    prefix: digest("KRegistryA"),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
                     id: 1,
-                    prefix: digest("ERegistryB"),
+                    prefix: digest("KRegistryB"),
                     url: "https://b.example.com".to_string(),
                 },
                 FederationMember {
                     id: 2,
-                    prefix: digest("ERegistryC"),
+                    prefix: digest("KRegistryC"),
                     url: "https://c.example.com".to_string(),
                 },
             ],
@@ -304,38 +304,38 @@ mod tests {
     #[test]
     fn test_config_member_by_id() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![
                 FederationMember {
                     id: 0,
-                    prefix: digest("ERegistryA"),
+                    prefix: digest("KRegistryA"),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
                     id: 1,
-                    prefix: digest("ERegistryB"),
+                    prefix: digest("KRegistryB"),
                     url: "https://b.example.com".to_string(),
                 },
             ],
         );
 
         let member = config.member_by_id(1).unwrap();
-        assert_eq!(member.prefix, digest("ERegistryB"));
+        assert_eq!(member.prefix, digest("KRegistryB"));
     }
 
     #[test]
     fn test_config_is_member() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
         );
 
-        assert!(config.is_member(&digest("ERegistryA")));
-        assert!(!config.is_member(&digest("ERegistryUnknown")));
+        assert!(config.is_member(&digest("KRegistryA")));
+        assert!(!config.is_member(&digest("KRegistryUnknown")));
     }
 
     #[test]
@@ -353,10 +353,10 @@ mod tests {
     #[test]
     fn test_config_member_by_id_out_of_bounds() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
         );
@@ -367,17 +367,17 @@ mod tests {
     #[test]
     fn test_config_member_by_prefix_not_found() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
         );
 
         assert!(
             config
-                .member_by_prefix(&digest("ERegistryUnknown"))
+                .member_by_prefix(&digest("KRegistryUnknown"))
                 .is_none()
         );
     }
@@ -385,32 +385,32 @@ mod tests {
     #[test]
     fn test_config_member_by_prefix_found() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![
                 FederationMember {
                     id: 0,
-                    prefix: digest("ERegistryA"),
+                    prefix: digest("KRegistryA"),
                     url: "https://a.example.com".to_string(),
                 },
                 FederationMember {
                     id: 1,
-                    prefix: digest("ERegistryB"),
+                    prefix: digest("KRegistryB"),
                     url: "https://b.example.com".to_string(),
                 },
             ],
         );
 
-        let member = config.member_by_prefix(&digest("ERegistryB")).unwrap();
+        let member = config.member_by_prefix(&digest("KRegistryB")).unwrap();
         assert_eq!(member.url, "https://b.example.com");
     }
 
     #[test]
     fn test_config_self_node_id_not_found() {
         let config = make_config(
-            "ERegistryNotInList",
+            "KRegistryNotInList",
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
         );
@@ -422,16 +422,16 @@ mod tests {
 
     #[test]
     fn test_parse_urls_single_url() {
-        let urls = parse_urls("ERegistryA=https://a.example.com").unwrap();
+        let urls = parse_urls("KRegistryA=https://a.example.com").unwrap();
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls.get("ERegistryA").unwrap(), "https://a.example.com");
+        assert_eq!(urls.get("KRegistryA").unwrap(), "https://a.example.com");
     }
 
     #[test]
     fn test_federation_member_clone() {
         let member = FederationMember {
             id: 0,
-            prefix: digest("ERegistryA"),
+            prefix: digest("KRegistryA"),
             url: "https://a.example.com".to_string(),
         };
         let cloned = member.clone();
@@ -443,10 +443,10 @@ mod tests {
     #[test]
     fn test_federation_config_clone() {
         let config = make_config(
-            "ERegistryA",
+            "KRegistryA",
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
         );
@@ -459,7 +459,7 @@ mod tests {
         (0..count)
             .map(|i| FederationMember {
                 id: i as u64,
-                prefix: digest(&format!("ERegistry{}", i)),
+                prefix: digest(&format!("KRegistry{}", i)),
                 url: format!("https://registry{}.example.com", i),
             })
             .collect()
@@ -467,133 +467,133 @@ mod tests {
 
     fn make_prefixes(count: usize) -> Vec<cesr::Digest> {
         (0..count)
-            .map(|i| digest(&format!("ERegistry{}", i)))
+            .map(|i| digest(&format!("KRegistry{}", i)))
             .collect()
     }
 
     #[test]
     fn test_approval_threshold_empty() {
-        let config = FederationConfig::new(digest("ERegistry0"), vec![], vec![]);
+        let config = FederationConfig::new(digest("KRegistry0"), vec![], vec![]);
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_1_member() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(1), make_prefixes(1));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(1), make_prefixes(1));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_2_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(2), make_prefixes(2));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(2), make_prefixes(2));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_3_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(3), make_prefixes(3));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(3), make_prefixes(3));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_4_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(4), make_prefixes(4));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(4), make_prefixes(4));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_5_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(5), make_prefixes(5));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(5), make_prefixes(5));
         assert_eq!(config.approval_threshold(), 3);
     }
 
     #[test]
     fn test_approval_threshold_6_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(6), make_prefixes(6));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(6), make_prefixes(6));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_7_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(7), make_prefixes(7));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(7), make_prefixes(7));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_9_members() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(9), make_prefixes(9));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(9), make_prefixes(9));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_10_members() {
         let config =
-            FederationConfig::new(digest("ERegistry0"), make_members(10), make_prefixes(10));
+            FederationConfig::new(digest("KRegistry0"), make_members(10), make_prefixes(10));
         assert_eq!(config.approval_threshold(), 4);
     }
 
     #[test]
     fn test_approval_threshold_20_members() {
         let config =
-            FederationConfig::new(digest("ERegistry0"), make_members(20), make_prefixes(20));
+            FederationConfig::new(digest("KRegistry0"), make_members(20), make_prefixes(20));
         assert_eq!(config.approval_threshold(), 7);
     }
 
     #[test]
     fn test_member_prefixes() {
-        let config = FederationConfig::new(digest("ERegistry0"), make_members(3), make_prefixes(3));
+        let config = FederationConfig::new(digest("KRegistry0"), make_members(3), make_prefixes(3));
         let prefixes = config.member_prefixes();
         assert_eq!(prefixes.len(), 3);
-        assert!(prefixes.contains(&digest("ERegistry0")));
-        assert!(prefixes.contains(&digest("ERegistry1")));
-        assert!(prefixes.contains(&digest("ERegistry2")));
+        assert!(prefixes.contains(&digest("KRegistry0")));
+        assert!(prefixes.contains(&digest("KRegistry1")));
+        assert!(prefixes.contains(&digest("KRegistry2")));
     }
 
     #[test]
     fn test_inactive_member_not_in_members() {
-        // ERegistryB is inactive — only active members in `members`
+        // KRegistryB is inactive — only active members in `members`
         let config = FederationConfig::new(
-            digest("ERegistryA"),
+            digest("KRegistryA"),
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
-            vec![digest("ERegistryA"), digest("ERegistryB")],
+            vec![digest("KRegistryA"), digest("KRegistryB")],
         );
 
         assert_eq!(config.members.len(), 1);
-        assert!(config.is_member(&digest("ERegistryA")));
-        assert!(!config.is_member(&digest("ERegistryB")));
+        assert!(config.is_member(&digest("KRegistryA")));
+        assert!(!config.is_member(&digest("KRegistryB")));
     }
 
     #[test]
     fn test_is_trusted_prefix_includes_inactive() {
         let config = FederationConfig::new(
-            digest("ERegistryA"),
+            digest("KRegistryA"),
             vec![FederationMember {
                 id: 0,
-                prefix: digest("ERegistryA"),
+                prefix: digest("KRegistryA"),
                 url: "https://a.example.com".to_string(),
             }],
-            vec![digest("ERegistryA"), digest("ERegistryB")],
+            vec![digest("KRegistryA"), digest("KRegistryB")],
         );
 
-        assert!(config.is_trusted_prefix(&digest("ERegistryA")));
-        assert!(config.is_trusted_prefix(&digest("ERegistryB")));
-        assert!(!config.is_trusted_prefix(&digest("ERegistryUnknown")));
+        assert!(config.is_trusted_prefix(&digest("KRegistryA")));
+        assert!(config.is_trusted_prefix(&digest("KRegistryB")));
+        assert!(!config.is_trusted_prefix(&digest("KRegistryUnknown")));
     }
 
     #[test]
     fn test_approval_threshold_counts_active_only() {
         // 3 trusted prefixes but only 2 active members — threshold from active count
         let config = FederationConfig::new(
-            digest("ERegistryA"),
+            digest("KRegistryA"),
             make_members(2),
             vec![
-                digest("ERegistry0"),
-                digest("ERegistry1"),
-                digest("ERegistryInactive"),
+                digest("KRegistry0"),
+                digest("KRegistry1"),
+                digest("KRegistryInactive"),
             ],
         );
 

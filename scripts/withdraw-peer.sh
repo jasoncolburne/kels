@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-PROPOSAL_ID="$1"
+PROPOSAL_PREFIX="$1"
 REGISTRY_NS="${2:-}"  # Optional: specific registry to withdraw from
 
-if [ -z "$PROPOSAL_ID" ]; then
-    echo "Usage: withdraw-peer.sh <proposal-id> [registry-namespace]"
+if [ -z "$PROPOSAL_PREFIX" ]; then
+    echo "Usage: withdraw-peer.sh <proposal-prefix> [registry-namespace]"
     echo "  Withdraws a peer proposal."
     echo "  If registry-namespace is not specified, finds the federation leader."
     exit 1
@@ -25,15 +25,15 @@ if [ -z "$REGISTRY_NS" ]; then
     exit 1
 fi
 
-echo "Withdrawing proposal $PROPOSAL_ID from $REGISTRY_NS..." >&2
+echo "Withdrawing proposal $PROPOSAL_PREFIX from $REGISTRY_NS..." >&2
 
 # Withdraw the proposal
 WITHDRAW_OUTPUT=$(kubectl exec -n "kels-$REGISTRY_NS" deploy/registry -c registry -- \
     /app/registry-admin peer withdraw \
-    --proposal-id "$PROPOSAL_ID" 2>&1)
+    --proposal-prefix "$PROPOSAL_PREFIX" 2>&1)
 
 echo "$WITHDRAW_OUTPUT"
 
 if echo "$WITHDRAW_OUTPUT" | grep -qi "withdrawn"; then
-    echo "Proposal $PROPOSAL_ID withdrawn!" >&2
+    echo "Proposal $PROPOSAL_PREFIX withdrawn!" >&2
 fi

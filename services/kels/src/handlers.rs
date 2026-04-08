@@ -785,11 +785,11 @@ pub(crate) async fn test_list_prefixes(
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_prefix: &str,
+    peer_kel_prefix: &str,
 ) -> Result<Option<kels_core::Peer>, ApiError> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
-        .get(format!("kels:verified-peer:{}", peer_prefix))
+        .get(format!("kels:verified-peer:{}", peer_kel_prefix))
         .await
         .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
     match json {
@@ -828,7 +828,7 @@ async fn refresh_verified_peers(
             let peer_json = serde_json::to_string(peer)
                 .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
             conn.set_ex::<_, _, ()>(
-                format!("kels:verified-peer:{}", peer.peer_prefix),
+                format!("kels:verified-peer:{}", peer.kel_prefix),
                 peer_json,
                 3600,
             )

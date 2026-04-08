@@ -59,7 +59,7 @@ pub enum FederationRequest {
     /// Vote on a peer proposal.
     VotePeer {
         /// The proposal being voted on.
-        proposal_id: cesr::Digest,
+        proposal_prefix: cesr::Digest,
         /// The signed vote.
         vote: Vote,
     },
@@ -68,20 +68,20 @@ pub enum FederationRequest {
 impl fmt::Display for FederationRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_prefix),
-            FederationRequest::RemovePeer(peer) => write!(f, "RemovePeer({})", peer.peer_prefix),
+            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.kel_prefix),
+            FederationRequest::RemovePeer(peer) => write!(f, "RemovePeer({})", peer.kel_prefix),
             FederationRequest::SubmitAdditionProposal(proposal) => {
                 if proposal.is_withdrawn() {
                     write!(
                         f,
                         "SubmitAdditionProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitAdditionProposal(create, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 }
             }
@@ -90,21 +90,24 @@ impl fmt::Display for FederationRequest {
                     write!(
                         f,
                         "SubmitRemovalProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitRemovalProposal(create, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 }
             }
-            FederationRequest::VotePeer { proposal_id, vote } => {
+            FederationRequest::VotePeer {
+                proposal_prefix,
+                vote,
+            } => {
                 write!(
                     f,
                     "VotePeer({}, voter={}, approve={})",
-                    proposal_id, vote.voter, vote.approve
+                    proposal_prefix, vote.voter, vote.approve
                 )
             }
         }
@@ -124,7 +127,7 @@ pub enum FederationResponse {
     PeerNotFound(String),
     /// Proposal created successfully.
     ProposalCreated {
-        proposal_id: cesr::Digest,
+        proposal_prefix: cesr::Digest,
         votes_needed: usize,
         current_votes: usize,
     },
@@ -132,7 +135,7 @@ pub enum FederationResponse {
     ProposalAlreadyExists(cesr::Digest),
     /// Vote recorded on proposal.
     VoteRecorded {
-        proposal_id: cesr::Digest,
+        proposal_prefix: cesr::Digest,
         current_votes: usize,
         votes_needed: usize,
         approved: bool,
@@ -155,8 +158,8 @@ pub enum FederationResponse {
     PeerAlreadyExists(cesr::Digest),
     /// Removal proposal approved — leader must deactivate, anchor, and submit RemovePeer.
     RemovalApproved {
-        proposal_id: cesr::Digest,
-        peer_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest,
         current_votes: usize,
         votes_needed: usize,
         /// When approved, includes the removal proposal so the leader can deactivate the Peer.
@@ -178,21 +181,21 @@ impl fmt::Display for FederationResponse {
             FederationResponse::PeerRemoved(id) => write!(f, "PeerRemoved({})", id),
             FederationResponse::PeerNotFound(id) => write!(f, "PeerNotFound({})", id),
             FederationResponse::ProposalCreated {
-                proposal_id,
+                proposal_prefix,
                 votes_needed,
                 current_votes,
             } => {
                 write!(
                     f,
                     "ProposalCreated({}, {}/{} votes)",
-                    proposal_id, current_votes, votes_needed
+                    proposal_prefix, current_votes, votes_needed
                 )
             }
             FederationResponse::ProposalAlreadyExists(id) => {
                 write!(f, "ProposalAlreadyExists({})", id)
             }
             FederationResponse::VoteRecorded {
-                proposal_id,
+                proposal_prefix,
                 current_votes,
                 votes_needed,
                 approved,
@@ -201,11 +204,11 @@ impl fmt::Display for FederationResponse {
                 write!(
                     f,
                     "VoteRecorded({}, {}/{} votes, approved={}, proposal={:?})",
-                    proposal_id,
+                    proposal_prefix,
                     current_votes,
                     votes_needed,
                     approved,
-                    proposal.as_ref().map(|p| &p.peer_prefix)
+                    proposal.as_ref().map(|p| &p.peer_kel_prefix)
                 )
             }
             FederationResponse::ProposalNotFound(id) => write!(f, "ProposalNotFound({})", id),
@@ -216,11 +219,15 @@ impl fmt::Display for FederationResponse {
             FederationResponse::NotAuthorized(msg) => write!(f, "NotAuthorized({})", msg),
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
             FederationResponse::RemovalApproved {
-                proposal_id,
-                peer_prefix,
+                proposal_prefix,
+                peer_kel_prefix,
                 ..
             } => {
-                write!(f, "RemovalApproved({}, peer={})", proposal_id, peer_prefix)
+                write!(
+                    f,
+                    "RemovalApproved({}, peer={})",
+                    proposal_prefix, peer_kel_prefix
+                )
             }
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
@@ -290,7 +297,7 @@ mod tests {
 
         match parsed {
             FederationRequest::AddPeer(p) => {
-                assert_eq!(p.peer_prefix, digest("12D3KooWExample"));
+                assert_eq!(p.kel_prefix, digest("12D3KooWExample"));
             }
             _ => panic!("Expected AddPeer"),
         }
@@ -470,7 +477,7 @@ mod tests {
         let parsed: MemberSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.active_peers.len(), 1);
-        assert_eq!(parsed.active_peers[0].peer_prefix, digest("peer-1"));
+        assert_eq!(parsed.active_peers[0].kel_prefix, digest("peer-1"));
         assert!(parsed.inactive_peers.is_empty());
         assert!(parsed.pending_addition_proposals.is_empty());
         assert!(parsed.completed_addition_proposals.is_empty());

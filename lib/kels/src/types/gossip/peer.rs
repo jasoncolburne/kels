@@ -22,7 +22,7 @@ pub struct Peer {
     pub version: u64,
     #[created_at]
     pub created_at: StorageDatetime,
-    pub peer_prefix: cesr::Digest,
+    pub kel_prefix: cesr::Digest,
     pub node_id: String,
     pub authorizing_kel: cesr::Digest,
     pub active: bool,

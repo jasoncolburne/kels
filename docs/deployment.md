@@ -258,8 +258,8 @@ registry-admin peer propose \
   --base-domain <base_domain> \
   --gossip-addr <host:port>
 
-# Produces a proposal ID. Vote from each registry:
-registry-admin peer vote --proposal-id <proposal_id> --approve
+# Produces a proposal prefix. Vote from each registry:
+registry-admin peer vote --proposal-prefix <proposal_prefix> --approve
 
 # After threshold votes, the peer is added to the allowlist.
 # Restart the node's gossip service to pick up authorization.
@@ -274,7 +274,7 @@ Peer removal also requires multi-party approval:
 registry-admin peer propose-removal --peer-prefix <peer_prefix>
 
 # Vote from each registry:
-registry-admin peer vote --proposal-id <proposal_id> --approve
+registry-admin peer vote --proposal-prefix <proposal_prefix> --approve
 
 # After threshold votes, the peer is removed from the allowlist.
 ```

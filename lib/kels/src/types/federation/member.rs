@@ -34,7 +34,7 @@ pub fn compute_approval_threshold(n: usize) -> usize {
 /// Response from proposal submission, voting, and withdrawal endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalResponse {
-    pub proposal_id: cesr::Digest,
+    pub proposal_prefix: cesr::Digest,
     pub status: String,
     pub votes_needed: usize,
     pub current_votes: usize,

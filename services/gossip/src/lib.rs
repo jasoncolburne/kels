@@ -272,11 +272,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Fetching identity prefix...");
     let identity_client = kels_core::IdentityClient::new(&config.identity_url)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
-    let peer_prefix_str = identity_client
+    let local_kel_prefix = identity_client
         .get_prefix()
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity prefix: {}", e)))?;
-    info!("Local PeerPrefix: {}", peer_prefix_str);
+    info!("Local PeerPrefix: {}", local_kel_prefix);
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
@@ -301,7 +301,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone())
+    let registry_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix.clone())
         .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
     let registry_signer: Arc<dyn kels_core::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
@@ -398,9 +398,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 2-3: Check allowlist and wait if not authorized
     loop {
-        match bootstrap.is_peer_authorized(peer_prefix_str.as_ref()).await {
+        match bootstrap
+            .is_peer_authorized(local_kel_prefix.as_ref())
+            .await
+        {
             Ok(true) => {
-                info!("Peer {} is authorized in allowlist", peer_prefix_str);
+                info!("Peer {} is authorized in allowlist", local_kel_prefix);
                 break;
             }
             Ok(false) => {
@@ -411,7 +414,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                      Add this peer via: registry-admin peer add --peer-prefix {} --node-id {}\n\
                      Preloading KELs while waiting...\n\
                      =======================================================================",
-                    peer_prefix_str, peer_prefix_str, config.node_id
+                    local_kel_prefix, local_kel_prefix, config.node_id
                 );
 
                 // Preload KELs, SAD objects, and SAD records from Ready peers
@@ -506,7 +509,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let mut peer_addrs: Vec<kels_gossip_core::addr::PeerAddr> = Vec::new();
     for peer in &discovery.peers {
-        let peer_uri = format!("kels://{}@{}", peer.peer_prefix, peer.gossip_addr);
+        let peer_uri = format!("kels://{}@{}", peer.kel_prefix, peer.gossip_addr);
         match kels_gossip_core::addr::PeerAddr::parse(&peer_uri) {
             Ok(addr) => {
                 info!("Will connect to peer {} at {}", peer.node_id, addr);
@@ -546,12 +549,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
-    let redis_peer_prefix = peer_prefix_str.clone();
+    let redis_local_kel_prefix = local_kel_prefix.clone();
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
                 &redis_url,
-                redis_peer_prefix.clone(),
+                redis_local_kel_prefix.clone(),
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
             )
@@ -569,12 +572,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
-    let sad_redis_peer_prefix = peer_prefix_str.clone();
+    let sad_redis_local_kel_prefix = local_kel_prefix.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
                 &sad_redis_url,
-                sad_redis_peer_prefix.clone(),
+                sad_redis_local_kel_prefix.clone(),
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
             )
@@ -610,7 +613,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Create gossip signer and verifier (signer uses identity service)
-    let signer = IdentityGossipSigner::new(&config.identity_url, peer_prefix_str.as_ref())?;
+    let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
     let verifier_store: std::sync::Arc<dyn kels_core::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
@@ -650,12 +653,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
-    // Get local NodePrefix for the gossip event loop
-    let local_node_prefix =
-        kels_gossip_core::identity::NodePrefix::option_from_str(peer_prefix_str.as_ref())
-            .ok_or_else(|| {
-                ServiceError::Config(format!("Invalid peer prefix: {}", peer_prefix_str))
-            })?;
+    let local_node_prefix = local_kel_prefix;
 
     // Start gossip event loop in background
     let gossip_instance_clone = gossip_instance.clone();

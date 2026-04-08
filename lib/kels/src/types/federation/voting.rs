@@ -58,7 +58,7 @@ pub struct Vote {
 
 /// Shared interface for proposal record types (addition and removal).
 ///
-/// Provides default implementations for `proposal_id()`, `is_expired()`, and
+/// Provides default implementations for `proposal_prefix()`, `is_expired()`, and
 /// `is_withdrawn()` based on accessor methods that each concrete type implements.
 pub trait Proposal: Chained {
     fn proposal_said(&self) -> &cesr::Digest;
@@ -70,9 +70,6 @@ pub trait Proposal: Chained {
     fn expires_at(&self) -> &StorageDatetime;
     fn withdrawn_at(&self) -> Option<&StorageDatetime>;
 
-    fn proposal_id(&self) -> &cesr::Digest {
-        self.proposal_prefix()
-    }
     fn is_expired(&self) -> bool {
         StorageDatetime::now() > *self.expires_at()
     }
@@ -278,7 +275,7 @@ pub trait ProposalWithVotesMethods {
         self.history().inception().is_some_and(|p| p.is_expired())
     }
 
-    fn proposal_id(&self) -> &cesr::Digest {
+    fn proposal_prefix(&self) -> &cesr::Digest {
         self.history().history_prefix()
     }
 
@@ -294,7 +291,7 @@ pub trait ProposalWithVotesMethods {
 /// A proposal to add a peer, requiring multi-party approval.
 ///
 /// Uses chaining for tamper-evident audit trail:
-/// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_id
+/// - `prefix`: Stable proposal identifier (derived from inception) - use as proposal_prefix
 /// - `said`: Changes with each update
 /// - `previous`: Links to previous version for full history
 ///
@@ -315,7 +312,7 @@ pub struct PeerAdditionProposal {
     #[version]
     pub version: u64,
     /// The KELS prefix of the peer being proposed.
-    pub peer_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest,
     /// The node_id being proposed.
     pub node_id: String,
     pub base_domain: String,
@@ -336,10 +333,10 @@ pub struct PeerAdditionProposal {
 impl PeerAdditionProposal {
     /// Create a new empty proposal (v0, no votes yet).
     ///
-    /// The prefix (proposal ID) is derived from content - no UUID needed.
+    /// The prefix (proposal prefix) is derived from content - no UUID needed.
     /// The proposer must submit their vote separately via VotePeer.
     pub fn empty(
-        peer_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest,
         node_id: &str,
         base_domain: &str,
         gossip_addr: &str,
@@ -348,7 +345,7 @@ impl PeerAdditionProposal {
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
         Self::create(
-            peer_prefix,
+            peer_kel_prefix,
             node_id.to_string(),
             base_domain.to_string(),
             gossip_addr.to_string(),
@@ -447,7 +444,7 @@ pub struct PeerRemovalProposal {
     pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
-    pub peer_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest,
     pub proposer: cesr::Digest,
     pub threshold: usize,
     #[created_at]
@@ -459,12 +456,12 @@ pub struct PeerRemovalProposal {
 
 impl PeerRemovalProposal {
     pub fn empty(
-        peer_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest,
         proposer: cesr::Digest,
         threshold: usize,
         expires_at: &StorageDatetime,
     ) -> Result<Self, verifiable_storage::StorageError> {
-        Self::create(peer_prefix, proposer, threshold, expires_at.clone(), None)
+        Self::create(peer_kel_prefix, proposer, threshold, expires_at.clone(), None)
     }
 }
 

@@ -485,7 +485,7 @@ pub async fn list_completed_proposals(
 /// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
-    pub peer_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest,
     pub node_id: String,
     pub base_domain: String,
     pub gossip_addr: String,
@@ -494,10 +494,10 @@ pub struct AddPeerRequest {
 /// Get a specific proposal with votes.
 pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_id): Path<String>,
+    Path(proposal_prefix): Path<String>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
-    let proposal_digest = cesr::Digest::from_qb64(&proposal_id)
-        .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?;
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
 
     if let Some(addition) = state
         .node
@@ -514,7 +514,7 @@ pub async fn get_proposal(
     } else {
         Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_id
+            proposal_prefix
         )))
     }
 }
@@ -603,29 +603,29 @@ pub async fn admin_submit_addition_proposal(
 
     match response {
         FederationResponse::ProposalCreated {
-            proposal_id,
+            proposal_prefix,
             votes_needed,
             current_votes,
         } => Ok(Json(ProposalResponse {
-            proposal_id,
+            proposal_prefix,
             status: "pending".to_string(),
             votes_needed,
             current_votes,
             message: format!("Proposal created. Need {} approvals.", votes_needed),
         })),
         FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "withdrawn".to_string(),
             votes_needed: 0,
             current_votes: 0,
             message: "Proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerAlreadyExists(peer_prefix) => Err(ApiError::bad_request(format!(
+        FederationResponse::PeerAlreadyExists(peer_kel_prefix) => Err(ApiError::bad_request(format!(
             "Peer already exists: {}",
-            peer_prefix
+            peer_kel_prefix
         ))),
-        FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
-            format!("Proposal already exists: {}", proposal_id),
+        FederationResponse::ProposalAlreadyExists(proposal_prefix) => Err(ApiError::bad_request(
+            format!("Proposal already exists: {}", proposal_prefix),
         )),
         FederationResponse::SaidMismatch(msg) => {
             Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
@@ -718,29 +718,29 @@ pub async fn admin_submit_removal_proposal(
 
     match response {
         FederationResponse::ProposalCreated {
-            proposal_id,
+            proposal_prefix,
             votes_needed,
             current_votes,
         } => Ok(Json(ProposalResponse {
-            proposal_id,
+            proposal_prefix,
             status: "pending".to_string(),
             votes_needed,
             current_votes,
             message: format!("Removal proposal created. Need {} approvals.", votes_needed),
         })),
         FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "withdrawn".to_string(),
             votes_needed: 0,
             current_votes: 0,
             message: "Removal proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerNotFound(peer_prefix) => Err(ApiError::not_found(format!(
+        FederationResponse::PeerNotFound(peer_kel_prefix) => Err(ApiError::not_found(format!(
             "Peer not found: {}",
-            peer_prefix
+            peer_kel_prefix
         ))),
-        FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
-            format!("Removal proposal already exists: {}", proposal_id),
+        FederationResponse::ProposalAlreadyExists(proposal_prefix) => Err(ApiError::bad_request(
+            format!("Removal proposal already exists: {}", proposal_prefix),
         )),
         FederationResponse::SaidMismatch(msg) => {
             Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
@@ -768,11 +768,11 @@ pub async fn admin_submit_removal_proposal(
 /// 5. Vote SAID is anchored in voter's KEL
 pub async fn admin_vote_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_id): Path<String>,
+    Path(proposal_prefix): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    let proposal_digest = cesr::Digest::from_qb64(&proposal_id)
-        .map_err(|e| ApiError::bad_request(format!("Invalid proposal ID: {}", e)))?;
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
 
     // 1. Verify vote SAID integrity
     vote.verify_said()
@@ -790,7 +790,7 @@ pub async fn admin_vote_proposal(
     if vote.proposal != proposal_digest {
         return Err(ApiError::bad_request(format!(
             "Vote is for proposal {} but submitted to {}",
-            vote.proposal, proposal_id
+            vote.proposal, proposal_prefix
         )));
     }
 
@@ -807,7 +807,7 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Proposal {} has been withdrawn",
-                proposal_id
+                proposal_prefix
             )));
         }
     } else if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await {
@@ -824,13 +824,13 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Removal proposal {} has been withdrawn",
-                proposal_id
+                proposal_prefix
             )));
         }
     } else {
         return Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_id
+            proposal_prefix
         )));
     }
 
@@ -841,7 +841,7 @@ pub async fn admin_vote_proposal(
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_id
+            proposal_prefix
         )));
     }
     if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await
@@ -849,7 +849,7 @@ pub async fn admin_vote_proposal(
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_id
+            proposal_prefix
         )));
     }
 
@@ -877,7 +877,7 @@ pub async fn admin_vote_proposal(
 
     match response {
         FederationResponse::VoteRecorded {
-            proposal_id,
+            proposal_prefix,
             current_votes,
             votes_needed,
             approved,
@@ -896,12 +896,12 @@ pub async fn admin_vote_proposal(
                         .inner()
                         .lock()
                         .await
-                        .active_peers
-                        .contains_key(&v0.peer_prefix);
+                        .active_peers_by_kel_prefix
+                        .contains_key(&v0.peer_kel_prefix);
 
                     if !already_active {
                         let peer = Peer::create(
-                            v0.peer_prefix.clone(),
+                            v0.peer_kel_prefix.clone(),
                             v0.node_id.clone(),
                             self_prefix.clone(),
                             true,
@@ -938,11 +938,11 @@ pub async fn admin_vote_proposal(
                     }
 
                     return Ok(Json(ProposalResponse {
-                        proposal_id,
+                        proposal_prefix,
                         status: "approved".to_string(),
                         votes_needed,
                         current_votes,
-                        message: format!("Proposal approved! Peer {} added.", v0.peer_prefix),
+                        message: format!("Proposal approved! Peer {} added.", v0.peer_kel_prefix),
                     }));
                 }
 
@@ -952,7 +952,7 @@ pub async fn admin_vote_proposal(
             }
 
             Ok(Json(ProposalResponse {
-                proposal_id,
+                proposal_prefix,
                 status: "pending".to_string(),
                 votes_needed,
                 current_votes,
@@ -963,8 +963,8 @@ pub async fn admin_vote_proposal(
             }))
         }
         FederationResponse::RemovalApproved {
-            proposal_id,
-            peer_prefix,
+            proposal_prefix,
+            peer_kel_prefix,
             current_votes,
             votes_needed,
             proposal,
@@ -979,7 +979,7 @@ pub async fn admin_vote_proposal(
                     .inner()
                     .lock()
                     .await
-                    .get_peer(&peer_prefix)
+                    .get_peer(&peer_kel_prefix)
                     .cloned();
 
                 let already_inactive = current_peer.as_ref().is_some_and(|p| !p.active);
@@ -988,7 +988,7 @@ pub async fn admin_vote_proposal(
                     let active_peer = current_peer.ok_or_else(|| {
                         ApiError::internal_error(format!(
                             "Peer {} not found in Raft state for deactivation",
-                            peer_prefix
+                            peer_kel_prefix
                         ))
                     })?;
 
@@ -1020,11 +1020,11 @@ pub async fn admin_vote_proposal(
                 }
 
                 return Ok(Json(ProposalResponse {
-                    proposal_id,
+                    proposal_prefix,
                     status: "removal_approved".to_string(),
                     votes_needed,
                     current_votes,
-                    message: format!("Removal approved! Peer {} deactivated.", peer_prefix),
+                    message: format!("Removal approved! Peer {} deactivated.", peer_kel_prefix),
                 }));
             }
 
@@ -1043,7 +1043,7 @@ pub async fn admin_vote_proposal(
             Err(ApiError::bad_request(format!("Proposal expired: {}", id)))
         }
         FederationResponse::ProposalRejected(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "rejected".to_string(),
             votes_needed: 0,
             current_votes: 0,

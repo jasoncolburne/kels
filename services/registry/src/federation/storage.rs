@@ -895,7 +895,7 @@ mod tests {
         assert!(
             matches!(
                 raft_entry.payload,
-                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.peer_prefix == digest("12D3KooWTest")
+                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.kel_prefix == digest("12D3KooWTest")
             ),
             "Expected Normal payload with AddPeer and matching peer_prefix"
         );
@@ -1009,7 +1009,7 @@ mod tests {
         assert!(
             matches!(
                 recovered.payload,
-                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.peer_prefix == digest("12D3KooWRoundtrip")
+                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.kel_prefix == digest("12D3KooWRoundtrip")
             ),
             "Expected Normal payload with RemovePeer and matching peer_prefix"
         );

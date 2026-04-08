@@ -1,6 +1,6 @@
 //! Allowlist-based peer authorization.
 //!
-//! Manages the shared allowlist of authorized peers, keyed by peer_prefix (KELS prefix string).
+//! Manages the shared allowlist of authorized peers, keyed by peer KEL prefix.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -21,7 +21,7 @@ pub enum AllowlistRefreshError {
     KelVerificationFailed(String),
 }
 
-/// Shared allowlist type - maps peer_prefix to full Peer data
+/// Shared allowlist type - maps peer KEL prefix to full Peer data
 pub type SharedAllowlist = Arc<RwLock<HashMap<cesr::Digest, kels_core::Peer>>>;
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
@@ -79,7 +79,7 @@ pub async fn refresh_allowlist(
             // Verify the peer record's SAID matches its content
             if let Err(e) = latest.verify() {
                 warn!(
-                    peer_prefix = %latest.peer_prefix,
+                    peer_kel_prefix = %latest.kel_prefix,
                     said = %latest.said,
                     error = %e,
                     "Peer record SAID verification failed, skipping"
@@ -93,7 +93,7 @@ pub async fn refresh_allowlist(
                 Ok(true) => {}
                 Ok(false) => {
                     warn!(
-                        peer_prefix = %latest.peer_prefix,
+                        peer_kel_prefix = %latest.kel_prefix,
                         said = %latest.said,
                         "Peer SAID not anchored in registry KEL, skipping"
                     );
@@ -101,7 +101,7 @@ pub async fn refresh_allowlist(
                 }
                 Err(e) => {
                     warn!(
-                        peer_prefix = %latest.peer_prefix,
+                        peer_kel_prefix = %latest.kel_prefix,
                         error = %e,
                         "Failed to verify peer anchoring, skipping"
                     );
@@ -109,13 +109,13 @@ pub async fn refresh_allowlist(
                 }
             }
 
-            debug!(peer_prefix = %latest.peer_prefix, "allowlist: peer anchoring OK, checking votes...");
+            debug!(peer_kel_prefix = %latest.kel_prefix, "allowlist: peer anchoring OK, checking votes...");
 
             // Verify the proposal has sufficient verified votes
             let tv = std::time::Instant::now();
             if !kels_core::verify_peer_votes(
                 registry_kel_store,
-                &latest.peer_prefix,
+                &latest.kel_prefix,
                 &proposals_response,
                 &trusted,
                 registry_urls,
@@ -123,20 +123,20 @@ pub async fn refresh_allowlist(
             .await
             {
                 warn!(
-                    peer_prefix = %latest.peer_prefix,
+                    peer_kel_prefix = %latest.kel_prefix,
                     "Peer not backed by sufficient verified votes, skipping"
                 );
                 continue;
             }
 
             debug!(
-                peer_prefix = %latest.peer_prefix,
+                peer_kel_prefix = %latest.kel_prefix,
                 elapsed = ?tv.elapsed(),
                 "allowlist: vote verification complete"
             );
 
             if latest.active {
-                authorized_peers.insert(latest.peer_prefix.clone(), latest.clone());
+                authorized_peers.insert(latest.kel_prefix.clone(), latest.clone());
             }
         }
     }
@@ -208,14 +208,14 @@ mod tests {
 
     use super::*;
 
-    fn _create_test_peer(peer_prefix: &str) -> kels_core::Peer {
+    fn _create_test_peer(peer_kel_prefix: &str) -> kels_core::Peer {
         kels_core::Peer {
             said: test_digest("test-said"),
             prefix: test_digest("test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: cesr::Digest::blake3_256(peer_prefix.as_bytes()),
+            kel_prefix: cesr::Digest::blake3_256(peer_kel_prefix.as_bytes()),
             node_id: "test-node".to_string(),
             authorizing_kel: test_digest("authorizing-kel"),
             active: true,

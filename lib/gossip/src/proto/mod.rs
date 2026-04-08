@@ -44,7 +44,7 @@ pub const MIN_MAX_MESSAGE_SIZE: usize = 192;
 /// The identifier for a peer.
 ///
 /// The protocol implementation is generic over this trait. When implementing the protocol,
-/// a concrete type must be chosen (e.g., [`crate::identity::NodePrefix`]) that will be used
+/// a concrete type must be chosen (e.g., `cesr::Digest`) that will be used
 /// throughout to identify and index individual peers.
 ///
 /// Note that the concrete type will be used in protocol messages. Therefore, implementations of
