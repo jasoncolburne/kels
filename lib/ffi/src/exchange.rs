@@ -216,7 +216,7 @@ pub unsafe extern "C" fn kels_encap_key_publication_create(
     };
 
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: cesr::Digest::blake3_256(b"placeholder"),
+        said: cesr::Digest::default(),
         algorithm: algo,
         encapsulation_key: encap_key,
     };
