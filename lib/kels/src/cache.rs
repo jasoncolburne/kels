@@ -21,6 +21,7 @@ use std::{
 };
 use tokio::sync::RwLock;
 
+use cesr::Matter;
 use redis::{AsyncCommands, aio::ConnectionManager};
 
 use crate::{KelsError, SignedKeyEvent};
@@ -375,12 +376,11 @@ impl ServerKelCache {
             return Ok(());
         }
 
-        let prefix_str: &str = prefix.as_ref();
         let json = serde_json::to_vec(events)?;
 
         // Store in Redis with 1-hour TTL (reconstructable from DB on miss)
         let mut conn = self.conn.clone();
-        let redis_key = self.redis_key(prefix_str);
+        let redis_key = self.redis_key(prefix.as_ref());
         let _: () = conn
             .set_ex(&redis_key, &json, 3600)
             .await
@@ -389,7 +389,7 @@ impl ServerKelCache {
         // Update local cache
         {
             let mut local = self.local_cache.write().await;
-            local.set(prefix_str.to_string(), json);
+            local.set(prefix.qb64(), json);
         }
 
         Ok(())
@@ -409,8 +409,7 @@ impl ServerKelCache {
         &self,
         prefix: &cesr::Digest,
     ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
-        let prefix_str: &str = prefix.as_ref();
-        self.get_full_serialized_inner(prefix_str).await
+        self.get_full_serialized_inner(prefix.as_ref()).await
     }
 
     async fn get_full_serialized_inner(
