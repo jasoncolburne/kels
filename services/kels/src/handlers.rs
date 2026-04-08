@@ -733,13 +733,12 @@ pub(crate) async fn list_prefixes(
         .redis_conn
         .as_ref()
         .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
-    let request_prefix = signed_request.prefix.to_string();
-    let peer = get_verified_peer(redis_conn, &request_prefix).await?;
+    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
     let _peer = match peer {
         Some(p) => p,
         None => {
             refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            get_verified_peer(redis_conn, &request_prefix)
+            get_verified_peer(redis_conn, &signed_request.prefix)
                 .await?
                 .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
         }
@@ -788,7 +787,7 @@ pub(crate) async fn test_list_prefixes(
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_kel_prefix: &str,
+    peer_kel_prefix: &cesr::Digest,
 ) -> Result<Option<kels_core::Peer>, ApiError> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
