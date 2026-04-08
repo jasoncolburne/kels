@@ -36,7 +36,7 @@ echo "Creating proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 # Create proposal on leader
 PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -- \
     /app/registry-admin peer propose \
-    --peer-prefix "$PEER_PREFIX" \
+    --peer-kel-prefix "$PEER_PREFIX" \
     --node-id "$NODE_NAME" \
     --base-domain "$BASE_DOMAIN" \
     --gossip-addr "$GOSSIP_ADDR" 2>&1)

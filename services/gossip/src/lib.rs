@@ -411,7 +411,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     "=======================================================================\n\
                      AUTHORIZATION REQUIRED: This node is not in the allowlist.\n\
                      Peer prefix: {}\n\
-                     Add this peer via: registry-admin peer add --peer-prefix {} --node-id {}\n\
+                     Add this peer via: registry-admin peer add --peer-kel-prefix {} --node-id {}\n\
                      Preloading KELs while waiting...\n\
                      =======================================================================",
                     local_kel_prefix, local_kel_prefix, config.node_id

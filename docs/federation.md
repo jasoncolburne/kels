@@ -150,7 +150,7 @@ Any federation member can propose a new peer:
 ```bash
 # From any registry in the federation
 registry-admin peer propose \
-  --peer-prefix Qm... \
+  --peer-kel-prefix Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
   --gossip-addr gossip.node-1.example.com:4001
@@ -194,7 +194,7 @@ Peer removal follows the same multi-party approval process as additions.
 ```bash
 # From any registry in the federation
 registry-admin peer propose-removal \
-  --peer-prefix Qm...
+  --peer-kel-prefix Km...
 
 # Output:
 # Removal proposal created: EProposal456...
@@ -205,7 +205,7 @@ registry-admin peer propose-removal \
 
 ```bash
 # On another registry
-registry-admin peer vote --proposal-prefix EProposal456... --approve
+registry-admin peer vote --proposal-prefix KProposal456... --approve
 
 # Output:
 # Removal approved! Peer Qm... removed from peer set.

@@ -33,7 +33,7 @@ echo "Creating removal proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 # Create removal proposal on leader
 PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -- \
     /app/registry-admin peer propose-removal \
-    --peer-prefix "$PEER_PREFIX" 2>&1)
+    --peer-kel-prefix "$PEER_PREFIX" 2>&1)
 
 echo "$PROPOSE_OUTPUT" >&2
 
