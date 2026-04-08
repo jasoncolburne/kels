@@ -557,14 +557,8 @@ mod tests {
                 None,
             );
             let icp = builder.incept().await.unwrap();
-            let ixn1 = builder
-                .interact(&test_digest("anchor1"))
-                .await
-                .unwrap();
-            let ixn2 = builder
-                .interact(&test_digest("anchor2"))
-                .await
-                .unwrap();
+            let ixn1 = builder.interact(&test_digest("anchor1")).await.unwrap();
+            let ixn2 = builder.interact(&test_digest("anchor2")).await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events_chunked(&[icp, ixn1, ixn2], 1).await;

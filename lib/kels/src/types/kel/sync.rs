@@ -925,8 +925,6 @@ mod tests {
                 .insert(prefix.to_string(), events.to_vec());
             Ok(())
         }
-
-
     }
 
     #[tokio::test]
@@ -990,10 +988,7 @@ mod tests {
         let page_size = crate::page_size();
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         builder1.incept().await.unwrap();
-        builder1
-            .interact(&test_digest("anchor-1"))
-            .await
-            .unwrap();
+        builder1.interact(&test_digest("anchor-1")).await.unwrap();
 
         // Duplicate builder after icp+ixn1 (adversary has same keys)
         let mut builder2 = builder1.clone();

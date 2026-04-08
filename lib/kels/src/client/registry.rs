@@ -1013,9 +1013,9 @@ mod tests {
 
     // ==================== Peers Tests ====================
 
-    fn make_test_peer(peer_prefix: &str, node_id: &str, active: bool) -> Peer {
+    fn make_test_peer(peer_prefix: &cesr::Digest, node_id: &str, active: bool) -> Peer {
         Peer::create(
-            cesr::Digest::blake3_256(peer_prefix.as_bytes()),
+            peer_prefix.clone(),
             node_id.to_string(),
             test_digest("authorizing-kel"),
             active,
@@ -1029,11 +1029,7 @@ mod tests {
     async fn test_fetch_peers_success() {
         let mock_server = MockServer::start().await;
 
-        let peer = make_test_peer(
-            "KPeer1Prefix________________________________",
-            "node-1",
-            true,
-        );
+        let peer = make_test_peer(&test_digest("peer-1"), "node-1", true);
         let response = PeersResponse {
             peers: vec![PeerHistory {
                 prefix: peer.prefix.clone(),

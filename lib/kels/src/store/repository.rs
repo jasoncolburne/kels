@@ -60,8 +60,6 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
         self.repo.save_with_merge(prefix.as_ref(), events).await?;
         Ok(())
     }
-
-
 }
 
 #[async_trait]

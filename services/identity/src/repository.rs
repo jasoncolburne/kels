@@ -216,7 +216,6 @@ mod tests {
             });
     }
 
-
     /// Shared test harness - initialized once, used by all tests.
     /// Cleaned up automatically at program exit via #[dtor].
     struct SharedHarness {

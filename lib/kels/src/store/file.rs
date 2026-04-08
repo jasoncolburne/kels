@@ -168,8 +168,6 @@ impl KelStore for FileKelStore {
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
         Ok(())
     }
-
-
 }
 
 #[cfg(test)]

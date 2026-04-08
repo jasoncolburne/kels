@@ -382,8 +382,7 @@ mod tests {
     async fn test_credential_with_edges() {
         use crate::edge::{Edge, Edges};
 
-        let edge =
-            Edge::create(test_digest("test-schema"), None, None, None).unwrap();
+        let edge = Edge::create(test_digest("test-schema"), None, None, None).unwrap();
 
         let mut edges_map = BTreeMap::new();
         edges_map.insert("license".to_string(), edge);
