@@ -65,7 +65,7 @@ get_prefix_count() {
     local cursor="null"
     while true; do
         local body
-        body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
+        body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" --argjson cursor "$cursor" \
             '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         local response
         response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
@@ -87,7 +87,7 @@ get_all_prefixes() {
     local cursor="null"
     while true; do
         local body
-        body=$(jq -n --arg nonce "$(openssl rand -hex 32)" --argjson cursor "$cursor" \
+        body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" --argjson cursor "$cursor" \
             '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:100},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         local response
         response=$(curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/test/prefixes")
@@ -263,7 +263,7 @@ echo "Created: $PREFIX1, $PREFIX2"
 
 # Test prefix listing (POST with mock signed request — test endpoint skips auth)
 RESPONSE=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:10},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
+    -d "$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:10},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
     "$NODE_A_URL/api/test/prefixes")
 echo "Prefix list response: $RESPONSE"
 
@@ -290,7 +290,7 @@ done
 
 # Test pagination with limit=2
 PAGE1=$(curl -s -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:2},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
+    -d "$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:2},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
     "$NODE_A_URL/api/test/prefixes")
 CURSOR=$(echo "$PAGE1" | jq -r '.nextCursor // empty')
 PAGE1_COUNT=$(echo "$PAGE1" | jq '.prefixes | length')
@@ -299,7 +299,7 @@ echo "Page 1: $PAGE1_COUNT prefixes, cursor: ${CURSOR:-none}"
 
 if [ -n "$CURSOR" ]; then
     PAGE2=$(curl -s -X POST -H 'Content-Type: application/json' \
-        -d "$(jq -n --arg cursor "$CURSOR" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:2},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
+        -d "$(jq -n --arg cursor "$CURSOR" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:2},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')" \
         "$NODE_A_URL/api/test/prefixes")
     PAGE2_COUNT=$(echo "$PAGE2" | jq '.prefixes | length')
     echo "Page 2: $PAGE2_COUNT prefixes"

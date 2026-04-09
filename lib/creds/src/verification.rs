@@ -18,9 +18,9 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialVerification {
-    pub credential: cesr::Digest,
-    pub policy: cesr::Digest,
-    pub subject: Option<cesr::Digest>,
+    pub credential: cesr::Digest256,
+    pub policy: cesr::Digest256,
+    pub subject: Option<cesr::Digest256>,
     pub is_expired: bool,
     pub policy_verification: PolicyVerification,
     pub schema_validation: SchemaValidationReport,

@@ -77,7 +77,7 @@ impl SadStoreClient {
     pub async fn post_sad_object(
         &self,
         object: &serde_json::Value,
-    ) -> Result<cesr::Digest, KelsError> {
+    ) -> Result<cesr::Digest256, KelsError> {
         object.verify_said().map_err(|e| {
             KelsError::VerificationFailed(format!("Object SAID verification failed: {}", e))
         })?;
@@ -104,7 +104,7 @@ impl SadStoreClient {
     }
 
     /// Check if a self-addressed object exists by SAID (HEAD check, no data transfer).
-    pub async fn sad_object_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
+    pub async fn sad_object_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/{}/exists", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
         Ok(resp.status().is_success())
@@ -113,7 +113,7 @@ impl SadStoreClient {
     /// Retrieve a self-addressed JSON object by SAID.
     pub async fn get_sad_object(
         &self,
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
     ) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/{}", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
@@ -132,12 +132,12 @@ impl SadStoreClient {
     pub async fn fetch_sad_objects(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&cesr::Digest>,
+        cursor: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<crate::SadObjectListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce().to_string(),
+            nonce: crate::generate_nonce(),
             cursor: cursor.cloned(),
             limit: Some(limit),
         };
@@ -225,7 +225,7 @@ impl SadStoreClient {
     /// Returns `(said, is_divergent)`. Used for sync comparison.
     pub async fn fetch_sad_pointer_effective_said(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<Option<(String, bool)>, KelsError> {
         let url = format!(
             "{}/api/v1/sad/pointers/{}/effective-said",
@@ -245,7 +245,7 @@ impl SadStoreClient {
     }
 
     /// Check if a pointer with the given SAID exists on this SADStore.
-    pub async fn sad_pointer_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
+    pub async fn sad_pointer_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/exists/{}", self.base_url, said);
         let resp = self.client.get(&url).send().await?;
         Ok(resp.status().is_success())
@@ -255,12 +255,12 @@ impl SadStoreClient {
     pub async fn fetch_sad_pointer_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&cesr::Digest>,
+        cursor: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce().to_string(),
+            nonce: crate::generate_nonce(),
             cursor: cursor.cloned(),
             limit: Some(limit),
         };
@@ -337,7 +337,7 @@ impl SadStoreClient {
     /// signature verification.
     pub async fn verify_sad_pointer(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         kels_client: &crate::KelsClient,
     ) -> Result<SadPointerVerification, KelsError> {
         crate::verify_sad_pointer(

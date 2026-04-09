@@ -45,7 +45,7 @@ pub(crate) async fn cmd_cred_issue(
         &schema,
         &policy,
         subject
-            .map(cesr::Digest::from_qb64)
+            .map(cesr::Digest256::from_qb64)
             .transpose()
             .context("Invalid subject prefix")?,
         claims,
@@ -61,7 +61,7 @@ pub(crate) async fn cmd_cred_issue(
     println!("  Canonical SAID:  {}", canonical_said);
 
     // Anchor the canonical SAID in the KEL via ixn
-    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -75,7 +75,7 @@ pub(crate) async fn cmd_cred_issue(
     .await?;
 
     let anchor_digest =
-        cesr::Digest::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
+        cesr::Digest256::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
     let signed = builder
         .interact(&anchor_digest)
         .await
@@ -140,7 +140,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
 
     let mut count = 0;
-    let mut since: Option<cesr::Digest> = None;
+    let mut since: Option<cesr::Digest256> = None;
     loop {
         let (saids, has_more) = sad_store
             .list(since.as_ref(), kels_core::page_size())
@@ -175,7 +175,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
-    let said = cesr::Digest::from_qb64(said).context("Invalid SAID")?;
+    let said = cesr::Digest256::from_qb64(said).context("Invalid SAID")?;
     let value = sad_store.load(&said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -188,7 +188,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
     println!("  Poison hash: {}", poison);
 
     // Anchor poison hash in KEL via ixn
-    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;

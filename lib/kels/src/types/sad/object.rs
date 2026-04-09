@@ -12,14 +12,14 @@ use verifiable_storage::SelfAddressed;
 #[serde(rename_all = "camelCase")]
 pub struct SadObjectEntry {
     #[said]
-    pub said: cesr::Digest,
-    pub sad_said: cesr::Digest,
+    pub said: cesr::Digest256,
+    pub sad_said: cesr::Digest256,
 }
 
 /// Response for listing SAD object SAIDs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadObjectListResponse {
-    pub saids: Vec<cesr::Digest>,
-    pub next_cursor: Option<cesr::Digest>,
+    pub saids: Vec<cesr::Digest256>,
+    pub next_cursor: Option<cesr::Digest256>,
 }

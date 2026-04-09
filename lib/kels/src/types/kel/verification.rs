@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use cesr::{Digest, Matter, VerificationKey};
+use cesr::{Digest256, Matter, VerificationKey};
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -39,16 +39,16 @@ pub struct BranchTip {
 #[crate_new]
 pub struct KelVerification {
     #[said]
-    said: cesr::Digest,
-    prefix: cesr::Digest,
-    delegating_prefix: Option<cesr::Digest>,
+    said: cesr::Digest256,
+    prefix: cesr::Digest256,
+    delegating_prefix: Option<cesr::Digest256>,
     branch_tips: Vec<BranchTip>,
     is_contested: bool,
     diverged_at_serial: Option<u64>,
     event_count: usize,
     rotation_count: usize,
-    anchored_saids: BTreeSet<cesr::Digest>,
-    queried_saids: BTreeSet<cesr::Digest>,
+    anchored_saids: BTreeSet<cesr::Digest256>,
+    queried_saids: BTreeSet<cesr::Digest256>,
     /// Whether the KEL maintains proactive recovery rotation compliance:
     /// no more than `MAX_NON_REVEALING_EVENTS` non-revealing events between
     /// consecutive recovery-revealing events. Required to ensure all server
@@ -61,17 +61,17 @@ pub struct KelVerification {
 
 impl KelVerification {
     /// The SAID (content-addressable digest) of this verification state.
-    pub fn said(&self) -> &cesr::Digest {
+    pub fn said(&self) -> &cesr::Digest256 {
         &self.said
     }
 
     /// The prefix this context is for.
-    pub fn prefix(&self) -> &cesr::Digest {
+    pub fn prefix(&self) -> &cesr::Digest256 {
         &self.prefix
     }
 
     /// The delegating prefix from the inception event, if it was a `dip`.
-    pub fn delegating_prefix(&self) -> Option<&cesr::Digest> {
+    pub fn delegating_prefix(&self) -> Option<&cesr::Digest256> {
         self.delegating_prefix.as_ref()
     }
 
@@ -142,7 +142,7 @@ impl KelVerification {
     /// - Contested: `hash("contested:{prefix}")` — deterministic across all nodes
     /// - Divergent: `hash("divergent:{prefix}")` — deterministic regardless of which
     ///   fork events each node has, avoiding wasted anti-entropy sync attempts
-    pub fn effective_tail_said(&self) -> Option<cesr::Digest> {
+    pub fn effective_tail_said(&self) -> Option<cesr::Digest256> {
         if self.branch_tips.is_empty() {
             return None;
         }
@@ -158,12 +158,12 @@ impl KelVerification {
     }
 
     /// Check if a specific SAID was found anchored in the verified KEL.
-    pub fn is_said_anchored(&self, said: &cesr::Digest) -> bool {
+    pub fn is_said_anchored(&self, said: &cesr::Digest256) -> bool {
         self.anchored_saids.contains(said)
     }
 
     /// The full set of verified anchored SAIDs.
-    pub fn anchored_saids(&self) -> &BTreeSet<cesr::Digest> {
+    pub fn anchored_saids(&self) -> &BTreeSet<cesr::Digest256> {
         &self.anchored_saids
     }
 
@@ -188,8 +188,8 @@ impl KelVerification {
     }
 }
 /// Compute the rotation hash (Blake3-256 of the public key qb64 string).
-pub fn compute_rotation_hash(public_key: &VerificationKey) -> cesr::Digest {
-    Digest::blake3_256(public_key.qb64().as_bytes())
+pub fn compute_rotation_hash(public_key: &VerificationKey) -> cesr::Digest256 {
+    Digest256::blake3_256(public_key.qb64().as_bytes())
 }
 
 /// Per-branch cryptographic state tracked during verification.
@@ -198,8 +198,8 @@ struct BranchState {
     tip: Arc<SignedKeyEvent>,
     establishment_tip: Arc<SignedKeyEvent>,
     current_public_key: VerificationKey,
-    pending_rotation_hash: Option<cesr::Digest>,
-    pending_recovery_hash: Option<cesr::Digest>,
+    pending_rotation_hash: Option<cesr::Digest256>,
+    pending_recovery_hash: Option<cesr::Digest256>,
     /// Non-revealing events since the last recovery-revealing event on this branch.
     events_since_last_revealing: usize,
 }
@@ -207,7 +207,7 @@ struct BranchState {
 fn branch_state_from_tip(
     tip: &BranchTip,
     events_since_last_revealing: usize,
-) -> Result<(cesr::Digest, BranchState), KelsError> {
+) -> Result<(cesr::Digest256, BranchState), KelsError> {
     let pk = tip
         .establishment_tip
         .event
@@ -246,11 +246,11 @@ fn branch_state_from_tip(
 /// After verification, call `into_verification()` to produce a `KelVerification`
 /// (proof-of-verification token).
 pub struct KelVerifier {
-    prefix: cesr::Digest,
+    prefix: cesr::Digest256,
     /// Delegating prefix from the inception event, if it was a `dip`.
-    delegating_prefix: Option<cesr::Digest>,
+    delegating_prefix: Option<cesr::Digest256>,
     /// Pre-divergence: single branch state. Branches keyed by tip SAID.
-    branches: HashMap<cesr::Digest, BranchState>,
+    branches: HashMap<cesr::Digest256, BranchState>,
     /// The current serial we've verified up to.
     last_verified_serial: Option<u64>,
     /// Serial where divergence first occurred.
@@ -262,9 +262,9 @@ pub struct KelVerifier {
     /// Number of rotation (rot/ror) events seen.
     rotation_count: usize,
     /// Anchor checking: SAIDs we're looking for.
-    queried_saids: BTreeSet<cesr::Digest>,
+    queried_saids: BTreeSet<cesr::Digest256>,
     /// Anchor checking: SAIDs we've found anchored.
-    anchored_saids: BTreeSet<cesr::Digest>,
+    anchored_saids: BTreeSet<cesr::Digest256>,
     /// Non-revealing events since the last recovery-revealing event.
     events_since_last_revealing: usize,
     /// Whether the proactive ror interval has been violated.
@@ -277,7 +277,7 @@ pub struct KelVerifier {
 
 impl KelVerifier {
     /// Start from inception. Used for full verification (e.g., streaming a peer's KEL).
-    pub fn new(prefix: &cesr::Digest) -> Self {
+    pub fn new(prefix: &cesr::Digest256) -> Self {
         Self {
             prefix: *prefix,
             delegating_prefix: None,
@@ -327,7 +327,7 @@ impl KelVerifier {
     /// does not produce verifications consumed for delegation checks.
     /// Delegation-aware verification always starts from inception via `new()`.
     pub fn from_branch_tip(
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         tip: &BranchTip,
         events_since_last_revealing: usize,
     ) -> Result<Self, KelsError> {
@@ -358,7 +358,7 @@ impl KelVerifier {
 
     /// Resume from a verified `KelVerification`.
     pub fn resume(
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         kel_verification: &KelVerification,
     ) -> Result<Self, KelsError> {
         let mut branches = HashMap::new();
@@ -398,7 +398,7 @@ impl KelVerifier {
     /// Call this before `verify_page()`. As the verifier walks events, it checks
     /// each `ixn` event's `anchor` field against these SAIDs. Results are available
     /// via `KelVerification::anchored_saids()` after calling `into_verification()`.
-    pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = cesr::Digest>) {
+    pub fn check_anchors(&mut self, saids: impl IntoIterator<Item = cesr::Digest256>) {
         self.queried_saids.extend(saids);
     }
 
@@ -576,7 +576,7 @@ impl KelVerifier {
         }
 
         // Match each event to its branch via `previous` pointer
-        let mut new_branches: HashMap<cesr::Digest, BranchState> = HashMap::new();
+        let mut new_branches: HashMap<cesr::Digest256, BranchState> = HashMap::new();
 
         for event in events {
             let previous = event.event.previous.as_ref().ok_or_else(|| {

@@ -10,21 +10,21 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
     #[said]
-    pub said: cesr::Digest,
-    pub schema: cesr::Digest,
+    pub said: cesr::Digest256,
+    pub schema: cesr::Digest256,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy: Option<cesr::Digest>,
+    pub policy: Option<cesr::Digest256>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<cesr::Digest>,
+    pub credential: Option<cesr::Digest256>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<String>,
+    pub nonce: Option<cesr::Nonce256>,
 }
 
 #[derive(Debug, Clone, Serialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct Edges {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[serde(flatten)]
     pub edges: BTreeMap<String, Edge>,
 }
@@ -32,7 +32,7 @@ pub struct Edges {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawEdges {
-    said: cesr::Digest,
+    said: cesr::Digest256,
     #[serde(flatten)]
     edges: BTreeMap<String, Edge>,
 }
@@ -79,7 +79,7 @@ impl Edges {
             edge.derive_said()?;
         }
         let mut instance = Self {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             edges,
         };
         instance.derive_said()?;
@@ -118,7 +118,7 @@ mod tests {
             test_digest("test-schema"),
             Some(test_digest("test-policy")),
             Some(test_digest("test-credential")),
-            Some("KNonce12345678901234567890123456789012abcde".to_string()),
+            Some(cesr::Nonce256::generate()),
         )
         .unwrap();
 

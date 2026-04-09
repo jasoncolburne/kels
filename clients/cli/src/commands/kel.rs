@@ -13,8 +13,8 @@ use kels_core::{
 use crate::Cli;
 use crate::helpers::*;
 
-fn parse_prefix(prefix: &str) -> Result<cesr::Digest> {
-    cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")
+fn parse_prefix(prefix: &str) -> Result<cesr::Digest256> {
+    cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")
 }
 
 pub(crate) async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
@@ -233,7 +233,7 @@ pub(crate) async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()
     )
     .await?;
 
-    let said_digest = cesr::Digest::from_qb64(said).context("Invalid SAID CESR")?;
+    let said_digest = cesr::Digest256::from_qb64(said).context("Invalid SAID CESR")?;
     let ixn = builder
         .interact(&said_digest)
         .await

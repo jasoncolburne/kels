@@ -319,7 +319,7 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
 pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     key_state_store: &FileKeyStateStore,
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
 ) -> Result<(), KelsError> {
     builder
         .key_provider()
@@ -427,7 +427,7 @@ pub extern "C" fn kels_init(
 
         // Restore persisted state if a prefix exists
         if let Some(ref pfx) = prefix_opt
-            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+            && let Ok(pfx_digest) = cesr::Digest256::from_qb64(pfx)
         {
             match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
@@ -451,7 +451,7 @@ pub extern "C" fn kels_init(
 
         // Restore persisted state if a prefix exists
         if let Some(ref pfx) = prefix_opt
-            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+            && let Ok(pfx_digest) = cesr::Digest256::from_qb64(pfx)
         {
             match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
@@ -478,7 +478,7 @@ pub extern "C" fn kels_init(
     // Create builder
     let prefix_digest = match prefix_opt
         .as_deref()
-        .map(cesr::Digest::from_qb64)
+        .map(cesr::Digest256::from_qb64)
         .transpose()
     {
         Ok(d) => d,

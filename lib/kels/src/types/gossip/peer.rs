@@ -12,19 +12,19 @@ use crate::{KelVerification, KelsError};
 #[serde(rename_all = "camelCase")]
 pub struct Peer {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     #[created_at]
     pub created_at: StorageDatetime,
-    pub kel_prefix: cesr::Digest,
+    pub kel_prefix: cesr::Digest256,
     pub node_id: String,
-    pub authorizing_kel: cesr::Digest,
+    pub authorizing_kel: cesr::Digest256,
     pub active: bool,
     /// Base domain for service discovery (e.g., "node-a.kels").
     /// Derive service URLs: http://kels.{base_domain}, http://sadstore.{base_domain}
@@ -45,7 +45,7 @@ impl Peer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerHistory {
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     pub records: Vec<Peer>,
 }
 
@@ -69,7 +69,7 @@ impl PeerHistory {
     }
 
     fn verify_records(&self) -> Result<(), KelsError> {
-        let mut last_said: Option<cesr::Digest> = None;
+        let mut last_said: Option<cesr::Digest256> = None;
         for (i, peer_record) in self.records.iter().enumerate() {
             peer_record.verify()?;
 

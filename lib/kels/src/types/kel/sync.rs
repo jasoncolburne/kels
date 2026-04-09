@@ -23,7 +23,7 @@ use crate::store::KelStore;
 pub trait PageLoader: Send + Sync {
     async fn load_page(
         &mut self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
@@ -42,7 +42,7 @@ impl<'a> StorePageLoader<'a> {
 impl PageLoader for StorePageLoader<'_> {
     async fn load_page(
         &mut self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -69,8 +69,8 @@ impl<'a> StoreKelSource<'a> {
 impl PagedKelSource for StoreKelSource<'_> {
     async fn fetch_page(
         &self,
-        prefix: &cesr::Digest,
-        since: Option<&cesr::Digest>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         if let Some(said) = since {
@@ -103,10 +103,10 @@ impl PagedKelSource for StoreKelSource<'_> {
 /// locked transaction wrapper to read under advisory lock.
 pub async fn completed_verification(
     loader: &mut dyn PageLoader,
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     page_size: usize,
     max_pages: usize,
-    anchor_saids: impl IntoIterator<Item = cesr::Digest>,
+    anchor_saids: impl IntoIterator<Item = cesr::Digest256>,
 ) -> Result<KelVerification, KelsError> {
     let mut verifier = KelVerifier::new(prefix);
     verifier.check_anchors(anchor_saids);
@@ -166,8 +166,8 @@ pub async fn completed_verification(
 pub trait PagedKelSource: Send + Sync {
     async fn fetch_page(
         &self,
-        prefix: &cesr::Digest,
-        since: Option<&cesr::Digest>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 }
@@ -211,8 +211,8 @@ impl HttpKelSource {
 impl PagedKelSource for HttpKelSource {
     async fn fetch_page(
         &self,
-        prefix: &cesr::Digest,
-        since: Option<&cesr::Digest>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         let path = self.path.replace("{prefix}", prefix.as_ref());
@@ -362,13 +362,13 @@ impl PagedKelSink for HttpKelSink {
 /// For unrecovered divergence (no rec), the recovery-revealing branch is deferred
 /// so the non-revealing branch establishes divergence first.
 async fn transfer_key_events(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     sink: &(dyn PagedKelSink + Sync),
     mut verifier: Option<&mut KelVerifier>,
     page_size: usize,
     max_pages: usize,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
     if verifier.is_some() && since.is_some() {
         return Err(KelsError::InvalidKel(
@@ -376,7 +376,7 @@ async fn transfer_key_events(
         ));
     }
 
-    let mut since: Option<cesr::Digest> = since.cloned();
+    let mut since: Option<cesr::Digest256> = since.cloned();
     // Hold back the last event when has_more is true. If the next page's
     // first event has the same serial, we've found a divergent pair. If not,
     // it's just a normal event and we process it with the next batch.
@@ -640,7 +640,7 @@ async fn send_divergent_events(
 
 /// Verify-only: pages through source, verifies, returns `KelVerification`.
 pub async fn verify_key_events(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -666,7 +666,7 @@ pub async fn verify_key_events(
 ///
 /// The verifier must have been constructed with `with_establishment_key_collection`.
 pub async fn verify_key_events_collecting_establishment_keys(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -694,7 +694,7 @@ pub async fn verify_key_events_collecting_establishment_keys(
 /// than `page_size` due to divergence handling. Completion is signaled by the function
 /// returning.
 pub async fn verify_key_events_with<F>(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -736,12 +736,12 @@ impl<F: FnMut(&[SignedKeyEvent]) + Send> PagedKelSink for CallbackSink<F> {
 ///
 /// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 pub async fn forward_key_events(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     sink: &(dyn PagedKelSink + Sync),
     page_size: usize,
     max_pages: usize,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
     transfer_key_events(prefix, source, sink, None, page_size, max_pages, since).await
 }
@@ -753,11 +753,11 @@ pub async fn forward_key_events(
 /// **WARNING:** This is an unbounded call, and should be used with care.
 #[cfg(any(test, feature = "dev-tools"))]
 pub async fn resolve_key_events(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let sink = CollectSink::new();
     transfer_key_events(prefix, source, &sink, None, page_size, max_pages, since).await?;
@@ -773,7 +773,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cesr::{Digest, Matter, SigningKey, VerificationKeyCode, test_digest};
+    use cesr::{Digest256, Matter, SigningKey, VerificationKeyCode, test_digest};
     use verifiable_storage::Chained;
 
     use super::super::verification::*;
@@ -793,8 +793,8 @@ mod tests {
     }
 
     /// Create a valid CESR anchor digest from a test label
-    fn anchor(label: &str) -> cesr::Digest {
-        Digest::blake3_256(label.as_bytes())
+    fn anchor(label: &str) -> cesr::Digest256 {
+        Digest256::blake3_256(label.as_bytes())
     }
 
     /// Create a SoftwareKeyProvider with random algorithm selection.
@@ -839,7 +839,7 @@ mod tests {
     /// Verify events with anchor checking and return KelVerification
     fn verify_with_anchors(
         events: &[SignedKeyEvent],
-        anchors: impl IntoIterator<Item = cesr::Digest>,
+        anchors: impl IntoIterator<Item = cesr::Digest256>,
     ) -> KelVerification {
         let prefix = &events[0].event.prefix;
         let mut verifier = KelVerifier::new(prefix);
@@ -865,7 +865,7 @@ mod tests {
     impl KelStore for MemoryStore {
         async fn load(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
@@ -887,7 +887,7 @@ mod tests {
 
         async fn load_tail(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             limit: u64,
         ) -> Result<Vec<SignedKeyEvent>, crate::error::KelsError> {
             let guard = self.kels.read().unwrap();
@@ -902,7 +902,7 @@ mod tests {
 
         async fn append(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             events: &[SignedKeyEvent],
         ) -> Result<(), crate::error::KelsError> {
             self.kels
@@ -916,7 +916,7 @@ mod tests {
 
         async fn overwrite(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             events: &[SignedKeyEvent],
         ) -> Result<(), crate::error::KelsError> {
             self.kels
@@ -940,7 +940,7 @@ mod tests {
         // Keep adding ixn until we have enough events (including auto-rors)
         while builder.pending_events().len() < target_events {
             builder
-                .interact(&Digest::blake3_256(
+                .interact(&Digest256::blake3_256(
                     format!("anchor-{}", builder.pending_events().len()).as_bytes(),
                 ))
                 .await
@@ -996,7 +996,7 @@ mod tests {
         // Owner continues building a long chain (2+ pages worth)
         while builder1.pending_events().len() < 2 * page_size + 1 {
             builder1
-                .interact(&Digest::blake3_256(
+                .interact(&Digest256::blake3_256(
                     format!("anchor-{}", builder1.pending_events().len()).as_bytes(),
                 ))
                 .await
@@ -1090,7 +1090,7 @@ mod tests {
         let mut events = vec![icp];
         for i in 0..20 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
+                .interact(&Digest256::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -1662,7 +1662,7 @@ mod tests {
         let mut events = vec![icp];
         for i in 0..9 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
+                .interact(&Digest256::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -1695,7 +1695,7 @@ mod tests {
         let mut events = vec![icp];
         for i in 0..10 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
+                .interact(&Digest256::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -2783,12 +2783,12 @@ mod tests {
         /// Compute effective SAID matching the real serving layer:
         /// single tip → its SAID, contested → hash("contested:{prefix}"),
         /// divergent → hash("divergent:{prefix}").
-        fn effective_said(&self) -> Option<cesr::Digest> {
+        fn effective_said(&self) -> Option<cesr::Digest256> {
             if self.events.is_empty() {
                 return None;
             }
             let prefix = &self.events[0].event.prefix;
-            let referenced: std::collections::HashSet<&cesr::Digest> = self
+            let referenced: std::collections::HashSet<&cesr::Digest256> = self
                 .events
                 .iter()
                 .filter_map(|e| e.event.previous.as_ref())
@@ -2816,8 +2816,8 @@ mod tests {
     impl PagedKelSource for MemoryKelSource {
         async fn fetch_page(
             &self,
-            _prefix: &cesr::Digest,
-            since: Option<&cesr::Digest>,
+            _prefix: &cesr::Digest256,
+            since: Option<&cesr::Digest256>,
             limit: usize,
         ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
             let start = match since {
@@ -2998,7 +2998,7 @@ mod tests {
 
         assert_eq!(events.len(), 4); // icp(0) + o1(1) + o2(2) + a1(2) = 4
         // Both serial-2 events present, one deferred to last position
-        let last_two_saids: Vec<&cesr::Digest> =
+        let last_two_saids: Vec<&cesr::Digest256> =
             events[2..].iter().map(|e| &e.event.said).collect();
         assert!(last_two_saids.contains(&&a1.event.said));
     }
@@ -3020,9 +3020,9 @@ mod tests {
         recovery: &str, // "none", "rec", "rec+rot", "cnt"
     ) -> (
         Vec<SignedKeyEvent>,
-        cesr::Digest,         // prefix
-        Vec<cesr::Digest>,    // owner chain SAIDs (includes rec/rot if present)
-        Option<cesr::Digest>, // adversary fork SAID
+        cesr::Digest256,         // prefix
+        Vec<cesr::Digest256>,    // owner chain SAIDs (includes rec/rot if present)
+        Option<cesr::Digest256>, // adversary fork SAID
     ) {
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
@@ -3100,8 +3100,8 @@ mod tests {
     /// Shorter fork should be last.
     fn verify_transfer_ordering(
         collected: &[SignedKeyEvent],
-        owner_saids: &[cesr::Digest],
-        adversary_fork_said: Option<&cesr::Digest>,
+        owner_saids: &[cesr::Digest256],
+        adversary_fork_said: Option<&cesr::Digest256>,
         owner_event_count: usize,
         adversary_event_count: usize,
     ) {

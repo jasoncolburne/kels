@@ -84,8 +84,8 @@ pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest, (u32, Instant)>,
-    prefix: &cesr::Digest,
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    prefix: &cesr::Digest256,
     event_count: u32,
     max_events: u32,
 ) -> Result<(), ApiError> {
@@ -108,8 +108,8 @@ fn check_prefix_rate_limit(
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest, (u32, Instant)>,
-    prefix: &cesr::Digest,
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    prefix: &cesr::Digest256,
     new_event_count: u32,
 ) {
     if new_event_count == 0 {
@@ -131,11 +131,11 @@ pub(crate) struct AppState {
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix daily rate limiting: counts events (not submissions).
-    pub(crate) prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
+    pub(crate) prefix_rate_limits: DashMap<cesr::Digest256, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
-    pub(crate) nonce_cache: DashMap<String, Instant>,
+    pub(crate) nonce_cache: DashMap<cesr::Nonce256, Instant>,
 }
 
 // ==================== Error Handling ====================
@@ -534,12 +534,12 @@ pub(crate) async fn get_kel(
     }
 
     // Cache miss — parse prefix and since to typed CESR
-    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+    let prefix_digest = cesr::Digest256::from_qb64(&prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let since_digest = params
         .since
         .as_deref()
-        .map(cesr::Digest::from_qb64)
+        .map(cesr::Digest256::from_qb64)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
 
@@ -632,7 +632,7 @@ pub(crate) async fn get_kel_archived(
         .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
-    let prefix = cesr::Digest::from_qb64(&prefix_string)
+    let prefix = cesr::Digest256::from_qb64(&prefix_string)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let (events, has_more) = state
         .repo
@@ -669,7 +669,7 @@ pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
     Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest::from_qb64(&prefix_string)
+    let prefix = cesr::Digest256::from_qb64(&prefix_string)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let effective = state
         .repo
@@ -688,7 +688,7 @@ pub(crate) async fn get_effective_said(
 /// Shared query logic for listing prefixes.
 async fn query_prefixes(
     state: &AppState,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
     limit: Option<usize>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     let limit = limit.unwrap_or(100).clamp(1, 1000);
@@ -721,7 +721,7 @@ pub(crate) async fn list_prefixes(
             .retain(|_, seen| now.duration_since(*seen) < Duration::from_secs(window));
         if state
             .nonce_cache
-            .insert(signed_request.payload.nonce.clone(), now)
+            .insert(signed_request.payload.nonce, now)
             .is_some()
         {
             return Err(ApiError::forbidden("Duplicate nonce"));
@@ -751,7 +751,7 @@ pub(crate) async fn list_prefixes(
         &signed_request.prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<cesr::Digest>(),
+        std::iter::empty::<cesr::Digest256>(),
     )
     .await
     .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
@@ -787,7 +787,7 @@ pub(crate) async fn test_list_prefixes(
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_kel_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest256,
 ) -> Result<Option<kels_core::Peer>, ApiError> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn

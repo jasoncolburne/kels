@@ -408,7 +408,7 @@ impl KeyProvider for HsmKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256, cesr::Digest256), KelsError> {
         let (current_handle, current_pub) = self.generate_signing_key().await?;
         let (next_handle, next_pub) = self.generate_signing_key().await?;
         let (recovery_handle, recovery_pub) = self.generate_recovery_key().await?;
@@ -463,7 +463,7 @@ impl KeyProvider for HsmKeyProvider {
         Ok(())
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -486,7 +486,7 @@ impl KeyProvider for HsmKeyProvider {
 
     async fn stage_recovery_rotation(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
@@ -558,7 +558,7 @@ impl KeyProvider for HsmKeyProvider {
     async fn save_state(
         &self,
         _store: &dyn kels_core::KeyStateStore,
-        _prefix: &cesr::Digest,
+        _prefix: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         // HSM keys persist in the hardware module; state is managed externally
         Ok(())
@@ -567,7 +567,7 @@ impl KeyProvider for HsmKeyProvider {
     async fn restore_state(
         &mut self,
         _store: &dyn kels_core::KeyStateStore,
-        _prefix: &cesr::Digest,
+        _prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
         // HSM keys persist in the hardware module; state is managed externally
         Ok(false)

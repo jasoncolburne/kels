@@ -10,12 +10,12 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct RaftVote {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     #[created_at]
@@ -38,12 +38,12 @@ pub struct RaftVote {
 #[serde(rename_all = "camelCase")]
 pub struct RaftLogEntry {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     #[created_at]
@@ -70,7 +70,7 @@ pub struct RaftLogEntry {
 #[serde(rename_all = "camelCase")]
 pub struct RaftLogAuditRecord {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// Node ID that performed the operation
     pub node_id: u64,
     /// Operation type: "truncate" or "purge"
@@ -119,12 +119,12 @@ impl RaftLogAuditRecord {
 #[serde(rename_all = "camelCase")]
 pub struct RaftState {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     #[created_at]

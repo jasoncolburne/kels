@@ -24,7 +24,7 @@ pub trait KelServer: Send + Sync {
     /// Load a page of signed events (full fetch path).
     async fn load_page(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
@@ -32,8 +32,8 @@ pub trait KelServer: Send + Sync {
     /// Load signed events after a given SAID (delta fetch path).
     async fn load_page_since(
         &self,
-        prefix: &cesr::Digest,
-        since_said: &cesr::Digest,
+        prefix: &cesr::Digest256,
+        since_said: &cesr::Digest256,
         limit: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
@@ -41,14 +41,14 @@ pub trait KelServer: Send + Sync {
     /// Single tip -> tip SAID. Multiple tips -> deterministic hash (divergent/contested).
     async fn effective_said(
         &self,
-        prefix: &cesr::Digest,
-    ) -> Result<Option<cesr::Digest>, KelsError>;
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<cesr::Digest256>, KelsError>;
 
     /// Look up the prefix of an event by its SAID.
     async fn event_prefix_by_said(
         &self,
-        said: &cesr::Digest,
-    ) -> Result<Option<cesr::Digest>, KelsError>;
+        said: &cesr::Digest256,
+    ) -> Result<Option<cesr::Digest256>, KelsError>;
 }
 
 /// Canonical since-resolution logic for serving paginated KEL pages.
@@ -61,8 +61,8 @@ pub trait KelServer: Send + Sync {
 ///   result returns `Err(NotFound)`.
 pub async fn serve_kel_page(
     server: &dyn KelServer,
-    prefix: &cesr::Digest,
-    since: Option<&cesr::Digest>,
+    prefix: &cesr::Digest256,
+    since: Option<&cesr::Digest256>,
     limit: u64,
 ) -> Result<SignedKeyEventPage, KelsError> {
     if let Some(since_said) = since {
@@ -142,7 +142,7 @@ mod tests {
     impl KelServer for MockKelServer {
         async fn load_page(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -166,8 +166,8 @@ mod tests {
 
         async fn load_page_since(
             &self,
-            prefix: &cesr::Digest,
-            since_said: &cesr::Digest,
+            prefix: &cesr::Digest256,
+            since_said: &cesr::Digest256,
             limit: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
             let prefix_str = prefix.to_string();
@@ -197,8 +197,8 @@ mod tests {
 
         async fn effective_said(
             &self,
-            prefix: &cesr::Digest,
-        ) -> Result<Option<cesr::Digest>, KelsError> {
+            prefix: &cesr::Digest256,
+        ) -> Result<Option<cesr::Digest256>, KelsError> {
             let prefix_str = prefix.to_string();
             let map = self
                 .events
@@ -212,8 +212,8 @@ mod tests {
 
         async fn event_prefix_by_said(
             &self,
-            said: &cesr::Digest,
-        ) -> Result<Option<cesr::Digest>, KelsError> {
+            said: &cesr::Digest256,
+        ) -> Result<Option<cesr::Digest256>, KelsError> {
             let map = self
                 .events
                 .lock()

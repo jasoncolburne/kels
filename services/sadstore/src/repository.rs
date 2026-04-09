@@ -60,7 +60,7 @@ impl SadPointerRepository {
         // Insert records, skipping duplicates by checking existence first.
         // We cannot rely on catching unique constraint violations because in
         // Postgres a constraint violation aborts the transaction.
-        let existing_saids: std::collections::HashSet<cesr::Digest> = {
+        let existing_saids: std::collections::HashSet<cesr::Digest256> = {
             let saids: Vec<String> = records.iter().map(|(r, _)| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -101,7 +101,7 @@ impl SadPointerRepository {
     /// (caller can check `is_divergent()` or call `finish()`).
     async fn verify_chain<Tx: TransactionExecutor>(
         tx: &mut Tx,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<kels_core::SadChainVerifier, StorageError> {
         let page_size = kels_core::page_size() as u64;
@@ -128,7 +128,7 @@ impl SadPointerRepository {
             )
             .r#in("pointer_said", page_saids);
             let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
-            let sig_map: std::collections::HashMap<cesr::Digest, &SadPointerSignature> =
+            let sig_map: std::collections::HashMap<cesr::Digest256, &SadPointerSignature> =
                 sigs.iter().map(|s| (s.pointer_said, s)).collect();
 
             // Build SignedSadPointers for the verifier
@@ -198,7 +198,7 @@ impl SadPointerRepository {
             let existing_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
-            let existing: std::collections::HashSet<cesr::Digest> = tx
+            let existing: std::collections::HashSet<cesr::Digest256> = tx
                 .fetch(existing_query)
                 .await?
                 .into_iter()
@@ -221,7 +221,7 @@ impl SadPointerRepository {
 
         // Archive records and signatures page-at-a-time before deleting
         let page_size = kels_core::page_size();
-        let mut repair_said: Option<cesr::Digest> = None;
+        let mut repair_said: Option<cesr::Digest256> = None;
         let mut version_cursor = from_version;
 
         loop {
@@ -305,7 +305,7 @@ impl SadPointerRepository {
     ///
     /// Uses `GROUP BY version ORDER BY COUNT(*) DESC LIMIT 1` — returns true if
     /// the highest count exceeds 1.
-    pub async fn is_divergent(&self, prefix: &cesr::Digest) -> Result<bool, StorageError> {
+    pub async fn is_divergent(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
         let query = ColumnQuery::new(Self::TABLE_NAME, "*")
             .filter(Filter::Eq(
                 "prefix".to_string(),
@@ -318,7 +318,7 @@ impl SadPointerRepository {
     }
 
     /// Check if a pointer with the given SAID exists.
-    pub async fn exists(&self, said: &cesr::Digest) -> Result<bool, StorageError> {
+    pub async fn exists(&self, said: &cesr::Digest256) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -331,7 +331,7 @@ impl SadPointerRepository {
     /// Bounded by `max` — returns an error if more than `max` unique serials exist.
     pub async fn existing_establishment_serials(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         max: usize,
     ) -> Result<std::collections::BTreeSet<u64>, StorageError> {
         use verifiable_storage::ScalarSubquery;
@@ -383,7 +383,7 @@ impl SadPointerRepository {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Resolve SAID cursor to a (version, said) position
-        let since_position: Option<(u64, cesr::Digest)> = if let Some(said) = since_said {
+        let since_position: Option<(u64, cesr::Digest256)> = if let Some(said) = since_said {
             let cursor_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .eq("said", said)
@@ -462,7 +462,7 @@ impl SadPointerRepository {
         let sigs: Vec<kels_core::SadPointerSignature> = self.pool.fetch(query).await?;
 
         // Index signatures by pointer_said for O(1) lookup
-        let sig_map: std::collections::HashMap<cesr::Digest, &kels_core::SadPointerSignature> =
+        let sig_map: std::collections::HashMap<cesr::Digest256, &kels_core::SadPointerSignature> =
             sigs.iter().map(|s| (s.pointer_said, s)).collect();
 
         let mut stored = Vec::with_capacity(records.len());
@@ -504,8 +504,8 @@ impl SadPointerRepository {
     /// deterministic SAID so all nodes agree on the divergent state.
     pub async fn effective_said(
         &self,
-        prefix: &cesr::Digest,
-    ) -> Result<Option<(cesr::Digest, bool)>, StorageError> {
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(cesr::Digest256, bool)>, StorageError> {
         let latest = self.get_latest(prefix).await?;
         let Some(latest) = latest else {
             return Ok(None);
@@ -587,7 +587,7 @@ impl SadPointerRepository {
         let sigs: Vec<SadPointerSignature> = self.pool.fetch(sigs_query).await?;
 
         // Index signatures by pointer_said
-        let sig_map: std::collections::HashMap<cesr::Digest, &SadPointerSignature> =
+        let sig_map: std::collections::HashMap<cesr::Digest256, &SadPointerSignature> =
             sigs.iter().map(|s| (s.pointer_said, s)).collect();
 
         // Zip into SignedSadPointer
@@ -618,7 +618,7 @@ impl SadPointerRepository {
     /// Divergent chains get a synthetic effective SAID.
     pub async fn list_prefixes(
         &self,
-        cursor: Option<&cesr::Digest>,
+        cursor: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<kels_core::PrefixListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
@@ -717,7 +717,7 @@ impl SadObjectIndex {
     /// then commits. If MinIO fails, the transaction rolls back on drop.
     pub async fn store(
         &self,
-        sad_said: &cesr::Digest,
+        sad_said: &cesr::Digest256,
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
@@ -762,7 +762,7 @@ impl SadObjectIndex {
     /// space (SAIDs <= cursor). Ensures unbiased random sampling for anti-entropy.
     pub async fn list(
         &self,
-        cursor: Option<&cesr::Digest>,
+        cursor: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<kels_core::SadObjectListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
@@ -779,7 +779,7 @@ impl SadObjectIndex {
 
         let entries: Vec<kels_core::SadObjectEntry> = self.pool.fetch(query).await?;
 
-        let mut saids: Vec<cesr::Digest> = entries.into_iter().map(|e| e.sad_said).collect();
+        let mut saids: Vec<cesr::Digest256> = entries.into_iter().map(|e| e.sad_said).collect();
 
         let next_cursor = if saids.len() > limit {
             saids.pop();

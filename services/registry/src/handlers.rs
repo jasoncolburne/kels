@@ -326,7 +326,7 @@ pub async fn federation_rpc(
         &signed_rpc.sender_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<cesr::Digest>(),
+        std::iter::empty::<cesr::Digest256>(),
     )
     .await;
 
@@ -484,7 +484,7 @@ pub async fn list_completed_proposals(
 /// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
-    pub peer_kel_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest256,
     pub node_id: String,
     pub base_domain: String,
     pub gossip_addr: String,
@@ -495,7 +495,7 @@ pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Path(proposal_prefix): Path<String>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
-    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+    let proposal_digest = cesr::Digest256::from_qb64(&proposal_prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
 
     if let Some(addition) = state
@@ -769,7 +769,7 @@ pub async fn admin_vote_proposal(
     Path(proposal_prefix): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+    let proposal_digest = cesr::Digest256::from_qb64(&proposal_prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
 
     // 1. Verify vote SAID integrity
@@ -1239,7 +1239,7 @@ pub async fn get_member_effective_said(
     State(state): State<Arc<FederationState>>,
     Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest::from_qb64(&prefix_string)
+    let prefix = cesr::Digest256::from_qb64(&prefix_string)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     match state
         .member_kel_repo
@@ -1269,12 +1269,12 @@ pub async fn get_member_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+    let prefix_digest = cesr::Digest256::from_qb64(&prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let since_digest = query
         .since
         .as_deref()
-        .map(cesr::Digest::from_qb64)
+        .map(cesr::Digest256::from_qb64)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(

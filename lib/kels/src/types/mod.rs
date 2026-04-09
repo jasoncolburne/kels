@@ -124,8 +124,8 @@ mod tests {
 
     // ==================== Test Helpers ====================
 
-    fn make_blake3_digest(data: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(data.as_bytes())
+    fn make_blake3_digest(data: &str) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(data.as_bytes())
     }
 
     fn make_secp256r1_key() -> cesr::VerificationKey {
@@ -398,7 +398,7 @@ mod tests {
     }
 
     // Note: invalid_said_format and invalid_public_key_format tests removed
-    // because these fields are now typed (cesr::Digest, cesr::VerificationKey)
+    // because these fields are now typed (cesr::Digest256, cesr::VerificationKey)
     // and invalid CESR is caught at deserialization time.
 
     // ==================== SignedKeyEvent tests ====================

@@ -80,7 +80,7 @@ impl From<std::io::Error> for Error {
 /// internally and returns raw bytes.
 pub trait Signer: Send + Sync + 'static {
     /// Our node identity (KELS prefix).
-    fn node_prefix(&self) -> cesr::Digest;
+    fn node_prefix(&self) -> cesr::Digest256;
 
     /// Sign the given data. Returns the signature as raw bytes.
     fn sign(&self, data: &[u8]) -> impl Future<Output = Result<Vec<u8>, Error>> + Send;
@@ -107,7 +107,7 @@ pub trait PeerVerifier: Send + Sync + 'static {
     /// 4. On verification failure (rotation), re-fetch the KEL and retry
     fn verify_peer(
         &self,
-        peer: &cesr::Digest,
+        peer: &cesr::Digest256,
         data: &[u8],
         signature: &[u8],
     ) -> impl Future<Output = Result<(), Error>> + Send;

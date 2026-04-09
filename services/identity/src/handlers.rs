@@ -24,13 +24,13 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRequest {
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorResponse {
-    pub event_said: cesr::Digest,
+    pub event_said: cesr::Digest256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,7 +162,7 @@ pub async fn get_key_events(
     let since_digest = query
         .since
         .as_deref()
-        .map(cesr::Digest::from_qb64)
+        .map(cesr::Digest256::from_qb64)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
@@ -177,7 +177,7 @@ pub async fn get_key_events(
 }
 
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
-pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest) {
+pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest256) {
     let forward_url = match state.forward_url.as_ref() {
         Some(url) => url,
         None => return,

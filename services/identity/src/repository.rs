@@ -14,15 +14,15 @@ use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 #[storable(table = "identity_hsm_key_bindings")]
 pub struct HsmKeyBinding {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
-    pub kel_prefix: cesr::Digest,
+    pub kel_prefix: cesr::Digest256,
     pub current_key_handle: String,
     pub next_key_handle: String,
     pub recovery_key_handle: String,
@@ -45,7 +45,7 @@ pub struct HsmBindingRepository {
 impl HsmBindingRepository {
     pub async fn get_latest_by_kel_prefix(
         &self,
-        kel_prefix: &cesr::Digest,
+        kel_prefix: &cesr::Digest256,
     ) -> Result<Option<HsmKeyBinding>, StorageError> {
         let query = Query::<HsmKeyBinding>::for_table(Self::TABLE_NAME)
             .eq("kel_prefix", kel_prefix)
@@ -56,7 +56,7 @@ impl HsmBindingRepository {
 
     pub async fn get_all_by_kel_prefix(
         &self,
-        kel_prefix: &cesr::Digest,
+        kel_prefix: &cesr::Digest256,
     ) -> Result<Vec<HsmKeyBinding>, StorageError> {
         let query = Query::<HsmKeyBinding>::for_table(Self::TABLE_NAME)
             .eq("kel_prefix", kel_prefix)
@@ -73,17 +73,17 @@ pub const AUTHORITY_IDENTITY_NAME: &str = "identity";
 #[storable(table = "identity_authority")]
 pub struct AuthorityMapping {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     pub name: String,
-    pub kel_prefix: cesr::Digest,
-    pub last_said: cesr::Digest,
+    pub kel_prefix: cesr::Digest256,
+    pub last_said: cesr::Digest256,
     #[created_at]
     pub created_at: StorageDatetime,
 }
@@ -122,7 +122,7 @@ impl KeyEventRepository {
     /// Lock is held until the transaction is committed or rolled back.
     pub async fn begin_locked_transaction(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<LockedKelTransaction, StorageError> {
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix.as_ref()).await?;
@@ -137,7 +137,7 @@ impl KeyEventRepository {
 /// Reads from this transaction see a consistent snapshot under the lock.
 pub struct LockedKelTransaction {
     tx: <PgPool as QueryExecutor>::Transaction,
-    prefix: cesr::Digest,
+    prefix: cesr::Digest256,
 }
 
 impl LockedKelTransaction {
@@ -168,7 +168,7 @@ impl LockedKelTransaction {
 impl kels_core::PageLoader for LockedKelTransaction {
     async fn load_page(
         &mut self,
-        _prefix: &cesr::Digest,
+        _prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {

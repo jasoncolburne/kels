@@ -62,7 +62,7 @@ pub struct SignedFederationRpc {
     /// The RPC payload as a JSON string (this is what gets signed)
     pub payload: String,
     /// Sender's registry prefix (used to look up their KEL)
-    pub sender_prefix: cesr::Digest,
+    pub sender_prefix: cesr::Digest256,
     /// QB64-encoded signature over the payload
     pub signature: cesr::Signature,
 }

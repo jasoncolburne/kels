@@ -77,7 +77,7 @@ impl ObjectStore {
     }
 
     /// Check if an object exists by SAID.
-    pub async fn exists(&self, said: &cesr::Digest) -> Result<bool, ObjectStoreError> {
+    pub async fn exists(&self, said: &cesr::Digest256) -> Result<bool, ObjectStoreError> {
         match self
             .client
             .head_object()
@@ -98,7 +98,7 @@ impl ObjectStore {
     }
 
     /// Store a JSON object by SAID.
-    pub async fn put(&self, said: &cesr::Digest, data: &[u8]) -> Result<(), ObjectStoreError> {
+    pub async fn put(&self, said: &cesr::Digest256, data: &[u8]) -> Result<(), ObjectStoreError> {
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -114,7 +114,7 @@ impl ObjectStore {
     }
 
     /// Retrieve a JSON object by SAID.
-    pub async fn get(&self, said: &cesr::Digest) -> Result<Vec<u8>, ObjectStoreError> {
+    pub async fn get(&self, said: &cesr::Digest256) -> Result<Vec<u8>, ObjectStoreError> {
         let response = match self
             .client
             .get_object()

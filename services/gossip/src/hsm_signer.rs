@@ -37,11 +37,11 @@ pub enum SignerError {
 /// matches the KEL public key that peers verify against.
 pub struct IdentityGossipSigner {
     identity_client: kels_core::IdentityClient,
-    node_prefix: cesr::Digest,
+    node_prefix: cesr::Digest256,
 }
 
 impl IdentityGossipSigner {
-    pub fn new(identity_url: &str, node_prefix: cesr::Digest) -> Result<Self, SignerError> {
+    pub fn new(identity_url: &str, node_prefix: cesr::Digest256) -> Result<Self, SignerError> {
         Ok(Self {
             identity_client: kels_core::IdentityClient::new(identity_url).map_err(|e| {
                 SignerError::Identity(format!("Failed to build identity client: {}", e))
@@ -52,7 +52,7 @@ impl IdentityGossipSigner {
 }
 
 impl Signer for IdentityGossipSigner {
-    fn node_prefix(&self) -> cesr::Digest {
+    fn node_prefix(&self) -> cesr::Digest256 {
         self.node_prefix
     }
 
@@ -113,13 +113,16 @@ impl KelsPeerVerifier {
     }
 
     /// Check if a peer is in the allowlist (without refreshing).
-    async fn is_in_allowlist(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
+    async fn is_in_allowlist(&self, prefix: &cesr::Digest256) -> Result<bool, GossipError> {
         let guard = self.allowlist.read().await;
         Ok(guard.contains_key(prefix))
     }
 
     /// Refresh the allowlist from the registry, then check again.
-    async fn is_in_allowlist_refreshed(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
+    async fn is_in_allowlist_refreshed(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<bool, GossipError> {
         if let Err(e) = crate::allowlist::refresh_allowlist(
             &self.federation_registry_urls,
             self.registry_kel_store.as_ref(),
@@ -137,7 +140,7 @@ impl KelsPeerVerifier {
     /// Get the current public key from a peer's verified KEL.
     async fn public_key_from_key_events(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
         let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
@@ -193,7 +196,7 @@ impl KelsPeerVerifier {
     /// will trigger the refresh path).
     async fn try_verify(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -208,7 +211,7 @@ impl KelsPeerVerifier {
     /// Re-fetch the peer's KEL from their KELS instance, submit it locally, then verify.
     async fn try_verify_refreshed(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -253,7 +256,7 @@ impl KelsPeerVerifier {
 impl PeerVerifier for KelsPeerVerifier {
     async fn verify_peer(
         &self,
-        peer: &cesr::Digest,
+        peer: &cesr::Digest256,
         data: &[u8],
         signature: &[u8],
     ) -> Result<(), GossipError> {
@@ -304,13 +307,13 @@ impl PeerVerifier for KelsPeerVerifier {
 /// key is used for all signing operations (gossip handshakes, registry requests).
 pub struct IdentitySigner {
     identity_client: kels_core::IdentityClient,
-    peer_kel_prefix: cesr::Digest,
+    peer_kel_prefix: cesr::Digest256,
 }
 
 impl IdentitySigner {
     pub fn new(
         identity_url: &str,
-        peer_kel_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest256,
     ) -> Result<Self, kels_core::KelsError> {
         Ok(Self {
             identity_client: kels_core::IdentityClient::new(identity_url)?,

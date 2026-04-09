@@ -132,7 +132,7 @@ enum FederationAction {
 /// Shared context for all commands
 struct AdminContext {
     identity_client: IdentityClient,
-    self_prefix: cesr::Digest,
+    self_prefix: cesr::Digest256,
     registry_url: String,
     registry_client: KelsRegistryClient,
 }
@@ -234,7 +234,7 @@ async fn propose_peer(
     gossip_addr: &str,
 ) -> anyhow::Result<()> {
     let peer_kel_prefix_digest =
-        cesr::Digest::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
+        cesr::Digest256::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
 
     // Get this registry's prefix as proposer
     let proposer = ctx
@@ -279,7 +279,7 @@ async fn propose_peer(
 
 async fn propose_removal(ctx: &AdminContext, peer_kel_prefix: &str) -> anyhow::Result<()> {
     let peer_kel_prefix_digest =
-        cesr::Digest::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
+        cesr::Digest256::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
 
     // Get this registry's prefix as proposer
     let proposer = ctx
@@ -333,7 +333,7 @@ async fn vote_proposal(
 
     // Create vote (SAID is auto-derived)
     let proposal_digest =
-        cesr::Digest::from_qb64(proposal_prefix).context("Invalid proposal prefix CESR")?;
+        cesr::Digest256::from_qb64(proposal_prefix).context("Invalid proposal prefix CESR")?;
     let vote = Vote::create(proposal_digest, voter, approve).context("Failed to create vote")?;
 
     // Anchor the vote's SAID in our KEL (this IS the signature)

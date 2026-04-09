@@ -55,7 +55,7 @@ pub async fn run_gossip(
     mail_topic: TopicId,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
-    local_node_prefix: cesr::Digest,
+    local_node_prefix: cesr::Digest256,
 ) -> Result<(), GossipError> {
     let mut event_rx = gossip_handle.subscribe();
 

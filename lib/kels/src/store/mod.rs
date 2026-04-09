@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::{error::KelsError, types::SignedKeyEvent};
 
 #[cfg(test)]
-pub(crate) async fn create_test_events() -> (cesr::Digest, Vec<SignedKeyEvent>) {
+pub(crate) async fn create_test_events() -> (cesr::Digest256, Vec<SignedKeyEvent>) {
     use cesr::VerificationKeyCode;
 
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
@@ -31,18 +31,18 @@ pub(crate) async fn create_test_events() -> (cesr::Digest, Vec<SignedKeyEvent>) 
 #[async_trait]
 pub trait KelStore: Send + Sync {
     /// Owner's prefix. When set, `cache()` skips saving KELs with this prefix.
-    fn owner_prefix(&self) -> Option<cesr::Digest> {
+    fn owner_prefix(&self) -> Option<cesr::Digest256> {
         None
     }
 
     /// Set/clear owner prefix after enrollment.
-    fn set_owner_prefix(&self, _prefix: Option<&cesr::Digest>) {}
+    fn set_owner_prefix(&self, _prefix: Option<&cesr::Digest256>) {}
 
     /// Load a page of events by prefix. Returns `(events, has_more)`.
     /// Callers iterate explicitly via paginated reads.
     async fn load(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
@@ -51,14 +51,14 @@ pub trait KelStore: Send + Sync {
     /// Used for bounded tail access without loading the entire KEL.
     async fn load_tail(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
     ) -> Result<Vec<SignedKeyEvent>, KelsError>;
 
     /// Append events for a prefix (merges with any existing events).
     async fn append(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError>;
 
@@ -66,14 +66,14 @@ pub trait KelStore: Send + Sync {
     /// Only intended for dev-tools use cases (e.g., truncation).
     async fn overwrite(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError>;
 
     /// Cache server-fetched events. Skips owner prefix to protect authoritative local state.
     async fn cache(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         if let Some(owner) = self.owner_prefix()
@@ -109,7 +109,7 @@ mod tests {
     /// In-memory store for testing
     struct MemoryStore {
         kels: RwLock<HashMap<String, Vec<SignedKeyEvent>>>,
-        owner: RwLock<Option<cesr::Digest>>,
+        owner: RwLock<Option<cesr::Digest256>>,
     }
 
     impl MemoryStore {
@@ -123,11 +123,11 @@ mod tests {
 
     #[async_trait]
     impl KelStore for MemoryStore {
-        fn owner_prefix(&self) -> Option<cesr::Digest> {
+        fn owner_prefix(&self) -> Option<cesr::Digest256> {
             self.owner.read().ok().and_then(|g| *g)
         }
 
-        fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {
+        fn set_owner_prefix(&self, prefix: Option<&cesr::Digest256>) {
             if let Ok(mut guard) = self.owner.write() {
                 *guard = prefix.cloned();
             }
@@ -135,7 +135,7 @@ mod tests {
 
         async fn load(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -160,7 +160,7 @@ mod tests {
 
         async fn load_tail(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             limit: u64,
         ) -> Result<Vec<SignedKeyEvent>, KelsError> {
             let guard = match self.kels.read() {
@@ -178,7 +178,7 @@ mod tests {
 
         async fn append(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             events: &[SignedKeyEvent],
         ) -> Result<(), KelsError> {
             if let Ok(mut guard) = self.kels.write() {
@@ -192,7 +192,7 @@ mod tests {
 
         async fn overwrite(
             &self,
-            prefix: &cesr::Digest,
+            prefix: &cesr::Digest256,
             events: &[SignedKeyEvent],
         ) -> Result<(), KelsError> {
             if let Ok(mut guard) = self.kels.write() {

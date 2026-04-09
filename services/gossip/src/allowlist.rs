@@ -22,7 +22,7 @@ pub enum AllowlistRefreshError {
 }
 
 /// Shared allowlist type - maps peer KEL prefix to full Peer data
-pub type SharedAllowlist = Arc<RwLock<HashMap<cesr::Digest, kels_core::Peer>>>;
+pub type SharedAllowlist = Arc<RwLock<HashMap<cesr::Digest256, kels_core::Peer>>>;
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
@@ -215,7 +215,7 @@ mod tests {
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            kel_prefix: cesr::Digest::blake3_256(peer_kel_prefix.as_bytes()),
+            kel_prefix: cesr::Digest256::blake3_256(peer_kel_prefix.as_bytes()),
             node_id: "test-node".to_string(),
             authorizing_kel: test_digest("authorizing-kel"),
             active: true,

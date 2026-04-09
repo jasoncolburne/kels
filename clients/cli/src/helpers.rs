@@ -92,7 +92,7 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
 
 pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
-    match cesr::Digest::from_qb64(prefix) {
+    match cesr::Digest256::from_qb64(prefix) {
         Ok(prefix_digest) => {
             FileKelStore::with_owner(dir, prefix_digest).context("Failed to create KEL store")
         }

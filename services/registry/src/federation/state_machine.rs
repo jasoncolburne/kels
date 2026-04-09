@@ -16,8 +16,8 @@ use kels_core::{Peer, PeerAdditionProposal, PeerRemovalProposal, Proposal, Vote}
 /// Consuming: paginated read + verification + inline anchor check.
 async fn verify_member_anchoring_from_repo(
     repo: &crate::raft_store::MemberKelRepository,
-    said: &cesr::Digest,
-    member_prefix: &cesr::Digest,
+    said: &cesr::Digest256,
+    member_prefix: &cesr::Digest256,
 ) -> Result<(), String> {
     let store = kels_core::RepositoryKelStore::new(Arc::new(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
@@ -61,19 +61,19 @@ pub struct StateMachineData {
     /// Last membership configuration
     pub last_membership: StoredMembership<TypeConfig>,
     /// Active peers (keyed by peer KEL prefix for efficient lookup)
-    pub active_peers_by_kel_prefix: HashMap<cesr::Digest, Peer>,
+    pub active_peers_by_kel_prefix: HashMap<cesr::Digest256, Peer>,
     /// Inactive (deactivated) peers for audit trail
-    pub inactive_peers_by_kel_prefix: HashMap<cesr::Digest, Peer>,
+    pub inactive_peers_by_kel_prefix: HashMap<cesr::Digest256, Peer>,
     /// Pending addition proposals awaiting votes (keyed by proposal prefix/proposal_prefix)
-    pub pending_addition_proposals: HashMap<cesr::Digest, PeerAdditionProposal>,
+    pub pending_addition_proposals: HashMap<cesr::Digest256, PeerAdditionProposal>,
     /// Completed addition proposals (full chain per proposal) for audit trail
     pub completed_addition_proposals: Vec<Vec<PeerAdditionProposal>>,
     /// Pending removal proposals awaiting votes (keyed by proposal prefix/proposal_prefix)
-    pub pending_removal_proposals: HashMap<cesr::Digest, PeerRemovalProposal>,
+    pub pending_removal_proposals: HashMap<cesr::Digest256, PeerRemovalProposal>,
     /// Completed removal proposals (full chain per proposal) for audit trail
     pub completed_removal_proposals: Vec<Vec<PeerRemovalProposal>>,
     /// Votes stored by SAID
-    pub votes: HashMap<cesr::Digest, Vote>,
+    pub votes: HashMap<cesr::Digest256, Vote>,
 }
 
 impl StateMachineData {
@@ -97,7 +97,7 @@ impl StateMachineData {
     }
 
     /// Get a peer by its KEL prefix (checks active first, then inactive).
-    pub fn get_peer(&self, peer_kel_prefix: &cesr::Digest) -> Option<&Peer> {
+    pub fn get_peer(&self, peer_kel_prefix: &cesr::Digest256) -> Option<&Peer> {
         self.active_peers_by_kel_prefix
             .get(peer_kel_prefix)
             .or_else(|| self.inactive_peers_by_kel_prefix.get(peer_kel_prefix))
@@ -112,9 +112,9 @@ impl StateMachineData {
     /// not possible here).
     pub fn verified_voters_for_peer(
         &self,
-        peer_kel_prefix: &cesr::Digest,
-        member_prefixes: &std::collections::HashSet<&cesr::Digest>,
-    ) -> std::collections::HashSet<cesr::Digest> {
+        peer_kel_prefix: &cesr::Digest256,
+        member_prefixes: &std::collections::HashSet<&cesr::Digest256>,
+    ) -> std::collections::HashSet<cesr::Digest256> {
         // Determine the most recent approved proposal action for this peer.
         // For each completed proposal (addition or removal), take the last record.
         // If it's not v0, it was withdrawn — skip it. Otherwise keep its created_at.
@@ -607,7 +607,7 @@ impl StateMachineData {
     }
 
     /// Count approval votes for a proposal.
-    pub fn approval_count(&self, proposal_prefix: &cesr::Digest) -> usize {
+    pub fn approval_count(&self, proposal_prefix: &cesr::Digest256) -> usize {
         self.votes
             .values()
             .filter(|v| v.proposal == *proposal_prefix && v.approve)
@@ -615,7 +615,7 @@ impl StateMachineData {
     }
 
     /// Get a pending proposal by ID.
-    pub fn get_proposal(&self, proposal_prefix: &cesr::Digest) -> Option<&PeerAdditionProposal> {
+    pub fn get_proposal(&self, proposal_prefix: &cesr::Digest256) -> Option<&PeerAdditionProposal> {
         self.pending_addition_proposals.get(proposal_prefix)
     }
 
@@ -714,8 +714,8 @@ impl StateMachineStore {
     /// checks anchor inline. Does NOT acquire the inner lock.
     pub async fn verify_member_anchoring(
         &self,
-        said: &cesr::Digest,
-        member_prefix: &cesr::Digest,
+        said: &cesr::Digest256,
+        member_prefix: &cesr::Digest256,
     ) -> Result<(), String> {
         if !self.config.is_trusted_prefix(member_prefix) {
             return Err(format!("Unknown member: {}", member_prefix));
@@ -791,7 +791,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 EntryPayload::Normal(request) => {
                     // For AddPeer, verify votes and KEL anchoring
                     if let FederationRequest::AddPeer(ref peer) = request {
-                        let member_prefixes: std::collections::HashSet<&cesr::Digest> =
+                        let member_prefixes: std::collections::HashSet<&cesr::Digest256> =
                             self.config.trusted_prefixes.iter().collect();
 
                         let candidate_voters =
@@ -905,7 +905,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
 
                     // For RemovePeer, verify removal proposal threshold and KEL anchoring
                     if let FederationRequest::RemovePeer(ref peer) = request {
-                        let member_prefixes: std::collections::HashSet<&cesr::Digest> =
+                        let member_prefixes: std::collections::HashSet<&cesr::Digest256> =
                             self.config.trusted_prefixes.iter().collect();
 
                         // Find a completed removal proposal, its threshold, and verify votes
@@ -1318,7 +1318,7 @@ mod tests {
         .unwrap()
     }
 
-    fn make_test_vote(proposal: &cesr::Digest, voter: &str, approve: bool) -> Vote {
+    fn make_test_vote(proposal: &cesr::Digest256, voter: &str, approve: bool) -> Vote {
         Vote::create(*proposal, test_digest(voter), approve).unwrap()
     }
 
@@ -1348,7 +1348,10 @@ mod tests {
     }
 
     /// Helper: submit a proposal, returns proposal_prefix
-    fn submit_proposal(sm: &mut StateMachineData, proposal: PeerAdditionProposal) -> cesr::Digest {
+    fn submit_proposal(
+        sm: &mut StateMachineData,
+        proposal: PeerAdditionProposal,
+    ) -> cesr::Digest256 {
         match sm.apply(FederationRequest::SubmitAdditionProposal(proposal)) {
             FederationResponse::ProposalCreated {
                 proposal_prefix, ..
@@ -1362,7 +1365,7 @@ mod tests {
         sm: &mut StateMachineData,
         peer_kel_prefix: &str,
         node_id: &str,
-    ) -> cesr::Digest {
+    ) -> cesr::Digest256 {
         let proposal = make_test_proposal(peer_kel_prefix, node_id, "KRegistryA");
         let proposal_prefix = submit_proposal(sm, proposal);
 
@@ -1381,14 +1384,14 @@ mod tests {
         proposal_prefix
     }
 
-    fn trusted_member_digests() -> Vec<cesr::Digest> {
+    fn trusted_member_digests() -> Vec<cesr::Digest256> {
         ["KRegistryA", "KRegistryB", "KRegistryC"]
             .into_iter()
             .map(test_digest)
             .collect()
     }
 
-    fn trusted_members(digests: &[cesr::Digest]) -> std::collections::HashSet<&cesr::Digest> {
+    fn trusted_members(digests: &[cesr::Digest256]) -> std::collections::HashSet<&cesr::Digest256> {
         digests.iter().collect()
     }
 
@@ -1904,11 +1907,11 @@ mod tests {
     #[test]
     fn test_verified_voters_ignores_untrusted_voter() {
         let mut sm = StateMachineData::new();
-        let member_digests: Vec<cesr::Digest> = ["KRegistryA", "KRegistryB"]
+        let member_digests: Vec<cesr::Digest256> = ["KRegistryA", "KRegistryB"]
             .into_iter()
             .map(test_digest)
             .collect();
-        let members: std::collections::HashSet<&cesr::Digest> = member_digests.iter().collect();
+        let members: std::collections::HashSet<&cesr::Digest256> = member_digests.iter().collect();
 
         let proposal = make_test_proposal("peer-1", "node-1", "KRegistryA");
         let proposal_prefix = submit_proposal(&mut sm, proposal);

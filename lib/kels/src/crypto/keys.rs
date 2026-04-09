@@ -133,9 +133,9 @@ impl ProviderConfig for HardwareProviderConfig {
 /// Implementors choose where to persist key state (filesystem, Keychain, CoreData, etc.).
 /// The provider decides the encoding — the store just handles opaque bytes.
 pub trait KeyStateStore: Send + Sync {
-    fn save(&self, key: &cesr::Digest, data: &[u8]) -> Result<(), KelsError>;
-    fn load(&self, key: &cesr::Digest) -> Result<Option<Vec<u8>>, KelsError>;
-    fn delete(&self, key: &cesr::Digest) -> Result<(), KelsError>;
+    fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError>;
+    fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError>;
+    fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError>;
 }
 
 /// Write a file and restrict its permissions to owner-only (0o600 on Unix).
@@ -180,7 +180,7 @@ impl FileKeyStateStore {
 }
 
 impl KeyStateStore for FileKeyStateStore {
-    fn save(&self, key: &cesr::Digest, data: &[u8]) -> Result<(), KelsError> {
+    fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError> {
         ensure_private_dir(&self.dir)?;
         let path = self.dir.join(format!("{}.keys.json", key));
         std::fs::write(&path, data)
@@ -195,7 +195,7 @@ impl KeyStateStore for FileKeyStateStore {
         Ok(())
     }
 
-    fn load(&self, key: &cesr::Digest) -> Result<Option<Vec<u8>>, KelsError> {
+    fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
         match std::fs::read(&path) {
             Ok(data) => Ok(Some(data)),
@@ -207,7 +207,7 @@ impl KeyStateStore for FileKeyStateStore {
         }
     }
 
-    fn delete(&self, key: &cesr::Digest) -> Result<(), KelsError> {
+    fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -268,7 +268,7 @@ pub trait KeyProvider: Send + Sync {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError>;
+    ) -> Result<(VerificationKey, cesr::Digest256, cesr::Digest256), KelsError>;
 
     // ==================== Query Methods ====================
 
@@ -288,12 +288,12 @@ pub trait KeyProvider: Send + Sync {
     // ==================== Rotation Operations ====================
 
     /// Prepares a key rotation. Returns the new current public key (what next will become).
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError>;
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest256), KelsError>;
 
     /// Prepares a recovery key rotation. Returns (current_recovery_pub, new_recovery_pub).
     async fn stage_recovery_rotation(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest), KelsError>;
+    ) -> Result<(VerificationKey, cesr::Digest256), KelsError>;
 
     /// Commits a staged key rotation (pending becomes active).
     async fn commit(&mut self) -> Result<(), KelsError>;
@@ -339,14 +339,14 @@ pub trait KeyProvider: Send + Sync {
     async fn save_state(
         &self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<(), KelsError>;
 
     /// Restore provider state from an opaque store. Returns true if state was found.
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError>;
 }
 
@@ -528,7 +528,7 @@ impl KeyProvider for SoftwareKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256, cesr::Digest256), KelsError> {
         let (public, private) = self.generate_signing_keypair()?;
         let (next_public, next_private) = self.generate_signing_keypair()?;
         let (recovery_public, recovery_private) = self.generate_recovery_keypair()?;
@@ -562,7 +562,7 @@ impl KeyProvider for SoftwareKeyProvider {
         self.recovery_keys.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -582,7 +582,7 @@ impl KeyProvider for SoftwareKeyProvider {
 
     async fn stage_recovery_rotation(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if !self.has_recovery().await {
             return Err(KelsError::NoRecoveryKey);
         }
@@ -669,7 +669,7 @@ impl KeyProvider for SoftwareKeyProvider {
     async fn save_state(
         &self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         let state = SoftwareKeyState {
             signing_algorithm: Some(self.signing_algorithm),
@@ -685,7 +685,7 @@ impl KeyProvider for SoftwareKeyProvider {
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
         let Some(data) = store.load(prefix)? else {
             return Ok(false);

@@ -8,7 +8,7 @@ use crate::{KelsError, SignedKeyEventPage};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityInfo {
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,9 +16,9 @@ pub struct IdentityInfo {
 pub struct IdentityStatus {
     pub initialized: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<cesr::Digest>,
+    pub prefix: Option<cesr::Digest256>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_said: Option<cesr::Digest>,
+    pub last_said: Option<cesr::Digest256>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_key_handle: Option<String>,
 }
@@ -47,15 +47,15 @@ pub enum ManageKelOperation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManageKelRequest {
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     pub operation: ManageKelOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManageKelResponse {
-    pub prefix: cesr::Digest,
-    pub said: cesr::Digest,
+    pub prefix: cesr::Digest256,
+    pub said: cesr::Digest256,
     pub event_kind: crate::EventKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation_number: Option<usize>,
@@ -65,13 +65,13 @@ pub struct ManageKelResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnchorRequest {
-    said: cesr::Digest,
+    said: cesr::Digest256,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnchorResponse {
-    event_said: cesr::Digest,
+    event_said: cesr::Digest256,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,7 +138,7 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn get_prefix(&self) -> Result<cesr::Digest, KelsError> {
+    pub async fn get_prefix(&self) -> Result<cesr::Digest256, KelsError> {
         let url = format!("{}/api/v1/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
         let info: IdentityInfo = self.parse_response(response).await?;
@@ -158,7 +158,7 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn anchor(&self, said: &cesr::Digest) -> Result<cesr::Digest, KelsError> {
+    pub async fn anchor(&self, said: &cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
         let url = format!("{}/api/v1/identity/anchor", self.base_url);
 
         let response = self

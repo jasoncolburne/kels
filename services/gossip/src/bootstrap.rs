@@ -174,7 +174,7 @@ impl BootstrapSync {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
-            let mut cursor: Option<cesr::Digest> = None;
+            let mut cursor: Option<cesr::Digest256> = None;
             loop {
                 let page = match remote_client
                     .fetch_sad_objects(self.signer.as_ref(), cursor.as_ref(), self.config.page_size)
@@ -251,7 +251,7 @@ impl BootstrapSync {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
-            let mut cursor: Option<cesr::Digest> = None;
+            let mut cursor: Option<cesr::Digest256> = None;
             loop {
                 let page = match remote_client
                     .fetch_sad_pointer_prefixes(
@@ -284,7 +284,7 @@ impl BootstrapSync {
                     // Forward the full chain (paginated) from remote to local
                     let since_digest = local_said
                         .as_deref()
-                        .and_then(|s| cesr::Digest::from_qb64(s).ok());
+                        .and_then(|s| cesr::Digest256::from_qb64(s).ok());
                     if let Err(e) = kels_core::forward_sad_pointer(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
@@ -406,13 +406,15 @@ impl BootstrapSync {
         // Step 1: Collect all unique prefixes from all peers that need syncing.
         // Track (since_said, source_kels_url, source_peer_kel_prefix) per kel prefix.
         info!("Collecting prefixes from {} peer(s)...", peers.len());
-        let mut all_prefixes: HashMap<cesr::Digest, (Option<cesr::Digest>, String, cesr::Digest)> =
-            HashMap::new();
+        let mut all_prefixes: HashMap<
+            cesr::Digest256,
+            (Option<cesr::Digest256>, String, cesr::Digest256),
+        > = HashMap::new();
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
             let peer_client = KelsClient::new(&peer_url)?;
-            let mut cursor: Option<cesr::Digest> = None;
+            let mut cursor: Option<cesr::Digest256> = None;
 
             loop {
                 match peer_client
@@ -521,7 +523,7 @@ impl BootstrapSync {
         &self,
         remote_state: &PrefixState,
         local_client: &KelsClient,
-    ) -> Option<Option<cesr::Digest>> {
+    ) -> Option<Option<cesr::Digest256>> {
         match local_client
             .fetch_effective_said(&remote_state.prefix)
             .await

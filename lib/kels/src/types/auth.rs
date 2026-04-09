@@ -21,7 +21,7 @@ pub fn validate_timestamp(timestamp: i64, max_age_secs: i64) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct SignedRequest<T> {
     pub payload: T,
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     pub signature: cesr::Signature,
 }
 

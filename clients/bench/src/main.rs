@@ -35,8 +35,8 @@ fn parse_algorithm(algorithm: &str) -> VerificationKeyCode {
     }
 }
 
-fn test_anchor(name: &str) -> cesr::Digest {
-    cesr::Digest::blake3_256(name.as_bytes())
+fn test_anchor(name: &str) -> cesr::Digest256 {
+    cesr::Digest256::blake3_256(name.as_bytes())
 }
 
 const DEFAULT_KELS_URL: &str = "http://kels.node-a.kels";
@@ -191,7 +191,7 @@ impl Stats {
 
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
-    let prefix_digest = cesr::Digest::from_qb64(prefix)?;
+    let prefix_digest = cesr::Digest256::from_qb64(prefix)?;
     let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
     let events = kels_core::resolve_key_events(
         &prefix_digest,

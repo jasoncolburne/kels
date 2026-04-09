@@ -26,7 +26,7 @@ use crate::{
 pub struct MergeOutcome {
     pub result: KelMergeResult,
     pub diverged_at: Option<u64>,
-    pub tip_said: Option<cesr::Digest>,
+    pub tip_said: Option<cesr::Digest256>,
     /// Number of new events actually inserted (excludes duplicates).
     pub new_event_count: usize,
 }
@@ -50,7 +50,7 @@ impl MergeOutcome {
 /// derive macro).
 pub struct MergeTransaction<T: TransactionExecutor> {
     tx: T,
-    prefix: cesr::Digest,
+    prefix: cesr::Digest256,
     events_table: &'static str,
     signatures_table: &'static str,
     recovery_table: &'static str,
@@ -63,7 +63,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tx: T,
-        prefix: cesr::Digest,
+        prefix: cesr::Digest256,
         events_table: &'static str,
         signatures_table: &'static str,
         recovery_table: &'static str,
@@ -83,11 +83,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
     }
 
-    pub fn prefix(&self) -> &cesr::Digest {
+    pub fn prefix(&self) -> &cesr::Digest256 {
         &self.prefix
     }
 
-    fn prefix_digest(&self) -> Result<cesr::Digest, KelsError> {
+    fn prefix_digest(&self) -> Result<cesr::Digest256, KelsError> {
         Ok(self.prefix)
     }
 
@@ -118,7 +118,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let query =
             Query::<EventSignature>::for_table(self.signatures_table).r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
+        let mut sig_map: HashMap<cesr::Digest256, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
             sig_map.entry(sig.event_said).or_default().push(sig);
         }
@@ -160,8 +160,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Check which of the given SAIDs already exist in the database.
     pub async fn existing_saids(
         &mut self,
-        saids: &[cesr::Digest],
-    ) -> Result<HashSet<cesr::Digest>, KelsError> {
+        saids: &[cesr::Digest256],
+    ) -> Result<HashSet<cesr::Digest256>, KelsError> {
         if saids.is_empty() {
             return Ok(HashSet::new());
         }
@@ -176,7 +176,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Get a single signed event by SAID.
     pub async fn get_event_by_said(
         &mut self,
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
     ) -> Result<Option<SignedKeyEvent>, KelsError> {
         let said_str = said.qb64();
         let query = Query::<KeyEvent>::for_table(self.events_table)
@@ -278,7 +278,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Delete events by SAID.
     pub async fn delete_events_by_said(
         &mut self,
-        saids: Vec<cesr::Digest>,
+        saids: Vec<cesr::Digest256>,
     ) -> Result<u64, KelsError> {
         if saids.is_empty() {
             return Ok(0);
@@ -302,8 +302,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// chain fits in one page.
     async fn archive_adversary_events(
         &mut self,
-        recovery_said: &cesr::Digest,
-        adversary_saids: Vec<cesr::Digest>,
+        recovery_said: &cesr::Digest256,
+        adversary_saids: Vec<cesr::Digest256>,
     ) -> Result<(), KelsError> {
         if adversary_saids.is_empty() {
             return Ok(());
@@ -356,10 +356,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ///   use `find_adversary_event` to identify the adversary branch.
     async fn archive_adversary_chain(
         &mut self,
-        recovery_said: &cesr::Digest,
+        recovery_said: &cesr::Digest256,
         first_serial: u64,
         diverged_at: u64,
-        rec_previous: &cesr::Digest,
+        rec_previous: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         let adversary_saids = if first_serial <= diverged_at {
             // Owner has no events at divergence — all existing events from
@@ -383,13 +383,13 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn collect_all_adversary_saids(
         &mut self,
         diverged_at: u64,
-        rec_previous: &cesr::Digest,
-    ) -> Result<Vec<cesr::Digest>, KelsError> {
+        rec_previous: &cesr::Digest256,
+    ) -> Result<Vec<cesr::Digest256>, KelsError> {
         // Build owner SAID set by walking backward from rec_previous.
         // Since rec/rot haven't been inserted yet, only pre-existing owner
         // events are in the DB.
-        let mut owner_saids: HashSet<cesr::Digest> = HashSet::new();
-        let mut walk: Option<cesr::Digest> = Some(*rec_previous);
+        let mut owner_saids: HashSet<cesr::Digest256> = HashSet::new();
+        let mut walk: Option<cesr::Digest256> = Some(*rec_previous);
         for _ in 0..crate::MINIMUM_PAGE_SIZE {
             let Some(said) = walk.take() else { break };
             let said_str = said.qb64();
@@ -427,8 +427,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn collect_adversary_chain_saids(
         &mut self,
         diverged_at: u64,
-        rec_previous: &cesr::Digest,
-    ) -> Result<Vec<cesr::Digest>, KelsError> {
+        rec_previous: &cesr::Digest256,
+    ) -> Result<Vec<cesr::Digest256>, KelsError> {
         let (adversary, adversary_has_chain) =
             self.find_adversary_event(diverged_at, rec_previous).await?;
 
@@ -681,7 +681,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Filter duplicates
-        let submitted_saids: Vec<cesr::Digest> = events.iter().map(|e| e.event.said).collect();
+        let submitted_saids: Vec<cesr::Digest256> = events.iter().map(|e| e.event.said).collect();
         let existing = self.existing_saids(&submitted_saids).await?;
         let new_events: Vec<SignedKeyEvent> = events
             .iter()
@@ -1106,7 +1106,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn find_adversary_event(
         &mut self,
         diverged_at: u64,
-        rec_previous: &cesr::Digest,
+        rec_previous: &cesr::Digest256,
     ) -> Result<(SignedKeyEvent, bool), KelsError> {
         let (events, _) = self
             .get_signed_history_since(diverged_at, crate::page_size() as u64)
@@ -1178,7 +1178,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         first_serial: u64,
         diverged_at: u64,
-        rec_previous: &cesr::Digest,
+        rec_previous: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         if first_serial <= diverged_at {
             // Owner has no events at the divergence serial — all events
@@ -1228,10 +1228,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// an establishment event.
     async fn trace_establishment_backward(
         &mut self,
-        start_said: &cesr::Digest,
+        start_said: &cesr::Digest256,
     ) -> Result<SignedKeyEvent, KelsError> {
         let max_steps = crate::max_pages() * crate::page_size();
-        let mut current_said: Option<cesr::Digest> = Some(*start_said);
+        let mut current_said: Option<cesr::Digest256> = Some(*start_said);
 
         for _ in 0..max_steps {
             let Some(said) = current_said.take() else {
@@ -1292,7 +1292,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 impl<T: TransactionExecutor> PageLoader for MergeTransaction<T> {
     async fn load_page(
         &mut self,
-        _prefix: &cesr::Digest,
+        _prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {

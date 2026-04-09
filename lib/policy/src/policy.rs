@@ -26,7 +26,7 @@ use crate::{
 #[crate_new]
 pub struct Policy {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     pub expression: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poison: Option<String>,
@@ -74,7 +74,7 @@ impl Policy {
         let immune_field = if immune { Some(true) } else { None };
 
         let mut policy = Self {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             expression: canonical,
             poison: canonical_poison,
             immune: immune_field,
@@ -105,7 +105,7 @@ impl Policy {
 
     /// Collect all endorser prefixes referenced in the expression.
     /// Includes both `endorse(PREFIX)` prefixes and `delegate(_, DELEGATE)` prefixes.
-    pub fn endorser_prefixes(&self) -> Result<BTreeSet<cesr::Digest>, PolicyError> {
+    pub fn endorser_prefixes(&self) -> Result<BTreeSet<cesr::Digest256>, PolicyError> {
         let ast = self.parse()?;
         let mut prefixes = BTreeSet::new();
         collect_endorser_prefixes(&ast, &mut prefixes);
@@ -116,7 +116,7 @@ impl Policy {
     }
 
     /// Collect all nested policy SAIDs referenced in the expression.
-    pub fn referenced_policy_saids(&self) -> Result<BTreeSet<cesr::Digest>, PolicyError> {
+    pub fn referenced_policy_saids(&self) -> Result<BTreeSet<cesr::Digest256>, PolicyError> {
         let ast = self.parse()?;
         let mut saids = BTreeSet::new();
         collect_policy_saids(&ast, &mut saids);
@@ -135,7 +135,7 @@ impl Policy {
             .parse_poison()?
             .map(|poison_ast| poison_ast.compact().to_string());
         let mut policy = Self {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             expression: compacted.to_string(),
             poison: compacted_poison,
             immune: self.immune,
@@ -145,14 +145,14 @@ impl Policy {
     }
 }
 
-fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest>) {
+fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest256>) {
     match node {
         PolicyNode::Endorse(prefix) => {
             prefixes.insert(*prefix);
         }
         PolicyNode::Delegate(delegator, delegate) => {
             prefixes.insert(*delegator);
-            if *delegate != cesr::Digest::default() {
+            if *delegate != cesr::Digest256::default() {
                 prefixes.insert(*delegate);
             }
         }
@@ -165,7 +165,7 @@ fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Di
     }
 }
 
-fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<cesr::Digest>) {
+fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<cesr::Digest256>) {
     match node {
         PolicyNode::Endorse(_) | PolicyNode::Delegate(_, _) => {}
         PolicyNode::Weighted(_, pairs) => {

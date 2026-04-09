@@ -16,7 +16,7 @@ pub const ENCAP_KEY_KIND: &str = "kels/exchange/v1/keys/mlkem";
 #[serde(rename_all = "camelCase")]
 pub struct EncapsulationKeyPublication {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// Algorithm identifier: `"ML-KEM-768"` or `"ML-KEM-1024"`.
     pub algorithm: String,
     /// CESR-encoded ML-KEM encapsulation key.
@@ -39,21 +39,21 @@ mod tests {
         let (ek, _dk) = cesr::generate_ml_kem_768().unwrap();
 
         let mut pub1 = EncapsulationKeyPublication {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             algorithm: ML_KEM_768.to_string(),
             encapsulation_key: ek.clone(),
         };
         pub1.derive_said().unwrap();
 
         let mut pub2 = EncapsulationKeyPublication {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             algorithm: ML_KEM_768.to_string(),
             encapsulation_key: ek,
         };
         pub2.derive_said().unwrap();
 
         assert_eq!(pub1.said, pub2.said);
-        assert_ne!(pub1.said, cesr::Digest::default());
+        assert_ne!(pub1.said, cesr::Digest256::default());
     }
 
     #[test]
@@ -62,14 +62,14 @@ mod tests {
         let (ek_b, _dk_b) = cesr::generate_ml_kem_768().unwrap();
 
         let mut pub1 = EncapsulationKeyPublication {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             algorithm: ML_KEM_768.to_string(),
             encapsulation_key: ek_a,
         };
         pub1.derive_said().unwrap();
 
         let mut pub2 = EncapsulationKeyPublication {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             algorithm: ML_KEM_768.to_string(),
             encapsulation_key: ek_b,
         };

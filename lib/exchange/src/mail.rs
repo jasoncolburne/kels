@@ -10,15 +10,15 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct MailMessage {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// Sender's KEL prefix (from authenticated request).
-    pub sender_kel_prefix: cesr::Digest,
+    pub sender_kel_prefix: cesr::Digest256,
     /// Node prefix where the envelope blob lives.
-    pub source_node_prefix: cesr::Digest,
+    pub source_node_prefix: cesr::Digest256,
     /// Recipient's KEL prefix.
-    pub recipient_kel_prefix: cesr::Digest,
+    pub recipient_kel_prefix: cesr::Digest256,
     /// Blake3 digest of the ESSR envelope blob (content-addressable MinIO key).
-    pub blob_digest: cesr::Digest,
+    pub blob_digest: cesr::Digest256,
     /// Size of the ESSR envelope blob in bytes.
     pub blob_size: i64,
     #[created_at]
@@ -36,7 +36,7 @@ pub enum MailAnnouncement {
     /// Mail message removed (blob deleted at source).
     Removal {
         /// SAID of the removed mail message.
-        said: cesr::Digest,
+        said: cesr::Digest256,
     },
 }
 
@@ -44,8 +44,8 @@ pub enum MailAnnouncement {
 pub const MAIL_GOSSIP_TOPIC: &str = "kels/mail/v1";
 
 /// Compute the Blake3 digest of a blob, returned as a CESR Digest.
-pub fn compute_blob_digest(blob: &[u8]) -> cesr::Digest {
-    cesr::Digest::blake3_256(blob)
+pub fn compute_blob_digest(blob: &[u8]) -> cesr::Digest256 {
+    cesr::Digest256::blake3_256(blob)
 }
 
 // ==================== Mail API Request/Response Types ====================
@@ -55,8 +55,8 @@ pub fn compute_blob_digest(blob: &[u8]) -> cesr::Digest {
 #[serde(rename_all = "camelCase")]
 pub struct SendRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub recipient_kel_prefix: cesr::Digest,
+    pub nonce: cesr::Nonce256,
+    pub recipient_kel_prefix: cesr::Digest256,
     /// Base64-encoded ESSR envelope blob.
     pub blob: String,
 }
@@ -66,7 +66,7 @@ pub struct SendRequest {
 #[serde(rename_all = "camelCase")]
 pub struct InboxRequest {
     pub timestamp: i64,
-    pub nonce: String,
+    pub nonce: cesr::Nonce256,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
@@ -83,8 +83,8 @@ pub struct InboxResponse {
 #[serde(rename_all = "camelCase")]
 pub struct FetchRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub mail_said: cesr::Digest,
+    pub nonce: cesr::Nonce256,
+    pub mail_said: cesr::Digest256,
 }
 
 /// Request payload for acknowledging (deleting) messages.
@@ -92,8 +92,8 @@ pub struct FetchRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AckRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub saids: Vec<cesr::Digest>,
+    pub nonce: cesr::Nonce256,
+    pub saids: Vec<cesr::Digest256>,
 }
 
 #[cfg(test)]
@@ -103,14 +103,14 @@ mod tests {
 
     use super::*;
 
-    fn test_digest(label: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(label.as_bytes())
+    fn test_digest(label: &str) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label.as_bytes())
     }
 
     #[test]
     fn mail_message_said_derivation() {
         let mut msg = MailMessage {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             sender_kel_prefix: test_digest("sender-prefix"),
             source_node_prefix: test_digest("node-prefix"),
             recipient_kel_prefix: test_digest("recipient-prefix"),
@@ -120,7 +120,7 @@ mod tests {
             expires_at: StorageDatetime::now(),
         };
         msg.derive_said().unwrap();
-        assert_ne!(msg.said, cesr::Digest::default());
+        assert_ne!(msg.said, cesr::Digest256::default());
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
         let d1 = compute_blob_digest(data);
         let d2 = compute_blob_digest(data);
         assert_eq!(d1, d2);
-        assert_ne!(d1, cesr::Digest::default());
+        assert_ne!(d1, cesr::Digest256::default());
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub struct SignResult {
     /// CESR qb64 encoded signature
     pub signature: cesr::Signature,
     /// The signer's peer identity (KELS prefix)
-    pub peer_kel_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest256,
 }
 
 /// Trait for signing requests.
@@ -214,7 +214,7 @@ impl KelsRegistryClient {
     }
 
     /// Fetch the registry's own prefix from federation status.
-    pub async fn fetch_registry_prefix(&self) -> Result<cesr::Digest, KelsError> {
+    pub async fn fetch_registry_prefix(&self) -> Result<cesr::Digest256, KelsError> {
         let url = format!("{}/api/v1/federation/status", self.base_url);
         let response = self.client.get(&url).send().await?;
 
@@ -440,7 +440,7 @@ where
 
 /// Sync a registry member KEL to a local store, trying each registry URL until one succeeds.
 pub async fn sync_member_kel(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     registry_urls: &[String],
     sink: &(dyn crate::PagedKelSink + Sync),
 ) {
@@ -526,7 +526,7 @@ enum ProposalCandidateRef<'a> {
 /// Uses a `KelStore` for anchor verification, with HTTP re-sync on cache miss.
 pub async fn verify_peer_votes(
     store: &(dyn crate::KelStore + Sync),
-    peer_kel_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest256,
     proposals_response: &Option<CompletedProposalsResponse>,
     trusted_prefixes: &HashSet<&str>,
     registry_urls: &[String],
@@ -645,8 +645,8 @@ pub async fn verify_peer_votes(
 /// Verify anchoring from a local store, retrying with HTTP re-sync if needed.
 async fn verify_anchors_from_store(
     store: &(dyn crate::KelStore + Sync),
-    prefix: &cesr::Digest,
-    saids: impl IntoIterator<Item = cesr::Digest> + Clone,
+    prefix: &cesr::Digest256,
+    saids: impl IntoIterator<Item = cesr::Digest256> + Clone,
     registry_urls: &[String],
 ) -> Result<Option<KelVerification>, KelsError> {
     // First try from local store
@@ -691,11 +691,11 @@ async fn verify_anchors_from_store(
 #[allow(clippy::too_many_arguments)]
 async fn verify_proposal_dag_standalone<'a>(
     store: &(dyn crate::KelStore + Sync),
-    peer_kel_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest256,
     kind: &str,
     structural_result: Result<(), KelsError>,
-    proposer: Option<&cesr::Digest>,
-    record_saids: impl Iterator<Item = &'a cesr::Digest>,
+    proposer: Option<&cesr::Digest256>,
+    record_saids: impl Iterator<Item = &'a cesr::Digest256>,
     votes: &[Vote],
     threshold: usize,
     member_prefixes: &HashSet<&str>,
@@ -720,7 +720,7 @@ async fn verify_proposal_dag_standalone<'a>(
         return false;
     }
 
-    let mut proposer_saids: Vec<cesr::Digest> = record_saids.cloned().collect();
+    let mut proposer_saids: Vec<cesr::Digest256> = record_saids.cloned().collect();
 
     let eligible_votes: Vec<&Vote> = votes
         .iter()
@@ -764,7 +764,7 @@ async fn verify_proposal_dag_standalone<'a>(
         }
     }
 
-    let mut verified_voters: HashSet<cesr::Digest> = HashSet::new();
+    let mut verified_voters: HashSet<cesr::Digest256> = HashSet::new();
     if proposer_voted {
         verified_voters.insert(*proposer);
     }
@@ -831,14 +831,14 @@ pub async fn peers_sorted_by_latency(
     // Fetch and verify registry member KELs to the local store
     let sink = crate::KelStoreSink(store);
     for prefix_str in &trusted {
-        if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
+        if let Ok(prefix) = cesr::Digest256::from_qb64(prefix_str) {
             sync_member_kel(&prefix, urls, &sink).await;
         }
     }
 
     // Verify each trusted prefix from store
     for prefix_str in &trusted {
-        if let Ok(prefix) = cesr::Digest::from_qb64(prefix_str) {
+        if let Ok(prefix) = cesr::Digest256::from_qb64(prefix_str) {
             let mut loader = crate::StorePageLoader::new(store);
             let _ = crate::completed_verification(
                 &mut loader,
@@ -1003,7 +1003,7 @@ mod tests {
 
     // ==================== Peers Tests ====================
 
-    fn make_test_peer(peer_kel_prefix: &cesr::Digest, node_id: &str, active: bool) -> Peer {
+    fn make_test_peer(peer_kel_prefix: &cesr::Digest256, node_id: &str, active: bool) -> Peer {
         Peer::create(
             *peer_kel_prefix,
             node_id.to_string(),

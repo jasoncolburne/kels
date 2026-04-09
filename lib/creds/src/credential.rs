@@ -23,12 +23,12 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Compactable<T> {
-    Said(cesr::Digest),
+    Said(cesr::Digest256),
     Expanded(T),
 }
 
 impl<T> Compactable<T> {
-    pub fn as_said(&self) -> Option<cesr::Digest> {
+    pub fn as_said(&self) -> Option<cesr::Digest256> {
         match self {
             Compactable::Said(s) => Some(*s),
             Compactable::Expanded(_) => None,
@@ -68,14 +68,14 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
-    pub said: cesr::Digest,
-    pub schema: cesr::Digest,
-    pub policy: cesr::Digest,
+    pub said: cesr::Digest256,
+    pub schema: cesr::Digest256,
+    pub policy: cesr::Digest256,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<cesr::Digest>,
+    pub subject: Option<cesr::Digest256>,
     pub issued_at: StorageDatetime,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<String>,
+    pub nonce: Option<cesr::Nonce256>,
     pub claims: Compactable<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<StorageDatetime>,
@@ -95,7 +95,7 @@ impl<T: Claims> Credential<T> {
     pub async fn build(
         schema: &Schema,
         policy: &Policy,
-        subject: Option<cesr::Digest>,
+        subject: Option<cesr::Digest256>,
         claims: T,
         unique: bool,
         edges: Option<Edges>,
@@ -104,14 +104,10 @@ impl<T: Claims> Credential<T> {
     ) -> Result<(Self, String), CredentialError> {
         let issued_at = StorageDatetime::now();
 
-        let nonce = if unique {
-            Some(generate_nonce().to_string())
-        } else {
-            None
-        };
+        let nonce = if unique { Some(generate_nonce()) } else { None };
 
         let credential = Self {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             schema: schema.said,
             policy: policy.said,
             subject,
@@ -163,7 +159,7 @@ impl<T: Claims> Credential<T> {
         &self,
         schema: &Schema,
         sad_store: &dyn SADStore,
-    ) -> Result<cesr::Digest, CredentialError> {
+    ) -> Result<cesr::Digest256, CredentialError> {
         let (compacted_said, chunks) = self.compact(schema)?;
         sad_store.store_chunks(&chunks).await?;
         Ok(compacted_said)
@@ -175,7 +171,7 @@ impl<T: Claims> Credential<T> {
     pub fn compact(
         &self,
         schema: &Schema,
-    ) -> Result<(cesr::Digest, HashMap<String, serde_json::Value>), CredentialError> {
+    ) -> Result<(cesr::Digest256, HashMap<String, serde_json::Value>), CredentialError> {
         if self.schema != schema.said {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
@@ -212,13 +208,13 @@ impl<T: Claims> Credential<T> {
         .await
     }
 
-    fn said_from_value(value: serde_json::Value) -> Result<cesr::Digest, CredentialError> {
+    fn said_from_value(value: serde_json::Value) -> Result<cesr::Digest256, CredentialError> {
         let s = value.as_str().ok_or_else(|| {
             CredentialError::CompactionError(
                 "compact_value did not produce a SAID string".to_string(),
             )
         })?;
-        cesr::Digest::from_qb64(s).map_err(|e| {
+        cesr::Digest256::from_qb64(s).map_err(|e| {
             CredentialError::CompactionError(format!("invalid CESR SAID from compaction: {e}"))
         })
     }
@@ -246,7 +242,7 @@ mod tests {
     #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
     struct TestClaims {
         #[said]
-        said: cesr::Digest,
+        said: cesr::Digest256,
         name: String,
         age: u32,
     }
@@ -286,7 +282,7 @@ mod tests {
         .unwrap()
     }
 
-    fn test_policy(prefix: cesr::Digest) -> Policy {
+    fn test_policy(prefix: cesr::Digest256) -> Policy {
         Policy::build(&format!("endorse({prefix})"), None, false).unwrap()
     }
 
@@ -557,7 +553,7 @@ mod tests {
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
-        cesr::Digest,
+        cesr::Digest256,
         Arc<FileKelStore>,
         tempfile::TempDir,
     ) {
@@ -580,7 +576,7 @@ mod tests {
     }
 
     async fn credential_for_prefix(
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> (Credential<TestClaims>, String, Policy) {
         let policy = test_policy(*prefix);
         let (cred, said) = Credential::build(
@@ -619,7 +615,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -683,7 +679,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -729,7 +725,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -777,7 +773,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -817,7 +813,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -862,7 +858,7 @@ mod tests {
         {
             use cesr::Matter;
             builder
-                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said).unwrap())
                 .await
                 .unwrap();
         }
@@ -924,7 +920,7 @@ mod tests {
         {
             use cesr::Matter;
             builder_a
-                .interact(&cesr::Digest::from_qb64(&compacted_said_a).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said_a).unwrap())
                 .await
                 .unwrap();
         }
@@ -937,7 +933,7 @@ mod tests {
         let edge = Edge::create(
             cred_a.schema,
             Some(policy_a.said),
-            Some(cesr::Digest::from_qb64(&compacted_said_a).unwrap()),
+            Some(cesr::Digest256::from_qb64(&compacted_said_a).unwrap()),
             None,
         )
         .unwrap();
@@ -1009,7 +1005,7 @@ mod tests {
         {
             use cesr::Matter;
             builder_b
-                .interact(&cesr::Digest::from_qb64(&compacted_said_b).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_said_b).unwrap())
                 .await
                 .unwrap();
         }
@@ -1115,7 +1111,7 @@ mod tests {
         {
             use cesr::Matter;
             builder_root
-                .interact(&cesr::Digest::from_qb64(&compacted_root).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_root).unwrap())
                 .await
                 .unwrap();
         }
@@ -1174,7 +1170,7 @@ mod tests {
         let edge_to_root = Edge::create(
             cred_root.schema,
             Some(root_policy.said),
-            Some(cesr::Digest::from_qb64(&compacted_root).unwrap()),
+            Some(cesr::Digest256::from_qb64(&compacted_root).unwrap()),
             None,
         )
         .unwrap();
@@ -1198,7 +1194,7 @@ mod tests {
         {
             use cesr::Matter;
             builder_mid
-                .interact(&cesr::Digest::from_qb64(&compacted_mid).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_mid).unwrap())
                 .await
                 .unwrap();
         }
@@ -1208,7 +1204,7 @@ mod tests {
         let edge_to_mid = Edge::create(
             cred_mid.schema,
             Some(mid_policy.said),
-            Some(cesr::Digest::from_qb64(&compacted_mid).unwrap()),
+            Some(cesr::Digest256::from_qb64(&compacted_mid).unwrap()),
             None,
         )
         .unwrap();
@@ -1232,7 +1228,7 @@ mod tests {
         {
             use cesr::Matter;
             builder_leaf
-                .interact(&cesr::Digest::from_qb64(&compacted_leaf).unwrap())
+                .interact(&cesr::Digest256::from_qb64(&compacted_leaf).unwrap())
                 .await
                 .unwrap();
         }

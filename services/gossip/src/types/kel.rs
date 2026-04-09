@@ -13,16 +13,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct KelAnnouncement {
     /// The KEL prefix that was updated
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     /// The SAID of the latest event
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// The peer prefix of the node that stored this event
-    pub origin: cesr::Digest,
+    pub origin: cesr::Digest256,
 }
 
 impl KelAnnouncement {
     /// Parse from Redis pub/sub message format "{prefix}:{said}"
-    pub fn from_pubsub_message(message: &str, origin: &cesr::Digest) -> Option<Self> {
+    pub fn from_pubsub_message(message: &str, origin: &cesr::Digest256) -> Option<Self> {
         let (prefix_str, said_str) = message.split_once(':')?;
 
         // Empty SAID means deletion - skip
@@ -30,8 +30,8 @@ impl KelAnnouncement {
             return None;
         }
 
-        let prefix = cesr::Digest::from_qb64(prefix_str).ok()?;
-        let said = cesr::Digest::from_qb64(said_str).ok()?;
+        let prefix = cesr::Digest256::from_qb64(prefix_str).ok()?;
+        let said = cesr::Digest256::from_qb64(said_str).ok()?;
 
         Some(Self {
             prefix,

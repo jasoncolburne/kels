@@ -33,7 +33,7 @@ pub async fn run(
     database_url: &str,
     redis_url: Option<&str>,
     kels_url: &str,
-    node_prefix: &cesr::Digest,
+    node_prefix: &cesr::Digest256,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to database");
     let repo = MailRepository::connect(database_url)

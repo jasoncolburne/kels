@@ -17,7 +17,7 @@ const TRUSTED_REGISTRY_MEMBERS: &str = env!("TRUSTED_REGISTRY_MEMBERS");
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrustedMember {
     id: FederationNodeId,
-    prefix: cesr::Digest,
+    prefix: cesr::Digest256,
     active: bool,
 }
 
@@ -27,7 +27,7 @@ pub struct FederationMember {
     /// Explicit Raft node ID.
     pub id: FederationNodeId,
     /// Registry identity prefix (KEL prefix).
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     /// Registry HTTP URL.
     pub url: String,
 }
@@ -36,19 +36,19 @@ pub struct FederationMember {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationConfig {
     /// This registry's identity prefix.
-    pub self_prefix: cesr::Digest,
+    pub self_prefix: cesr::Digest256,
     /// Active federation members (including self).
     pub members: Vec<FederationMember>,
     /// All trusted prefixes (active + inactive), for historical verification.
-    pub trusted_prefixes: Vec<cesr::Digest>,
+    pub trusted_prefixes: Vec<cesr::Digest256>,
 }
 
 impl FederationConfig {
     /// Create a new federation configuration.
     pub fn new(
-        self_prefix: cesr::Digest,
+        self_prefix: cesr::Digest256,
         members: Vec<FederationMember>,
-        trusted_prefixes: Vec<cesr::Digest>,
+        trusted_prefixes: Vec<cesr::Digest256>,
     ) -> Self {
         Self {
             self_prefix,
@@ -84,7 +84,7 @@ impl FederationConfig {
             Ok(p) if !p.is_empty() => p,
             _ => return Ok(None), // Federation not configured
         };
-        let self_prefix = cesr::Digest::from_qb64(&self_prefix_str).map_err(|e| {
+        let self_prefix = cesr::Digest256::from_qb64(&self_prefix_str).map_err(|e| {
             FederationError::ConfigError(format!(
                 "Invalid CESR digest for FEDERATION_SELF_PREFIX '{}': {}",
                 self_prefix_str, e
@@ -116,7 +116,7 @@ impl FederationConfig {
         }
 
         // Collect all trusted prefixes (active + inactive)
-        let trusted_prefixes: Vec<cesr::Digest> =
+        let trusted_prefixes: Vec<cesr::Digest256> =
             trusted_members.iter().map(|m| m.prefix).collect();
 
         // Parse runtime URLs
@@ -170,17 +170,17 @@ impl FederationConfig {
     }
 
     /// Get member by prefix.
-    pub fn member_by_prefix(&self, prefix: &cesr::Digest) -> Option<&FederationMember> {
+    pub fn member_by_prefix(&self, prefix: &cesr::Digest256) -> Option<&FederationMember> {
         self.members.iter().find(|m| m.prefix == *prefix)
     }
 
     /// Check if a prefix is an active federation member.
-    pub fn is_member(&self, prefix: &cesr::Digest) -> bool {
+    pub fn is_member(&self, prefix: &cesr::Digest256) -> bool {
         self.members.iter().any(|m| m.prefix == *prefix)
     }
 
     /// Check if a prefix is a trusted prefix (active or inactive).
-    pub fn is_trusted_prefix(&self, prefix: &cesr::Digest) -> bool {
+    pub fn is_trusted_prefix(&self, prefix: &cesr::Digest256) -> bool {
         self.trusted_prefixes.contains(prefix)
     }
 
@@ -205,7 +205,7 @@ impl FederationConfig {
     }
 
     /// Get all member prefixes.
-    pub fn member_prefixes(&self) -> Vec<cesr::Digest> {
+    pub fn member_prefixes(&self) -> Vec<cesr::Digest256> {
         self.members.iter().map(|m| m.prefix).collect()
     }
 }
@@ -462,7 +462,7 @@ mod tests {
             .collect()
     }
 
-    fn make_prefixes(count: usize) -> Vec<cesr::Digest> {
+    fn make_prefixes(count: usize) -> Vec<cesr::Digest256> {
         (0..count)
             .map(|i| test_digest(&format!("KRegistry{}", i)))
             .collect()
