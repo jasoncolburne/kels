@@ -1,6 +1,6 @@
 //! PostgreSQL Repository for KELS SADStore
 
-use cesr::{Matter, VerificationKey};
+use cesr::VerificationKey;
 
 use kels_core::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
 use verifiable_storage::{
@@ -318,11 +318,11 @@ impl SadPointerRepository {
     }
 
     /// Check if a pointer with the given SAID exists.
-    pub async fn exists(&self, said: &str) -> Result<bool, StorageError> {
+    pub async fn exists(&self, said: &cesr::Digest) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-            .eq("said", said)
+            .eq("said", said.as_ref())
             .limit(1);
         Ok(!self.pool.fetch(query).await?.is_empty())
     }
@@ -506,7 +506,7 @@ impl SadPointerRepository {
         &self,
         prefix: &cesr::Digest,
     ) -> Result<Option<(cesr::Digest, bool)>, StorageError> {
-        let latest = self.get_latest(&prefix).await?;
+        let latest = self.get_latest(prefix).await?;
         let Some(latest) = latest else {
             return Ok(None);
         };
@@ -717,13 +717,11 @@ impl SadObjectIndex {
     /// then commits. If MinIO fails, the transaction rolls back on drop.
     pub async fn store(
         &self,
-        sad_said: &str,
+        sad_said: &cesr::Digest,
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        let sad_said_digest = cesr::Digest::from_qb64(sad_said)
-            .map_err(|e| StorageError::StorageError(format!("Invalid SAID CESR: {}", e)))?;
-        let entry = kels_core::SadObjectEntry::create(sad_said_digest)?;
+        let entry = kels_core::SadObjectEntry::create(*sad_said)?;
 
         let mut tx = self.pool.begin_transaction().await?;
 

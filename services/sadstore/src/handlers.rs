@@ -144,7 +144,7 @@ pub struct AppState {
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_kel_prefix: &str,
+    peer_kel_prefix: &cesr::Digest,
 ) -> Result<Option<kels_core::Peer>, (StatusCode, String)> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
@@ -254,11 +254,10 @@ async fn authenticate_peer_request<T: serde::Serialize>(
         )
     })?;
 
-    let request_prefix_str = signed_request.prefix.to_string();
-    let peer = get_verified_peer(redis_conn, &request_prefix_str).await?;
+    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
     if peer.is_none() {
         refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-        if get_verified_peer(redis_conn, &request_prefix_str)
+        if get_verified_peer(redis_conn, &signed_request.prefix)
             .await?
             .is_none()
         {
@@ -339,7 +338,7 @@ pub async fn post_sad_object(
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
     }
 
-    let said = value.get_said().to_string();
+    let said = value.get_said();
 
     // HEAD check — short-circuit if already exists
     match state.object_store.exists(&said).await {
@@ -370,7 +369,7 @@ pub async fn post_sad_object(
         let mut conn = conn.clone();
         if let Err(e) = redis::cmd("PUBLISH")
             .arg("sad_updates")
-            .arg(&said)
+            .arg(said.as_ref())
             .query_async::<()>(&mut conn)
             .await
         {
@@ -382,9 +381,13 @@ pub async fn post_sad_object(
 }
 
 pub async fn get_sad_object(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.object_store.get(&said).await {
         Ok(data) => (
             StatusCode::OK,
@@ -403,9 +406,13 @@ pub async fn get_sad_object(
 }
 
 pub async fn sad_object_exists(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.object_store.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -417,9 +424,13 @@ pub async fn sad_object_exists(
 }
 
 pub async fn sad_pointer_exists(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.repo.sad_records.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -476,7 +487,7 @@ pub async fn submit_sad_pointer(
     // Per-chain-prefix daily rate limit (check before, accrue after)
     if let Err(msg) = check_prefix_rate_limit(
         &state.prefix_rate_limits,
-        &chain_prefix,
+        chain_prefix,
         records.len() as u32,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -664,7 +675,7 @@ pub async fn submit_sad_pointer(
     }
 
     // Accrue only actual new records to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, &chain_prefix, new_record_count);
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
     // Publish the effective SAID to Redis for gossip. Using the effective SAID
     // (not the tip record SAID) ensures the gossip feedback loop cache key matches
@@ -672,7 +683,7 @@ pub async fn submit_sad_pointer(
     // Repair updates include a ":repair" suffix so the gossip subscriber
     // can propagate the repair flag to other nodes.
     let effective_said = if should_publish {
-        match state.repo.sad_records.effective_said(&chain_prefix).await {
+        match state.repo.sad_records.effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
