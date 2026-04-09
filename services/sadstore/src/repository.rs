@@ -464,14 +464,14 @@ impl SadPointerRepository {
         let sigs: Vec<kels_core::SadPointerSignature> = self.pool.fetch(query).await?;
 
         // Index signatures by pointer_said for O(1) lookup
-        let sig_map: std::collections::HashMap<String, &kels_core::SadPointerSignature> = sigs
+        let sig_map: std::collections::HashMap<cesr::Digest, &kels_core::SadPointerSignature> = sigs
             .iter()
-            .map(|s| (s.pointer_said.to_string(), s))
+            .map(|s| (s.pointer_said, s))
             .collect();
 
         let mut stored = Vec::with_capacity(records.len());
         for record in records {
-            let sig = sig_map.get(&record.said.to_string()).ok_or_else(|| {
+            let sig = sig_map.get(&record.said).ok_or_else(|| {
                 StorageError::StorageError(format!(
                     "Missing signature for SAD record {}",
                     record.said
@@ -593,15 +593,15 @@ impl SadPointerRepository {
         let sigs: Vec<SadPointerSignature> = self.pool.fetch(sigs_query).await?;
 
         // Index signatures by pointer_said
-        let sig_map: std::collections::HashMap<String, &SadPointerSignature> = sigs
+        let sig_map: std::collections::HashMap<cesr::Digest, &SadPointerSignature> = sigs
             .iter()
-            .map(|s| (s.pointer_said.to_string(), s))
+            .map(|s| (s.pointer_said, s))
             .collect();
 
         // Zip into SignedSadPointer
         let mut signed = Vec::with_capacity(records.len());
         for record in records {
-            let sig = sig_map.get(&record.said.to_string()).ok_or_else(|| {
+            let sig = sig_map.get(&record.said).ok_or_else(|| {
                 StorageError::StorageError(format!(
                     "Missing signature for archived record {}",
                     record.said
