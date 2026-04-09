@@ -38,10 +38,9 @@ impl SadPointerRepository {
             return Ok(0);
         }
 
-        let prefix_digest = records[0].0.prefix;
-        let prefix = prefix_digest.to_string();
+        let prefix = records[0].0.prefix;
         let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(&prefix).await?;
+        tx.acquire_advisory_lock(prefix.as_ref()).await?;
 
         // Quick divergence check before inserting — reject appends to frozen chains
         let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
@@ -102,20 +101,17 @@ impl SadPointerRepository {
     /// (caller can check `is_divergent()` or call `finish()`).
     async fn verify_chain<Tx: TransactionExecutor>(
         tx: &mut Tx,
-        prefix: &str,
+        prefix: &cesr::Digest,
         establishment_keys: &std::collections::HashMap<u64, VerificationKey>,
     ) -> Result<kels_core::SadChainVerifier, StorageError> {
         let page_size = kels_core::page_size() as u64;
-        let prefix_digest = cesr::Digest::from_qb64(prefix)
-            .map_err(|e| StorageError::StorageError(format!("Invalid prefix CESR: {}", e)))?;
-        let mut verifier =
-            kels_core::SadChainVerifier::new(&prefix_digest, establishment_keys.clone());
+        let mut verifier = kels_core::SadChainVerifier::new(prefix, establishment_keys.clone());
 
         let mut offset: u64 = 0;
         loop {
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", prefix)
+                    .eq("prefix", prefix.as_ref())
                     .order_by("version", verifiable_storage_postgres::Order::Asc)
                     .limit(page_size)
                     .offset(offset);
@@ -132,16 +128,14 @@ impl SadPointerRepository {
             )
             .r#in("pointer_said", page_saids);
             let sigs: Vec<SadPointerSignature> = tx.fetch(sig_query).await?;
-            let sig_map: std::collections::HashMap<String, &SadPointerSignature> = sigs
-                .iter()
-                .map(|s| (s.pointer_said.to_string(), s))
-                .collect();
+            let sig_map: std::collections::HashMap<cesr::Digest, &SadPointerSignature> =
+                sigs.iter().map(|s| (s.pointer_said, s)).collect();
 
             // Build SignedSadPointers for the verifier
             let signed_records: Vec<kels_core::SignedSadPointer> = page
                 .into_iter()
                 .map(|record| {
-                    let sig_record = sig_map.get(&record.said.to_string()).ok_or_else(|| {
+                    let sig_record = sig_map.get(&record.said).ok_or_else(|| {
                         StorageError::StorageError(format!(
                             "Missing signature for record {} — DB tampered",
                             record.said
@@ -188,10 +182,9 @@ impl SadPointerRepository {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
 
-        let prefix_digest = records[0].0.prefix;
-        let prefix = prefix_digest.to_string();
+        let prefix = records[0].0.prefix;
         let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(&prefix).await?;
+        tx.acquire_advisory_lock(prefix.as_ref()).await?;
 
         // Verify full chain integrity before modifying — DB cannot be trusted
         Self::verify_chain(&mut tx, &prefix, establishment_keys).await?;
@@ -248,7 +241,7 @@ impl SadPointerRepository {
             let repair_said_ref = match &repair_said {
                 Some(said) => said,
                 None => {
-                    let repair = SadPointerRepair::create(prefix_digest, from_version)?;
+                    let repair = SadPointerRepair::create(prefix, from_version)?;
                     tx.insert(&repair).await?;
                     repair_said = Some(repair.said);
                     repair_said.as_ref().ok_or_else(|| {
