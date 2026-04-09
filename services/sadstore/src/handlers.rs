@@ -136,7 +136,7 @@ pub struct AppState {
     pub registry_urls: Vec<String>,
     pub prefix_rate_limits: DashMap<cesr::Digest256, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
-    pub nonce_cache: DashMap<String, Instant>,
+    pub nonce_cache: DashMap<cesr::Nonce256, Instant>,
 }
 
 // ==================== Peer Authentication ====================
@@ -238,7 +238,7 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     let window = nonce_window_secs();
     if window > 0 {
         let now = Instant::now();
-        if state.nonce_cache.insert(nonce.to_string(), now).is_some() {
+        if state.nonce_cache.insert(*nonce, now).is_some() {
             return Err((StatusCode::FORBIDDEN, "Duplicate nonce".into()));
         }
     }
