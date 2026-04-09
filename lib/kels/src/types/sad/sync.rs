@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use super::super::error::ErrorCode;
 use super::pointer::{SadPointerPage, SignedSadPointer};
 use super::verification::{SadChainVerifier, collect_establishment_serials};
-use crate::{KelVerifier, KelsError, SadPointerVerification};
+use crate::{KelVerifier, KelsError, SadPointerVerification, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
 
@@ -100,7 +100,7 @@ impl PagedSadSource for HttpSadSource {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -153,7 +153,7 @@ impl PagedSadSink for HttpSadSink {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }

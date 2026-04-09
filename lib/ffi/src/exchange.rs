@@ -483,8 +483,8 @@ pub unsafe extern "C" fn kels_essr_open_result_free(result: *mut KelsEssrOpenRes
 pub extern "C" fn kels_encap_key_kind() -> *const c_char {
     // Static CString to ensure null-terminated lifetime
     static KIND: std::sync::LazyLock<CString> = std::sync::LazyLock::new(|| {
-        CString::new(kels_exchange::ENCAP_KEY_KIND)
-            .unwrap_or_else(|_| CString::new("kels/exchange/v1/keys/mlkem").unwrap_or_default())
+        #[allow(clippy::expect_used)]
+        CString::new(kels_exchange::ENCAP_KEY_KIND).expect("ENCAP_KEY_KIND contains null byte")
     });
     KIND.as_ptr()
 }

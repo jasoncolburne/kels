@@ -291,7 +291,12 @@ impl KelsClient {
             let divergent = body
                 .get("divergent")
                 .and_then(|d| d.as_bool())
-                .unwrap_or(false);
+                .ok_or_else(|| {
+                    KelsError::HttpError(
+                        "missing or invalid 'divergent' field in effective SAID response"
+                            .to_string(),
+                    )
+                })?;
             Ok(said.map(|s| (s, divergent)))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)

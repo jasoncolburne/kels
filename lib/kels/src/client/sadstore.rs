@@ -9,6 +9,7 @@ use verifiable_storage::SelfAddressed;
 
 use crate::{
     KelsError, SadPointerPage, SadPointerRepairPage, SadPointerVerification,
+    error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
 
@@ -97,7 +98,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(said)
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -122,7 +123,7 @@ impl SadStoreClient {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(said.to_string()))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -151,7 +152,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -169,7 +170,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -188,7 +189,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -215,7 +216,7 @@ impl SadStoreClient {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(prefix.to_string()))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -238,7 +239,7 @@ impl SadStoreClient {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -274,7 +275,7 @@ impl SadStoreClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -297,7 +298,7 @@ impl SadStoreClient {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(prefix.to_string()))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -321,7 +322,7 @@ impl SadStoreClient {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(repair_said.to_string()))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }

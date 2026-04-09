@@ -297,12 +297,8 @@ pub(crate) fn parse_algorithm_option(algo: *const c_char) -> Option<Verification
         Some("ml-dsa-65") | Some("ML-DSA-65") => Some(VerificationKeyCode::MlDsa65),
         Some("ml-dsa-87") | Some("ML-DSA-87") => Some(VerificationKeyCode::MlDsa87),
         Some("secp256r1") | Some("p256") => Some(VerificationKeyCode::Secp256r1),
-        _ => None, // null, empty, or unrecognized = keep current
+        _ => None, // null, empty, or unrecognized = invalid
     }
-}
-
-pub(crate) fn parse_algorithm(algo: *const c_char) -> VerificationKeyCode {
-    parse_algorithm_option(algo).unwrap_or(VerificationKeyCode::MlDsa65)
 }
 
 pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
@@ -340,10 +336,10 @@ pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
 /// * `state_dir` - Directory for storing local state (KELs, keys)
 /// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
-/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). NULL defaults to "secp256r1".
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Recovery key algorithm. NULL defaults to "secp256r1".
-///   Supported on all platforms including Secure Enclave.
+/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). Required.
+///   Returns NULL on error if absent or unrecognized.
+/// * `recovery_algorithm` - Recovery key algorithm. Required.
+///   Returns NULL on error if absent or unrecognized.
 ///
 /// # Returns
 /// Pointer to context, or NULL on error. Check kels_last_error() for details.
@@ -386,8 +382,14 @@ pub extern "C" fn kels_init(
     )))]
     let _ = key_namespace; // Unused in software-only builds
 
-    let signing_algo = parse_algorithm(signing_algorithm);
-    let recovery_algo = parse_algorithm(recovery_algorithm);
+    let Some(signing_algo) = parse_algorithm_option(signing_algorithm) else {
+        set_last_error("Invalid or missing signing algorithm");
+        return std::ptr::null_mut();
+    };
+    let Some(recovery_algo) = parse_algorithm_option(recovery_algorithm) else {
+        set_last_error("Invalid or missing recovery algorithm");
+        return std::ptr::null_mut();
+    };
 
     let prefix_opt = from_c_string(prefix);
     let state_path = PathBuf::from(&state_dir_str);

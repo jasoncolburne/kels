@@ -966,9 +966,10 @@ struct StaleEntry {
 /// Encode a stale entry value for Redis: `{source}:{retries}:{not_before_epoch}`.
 fn encode_stale_value(source: &cesr::Digest, retries: u32) -> String {
     let backoff_secs = STALE_BACKOFF_BASE_SECS * 2u64.saturating_pow(retries);
+    #[allow(clippy::expect_used)]
     let not_before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock before UNIX epoch")
         .as_secs()
         + backoff_secs;
     format!("{}:{}:{}", source, retries, not_before)
@@ -978,13 +979,28 @@ fn encode_stale_value(source: &cesr::Digest, retries: u32) -> String {
 fn decode_stale_value(value: &str) -> (String, u32, u64) {
     let parts: Vec<&str> = value.rsplitn(3, ':').collect();
     if parts.len() == 3 {
-        let not_before = parts[0].parse::<u64>().unwrap_or(0);
-        let retries = parts[1].parse::<u32>().unwrap_or(0);
+        let not_before = match parts[0].parse::<u64>() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Failed to parse not_before in stale entry '{}': {}",
+                    value, e
+                );
+                u64::MAX
+            }
+        };
+        let retries = match parts[1].parse::<u32>() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to parse retries in stale entry '{}': {}", value, e);
+                MAX_STALE_RETRIES
+            }
+        };
         (parts[2].to_string(), retries, not_before)
     } else {
-        // Malformed entry — treat as first attempt due immediately
+        // Malformed entry — fail-secure: max retries so it gets cleaned up
         warn!("Malformed stale entry value: {}", value);
-        (value.to_string(), 0, 0)
+        (value.to_string(), MAX_STALE_RETRIES, 0)
     }
 }
 
@@ -1132,9 +1148,10 @@ async fn drain_due_stale_entries(
         .query_async::<()>(&mut conn)
         .await;
 
+    #[allow(clippy::expect_used)]
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock before UNIX epoch")
         .as_secs();
 
     let mut due = HashMap::new();

@@ -16,7 +16,7 @@ public final class KelsClient: @unchecked Sendable {
     ///   - prefix: Optional existing KEL prefix to load
     ///   - signingAlgorithm: Signing algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
     ///   - recoveryAlgorithm: Recovery key algorithm ("secp256r1", "ml-dsa-65", or "ml-dsa-87"). Defaults to "secp256r1".
-    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil, signingAlgorithm: String? = nil, recoveryAlgorithm: String? = nil) throws {
+    public init(kelsURL: String, stateDir: String? = nil, keyNamespace: String, prefix: String? = nil, signingAlgorithm: String = "secp256r1", recoveryAlgorithm: String = "secp256r1") throws {
         let dir = stateDir ?? Self.defaultStateDirectory()
 
         context = kels_init(kelsURL, dir, keyNamespace, prefix, signingAlgorithm, recoveryAlgorithm)

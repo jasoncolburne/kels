@@ -82,9 +82,16 @@ pub unsafe extern "C" fn kels_credential_build(
 
     match result {
         Ok((credential_json, canonical_said)) => {
+            let credential_value = match serde_json::from_str::<serde_json::Value>(&credential_json)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    set_last_error(&format!("Failed to parse credential JSON: {e}"));
+                    return std::ptr::null_mut();
+                }
+            };
             match serde_json::to_string(&serde_json::json!({
-                "credential": serde_json::from_str::<serde_json::Value>(&credential_json)
-                    .unwrap_or(serde_json::Value::Null),
+                "credential": credential_value,
                 "canonicalSaid": canonical_said,
             })) {
                 Ok(json) => to_c_string(&json),

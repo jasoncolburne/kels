@@ -15,6 +15,7 @@ pub use keys::*;
 /// Generate a cryptographic nonce: 32 random bytes hashed with BLAKE3-256, CESR-encoded.
 pub fn generate_nonce() -> cesr::Digest {
     let mut entropy = [0u8; 32];
-    getrandom::getrandom(&mut entropy).unwrap_or_else(|e| unreachable!("getrandom failed: {}", e));
+    #[allow(clippy::expect_used)]
+    getrandom::getrandom(&mut entropy).expect("getrandom failed");
     Digest::blake3_256(&entropy)
 }

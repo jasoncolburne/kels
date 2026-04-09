@@ -38,10 +38,11 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         .unwrap_or_else(|_| "postgres://postgres:postgres@database:5432/identity".to_string());
     let pkcs11_library = std::env::var("PKCS11_LIBRARY_PATH")
         .unwrap_or_else(|_| "/usr/lib/kels/libkels_mock_hsm.so".to_string());
+    #[allow(clippy::expect_used)]
     let hsm_slot: usize = std::env::var("HSM_SLOT")
         .unwrap_or_else(|_| "0".to_string())
         .parse()
-        .unwrap_or(0);
+        .expect("HSM_SLOT must be a valid integer");
     let hsm_pin = std::env::var("HSM_PIN").unwrap_or_else(|_| "1234".to_string());
     let key_handle_prefix =
         std::env::var("KEY_HANDLE_PREFIX").unwrap_or_else(|_| "registry".to_string());
@@ -625,9 +626,15 @@ fn verify_latest_binding(
         .get_created_at()
         .ok_or("Missing created_at on latest binding")?;
     let now = StorageDatetime::now();
-    let age = (*now.inner() - *latest_ts.inner())
-        .to_std()
-        .unwrap_or(Duration::ZERO);
+    let age = match (*now.inner() - *latest_ts.inner()).to_std() {
+        Ok(d) => d,
+        Err(_) => {
+            warn!(
+                "Clock skew detected: latest binding timestamp is in the future, forcing rotation"
+            );
+            Duration::MAX
+        }
+    };
 
     Ok(age > rotation_interval())
 }

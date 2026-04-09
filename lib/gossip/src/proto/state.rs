@@ -55,8 +55,9 @@ impl<PI: Serialize> Message<PI> {
             message: topic::Message::<PI>::Gossip(super::plumtree::Message::Prune),
         };
         // This serialization is deterministic and infallible for this known struct.
+        #[allow(clippy::expect_used)]
         postcard::experimental::serialized_size(&m)
-            .unwrap_or(0)
+            .expect("failed to compute overhead for known struct")
             .saturating_sub(1)
     }
 }
