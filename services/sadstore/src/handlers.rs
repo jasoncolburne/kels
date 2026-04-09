@@ -75,13 +75,13 @@ pub fn max_sad_object_size() -> usize {
 /// records would exceed the daily limit. Does NOT update the counter — call
 /// `accrue_prefix_rate_limit` after storage with the actual new record count.
 fn check_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     record_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max_records = max_records_per_prefix_per_day();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
@@ -97,12 +97,12 @@ fn check_prefix_rate_limit(
 
 /// Accrue the actual number of new records after storage completes.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     new_record_count: u32,
 ) {
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
         entry.1 = now;
@@ -134,7 +134,7 @@ pub struct AppState {
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub registry_urls: Vec<String>,
-    pub prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    pub prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
     pub nonce_cache: DashMap<String, Instant>,
 }
@@ -464,12 +464,8 @@ pub async fn submit_sad_pointer(
     }
 
     // All records must be for the same chain prefix
-    let chain_prefix_digest = &records[0].pointer.prefix;
-    let chain_prefix = chain_prefix_digest.to_string();
-    if records
-        .iter()
-        .any(|r| r.pointer.prefix != *chain_prefix_digest)
-    {
+    let chain_prefix = &records[0].pointer.prefix;
+    if records.iter().any(|r| r.pointer.prefix != *chain_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -518,7 +514,7 @@ pub async fn submit_sad_pointer(
     match state
         .repo
         .sad_records
-        .existing_establishment_serials(&chain_prefix, kels_core::max_collected_keys())
+        .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
         .await
     {
         Ok(existing) => establishment_serials.extend(existing),
@@ -769,24 +765,19 @@ pub async fn get_sad_pointer(
 }
 
 pub async fn get_sad_pointer_effective_said(
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let prefix = match cesr::Digest::from_qb64(&prefix_string) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid prefix").into_response(),
+    };
     match state.repo.sad_records.effective_said(&prefix).await {
-        Ok(Some((said, divergent))) => match cesr::Digest::from_qb64(&said) {
-            Ok(said_digest) => (
-                StatusCode::OK,
-                Json(kels_core::EffectiveSaidResponse {
-                    said: said_digest,
-                    divergent,
-                }),
-            )
-                .into_response(),
-            Err(e) => {
-                warn!("Invalid effective SAID: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "invalid SAID").into_response()
-            }
-        },
+        Ok(Some((said, divergent))) => (
+            StatusCode::OK,
+            Json(kels_core::EffectiveSaidResponse { said, divergent }),
+        )
+            .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);

@@ -60,7 +60,7 @@ impl SadPointerRepository {
         // Insert records, skipping duplicates by checking existence first.
         // We cannot rely on catching unique constraint violations because in
         // Postgres a constraint violation aborts the transaction.
-        let existing_saids: std::collections::HashSet<String> = {
+        let existing_saids: std::collections::HashSet<cesr::Digest> = {
             let saids: Vec<String> = records.iter().map(|(r, _)| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -68,13 +68,13 @@ impl SadPointerRepository {
             tx.fetch(query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said.to_string())
+                .map(|r: SadPointer| r.said)
                 .collect()
         };
 
         let mut count = 0u32;
         for (record, signature) in records {
-            if existing_saids.contains(&record.said.to_string()) {
+            if existing_saids.contains(&record.said) {
                 continue;
             }
             self.insert_in(&mut tx, record.clone()).await?;
@@ -198,15 +198,15 @@ impl SadPointerRepository {
             let existing_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
-            let existing: std::collections::HashSet<String> = tx
+            let existing: std::collections::HashSet<cesr::Digest> = tx
                 .fetch(existing_query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said.to_string())
+                .map(|r: SadPointer| r.said)
                 .collect();
             let deduped: Vec<_> = records
                 .iter()
-                .skip_while(|(r, _)| existing.contains(&r.said.to_string()))
+                .skip_while(|(r, _)| existing.contains(&r.said))
                 .collect();
             if deduped.is_empty() {
                 // All replacement records match existing — truncate from the
@@ -305,7 +305,7 @@ impl SadPointerRepository {
     ///
     /// Uses `GROUP BY version ORDER BY COUNT(*) DESC LIMIT 1` — returns true if
     /// the highest count exceeds 1.
-    pub async fn is_divergent(&self, prefix: &str) -> Result<bool, StorageError> {
+    pub async fn is_divergent(&self, prefix: &cesr::Digest) -> Result<bool, StorageError> {
         let query = ColumnQuery::new(Self::TABLE_NAME, "*")
             .filter(Filter::Eq(
                 "prefix".to_string(),
@@ -331,7 +331,7 @@ impl SadPointerRepository {
     /// Bounded by `max` — returns an error if more than `max` unique serials exist.
     pub async fn existing_establishment_serials(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         max: usize,
     ) -> Result<std::collections::BTreeSet<u64>, StorageError> {
         use verifiable_storage::ScalarSubquery;
@@ -383,7 +383,7 @@ impl SadPointerRepository {
         use verifiable_storage_postgres::QueryExecutor;
 
         // Resolve SAID cursor to a (version, said) position
-        let since_position: Option<(u64, String)> = if let Some(said) = since_said {
+        let since_position: Option<(u64, cesr::Digest)> = if let Some(said) = since_said {
             let cursor_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .eq("said", said)
@@ -393,7 +393,7 @@ impl SadPointerRepository {
                 .await?
                 .into_iter()
                 .next()
-                .map(|r| (r.version, r.said.to_string()))
+                .map(|r| (r.version, r.said))
         } else {
             None
         };
@@ -430,9 +430,7 @@ impl SadPointerRepository {
         // Skip records at or before the cursor position
         if let Some((version, said)) = &since_position {
             let skipped = records.len();
-            records.retain(|r| {
-                r.version > *version || (r.version == *version && r.said.to_string() > *said)
-            });
+            records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
             let skipped = skipped - records.len();
 
             // The cursor record itself is always skipped (1). Legitimate divergence
@@ -506,21 +504,19 @@ impl SadPointerRepository {
     /// deterministic SAID so all nodes agree on the divergent state.
     pub async fn effective_said(
         &self,
-        prefix: &str,
-    ) -> Result<Option<(String, bool)>, StorageError> {
-        let prefix_digest = cesr::Digest::from_qb64(prefix)
-            .map_err(|e| StorageError::StorageError(format!("Invalid prefix CESR: {}", e)))?;
-        let latest = self.get_latest(&prefix_digest).await?;
+        prefix: &cesr::Digest,
+    ) -> Result<Option<(cesr::Digest, bool)>, StorageError> {
+        let latest = self.get_latest(&prefix).await?;
         let Some(latest) = latest else {
             return Ok(None);
         };
 
         if self.is_divergent(prefix).await? {
-            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix)).to_string();
+            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix));
             return Ok(Some((said, true)));
         }
 
-        Ok(Some((latest.said.to_string(), false)))
+        Ok(Some((latest.said, false)))
     }
 
     /// Get repairs for a chain prefix, paginated.

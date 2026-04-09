@@ -232,11 +232,11 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
         .sad_records
-        .effective_said(prefix.as_ref())
+        .effective_said(&prefix)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(effective, chain[4].0.said.to_string());
+    assert_eq!(effective, chain[4].0.said);
     assert!(!divergent);
 
     // Build replacement from v3 (replacing v3 and v4 with 2 new records)
@@ -260,11 +260,11 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Verify effective SAID is now the new v4's SAID
     let (effective, divergent) = repo
         .sad_records
-        .effective_said(prefix.as_ref())
+        .effective_said(&prefix)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(effective, replacement[1].0.said.to_string());
+    assert_eq!(effective, replacement[1].0.said);
     assert!(!divergent);
 
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
