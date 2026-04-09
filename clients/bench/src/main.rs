@@ -124,7 +124,12 @@ impl Stats {
 
     async fn record_success(&self, latency_us: u64) {
         if !self.throughput_only {
-            self.histogram.lock().await.record(latency_us).unwrap_or(());
+            #[allow(clippy::expect_used)]
+            self.histogram
+                .lock()
+                .await
+                .record(latency_us)
+                .expect("histogram record failed: value exceeds configured max");
         }
         self.success_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -195,9 +200,10 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
         None,
     )
     .await?;
+    #[allow(clippy::expect_used)]
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
-        .unwrap_or(0);
+        .expect("failed to serialize events for size calculation");
     Ok(TestKelConfig {
         event_count: events.len(),
         kel_bytes,

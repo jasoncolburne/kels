@@ -69,10 +69,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 
@@ -101,10 +98,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 
@@ -158,10 +152,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 
@@ -201,10 +192,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 
@@ -244,10 +232,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(resp.bytes().await?.to_vec())
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 
@@ -287,10 +272,7 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(
-                resp.status(),
-                resp.text().await.unwrap_or_default(),
-            ))
+            Err(MailClientError::Http(resp.status(), resp.text().await?))
         }
     }
 }

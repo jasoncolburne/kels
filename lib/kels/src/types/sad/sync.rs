@@ -100,7 +100,7 @@ impl PagedSadSource for HttpSadSource {
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = resp.text().await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
@@ -153,7 +153,7 @@ impl PagedSadSink for HttpSadSink {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = resp.text().await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }

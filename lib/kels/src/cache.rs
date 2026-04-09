@@ -470,10 +470,7 @@ impl ServerKelCache {
 }
 
 pub fn parse_pubsub_message(message: &str) -> Option<(&str, &str)> {
-    let mut parts = message.splitn(2, ':');
-    let prefix = parts.next()?;
-    let said = parts.next().unwrap_or("");
-    Some((prefix, said))
+    message.split_once(':')
 }
 
 pub fn pubsub_channel() -> &'static str {
@@ -563,8 +560,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pubsub_empty_said() {
+    fn test_parse_pubsub_no_colon_returns_none() {
         let result = parse_pubsub_message("prefixonly");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_pubsub_empty_said() {
+        let result = parse_pubsub_message("prefixonly:");
         assert_eq!(result, Some(("prefixonly", "")));
     }
 
