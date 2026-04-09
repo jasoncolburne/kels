@@ -301,10 +301,6 @@ pub(crate) fn parse_algorithm_option(algo: *const c_char) -> Option<Verification
     }
 }
 
-pub(crate) fn parse_algorithm(algo: *const c_char) -> Option<VerificationKeyCode> {
-    parse_algorithm_option(algo)
-}
-
 pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
     match err {
         KelsError::NotFound(_) => KelsStatus::KelNotFound,
@@ -386,11 +382,11 @@ pub extern "C" fn kels_init(
     )))]
     let _ = key_namespace; // Unused in software-only builds
 
-    let Some(signing_algo) = parse_algorithm(signing_algorithm) else {
+    let Some(signing_algo) = parse_algorithm_option(signing_algorithm) else {
         set_last_error("Invalid or missing signing algorithm");
         return std::ptr::null_mut();
     };
-    let Some(recovery_algo) = parse_algorithm(recovery_algorithm) else {
+    let Some(recovery_algo) = parse_algorithm_option(recovery_algorithm) else {
         set_last_error("Invalid or missing recovery algorithm");
         return std::ptr::null_mut();
     };

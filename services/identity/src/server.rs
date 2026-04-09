@@ -629,8 +629,10 @@ fn verify_latest_binding(
     let age = match (*now.inner() - *latest_ts.inner()).to_std() {
         Ok(d) => d,
         Err(_) => {
-            warn!("Clock skew detected: latest binding timestamp is in the future");
-            Duration::ZERO
+            warn!(
+                "Clock skew detected: latest binding timestamp is in the future, forcing rotation"
+            );
+            Duration::MAX
         }
     };
 

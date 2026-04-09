@@ -1,5 +1,7 @@
 //! kels-bench - KELS Load Testing Tool
 
+#![allow(clippy::expect_used)]
+
 use std::{
     process,
     sync::{
@@ -124,7 +126,6 @@ impl Stats {
 
     async fn record_success(&self, latency_us: u64) {
         if !self.throughput_only {
-            #[allow(clippy::expect_used)]
             self.histogram
                 .lock()
                 .await
@@ -200,7 +201,6 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
         None,
     )
     .await?;
-    #[allow(clippy::expect_used)]
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
         .expect("failed to serialize events for size calculation");

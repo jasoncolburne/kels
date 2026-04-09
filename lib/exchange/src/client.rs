@@ -69,7 +69,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 
@@ -98,7 +99,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 
@@ -152,7 +154,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 
@@ -192,7 +195,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 
@@ -232,7 +236,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(resp.bytes().await?.to_vec())
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 
@@ -272,7 +277,8 @@ impl MailClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(MailClientError::Http(resp.status(), resp.text().await?))
+            let (status, text) = read_error_body(resp).await?;
+            Err(MailClientError::Http(status, text))
         }
     }
 }
@@ -285,4 +291,17 @@ pub enum MailClientError {
     Http(reqwest::StatusCode, String),
     #[error("Signing failed: {0}")]
     Signing(String),
+}
+
+/// Read the response body text from an error response, preserving the HTTP
+/// status code in the error if the body read itself fails.
+pub(crate) async fn read_error_body(
+    resp: reqwest::Response,
+) -> Result<(reqwest::StatusCode, String), MailClientError> {
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| MailClientError::Http(status, format!("body unreadable: {e}")))?;
+    Ok((status, text))
 }

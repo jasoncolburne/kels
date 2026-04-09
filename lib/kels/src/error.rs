@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::ErrorCode;
+
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
     #[error("Not found: {0}")]
@@ -178,6 +180,18 @@ impl From<verifiable_storage::StorageError> for KelsError {
     fn from(e: verifiable_storage::StorageError) -> Self {
         KelsError::StorageError(e.to_string())
     }
+}
+
+/// Read the response body text from an error response, preserving the HTTP
+/// status code in the error if the body read itself fails.
+pub async fn read_error_body(resp: reqwest::Response) -> Result<String, KelsError> {
+    let status = resp.status();
+    resp.text().await.map_err(|e| {
+        KelsError::ServerError(
+            format!("HTTP {status}: body unreadable: {e}"),
+            ErrorCode::InternalError,
+        )
+    })
 }
 
 #[cfg(test)]
