@@ -423,7 +423,7 @@ impl KeyProvider for HardwareKeyProvider {
 
         let data =
             serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        store.save(prefix, &data)
+        store.save(prefix, &data).await
     }
 
     async fn restore_state(
@@ -431,7 +431,7 @@ impl KeyProvider for HardwareKeyProvider {
         store: &dyn KeyStateStore,
         prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
-        let Some(data) = store.load(prefix)? else {
+        let Some(data) = store.load(prefix).await? else {
             return Ok(false);
         };
 

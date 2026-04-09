@@ -3,6 +3,7 @@
 use std::io::{BufRead, Write};
 
 use async_trait::async_trait;
+use tokio::task::spawn_blocking;
 
 use super::KelStore;
 use crate::{error::KelsError, types::SignedKeyEvent};
@@ -60,36 +61,40 @@ impl KelStore for FileKelStore {
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         let path = self.kel_path(prefix.as_ref());
-        if !path.exists() {
-            return Ok((vec![], false));
-        }
-        let file =
-            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        let reader = std::io::BufReader::new(file);
-
-        let start = offset as usize;
-        let limit = limit as usize;
-        let mut events = Vec::new();
-        let mut count = 0;
-
-        for line in reader.lines() {
-            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
-            if line.is_empty() {
-                continue;
+        spawn_blocking(move || {
+            if !path.exists() {
+                return Ok((vec![], false));
             }
-            if count < start {
+            let file =
+                std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            let reader = std::io::BufReader::new(file);
+
+            let start = offset as usize;
+            let limit = limit as usize;
+            let mut events = Vec::new();
+            let mut count = 0;
+
+            for line in reader.lines() {
+                let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+                if line.is_empty() {
+                    continue;
+                }
+                if count < start {
+                    count += 1;
+                    continue;
+                }
+                if events.len() >= limit {
+                    return Ok((events, true));
+                }
+                let event: SignedKeyEvent = serde_json::from_str(&line)?;
+                events.push(event);
                 count += 1;
-                continue;
             }
-            if events.len() >= limit {
-                return Ok((events, true));
-            }
-            let event: SignedKeyEvent = serde_json::from_str(&line)?;
-            events.push(event);
-            count += 1;
-        }
 
-        Ok((events, false))
+            Ok((events, false))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn load_tail(
@@ -98,31 +103,35 @@ impl KelStore for FileKelStore {
         limit: u64,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let path = self.kel_path(prefix.as_ref());
-        if !path.exists() {
-            return Ok(vec![]);
-        }
-        let file =
-            std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        let reader = std::io::BufReader::new(file);
-        let limit = limit as usize;
-
-        // Collect all lines, keeping only the last `limit` in a ring buffer.
-        let mut ring: std::collections::VecDeque<String> =
-            std::collections::VecDeque::with_capacity(limit);
-        for line in reader.lines() {
-            let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
-            if line.is_empty() {
-                continue;
+        spawn_blocking(move || {
+            if !path.exists() {
+                return Ok(vec![]);
             }
-            if ring.len() == limit {
-                ring.pop_front();
-            }
-            ring.push_back(line);
-        }
+            let file =
+                std::fs::File::open(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            let reader = std::io::BufReader::new(file);
+            let limit = limit as usize;
 
-        ring.iter()
-            .map(|line| serde_json::from_str(line).map_err(Into::into))
-            .collect()
+            // Collect all lines, keeping only the last `limit` in a ring buffer.
+            let mut ring: std::collections::VecDeque<String> =
+                std::collections::VecDeque::with_capacity(limit);
+            for line in reader.lines() {
+                let line = line.map_err(|e| KelsError::StorageError(e.to_string()))?;
+                if line.is_empty() {
+                    continue;
+                }
+                if ring.len() == limit {
+                    ring.pop_front();
+                }
+                ring.push_back(line);
+            }
+
+            ring.iter()
+                .map(|line| serde_json::from_str(line).map_err(Into::into))
+                .collect()
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn append(
@@ -131,22 +140,29 @@ impl KelStore for FileKelStore {
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         let path = self.kel_path(prefix.as_ref());
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let lines: Vec<String> = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<_, _>>()?;
+        spawn_blocking(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
 
-        for event in events {
-            let line = serde_json::to_string(event)?;
-            file.write_all(line.as_bytes())
+            for line in &lines {
+                file.write_all(line.as_bytes())
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+                file.write_all(b"\n")
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            }
+            file.sync_all()
                 .map_err(|e| KelsError::StorageError(e.to_string()))?;
-            file.write_all(b"\n")
-                .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        file.sync_all()
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn overwrite(
@@ -155,18 +171,25 @@ impl KelStore for FileKelStore {
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         let path = self.kel_path(prefix.as_ref());
-        let mut file =
-            std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        for event in events {
-            let line = serde_json::to_string(event)?;
-            file.write_all(line.as_bytes())
+        let lines: Vec<String> = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<_, _>>()?;
+        spawn_blocking(move || {
+            let mut file =
+                std::fs::File::create(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            for line in &lines {
+                file.write_all(line.as_bytes())
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+                file.write_all(b"\n")
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            }
+            file.sync_all()
                 .map_err(|e| KelsError::StorageError(e.to_string()))?;
-            file.write_all(b"\n")
-                .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        file.sync_all()
-            .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 }
 

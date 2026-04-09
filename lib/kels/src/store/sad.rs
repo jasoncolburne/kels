@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use cesr::Matter;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, task::spawn_blocking};
 
 use crate::error::KelsError;
 
@@ -96,13 +96,16 @@ impl SadStore for FileSadStore {
         let path = self.sad_path(said);
         let json = serde_json::to_string_pretty(value)
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        std::fs::write(&path, json).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
+        spawn_blocking(move || {
+            std::fs::write(&path, json).map_err(|e| KelsError::StorageError(e.to_string()))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn load(&self, said: &cesr::Digest256) -> Result<Option<serde_json::Value>, KelsError> {
         let path = self.sad_path(said);
-        match std::fs::read_to_string(&path) {
+        spawn_blocking(move || match std::fs::read_to_string(&path) {
             Ok(data) => {
                 let value = serde_json::from_str(&data)
                     .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -110,7 +113,9 @@ impl SadStore for FileSadStore {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(KelsError::StorageError(e.to_string())),
-        }
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn list(
@@ -118,36 +123,46 @@ impl SadStore for FileSadStore {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<cesr::Digest256>, bool), KelsError> {
-        let mut saids = Vec::new();
-        let entries =
-            std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| KelsError::StorageError(e.to_string()))?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && let Ok(digest) = cesr::Digest256::from_qb64(stem)
-            {
-                saids.push(digest);
+        let sad_dir = self.sad_dir.clone();
+        let since = since.copied();
+        spawn_blocking(move || {
+            let mut saids = Vec::new();
+            let entries =
+                std::fs::read_dir(&sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| KelsError::StorageError(e.to_string()))?;
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "json")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && let Ok(digest) = cesr::Digest256::from_qb64(stem)
+                {
+                    saids.push(digest);
+                }
             }
-        }
-        saids.sort();
+            saids.sort();
 
-        if let Some(cursor) = since {
-            saids.retain(|s| s > cursor);
-        }
+            if let Some(cursor) = since.as_ref() {
+                saids.retain(|s| s > cursor);
+            }
 
-        let has_more = saids.len() > limit;
-        saids.truncate(limit);
-        Ok((saids, has_more))
+            let has_more = saids.len() > limit;
+            saids.truncate(limit);
+            Ok((saids, has_more))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError> {
         let path = self.sad_path(said);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        Ok(())
+        spawn_blocking(move || {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 }
 

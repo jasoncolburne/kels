@@ -58,14 +58,21 @@ impl ProviderConfig for SoftwareProviderConfig {
     type Provider = SoftwareKeyProvider;
 
     async fn load_provider(&self) -> Result<Self::Provider, KelsError> {
-        if self.key_dir.exists() {
-            SoftwareKeyProvider::load_from_dir(&self.key_dir)
-        } else {
-            Ok(SoftwareKeyProvider::new(
-                self.signing_algorithm,
-                self.recovery_algorithm,
-            ))
-        }
+        let key_dir = self.key_dir.clone();
+        let signing_algorithm = self.signing_algorithm;
+        let recovery_algorithm = self.recovery_algorithm;
+        tokio::task::spawn_blocking(move || {
+            if key_dir.exists() {
+                SoftwareKeyProvider::load_from_dir(&key_dir)
+            } else {
+                Ok(SoftwareKeyProvider::new(
+                    signing_algorithm,
+                    recovery_algorithm,
+                ))
+            }
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn save_provider(&self, provider: &Self::Provider) -> Result<(), KelsError> {
@@ -132,10 +139,11 @@ impl ProviderConfig for HardwareProviderConfig {
 ///
 /// Implementors choose where to persist key state (filesystem, Keychain, CoreData, etc.).
 /// The provider decides the encoding — the store just handles opaque bytes.
+#[async_trait::async_trait]
 pub trait KeyStateStore: Send + Sync {
-    fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError>;
-    fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError>;
-    fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError>;
+    async fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError>;
+    async fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError>;
+    async fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError>;
 }
 
 /// Write a file and restrict its permissions to owner-only (0o600 on Unix).
@@ -179,44 +187,61 @@ impl FileKeyStateStore {
     }
 }
 
+#[async_trait::async_trait]
 impl KeyStateStore for FileKeyStateStore {
-    fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError> {
-        ensure_private_dir(&self.dir)?;
+    async fn save(&self, key: &cesr::Digest256, data: &[u8]) -> Result<(), KelsError> {
+        let dir = self.dir.clone();
         let path = self.dir.join(format!("{}.keys.json", key));
-        std::fs::write(&path, data)
-            .map_err(|e| KelsError::StorageError(format!("Failed to write key state: {}", e)))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| KelsError::StorageError(format!("Failed to set key state permissions: {}", e)),
-            )?;
-        }
-        Ok(())
+        let data = data.to_vec();
+        tokio::task::spawn_blocking(move || {
+            ensure_private_dir(&dir)?;
+            std::fs::write(&path, &data).map_err(|e| {
+                KelsError::StorageError(format!("Failed to write key state: {}", e))
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(
+                    |e| {
+                        KelsError::StorageError(format!(
+                            "Failed to set key state permissions: {}",
+                            e
+                        ))
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
-    fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError> {
+    async fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
-        match std::fs::read(&path) {
+        tokio::task::spawn_blocking(move || match std::fs::read(&path) {
             Ok(data) => Ok(Some(data)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(KelsError::StorageError(format!(
                 "Failed to read key state: {}",
                 e
             ))),
-        }
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
-    fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError> {
+    async fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
-        match std::fs::remove_file(&path) {
+        tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(KelsError::StorageError(format!(
                 "Failed to delete key state: {}",
                 e
             ))),
-        }
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 }
 
@@ -471,29 +496,24 @@ impl SoftwareKeyProvider {
             return Err(KelsError::CurrentlyStaged);
         }
 
-        ensure_private_dir(dir)?;
+        let current_qb64 = self.keys.first().ok_or(KelsError::NoCurrentKey)?.qb64();
+        let next_qb64 = self.keys.last().ok_or(KelsError::NoNextKey)?.qb64();
+        let recovery_qb64 = self
+            .recovery_keys
+            .first()
+            .ok_or(KelsError::NoRecoveryKey)?
+            .qb64();
 
-        if let Some(key) = self.keys.first() {
-            let path = dir.join("current.key");
-            write_key_file(&path, &key.qb64())?;
-        } else {
-            return Err(KelsError::NoCurrentKey);
-        }
-        if let Some(key) = &self.keys.last() {
-            let path = dir.join("next.key");
-            write_key_file(&path, &key.qb64())?;
-        } else {
-            return Err(KelsError::NoNextKey);
-        }
-
-        if let Some(key) = &self.recovery_keys.first() {
-            let path = dir.join("recovery.key");
-            write_key_file(&path, &key.qb64())?;
-        } else {
-            return Err(KelsError::NoRecoveryKey);
-        }
-
-        Ok(())
+        let dir = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            ensure_private_dir(&dir)?;
+            write_key_file(&dir.join("current.key"), &current_qb64)?;
+            write_key_file(&dir.join("next.key"), &next_qb64)?;
+            write_key_file(&dir.join("recovery.key"), &recovery_qb64)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 }
 
@@ -679,7 +699,7 @@ impl KeyProvider for SoftwareKeyProvider {
         };
         let data =
             serde_json::to_vec(&state).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        store.save(prefix, &data)
+        store.save(prefix, &data).await
     }
 
     async fn restore_state(
@@ -687,7 +707,7 @@ impl KeyProvider for SoftwareKeyProvider {
         store: &dyn KeyStateStore,
         prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
-        let Some(data) = store.load(prefix)? else {
+        let Some(data) = store.load(prefix).await? else {
             return Ok(false);
         };
 
