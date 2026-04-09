@@ -986,14 +986,14 @@ fn decode_stale_value(value: &str) -> (String, u32, u64) {
                     "Failed to parse not_before in stale entry '{}': {}",
                     value, e
                 );
-                0
+                u64::MAX
             }
         };
         let retries = match parts[1].parse::<u32>() {
             Ok(v) => v,
             Err(e) => {
                 warn!("Failed to parse retries in stale entry '{}': {}", value, e);
-                0
+                MAX_STALE_RETRIES
             }
         };
         (parts[2].to_string(), retries, not_before)

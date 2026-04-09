@@ -73,7 +73,7 @@ pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
-pub use error::{KelsError, read_error_body};
+pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};

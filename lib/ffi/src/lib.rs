@@ -297,7 +297,7 @@ pub(crate) fn parse_algorithm_option(algo: *const c_char) -> Option<Verification
         Some("ml-dsa-65") | Some("ML-DSA-65") => Some(VerificationKeyCode::MlDsa65),
         Some("ml-dsa-87") | Some("ML-DSA-87") => Some(VerificationKeyCode::MlDsa87),
         Some("secp256r1") | Some("p256") => Some(VerificationKeyCode::Secp256r1),
-        _ => None, // null, empty, or unrecognized = keep current
+        _ => None, // null, empty, or unrecognized = invalid
     }
 }
 

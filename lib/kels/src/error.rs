@@ -184,7 +184,7 @@ impl From<verifiable_storage::StorageError> for KelsError {
 
 /// Read the response body text from an error response, preserving the HTTP
 /// status code in the error if the body read itself fails.
-pub async fn read_error_body(resp: reqwest::Response) -> Result<String, KelsError> {
+pub(crate) async fn read_error_body(resp: reqwest::Response) -> Result<String, KelsError> {
     let status = resp.status();
     resp.text().await.map_err(|e| {
         KelsError::ServerError(
