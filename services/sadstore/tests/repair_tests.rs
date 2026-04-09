@@ -131,12 +131,12 @@ fn build_chain(
     sk: &SigningKey,
 ) -> Vec<(SadPointer, SadPointerSignature)> {
     let mut pairs = Vec::with_capacity(count);
-    let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
+    let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer::create(kel_digest, kind.to_string(), None).unwrap();
     pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
 
     for i in 1..count {
-        pointer.content_said = Some(cesr::Digest::blake3_256(
+        pointer.content_said = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),
         ));
         pointer.increment().unwrap();
@@ -150,8 +150,8 @@ fn build_chain(
 /// `content_tag` differentiates replacement chains so they produce unique SAIDs.
 #[allow(clippy::too_many_arguments)]
 fn build_replacement(
-    previous_said: &cesr::Digest,
-    prefix: &cesr::Digest,
+    previous_said: &cesr::Digest256,
+    prefix: &cesr::Digest256,
     kel_prefix: &str,
     kind: &str,
     from_version: u64,
@@ -161,15 +161,15 @@ fn build_replacement(
 ) -> Vec<(SadPointer, SadPointerSignature)> {
     let mut pairs = Vec::with_capacity(count);
 
-    let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
+    let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
-        said: cesr::Digest::default(),
+        said: cesr::Digest256::default(),
         prefix: *prefix,
         previous: Some(*previous_said),
         version: from_version,
         kel_prefix: kel_digest,
         kind: kind.to_string(),
-        content_said: Some(cesr::Digest::blake3_256(
+        content_said: Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
     };
@@ -177,7 +177,7 @@ fn build_replacement(
     pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
 
     for i in 1..count {
-        pointer.content_said = Some(cesr::Digest::blake3_256(
+        pointer.content_said = Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version + i as u64).as_bytes(),
         ));
         pointer.increment().unwrap();

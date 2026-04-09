@@ -7,12 +7,12 @@ use crate::{Policy, error::PolicyError};
 /// Trait for resolving nested policy references by SAID.
 #[async_trait]
 pub trait PolicyResolver: Sync {
-    async fn resolve_policy(&self, said: &cesr::Digest) -> Result<Policy, PolicyError>;
+    async fn resolve_policy(&self, said: &cesr::Digest256) -> Result<Policy, PolicyError>;
 }
 
 /// In-memory policy resolver backed by a BTreeMap.
 pub struct InMemoryPolicyResolver {
-    policies: BTreeMap<cesr::Digest, Policy>,
+    policies: BTreeMap<cesr::Digest256, Policy>,
 }
 
 impl InMemoryPolicyResolver {
@@ -30,7 +30,7 @@ impl InMemoryPolicyResolver {
 
 #[async_trait]
 impl PolicyResolver for InMemoryPolicyResolver {
-    async fn resolve_policy(&self, said: &cesr::Digest) -> Result<Policy, PolicyError> {
+    async fn resolve_policy(&self, said: &cesr::Digest256) -> Result<Policy, PolicyError> {
         self.policies
             .get(said)
             .cloned()

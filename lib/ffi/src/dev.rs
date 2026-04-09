@@ -151,7 +151,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
 
             let result = match kind {
                 EventKind::Ixn => {
-                    let anchor = cesr::Digest::blake3_256(
+                    let anchor = cesr::Digest256::blake3_256(
                         format!("adversary_anchor_{}", counter).as_bytes(),
                     );
                     counter += 1;

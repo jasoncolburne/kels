@@ -10,7 +10,7 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     pub condition: String,
 }
 
@@ -18,7 +18,7 @@ pub struct Rule {
 #[serde(rename_all = "camelCase")]
 pub struct Rules {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[serde(flatten)]
     pub rules: BTreeMap<String, Rule>,
 }
@@ -26,7 +26,7 @@ pub struct Rules {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawRules {
-    said: cesr::Digest,
+    said: cesr::Digest256,
     #[serde(flatten)]
     rules: BTreeMap<String, Rule>,
 }
@@ -73,7 +73,7 @@ impl Rules {
             rule.derive_said()?;
         }
         let mut instance = Self {
-            said: cesr::Digest::default(),
+            said: cesr::Digest256::default(),
             rules,
         };
         instance.derive_said()?;

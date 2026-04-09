@@ -134,9 +134,9 @@ fn consume_keyword(input: &str, pos: &mut usize, keyword: &str) -> Result<(), Po
     Ok(())
 }
 
-fn parse_digest(input: &str, pos: &mut usize) -> Result<cesr::Digest, PolicyError> {
+fn parse_digest(input: &str, pos: &mut usize) -> Result<cesr::Digest256, PolicyError> {
     let ident = parse_identifier(input, pos)?;
-    cesr::Digest::from_qb64(&ident)
+    cesr::Digest256::from_qb64(&ident)
         .map_err(|e| PolicyError::ParseError(format!("invalid CESR digest '{}': {}", ident, e)))
 }
 
@@ -160,7 +160,7 @@ fn parse_delegate(input: &str, pos: &mut usize) -> Result<PolicyNode, PolicyErro
         *pos += 1;
         parse_digest(input, pos)?
     } else {
-        cesr::Digest::default()
+        cesr::Digest256::default()
     };
 
     expect_char(input, pos, b')')?;
@@ -501,7 +501,7 @@ mod tests {
     fn test_parse_delegate_compacted() {
         let a = test_digest("prefix-a");
         let node = parse(&format!("delegate({a})")).unwrap();
-        assert_eq!(node, PolicyNode::Delegate(a, cesr::Digest::default()));
+        assert_eq!(node, PolicyNode::Delegate(a, cesr::Digest256::default()));
     }
 
     #[test]

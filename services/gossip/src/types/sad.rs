@@ -12,18 +12,18 @@ pub(crate) enum SadAnnouncement {
     /// A new SAD object was stored (content-addressed blob in MinIO).
     Object {
         /// The SAID of the stored object.
-        said: cesr::Digest,
+        said: cesr::Digest256,
         /// The peer prefix that stored it.
-        origin: cesr::Digest,
+        origin: cesr::Digest256,
     },
     /// A SAD pointer chain was updated.
     Pointer {
         /// The chain prefix that was updated.
-        chain_prefix: cesr::Digest,
+        chain_prefix: cesr::Digest256,
         /// The SAID of the latest chain pointer.
-        said: cesr::Digest,
+        said: cesr::Digest256,
         /// The peer prefix that stored it.
-        origin: cesr::Digest,
+        origin: cesr::Digest256,
         /// Whether this update is a repair of a previously divergent chain.
         /// When true, the receiving node should use `?repair=true` to replace
         /// its local divergent chain.

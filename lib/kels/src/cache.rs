@@ -353,8 +353,8 @@ impl ServerKelCache {
 
     pub async fn publish_update(
         &self,
-        prefix: &cesr::Digest,
-        said: &cesr::Digest,
+        prefix: &cesr::Digest256,
+        said: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         let mut conn = self.conn.clone();
         let message = format!("{}:{}", prefix, said);
@@ -369,7 +369,7 @@ impl ServerKelCache {
     /// Skips caching for KELs larger than MAX_CACHED_KEL_EVENTS.
     pub async fn store(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         if events.is_empty() || events.len() > crate::page_size() {
@@ -407,7 +407,7 @@ impl ServerKelCache {
     /// Get full KEL as pre-serialized bytes (for returning directly to client)
     pub async fn get_full_serialized(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<Option<Arc<Vec<u8>>>, KelsError> {
         self.get_full_serialized_inner(prefix.as_ref()).await
     }
@@ -447,7 +447,7 @@ impl ServerKelCache {
     }
 
     /// Invalidate a cached KEL entry, removing it from both Redis and local cache.
-    pub async fn invalidate(&self, prefix: &cesr::Digest) -> Result<(), KelsError> {
+    pub async fn invalidate(&self, prefix: &cesr::Digest256) -> Result<(), KelsError> {
         let prefix_str: &str = prefix.as_ref();
         let mut conn = self.conn.clone();
         let redis_key = self.redis_key(prefix_str);
@@ -461,7 +461,10 @@ impl ServerKelCache {
     }
 
     /// Get full KEL deserialized (for processing)
-    pub async fn get_full(&self, prefix: &cesr::Digest) -> Result<Vec<SignedKeyEvent>, KelsError> {
+    pub async fn get_full(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         match self.get_full_serialized(prefix).await? {
             Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
             None => Ok(vec![]),

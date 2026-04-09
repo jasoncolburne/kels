@@ -17,7 +17,7 @@ use cesr::Matter;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddr {
     /// The peer's KELS prefix (CESR digest).
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     /// The host (IPv4, IPv6, or DNS name).
     pub host: String,
     /// The port number.
@@ -64,7 +64,8 @@ impl PeerAddr {
             .ok_or(AddrError::InvalidScheme)?;
         let (prefix_str, rest) = stripped.split_once('@').ok_or(AddrError::MissingPrefix)?;
 
-        let prefix = cesr::Digest::from_qb64(prefix_str).map_err(|_| AddrError::InvalidPrefix)?;
+        let prefix =
+            cesr::Digest256::from_qb64(prefix_str).map_err(|_| AddrError::InvalidPrefix)?;
 
         // Handle IPv6 bracket notation: [::1]:port
         let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
@@ -118,8 +119,8 @@ impl fmt::Display for PeerAddr {
 mod tests {
     use super::*;
 
-    fn test_prefix() -> cesr::Digest {
-        cesr::Digest::from_qb64("KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
+    fn test_prefix() -> cesr::Digest256 {
+        cesr::Digest256::from_qb64("KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
     }
 
     #[test]

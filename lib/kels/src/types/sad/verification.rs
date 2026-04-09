@@ -32,12 +32,12 @@ struct SadBranchState {
 /// (DB chain walk). Divergence detection is tracked but not rejected —
 /// the caller decides how to handle it.
 pub struct SadChainVerifier {
-    prefix: cesr::Digest,
-    kel_prefix: Option<cesr::Digest>,
+    prefix: cesr::Digest256,
+    kel_prefix: Option<cesr::Digest256>,
     kind: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
     /// At divergence: two branches (one per fork).
-    branches: HashMap<cesr::Digest, SadBranchState>,
+    branches: HashMap<cesr::Digest256, SadBranchState>,
     /// Records buffered for the current generation (same version).
     generation_buffer: Vec<SignedSadPointer>,
     /// The version of the current buffered generation.
@@ -47,7 +47,10 @@ pub struct SadChainVerifier {
 }
 
 impl SadChainVerifier {
-    pub fn new(prefix: &cesr::Digest, establishment_keys: HashMap<u64, VerificationKey>) -> Self {
+    pub fn new(
+        prefix: &cesr::Digest256,
+        establishment_keys: HashMap<u64, VerificationKey>,
+    ) -> Self {
         Self {
             prefix: *prefix,
             kel_prefix: None,
@@ -169,7 +172,7 @@ impl SadChainVerifier {
         }
 
         // Match each record to its branch via `previous` pointer
-        let mut new_branches: HashMap<cesr::Digest, SadBranchState> = HashMap::new();
+        let mut new_branches: HashMap<cesr::Digest256, SadBranchState> = HashMap::new();
 
         for stored in &records {
             let record = &stored.pointer;
@@ -252,7 +255,7 @@ impl SadChainVerifier {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(SignedSadPointer, cesr::Digest), KelsError> {
+    pub fn finish(mut self) -> Result<(SignedSadPointer, cesr::Digest256), KelsError> {
         // Flush any remaining buffered generation
         self.flush_generation()?;
 
@@ -287,14 +290,14 @@ impl SadChainVerifier {
 /// Collect establishment serials from a paged source without verification.
 /// Used as pass 1 to determine which KEL keys are needed before full verification.
 pub async fn collect_establishment_serials(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     page_size: usize,
     max_pages: usize,
-) -> Result<(BTreeSet<u64>, cesr::Digest), KelsError> {
+) -> Result<(BTreeSet<u64>, cesr::Digest256), KelsError> {
     let mut serials = BTreeSet::new();
-    let mut kel_prefix: Option<cesr::Digest> = None;
-    let mut since: Option<cesr::Digest> = None;
+    let mut kel_prefix: Option<cesr::Digest256> = None;
+    let mut since: Option<cesr::Digest256> = None;
 
     for _ in 0..max_pages {
         let (records, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
@@ -336,8 +339,8 @@ mod tests {
         generate_secp256r1().unwrap()
     }
 
-    fn test_digest(label: &[u8]) -> cesr::Digest {
-        cesr::Digest::blake3_256(label)
+    fn test_digest(label: &[u8]) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label)
     }
 
     fn signed(record: &SadPointer, signing_key: &cesr::SigningKey) -> SignedSadPointer {

@@ -216,7 +216,7 @@ pub unsafe extern "C" fn kels_encap_key_publication_create(
     };
 
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: cesr::Digest::default(),
+        said: cesr::Digest256::default(),
         algorithm: algo,
         encapsulation_key: encap_key,
     };
@@ -271,7 +271,7 @@ pub unsafe extern "C" fn kels_essr_seal(
         set_last_error("Invalid sender prefix");
         return std::ptr::null_mut();
     };
-    let sender = match cesr::Digest::from_qb64(&sender_str) {
+    let sender = match cesr::Digest256::from_qb64(&sender_str) {
         Ok(d) => d,
         Err(e) => {
             set_last_error(&format!("Invalid sender prefix CESR: {e}"));
@@ -283,7 +283,7 @@ pub unsafe extern "C" fn kels_essr_seal(
         set_last_error("Invalid recipient prefix");
         return std::ptr::null_mut();
     };
-    let recipient = match cesr::Digest::from_qb64(&recipient_str) {
+    let recipient = match cesr::Digest256::from_qb64(&recipient_str) {
         Ok(d) => d,
         Err(e) => {
             set_last_error(&format!("Invalid recipient prefix CESR: {e}"));

@@ -75,8 +75,8 @@ pub fn max_sad_object_size() -> usize {
 /// records would exceed the daily limit. Does NOT update the counter — call
 /// `accrue_prefix_rate_limit` after storage with the actual new record count.
 fn check_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest, (u32, Instant)>,
-    prefix: &cesr::Digest,
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    prefix: &cesr::Digest256,
     record_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
@@ -97,8 +97,8 @@ fn check_prefix_rate_limit(
 
 /// Accrue the actual number of new records after storage completes.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest, (u32, Instant)>,
-    prefix: &cesr::Digest,
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    prefix: &cesr::Digest256,
     new_record_count: u32,
 ) {
     let now = Instant::now();
@@ -134,7 +134,7 @@ pub struct AppState {
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub registry_urls: Vec<String>,
-    pub prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
+    pub prefix_rate_limits: DashMap<cesr::Digest256, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
     pub nonce_cache: DashMap<String, Instant>,
 }
@@ -144,7 +144,7 @@ pub struct AppState {
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_kel_prefix: &cesr::Digest,
+    peer_kel_prefix: &cesr::Digest256,
 ) -> Result<Option<kels_core::Peer>, (StatusCode, String)> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
@@ -228,7 +228,7 @@ async fn authenticate_peer_request<T: serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
     timestamp: i64,
-    nonce: &str,
+    nonce: &cesr::Nonce256,
 ) -> Result<(), (StatusCode, String)> {
     if !kels_core::validate_timestamp(timestamp, 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
@@ -381,7 +381,7 @@ pub async fn get_sad_object(
     Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&said_string) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
@@ -406,7 +406,7 @@ pub async fn sad_object_exists(
     Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&said_string) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
@@ -424,7 +424,7 @@ pub async fn sad_pointer_exists(
     Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&said_string) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
@@ -776,7 +776,7 @@ pub async fn get_sad_pointer_effective_said(
     Path(prefix_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let prefix = match cesr::Digest::from_qb64(&prefix_string) {
+    let prefix = match cesr::Digest256::from_qb64(&prefix_string) {
         Ok(p) => p,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid prefix").into_response(),
     };
@@ -801,7 +801,7 @@ const MAX_PREFIX_PAGE_SIZE: usize = 100;
 /// Shared query logic for listing SAD objects.
 async fn query_sad_objects(
     state: &AppState,
-    cursor: Option<&cesr::Digest>,
+    cursor: Option<&cesr::Digest256>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit
@@ -820,7 +820,7 @@ async fn query_sad_objects(
 /// Shared query logic for listing SAD chain prefixes.
 async fn query_sad_prefixes(
     state: &AppState,
-    cursor: Option<&cesr::Digest>,
+    cursor: Option<&cesr::Digest256>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit

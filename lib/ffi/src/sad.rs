@@ -42,7 +42,7 @@ pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
         return std::ptr::null_mut();
     };
 
-    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+    let prefix_digest = match cesr::Digest256::from_qb64(&prefix) {
         Ok(d) => d,
         Err(e) => {
             set_last_error(&format!("Invalid KEL prefix CESR: {e}"));
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
         set_last_error("Invalid SAID");
         return std::ptr::null_mut();
     };
-    let said_digest = match cesr::Digest::from_qb64(&said_str) {
+    let said_digest = match cesr::Digest256::from_qb64(&said_str) {
         Ok(d) => d,
         Err(e) => {
             set_last_error(&format!("Invalid SAID CESR: {e}"));

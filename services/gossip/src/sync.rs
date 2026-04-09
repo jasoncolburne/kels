@@ -54,7 +54,7 @@ pub enum SyncError {
 /// and broadcasts them to the gossip network.
 pub async fn run_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest,
+    local_kel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -114,7 +114,7 @@ const SAD_CHAIN_PUBSUB_CHANNEL: &str = "sad_chain_updates";
 /// Broadcasts announcements to the gossip network on the SAD topic.
 pub async fn run_sad_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest,
+    local_kel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
 ) -> Result<(), SyncError> {
@@ -166,7 +166,7 @@ pub async fn run_sad_redis_subscriber(
 
         let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
             // Object update: payload is just the SAID
-            let said_digest = match cesr::Digest::from_qb64(&payload) {
+            let said_digest = match cesr::Digest256::from_qb64(&payload) {
                 Ok(d) => d,
                 Err(e) => {
                     warn!("Invalid SAID CESR in SAD Redis message: {}", e);
@@ -295,13 +295,13 @@ pub struct SyncHandler {
     mail_client: kels_exchange::MailClient,
     signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
-    local_saids: HashMap<cesr::Digest, cesr::Digest>,
+    local_saids: HashMap<cesr::Digest256, cesr::Digest256>,
     /// Shared allowlist for peer URL lookups
     allowlist: SharedAllowlist,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
     /// Per-peer fetch rate limiting: maps peer_kel_prefix -> (count, window_start)
-    peer_fetch_counts: HashMap<cesr::Digest, (u32, Instant)>,
+    peer_fetch_counts: HashMap<cesr::Digest256, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
 }
@@ -332,14 +332,14 @@ impl SyncHandler {
     }
 
     /// Record a prefix as stale for anti-entropy repair.
-    async fn record_stale(&self, prefix: &cesr::Digest, source_node_prefix: &cesr::Digest) {
+    async fn record_stale(&self, prefix: &cesr::Digest256, source_node_prefix: &cesr::Digest256) {
         if let Some(ref redis) = self.redis {
             record_stale_prefix(redis.as_ref(), prefix, source_node_prefix).await;
         }
     }
 
     /// Get all peer KELS URLs from the allowlist
-    async fn get_peer_kels_urls(&self) -> Vec<(cesr::Digest, String)> {
+    async fn get_peer_kels_urls(&self) -> Vec<(cesr::Digest256, String)> {
         let guard = self.allowlist.read().await;
         guard
             .values()
@@ -397,7 +397,11 @@ impl SyncHandler {
     }
 
     /// Handle a SAD object announcement — fetch the object if we don't have it.
-    async fn handle_sad_object_announcement(&self, said: &cesr::Digest, origin: &cesr::Digest) {
+    async fn handle_sad_object_announcement(
+        &self,
+        said: &cesr::Digest256,
+        origin: &cesr::Digest256,
+    ) {
         // Look up origin peer's SADStore URL
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
             debug!("No SADStore URL for origin peer {}", origin);
@@ -457,9 +461,9 @@ impl SyncHandler {
     /// fetched (no delta) since repair truncates and replaces from the divergence point.
     async fn handle_sad_chain_announcement(
         &self,
-        chain_prefix: &cesr::Digest,
-        remote_said: &cesr::Digest,
-        origin: &cesr::Digest,
+        chain_prefix: &cesr::Digest256,
+        remote_said: &cesr::Digest256,
+        origin: &cesr::Digest256,
         repair: bool,
     ) {
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
@@ -542,7 +546,7 @@ impl SyncHandler {
         } else {
             local_said
                 .as_deref()
-                .and_then(|s| match cesr::Digest::from_qb64(s) {
+                .and_then(|s| match cesr::Digest256::from_qb64(s) {
                     Ok(d) => Some(d),
                     Err(e) => {
                         warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
@@ -623,7 +627,7 @@ impl SyncHandler {
     }
 
     /// Derive a peer's SADStore URL from their base domain.
-    async fn get_peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest) -> Option<String> {
+    async fn get_peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
         let guard = self.allowlist.read().await;
         let peer = guard.get(peer_kel_prefix)?;
         Some(format!("http://sadstore.{}", peer.base_domain))
@@ -805,8 +809,8 @@ impl SyncHandler {
     /// real event SAID for non-divergent). Cached to avoid repeated DB round-trips.
     async fn get_local_effective_said(
         &mut self,
-        prefix: &cesr::Digest,
-    ) -> Result<Option<cesr::Digest>, SyncError> {
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<cesr::Digest256>, SyncError> {
         // Check our cache first
         if let Some(said) = self.local_saids.get(prefix) {
             return Ok(Some(*said));
@@ -824,7 +828,7 @@ impl SyncHandler {
     }
 
     /// Re-fetch effective tail SAID from local KELS and update cache.
-    async fn refresh_local_effective_said(&mut self, prefix: &cesr::Digest) {
+    async fn refresh_local_effective_said(&mut self, prefix: &cesr::Digest256) {
         if let Ok(Some((effective, _))) = self.fetch_local_effective_said(prefix).await {
             self.local_saids.insert(*prefix, effective);
         }
@@ -834,8 +838,8 @@ impl SyncHandler {
     /// A wrong answer just triggers an unnecessary sync (which itself verifies).
     async fn fetch_local_effective_said(
         &self,
-        prefix: &cesr::Digest,
-    ) -> Result<Option<(cesr::Digest, bool)>, SyncError> {
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(cesr::Digest256, bool)>, SyncError> {
         self.kels_client
             .fetch_effective_said(prefix)
             .await
@@ -910,10 +914,10 @@ pub async fn run_sync_handler(
 /// Tries delta fetch first (using `since`), falls back to full fetch on
 /// `NotFound` (remote may have recovered, removing the since SAID).
 async fn forward_with_fallback(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &kels_core::HttpKelSource,
     sink: &kels_core::HttpKelSink,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
     max_pages: usize,
 ) -> Result<(), KelsError> {
     if let Some(since_digest) = since {
@@ -959,12 +963,12 @@ const STALE_BACKOFF_BASE_SECS: u64 = 30;
 
 /// Parsed stale prefix entry from Redis.
 struct StaleEntry {
-    source: cesr::Digest,
+    source: cesr::Digest256,
     retries: u32,
 }
 
 /// Encode a stale entry value for Redis: `{source}:{retries}:{not_before_epoch}`.
-fn encode_stale_value(source: &cesr::Digest, retries: u32) -> String {
+fn encode_stale_value(source: &cesr::Digest256, retries: u32) -> String {
     let backoff_secs = STALE_BACKOFF_BASE_SECS * 2u64.saturating_pow(retries);
     #[allow(clippy::expect_used)]
     let not_before = std::time::SystemTime::now()
@@ -1007,8 +1011,8 @@ fn decode_stale_value(value: &str) -> (String, u32, u64) {
 /// Record a stale prefix for anti-entropy repair (first occurrence).
 pub async fn record_stale_prefix(
     redis: &redis::aio::ConnectionManager,
-    kel_prefix: &cesr::Digest,
-    source_node_prefix: &cesr::Digest,
+    kel_prefix: &cesr::Digest256,
+    source_node_prefix: &cesr::Digest256,
 ) {
     record_stale_entry(redis, STALE_PREFIX_KEY, kel_prefix, source_node_prefix, 0).await;
 }
@@ -1017,8 +1021,8 @@ pub async fn record_stale_prefix(
 async fn requeue_stale_entry(
     redis: &redis::aio::ConnectionManager,
     key: &str,
-    prefix: &cesr::Digest,
-    source: &cesr::Digest,
+    prefix: &cesr::Digest256,
+    source: &cesr::Digest256,
     retries: u32,
 ) {
     let next_retries = retries + 1;
@@ -1036,8 +1040,8 @@ async fn requeue_stale_entry(
 async fn record_stale_entry(
     redis: &redis::aio::ConnectionManager,
     hash_key: &str,
-    prefix: &cesr::Digest,
-    source: &cesr::Digest,
+    prefix: &cesr::Digest256,
+    source: &cesr::Digest256,
     retries: u32,
 ) {
     let mut conn = redis.clone();
@@ -1078,8 +1082,8 @@ pub(crate) enum RepairResult {
 pub(crate) async fn sync_prefix(
     source: &KelsClient,
     dest: &KelsClient,
-    prefix: &cesr::Digest,
-    since: Option<&cesr::Digest>,
+    prefix: &cesr::Digest256,
+    since: Option<&cesr::Digest256>,
 ) -> RepairResult {
     let remote_source = match source.as_kel_source() {
         Ok(s) => s,
@@ -1119,7 +1123,7 @@ pub(crate) async fn sync_prefix(
 async fn drain_due_stale_entries(
     redis: &redis::aio::ConnectionManager,
     key: &str,
-) -> Option<HashMap<cesr::Digest, StaleEntry>> {
+) -> Option<HashMap<cesr::Digest256, StaleEntry>> {
     let mut conn = redis.clone();
     let flat: Vec<String> = redis::cmd("HGETALL")
         .arg(key)
@@ -1158,14 +1162,14 @@ async fn drain_due_stale_entries(
     for (prefix_str, value) in raw {
         let (source_str, retries, not_before) = decode_stale_value(&value);
         if now >= not_before {
-            let prefix = match cesr::Digest::from_qb64(&prefix_str) {
+            let prefix = match cesr::Digest256::from_qb64(&prefix_str) {
                 Ok(d) => d,
                 Err(e) => {
                     warn!("Invalid CESR prefix in stale entry: {}: {}", prefix_str, e);
                     continue;
                 }
             };
-            let source = match cesr::Digest::from_qb64(&source_str) {
+            let source = match cesr::Digest256::from_qb64(&source_str) {
                 Ok(d) => d,
                 Err(e) => {
                     warn!(
@@ -1193,7 +1197,7 @@ async fn drain_due_stale_entries(
 /// Drain due stale KEL prefixes from Redis.
 async fn drain_stale_prefixes(
     redis: &redis::aio::ConnectionManager,
-) -> Option<HashMap<cesr::Digest, StaleEntry>> {
+) -> Option<HashMap<cesr::Digest256, StaleEntry>> {
     drain_due_stale_entries(redis, STALE_PREFIX_KEY).await
 }
 
@@ -1222,7 +1226,7 @@ pub async fn run_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest, String)> = {
+        let peers: Vec<(cesr::Digest256, String)> = {
             let guard = allowlist.read().await;
             guard
                 .values()
@@ -1255,7 +1259,7 @@ pub async fn run_anti_entropy_loop(
             let mut tasks = Vec::new();
             for (kel_prefix, entry) in &stale_entries {
                 // Build ordered peer list: source peer first, then others
-                let mut ordered_peers: Vec<(cesr::Digest, String)> = Vec::new();
+                let mut ordered_peers: Vec<(cesr::Digest256, String)> = Vec::new();
                 if let Some(source) = peers.iter().find(|(pp, _)| *pp == entry.source) {
                     ordered_peers.push(source.clone());
                 }
@@ -1388,7 +1392,7 @@ pub async fn run_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce();
+        let random_cursor = cesr::Digest256::blake3_256(&cesr::Nonce256::generate().to_bytes());
         let local_page = local_client
             .fetch_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1494,8 +1498,8 @@ const SAD_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sad_chain_stale";
 /// Record a SAD chain prefix as stale for anti-entropy repair (first occurrence).
 pub async fn record_sad_stale_prefix(
     redis: &redis::aio::ConnectionManager,
-    chain_prefix: &cesr::Digest,
-    source_node_prefix: &cesr::Digest,
+    chain_prefix: &cesr::Digest256,
+    source_node_prefix: &cesr::Digest256,
 ) {
     record_stale_entry(
         redis,
@@ -1530,7 +1534,7 @@ pub async fn run_sad_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest, String)> = {
+        let peers: Vec<(cesr::Digest256, String)> = {
             let guard = allowlist.read().await;
             guard
                 .values()
@@ -1560,7 +1564,7 @@ pub async fn run_sad_anti_entropy_loop(
 
             let mut tasks = Vec::new();
             for (chain_prefix, entry) in &stale_entries {
-                let mut ordered_peers: Vec<(cesr::Digest, String)> = Vec::new();
+                let mut ordered_peers: Vec<(cesr::Digest256, String)> = Vec::new();
                 if let Some(source) = peers.iter().find(|(pp, _)| *pp == entry.source) {
                     ordered_peers.push(source.clone());
                 }
@@ -1603,7 +1607,7 @@ pub async fn run_sad_anti_entropy_loop(
                         // exists in our local chain. If yes, we're ahead → push.
                         // If no, remote is ahead → pull.
                         let remote_said_digest = match &remote_said {
-                            Some(s) => match cesr::Digest::from_qb64(s) {
+                            Some(s) => match cesr::Digest256::from_qb64(s) {
                                 Ok(d) => d,
                                 Err(_) => continue,
                             },
@@ -1634,8 +1638,8 @@ pub async fn run_sad_anti_entropy_loop(
                             let since_digest = if use_repair || local_divergent {
                                 None
                             } else {
-                                remote_said.as_deref().and_then(|s| {
-                                    match cesr::Digest::from_qb64(s) {
+                                remote_said.as_deref().and_then(
+                                    |s| match cesr::Digest256::from_qb64(s) {
                                         Ok(d) => Some(d),
                                         Err(e) => {
                                             warn!(
@@ -1644,8 +1648,8 @@ pub async fn run_sad_anti_entropy_loop(
                                             );
                                             None
                                         }
-                                    }
-                                })
+                                    },
+                                )
                             };
                             if kels_core::forward_sad_pointer(
                                 prefix,
@@ -1677,8 +1681,8 @@ pub async fn run_sad_anti_entropy_loop(
                             let since_digest = if use_repair {
                                 None
                             } else {
-                                local_said.as_deref().and_then(|s| {
-                                    match cesr::Digest::from_qb64(s) {
+                                local_said.as_deref().and_then(
+                                    |s| match cesr::Digest256::from_qb64(s) {
                                         Ok(d) => Some(d),
                                         Err(e) => {
                                             warn!(
@@ -1687,8 +1691,8 @@ pub async fn run_sad_anti_entropy_loop(
                                             );
                                             None
                                         }
-                                    }
-                                })
+                                    },
+                                )
                             };
                             if kels_core::forward_sad_pointer(
                                 prefix,
@@ -1750,7 +1754,7 @@ pub async fn run_sad_anti_entropy_loop(
             }
         };
 
-        let random_cursor = kels_core::generate_nonce();
+        let random_cursor = cesr::Digest256::blake3_256(&cesr::Nonce256::generate().to_bytes());
         let local_page = local_client
             .fetch_sad_pointer_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
@@ -1793,8 +1797,8 @@ pub async fn run_sad_anti_entropy_loop(
             Box<
                 dyn Future<
                         Output = (
-                            cesr::Digest,
-                            cesr::Digest,
+                            cesr::Digest256,
+                            cesr::Digest256,
                             &'static str,
                             Result<(), kels_core::KelsError>,
                         ),
@@ -1810,14 +1814,14 @@ pub async fn run_sad_anti_entropy_loop(
                 continue;
             }
 
-            let prefix_digest = match cesr::Digest::from_qb64(prefix) {
+            let prefix_digest = match cesr::Digest256::from_qb64(prefix) {
                 Ok(d) => d,
                 Err(_) => continue,
             };
 
             // Determine direction: check if remote's SAID exists locally
             let we_have_remote = if let Some(said) = remote_said_str
-                && let Ok(digest) = cesr::Digest::from_qb64(said)
+                && let Ok(digest) = cesr::Digest256::from_qb64(said)
             {
                 local_client
                     .sad_pointer_exists(&digest)
@@ -1862,7 +1866,7 @@ pub async fn run_sad_anti_entropy_loop(
                 } else {
                     remote_said
                         .as_deref()
-                        .and_then(|s| match cesr::Digest::from_qb64(s) {
+                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
                             Ok(d) => Some(d),
                             Err(e) => {
                                 warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
@@ -1903,7 +1907,7 @@ pub async fn run_sad_anti_entropy_loop(
                 } else {
                     local_said
                         .as_deref()
-                        .and_then(|s| match cesr::Digest::from_qb64(s) {
+                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
                             Ok(d) => Some(d),
                             Err(e) => {
                                 warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
@@ -1948,7 +1952,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         // Phase 3: Object comparison — compare SAD object sets with the same random peer
-        let obj_cursor = kels_core::generate_nonce();
+        let obj_cursor = cesr::Digest256::blake3_256(&cesr::Nonce256::generate().to_bytes());
         let local_objects = local_client
             .fetch_sad_objects(signer.as_ref(), Some(&obj_cursor), 100)
             .await;
@@ -1961,9 +1965,9 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         };
 
-        let local_obj_set: std::collections::HashSet<cesr::Digest> =
+        let local_obj_set: std::collections::HashSet<cesr::Digest256> =
             local_objects.saids.iter().copied().collect();
-        let remote_obj_set: std::collections::HashSet<cesr::Digest> =
+        let remote_obj_set: std::collections::HashSet<cesr::Digest256> =
             remote_objects.saids.iter().copied().collect();
 
         if local_obj_set == remote_obj_set {

@@ -4,15 +4,15 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyNode {
     /// A specific prefix must anchor the credential SAID.
-    Endorse(cesr::Digest),
+    Endorse(cesr::Digest256),
     /// A delegated endorsement: the delegate must be delegated by the delegator,
     /// and the delegate must anchor the credential SAID.
-    Delegate(cesr::Digest, cesr::Digest),
+    Delegate(cesr::Digest256, cesr::Digest256),
     /// Sum of weights of satisfied children must be >= min_weight.
     /// `threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])`.
     Weighted(u64, Vec<(PolicyNode, u64)>),
     /// Resolve and evaluate another policy by SAID.
-    Policy(cesr::Digest),
+    Policy(cesr::Digest256),
 }
 
 impl PolicyNode {
@@ -23,7 +23,7 @@ impl PolicyNode {
         match self {
             PolicyNode::Endorse(prefix) => PolicyNode::Endorse(*prefix),
             PolicyNode::Delegate(delegator, _) => {
-                PolicyNode::Delegate(*delegator, cesr::Digest::default())
+                PolicyNode::Delegate(*delegator, cesr::Digest256::default())
             }
             PolicyNode::Weighted(min_weight, pairs) => PolicyNode::Weighted(
                 *min_weight,
@@ -42,7 +42,7 @@ impl fmt::Display for PolicyNode {
         match self {
             PolicyNode::Endorse(prefix) => write!(f, "endorse({prefix})"),
             PolicyNode::Delegate(delegator, delegate) => {
-                if *delegate == cesr::Digest::default() {
+                if *delegate == cesr::Digest256::default() {
                     write!(f, "delegate({delegator})")
                 } else {
                     write!(f, "delegate({delegator}, {delegate})")
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn test_display_delegate_compacted() {
         let a = test_digest("prefix-a");
-        let node = PolicyNode::Delegate(a, cesr::Digest::default());
+        let node = PolicyNode::Delegate(a, cesr::Digest256::default());
         assert_eq!(node.to_string(), format!("delegate({a})"));
     }
 
@@ -150,7 +150,10 @@ mod tests {
         let b = test_digest("prefix-b");
         let node = PolicyNode::Delegate(a, b);
         let compacted = node.compact();
-        assert_eq!(compacted, PolicyNode::Delegate(a, cesr::Digest::default()));
+        assert_eq!(
+            compacted,
+            PolicyNode::Delegate(a, cesr::Digest256::default())
+        );
     }
 
     #[test]
@@ -175,7 +178,7 @@ mod tests {
             PolicyNode::Weighted(
                 1,
                 vec![
-                    (PolicyNode::Delegate(a, cesr::Digest::default()), 1),
+                    (PolicyNode::Delegate(a, cesr::Digest256::default()), 1),
                     (PolicyNode::Endorse(c), 1),
                 ]
             )

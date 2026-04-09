@@ -68,7 +68,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
-        prefix: Option<&cesr::Digest>,
+        prefix: Option<&cesr::Digest256>,
     ) -> Result<Self, KelsError> {
         let kel_verification = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
@@ -77,7 +77,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                     p,
                     crate::page_size(),
                     crate::max_pages(),
-                    std::iter::empty::<cesr::Digest>(),
+                    std::iter::empty::<cesr::Digest256>(),
                 )
                 .await?;
                 if verification.is_empty() {
@@ -187,7 +187,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             .map(|bt| &bt.tip.event)
     }
 
-    pub fn last_said(&self) -> Option<&cesr::Digest> {
+    pub fn last_said(&self) -> Option<&cesr::Digest256> {
         if let Some(last) = self.pending_events.last() {
             return Some(&last.event.said);
         }
@@ -201,7 +201,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &self.pending_events
     }
 
-    pub fn prefix(&self) -> Option<&cesr::Digest> {
+    pub fn prefix(&self) -> Option<&cesr::Digest256> {
         if let Some(first) = self.pending_events.first() {
             return Some(&first.event.prefix);
         }
@@ -222,7 +222,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             &prefix,
             crate::page_size(),
             crate::max_pages(),
-            std::iter::empty::<cesr::Digest>(),
+            std::iter::empty::<cesr::Digest256>(),
         )
         .await?;
         if !verification.is_empty() {
@@ -257,7 +257,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     pub async fn incept_delegated(
         &mut self,
-        delegating_prefix: &cesr::Digest,
+        delegating_prefix: &cesr::Digest256,
     ) -> Result<SignedKeyEvent, KelsError> {
         let signed_event = self
             .create_signed_delegated_inception_event(delegating_prefix)
@@ -267,7 +267,10 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(signed_event)
     }
 
-    pub async fn interact(&mut self, anchor: &cesr::Digest) -> Result<SignedKeyEvent, KelsError> {
+    pub async fn interact(
+        &mut self,
+        anchor: &cesr::Digest256,
+    ) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
@@ -676,7 +679,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     async fn create_signed_delegated_inception_event(
         &mut self,
-        delegating_prefix: &cesr::Digest,
+        delegating_prefix: &cesr::Digest256,
     ) -> Result<SignedKeyEvent, KelsError> {
         let (current_key, rotation_hash, recovery_hash) =
             self.key_provider.generate_initial_keys().await?;
@@ -695,7 +698,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     async fn create_signed_interaction_event(
         &self,
         base_event: &KeyEvent,
-        anchor: &cesr::Digest,
+        anchor: &cesr::Digest256,
     ) -> Result<SignedKeyEvent, KelsError> {
         let event = KeyEvent::create_interaction(base_event, *anchor)?;
         let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;

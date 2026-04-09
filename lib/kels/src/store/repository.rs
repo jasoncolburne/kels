@@ -24,7 +24,7 @@ impl<R: SignedEventRepository> RepositoryKelStore<R> {
 impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
     async fn load(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -33,7 +33,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 
     async fn load_tail(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         self.repo.get_signed_history_tail(prefix, limit).await
@@ -41,7 +41,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 
     async fn append(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         self.repo.save_with_merge(prefix, events).await?;
@@ -50,7 +50,7 @@ impl<R: SignedEventRepository + 'static> KelStore for RepositoryKelStore<R> {
 
     async fn overwrite(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         self.repo.save_with_merge(prefix, events).await?;

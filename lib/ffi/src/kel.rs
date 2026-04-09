@@ -294,7 +294,7 @@ pub unsafe extern "C" fn kels_interact(
         return;
     };
 
-    let anchor_digest = match cesr::Digest::from_qb64(&anchor_str) {
+    let anchor_digest = match cesr::Digest256::from_qb64(&anchor_str) {
         Ok(d) => d,
         Err(e) => {
             result.status = KelsStatus::Error;

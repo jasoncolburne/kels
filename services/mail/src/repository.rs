@@ -25,7 +25,7 @@ impl MailMessageRepository {
     /// Fetch inbox for a recipient (paginated by created_at).
     pub async fn inbox(
         &self,
-        recipient_kel_prefix: &cesr::Digest,
+        recipient_kel_prefix: &cesr::Digest256,
         limit: usize,
         offset: usize,
     ) -> Result<Vec<MailMessage>, StorageError> {
@@ -40,7 +40,7 @@ impl MailMessageRepository {
     /// Look up a message by SAID.
     pub async fn get_by_said(
         &self,
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
     ) -> Result<Option<MailMessage>, StorageError> {
         let query = Query::<MailMessage>::for_table(Self::TABLE_NAME)
             .eq("said", said.as_ref())
@@ -49,14 +49,16 @@ impl MailMessageRepository {
     }
 
     /// Delete a message by SAID. Returns true if deleted.
-    pub async fn delete(&self, said: &cesr::Digest) -> Result<bool, StorageError> {
+    pub async fn delete(&self, said: &cesr::Digest256) -> Result<bool, StorageError> {
         let delete = Delete::<MailMessage>::for_table(Self::TABLE_NAME).eq("said", said.as_ref());
         let count = self.pool.delete(delete).await?;
         Ok(count > 0)
     }
 
     /// Delete expired messages in batches, returning (said, blob_digest) pairs.
-    pub async fn delete_expired(&self) -> Result<Vec<(cesr::Digest, cesr::Digest)>, StorageError> {
+    pub async fn delete_expired(
+        &self,
+    ) -> Result<Vec<(cesr::Digest256, cesr::Digest256)>, StorageError> {
         const BATCH_SIZE: u64 = 100;
         let now = StorageDatetime::now();
         let mut deleted = Vec::new();
@@ -85,8 +87,8 @@ impl MailMessageRepository {
     /// Sum blob sizes for a recipient on a specific node (for local storage cap enforcement).
     pub async fn local_storage_for_recipient(
         &self,
-        source_node_prefix: &cesr::Digest,
-        recipient_kel_prefix: &cesr::Digest,
+        source_node_prefix: &cesr::Digest256,
+        recipient_kel_prefix: &cesr::Digest256,
     ) -> Result<i64, StorageError> {
         let query = ColumnQuery::new(Self::TABLE_NAME, "blob_size")
             .eq("source_node_prefix", source_node_prefix.as_ref())
@@ -97,7 +99,7 @@ impl MailMessageRepository {
     /// Count messages for a recipient (for inbox cap enforcement).
     pub async fn count_for_recipient(
         &self,
-        recipient_kel_prefix: &cesr::Digest,
+        recipient_kel_prefix: &cesr::Digest256,
     ) -> Result<usize, StorageError> {
         let query = Query::<MailMessage>::for_table(Self::TABLE_NAME)
             .eq("recipient_kel_prefix", recipient_kel_prefix.as_ref());

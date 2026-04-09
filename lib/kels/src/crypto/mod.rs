@@ -7,15 +7,10 @@
 pub mod aead;
 pub mod keys;
 
-use cesr::Digest;
-
 pub use aead::{aes_gcm_decrypt, aes_gcm_encrypt, cipher_from_key, derive_aes_key};
 pub use keys::*;
 
 /// Generate a cryptographic nonce: 32 random bytes hashed with BLAKE3-256, CESR-encoded.
-pub fn generate_nonce() -> cesr::Digest {
-    let mut entropy = [0u8; 32];
-    #[allow(clippy::expect_used)]
-    getrandom::getrandom(&mut entropy).expect("getrandom failed");
-    Digest::blake3_256(&entropy)
+pub fn generate_nonce() -> cesr::Nonce256 {
+    cesr::Nonce256::generate()
 }

@@ -16,7 +16,7 @@ pub type FederationNodeId = u64;
 pub enum FederationError {
     #[error("Not the federation leader. Leader: {leader_prefix:?} at {leader_url:?}")]
     NotLeader {
-        leader_prefix: Option<cesr::Digest>,
+        leader_prefix: Option<cesr::Digest256>,
         leader_url: Option<String>,
     },
 
@@ -59,7 +59,7 @@ pub enum FederationRequest {
     /// Vote on a peer proposal.
     VotePeer {
         /// The proposal being voted on.
-        proposal_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest256,
         /// The signed vote.
         vote: Vote,
     },
@@ -127,15 +127,15 @@ pub enum FederationResponse {
     PeerNotFound(String),
     /// Proposal created successfully.
     ProposalCreated {
-        proposal_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest256,
         votes_needed: usize,
         current_votes: usize,
     },
     /// Proposal already exists for this peer.
-    ProposalAlreadyExists(cesr::Digest),
+    ProposalAlreadyExists(cesr::Digest256),
     /// Vote recorded on proposal.
     VoteRecorded {
-        proposal_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest256,
         current_votes: usize,
         votes_needed: usize,
         approved: bool,
@@ -143,23 +143,23 @@ pub enum FederationResponse {
         proposal: Option<Box<PeerAdditionProposal>>,
     },
     /// Proposal not found.
-    ProposalNotFound(cesr::Digest),
+    ProposalNotFound(cesr::Digest256),
     /// Already voted on this proposal.
-    AlreadyVoted(cesr::Digest),
+    AlreadyVoted(cesr::Digest256),
     /// Proposal expired.
-    ProposalExpired(cesr::Digest),
+    ProposalExpired(cesr::Digest256),
     /// Proposal rejected (rejection threshold met).
-    ProposalRejected(cesr::Digest),
+    ProposalRejected(cesr::Digest256),
     /// Proposal withdrawn.
-    ProposalWithdrawn(cesr::Digest),
+    ProposalWithdrawn(cesr::Digest256),
     /// Not authorized (e.g., only proposer can withdraw).
     NotAuthorized(String),
     /// Peer already exists or has a pending proposal.
-    PeerAlreadyExists(cesr::Digest),
+    PeerAlreadyExists(cesr::Digest256),
     /// Removal proposal approved — leader must deactivate, anchor, and submit RemovePeer.
     RemovalApproved {
-        proposal_prefix: cesr::Digest,
-        peer_kel_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest256,
+        peer_kel_prefix: cesr::Digest256,
         current_votes: usize,
         votes_needed: usize,
         /// When approved, includes the removal proposal so the leader can deactivate the Peer.
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn test_federation_error_display() {
         let err = FederationError::NotLeader {
-            leader_prefix: Some(cesr::Digest::default()),
+            leader_prefix: Some(cesr::Digest256::default()),
             leader_url: Some("http://leader".to_string()),
         };
         assert!(err.to_string().contains("Not the federation leader"));

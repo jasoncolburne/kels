@@ -269,8 +269,8 @@ impl KelsClient {
     /// Returns `None` if the prefix doesn't exist.
     pub async fn fetch_effective_said(
         &self,
-        prefix: &cesr::Digest,
-    ) -> Result<Option<(cesr::Digest, bool)>, KelsError> {
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(cesr::Digest256, bool)>, KelsError> {
         let resp = self
             .client
             .get(format!(
@@ -285,7 +285,7 @@ impl KelsClient {
             let said = body
                 .get("said")
                 .and_then(|s| s.as_str())
-                .map(cesr::Digest::from_qb64)
+                .map(cesr::Digest256::from_qb64)
                 .transpose()
                 .map_err(|e| KelsError::HttpError(format!("Invalid effective SAID CESR: {}", e)))?;
             let divergent = body
@@ -363,12 +363,12 @@ impl KelsClient {
     pub async fn fetch_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&cesr::Digest>,
+        cursor: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce().qb64(),
+            nonce: crate::generate_nonce(),
             cursor: cursor.cloned(),
             limit: Some(limit),
         };
@@ -389,7 +389,7 @@ impl KelsClient {
     }
 
     /// Check if an event SAID exists on the server.
-    pub async fn event_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
+    pub async fn event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let resp = self
             .client
             .get(format!(

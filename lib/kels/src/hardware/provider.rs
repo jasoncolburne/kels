@@ -217,7 +217,7 @@ impl KeyProvider for HardwareKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256, cesr::Digest256), KelsError> {
         let current_pub = self.generate_internal().await?;
         let next_pub = self.generate_internal().await?;
         let recovery_pub = self.generate_recovery_internal().await?;
@@ -253,7 +253,7 @@ impl KeyProvider for HardwareKeyProvider {
         key_handles.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -280,7 +280,7 @@ impl KeyProvider for HardwareKeyProvider {
 
     async fn stage_recovery_rotation(
         &mut self,
-    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest256), KelsError> {
         if self.has_staged_recovery().await {
             return Err(KelsError::AlreadyStagedRecovery);
         }
@@ -400,7 +400,7 @@ impl KeyProvider for HardwareKeyProvider {
     async fn save_state(
         &self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<(), KelsError> {
         let key_handles = self.key_handles.read().await;
         let recovery_handles = self.recovery_handles.read().await;
@@ -429,7 +429,7 @@ impl KeyProvider for HardwareKeyProvider {
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
         let Some(data) = store.load(prefix)? else {
             return Ok(false);

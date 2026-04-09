@@ -303,7 +303,8 @@ async fn check_and_rotate(
     }
 
     // Consuming: verify full KEL under advisory lock with inline anchor checking
-    let binding_saids: Vec<cesr::Digest> = { bindings.iter().map(|b| b.said).collect::<Vec<_>>() };
+    let binding_saids: Vec<cesr::Digest256> =
+        { bindings.iter().map(|b| b.said).collect::<Vec<_>>() };
     let mut tx = state.kel_repo.begin_locked_transaction(prefix).await?;
     let kel_verification = kels_core::completed_verification(
         &mut tx,

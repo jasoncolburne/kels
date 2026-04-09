@@ -44,7 +44,7 @@ struct PeerInfoJson {
     node_id: String,
     base_domain: String,
     gossip_addr: String,
-    kel_prefix: cesr::Digest,
+    kel_prefix: cesr::Digest256,
 }
 
 /// Result of fetching registry prefix

@@ -16,17 +16,17 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryRecord {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[created_at]
     pub created_at: StorageDatetime,
     /// The KEL prefix that was recovered.
-    pub kel_prefix: cesr::Digest,
+    pub kel_prefix: cesr::Digest256,
     /// Serial number of the `rec` event.
     pub recovery_serial: u64,
     /// Serial where divergence occurred.
     pub diverged_at: u64,
     /// The `previous` field of the `rec` event, used to identify the adversary branch.
-    pub rec_previous: cesr::Digest,
+    pub rec_previous: cesr::Digest256,
     /// First serial in the submitted recovery batch.
     pub owner_first_serial: u64,
 }
@@ -41,11 +41,11 @@ pub struct RecoveryRecord {
 #[serde(rename_all = "camelCase")]
 pub struct KelRecoveryEvent {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// The recovery record this event belongs to.
-    pub recovery_said: cesr::Digest,
+    pub recovery_said: cesr::Digest256,
     /// The SAID of the archived event.
-    pub event_said: cesr::Digest,
+    pub event_said: cesr::Digest256,
 }
 
 /// A page of recovery records.

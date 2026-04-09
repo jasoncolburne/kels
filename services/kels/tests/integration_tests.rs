@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cesr::{Digest, test_digest, test_signature};
+use cesr::{Digest256, test_digest, test_signature};
 use chrono::Utc;
 use ctor::dtor;
 use kels_core::{
@@ -242,14 +242,14 @@ async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvi
 }
 
 /// Generate a valid CESR Blake3 digest to use as an anchor.
-fn make_anchor(data: &str) -> Digest {
-    Digest::blake3_256(data.as_bytes())
+fn make_anchor(data: &str) -> Digest256 {
+    Digest256::blake3_256(data.as_bytes())
 }
 
 /// Helper to create a signed interaction event.
 async fn create_interaction(
     builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
-    anchor: &cesr::Digest,
+    anchor: &cesr::Digest256,
 ) -> SignedKeyEvent {
     builder.interact(anchor).await.unwrap()
 }
@@ -388,7 +388,7 @@ async fn test_list_prefixes() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce().to_string(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },
@@ -532,7 +532,7 @@ async fn test_list_prefixes_with_limit() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce().to_string(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: Some(2),
         },
@@ -669,7 +669,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce().to_string(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: Some(1),
         },
@@ -694,7 +694,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
         let request = kels_core::SignedRequest {
             payload: kels_core::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
-                nonce: kels_core::generate_nonce().to_string(),
+                nonce: kels_core::generate_nonce(),
                 cursor: Some(*cursor),
                 limit: Some(1),
             },

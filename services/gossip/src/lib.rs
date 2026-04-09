@@ -366,7 +366,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         let registry_kel_store =
             kels_core::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
         for prefix_str in &registry_prefixes {
-            if let Ok(prefix_digest) = cesr::Digest::from_qb64(prefix_str) {
+            if let Ok(prefix_digest) = cesr::Digest256::from_qb64(prefix_str) {
                 kels_core::sync_member_kel(
                     &prefix_digest,
                     &federation_registry_urls,

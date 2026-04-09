@@ -13,7 +13,7 @@ use crate::{
 /// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
 pub(crate) fn zip_events_with_signatures(
     events: Vec<KeyEvent>,
-    sig_map: &HashMap<cesr::Digest, Vec<EventSignature>>,
+    sig_map: &HashMap<cesr::Digest256, Vec<EventSignature>>,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let mut result = Vec::with_capacity(events.len());
     for event in events {
@@ -39,7 +39,7 @@ pub async fn load_signed_history(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
     signatures_table: &str,
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     limit: u64,
     offset: u64,
 ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -65,7 +65,7 @@ pub async fn load_signed_history(
     let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
-    let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
+    let mut sig_map: HashMap<cesr::Digest256, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
         sig_map.entry(sig.event_said).or_default().push(sig);
     }
@@ -81,7 +81,7 @@ pub async fn load_signed_history_tail(
     tx: &mut impl TransactionExecutor,
     events_table: &str,
     signatures_table: &str,
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     limit: u64,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let query = Query::<KeyEvent>::for_table(events_table)
@@ -102,7 +102,7 @@ pub async fn load_signed_history_tail(
     let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
     let sig_query = Query::<EventSignature>::for_table(signatures_table).r#in("event_said", saids);
     let signatures: Vec<EventSignature> = tx.fetch(sig_query).await?;
-    let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
+    let mut sig_map: HashMap<cesr::Digest256, Vec<EventSignature>> = HashMap::new();
     for sig in signatures {
         sig_map.entry(sig.event_said).or_default().push(sig);
     }
@@ -118,7 +118,7 @@ pub trait SignedEventRepository: Send + Sync {
     /// Returns `(events, has_more)`.
     async fn get_signed_history(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<crate::SignedKeyEvent>, bool), KelsError>;
@@ -126,13 +126,13 @@ pub trait SignedEventRepository: Send + Sync {
     /// Get the last `limit` signed events for a prefix, in serial-ascending order.
     async fn get_signed_history_tail(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
     ) -> Result<Vec<crate::SignedKeyEvent>, KelsError>;
 
     async fn get_signature_by_said(
         &self,
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
     ) -> Result<Option<crate::EventSignature>, KelsError>;
     async fn create_with_signatures(
         &self,
@@ -151,7 +151,7 @@ pub trait SignedEventRepository: Send + Sync {
     /// Uses an advisory lock on the prefix to serialize operations.
     async fn save_with_merge(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[crate::SignedKeyEvent],
     ) -> Result<MergeOutcome, KelsError>;
 }

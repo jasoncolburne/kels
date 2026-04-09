@@ -27,27 +27,27 @@ pub enum ExchangeKind {
 #[serde(rename_all = "camelCase")]
 pub struct ExchangeMessage {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// Thread identifier (deterministic from v0 inception).
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     /// SAID of prior message in thread (None for thread inception).
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     /// Message sequence within thread.
     #[version]
     pub message_number: u64,
     /// Message kind.
     pub kind: ExchangeKind,
     /// Sender's KEL prefix.
-    pub sender: cesr::Digest,
+    pub sender: cesr::Digest256,
     /// Recipient's KEL prefix.
-    pub recipient: cesr::Digest,
+    pub recipient: cesr::Digest256,
     #[created_at]
     pub created_at: StorageDatetime,
     /// Anti-replay nonce (Blake3 hash of random bytes).
-    pub nonce: cesr::Digest,
+    pub nonce: cesr::Digest256,
     /// Kind-specific payload.
     pub payload: ExchangePayload,
 }
@@ -59,10 +59,10 @@ pub enum ExchangePayload {
     /// Apply: request a credential.
     Apply {
         /// Schema SAID being requested.
-        schema: cesr::Digest,
+        schema: cesr::Digest256,
         /// Optional policy SAID constraint.
         #[serde(skip_serializing_if = "Option::is_none")]
-        policy: Option<cesr::Digest>,
+        policy: Option<cesr::Digest256>,
         /// Optional disclosure expression.
         #[serde(skip_serializing_if = "Option::is_none")]
         disclosure: Option<String>,
@@ -70,9 +70,9 @@ pub enum ExchangePayload {
     /// Offer: propose issuing a credential.
     Offer {
         /// Schema SAID.
-        schema: cesr::Digest,
+        schema: cesr::Digest256,
         /// Policy SAID.
-        policy: cesr::Digest,
+        policy: cesr::Digest256,
         /// Optional credential preview (partial claims).
         #[serde(skip_serializing_if = "Option::is_none")]
         credential_preview: Option<serde_json::Value>,
@@ -83,7 +83,7 @@ pub enum ExchangePayload {
     /// Agree: accept an offer.
     Agree {
         /// SAID of the accepted offer message.
-        offer: cesr::Digest,
+        offer: cesr::Digest256,
     },
     /// Grant: deliver a credential.
     Grant {
@@ -103,7 +103,7 @@ pub enum ExchangePayload {
     /// Admit: acknowledge receipt and verification of a grant.
     Admit {
         /// SAID of the acknowledged grant message.
-        grant: cesr::Digest,
+        grant: cesr::Digest256,
     },
     /// Reject: reject a message in the thread.
     Reject {
@@ -123,8 +123,8 @@ mod tests {
 
     use super::*;
 
-    fn test_digest(label: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(label.as_bytes())
+    fn test_digest(label: &str) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label.as_bytes())
     }
 
     #[test]
@@ -142,8 +142,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_ne!(msg.said, cesr::Digest::default());
-        assert_ne!(msg.prefix, cesr::Digest::default());
+        assert_ne!(msg.said, cesr::Digest256::default());
+        assert_ne!(msg.prefix, cesr::Digest256::default());
         assert!(msg.previous.is_none());
         assert_eq!(msg.message_number, 0);
     }

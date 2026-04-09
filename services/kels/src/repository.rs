@@ -41,7 +41,7 @@ impl KeyEventRepository {
     /// Paginated query of archived adversary events for a prefix.
     pub async fn get_archived_events(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -153,7 +153,7 @@ impl KeyEventRepository {
     /// have the same divergent branches. See [`kels_core::compute_effective_said`] for details.
     pub async fn list_prefixes(
         &self,
-        since: Option<&cesr::Digest>,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<PrefixListResponse, StorageError> {
         // DISTINCT ON (prefix) with secondary sort by serial DESC ensures we
@@ -215,12 +215,12 @@ impl KeyEventRepository {
             .group_by("prefix")
             .group_by("serial")
             .having_count_gt(1);
-        let divergent_prefixes: HashSet<cesr::Digest> = self
+        let divergent_prefixes: HashSet<cesr::Digest256> = self
             .pool
             .fetch_column::<String>(divergent_query)
             .await?
             .iter()
-            .filter_map(|s| cesr::Digest::from_qb64(s).ok())
+            .filter_map(|s| cesr::Digest256::from_qb64(s).ok())
             .collect();
 
         // For divergent prefixes, replace the single tip SAID with a deterministic

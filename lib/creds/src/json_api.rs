@@ -29,7 +29,7 @@ pub struct EdgeInput {
     #[serde(default)]
     pub credential: Option<String>,
     #[serde(default)]
-    pub nonce: Option<String>,
+    pub nonce: Option<cesr::Nonce256>,
 }
 
 /// Rule input without SAID (SAIDs are derived during creation).
@@ -79,7 +79,7 @@ pub async fn build(
         &schema,
         &policy,
         subject
-            .map(cesr::Digest::from_qb64)
+            .map(cesr::Digest256::from_qb64)
             .transpose()
             .map_err(|e| CredentialError::VerificationError(format!("Invalid subject: {}", e)))?,
         claims,
@@ -217,12 +217,12 @@ pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     let mut edges = BTreeMap::new();
 
     for (label, input) in inputs {
-        let schema = cesr::Digest::from_qb64(&input.schema).map_err(|e| {
+        let schema = cesr::Digest256::from_qb64(&input.schema).map_err(|e| {
             CredentialError::VerificationError(format!("edge '{label}': invalid schema CESR: {e}"))
         })?;
         let policy = input
             .policy
-            .map(|s| cesr::Digest::from_qb64(&s))
+            .map(|s| cesr::Digest256::from_qb64(&s))
             .transpose()
             .map_err(|e| {
                 CredentialError::VerificationError(format!(
@@ -231,7 +231,7 @@ pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
             })?;
         let credential = input
             .credential
-            .map(|s| cesr::Digest::from_qb64(&s))
+            .map(|s| cesr::Digest256::from_qb64(&s))
             .transpose()
             .map_err(|e| {
                 CredentialError::VerificationError(format!(

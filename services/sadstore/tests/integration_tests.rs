@@ -441,7 +441,7 @@ async fn test_list_prefixes_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce().to_string(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },
@@ -472,7 +472,7 @@ async fn test_list_objects_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce().to_string(),
+            nonce: kels_core::generate_nonce(),
             cursor: None,
             limit: None,
         },

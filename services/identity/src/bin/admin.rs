@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn manage_kel(
     identity_client: &IdentityClient,
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     operation: kels_core::ManageKelOperation,
 ) -> anyhow::Result<kels_core::ManageKelResponse> {
     let request = kels_core::ManageKelRequest {

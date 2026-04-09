@@ -148,8 +148,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Get signatures for multiple SAIDs in one query.
             pub async fn get_signatures_by_saids(
                 &self,
-                saids: &[cesr::Digest],
-            ) -> Result<std::collections::HashMap<cesr::Digest, Vec<kels_core::EventSignature>>, verifiable_storage::StorageError> {
+                saids: &[cesr::Digest256],
+            ) -> Result<std::collections::HashMap<cesr::Digest256, Vec<kels_core::EventSignature>>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
                 let said_strings: Vec<String> = saids.iter().map(|s| s.to_string()).collect();
@@ -157,7 +157,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     .r#in("event_said", said_strings);
                 let sigs = self.pool.fetch(query).await?;
 
-                let mut map: std::collections::HashMap<cesr::Digest, Vec<kels_core::EventSignature>> =
+                let mut map: std::collections::HashMap<cesr::Digest256, Vec<kels_core::EventSignature>> =
                     std::collections::HashMap::new();
                 for sig in sigs {
                     map.entry(sig.event_said).or_default().push(sig);
@@ -169,7 +169,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Get a single signature by event SAID.
             pub async fn get_signature_by_said(
                 &self,
-                said: &cesr::Digest,
+                said: &cesr::Digest256,
             ) -> Result<Option<kels_core::EventSignature>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
 
@@ -186,7 +186,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
             pub async fn get_signed_history(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 limit: u64,
                 offset: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
@@ -211,7 +211,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Single query with `ORDER BY serial DESC`, then reversed.
             pub async fn get_signed_history_tail(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 limit: u64,
             ) -> Result<Vec<kels_core::SignedKeyEvent>, verifiable_storage::StorageError> {
                 use verifiable_storage::{QueryExecutor, TransactionExecutor};
@@ -238,8 +238,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Events are ordered by `serial ASC, kind sort_priority ASC, said ASC` for deterministic pagination.
             pub async fn get_signed_history_since(
                 &self,
-                prefix: &cesr::Digest,
-                since_said: &cesr::Digest,
+                prefix: &cesr::Digest256,
+                since_said: &cesr::Digest256,
                 limit: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
@@ -285,7 +285,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     return Ok((vec![], false));
                 }
 
-                let saids: Vec<cesr::Digest> = events.iter().map(|e| e.said).collect();
+                let saids: Vec<cesr::Digest256> = events.iter().map(|e| e.said).collect();
                 let signatures = self.get_signatures_by_saids(&saids).await?;
 
                 let mut signed_events = Vec::with_capacity(events.len());
@@ -313,8 +313,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// deterministic hash of sorted tip SAIDs for divergent KELs.
             pub async fn compute_prefix_effective_said(
                 &self,
-                prefix: &cesr::Digest,
-            ) -> Result<Option<(cesr::Digest, bool)>, verifiable_storage::StorageError> {
+                prefix: &cesr::Digest256,
+            ) -> Result<Option<(cesr::Digest256, bool)>, verifiable_storage::StorageError> {
                 use verifiable_storage_postgres::QueryExecutor;
                 use cesr::Matter;
 
@@ -402,7 +402,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
             /// Uses an advisory lock on the prefix to serialize operations.
             pub async fn save_with_merge(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 events: &[kels_core::SignedKeyEvent],
             ) -> Result<kels_core::MergeOutcome, kels_core::KelsError> {
                 use cesr::Matter;
@@ -445,7 +445,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         impl kels_core::SignedEventRepository for #repo_name {
             async fn get_signed_history(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 limit: u64,
                 offset: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -456,7 +456,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
             async fn get_signed_history_tail(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 limit: u64,
             ) -> Result<Vec<kels_core::SignedKeyEvent>, kels_core::KelsError> {
                 #repo_name::get_signed_history_tail(self, prefix, limit)
@@ -466,7 +466,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
             async fn get_signature_by_said(
                 &self,
-                said: &cesr::Digest,
+                said: &cesr::Digest256,
             ) -> Result<Option<kels_core::EventSignature>, kels_core::KelsError> {
                 #repo_name::get_signature_by_said(self, said)
                     .await
@@ -494,7 +494,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
             async fn save_with_merge(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 events: &[kels_core::SignedKeyEvent],
             ) -> Result<kels_core::MergeOutcome, kels_core::KelsError> {
                 #repo_name::save_with_merge(self, prefix, events).await
@@ -507,7 +507,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
         impl kels_core::KelServer for #repo_name {
             async fn load_page(
                 &self,
-                prefix: &cesr::Digest,
+                prefix: &cesr::Digest256,
                 limit: u64,
                 offset: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -518,8 +518,8 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
 
             async fn load_page_since(
                 &self,
-                prefix: &cesr::Digest,
-                since_said: &cesr::Digest,
+                prefix: &cesr::Digest256,
+                since_said: &cesr::Digest256,
                 limit: u64,
             ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
                 self.get_signed_history_since(prefix, since_said, limit)
@@ -527,14 +527,14 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn effective_said(&self, prefix: &cesr::Digest) -> Result<Option<cesr::Digest>, kels_core::KelsError> {
+            async fn effective_said(&self, prefix: &cesr::Digest256) -> Result<Option<cesr::Digest256>, kels_core::KelsError> {
                 self.compute_prefix_effective_said(prefix)
                     .await
                     .map(|opt| opt.map(|(said, _)| said))
                     .map_err(kels_core::KelsError::from)
             }
 
-            async fn event_prefix_by_said(&self, said: &cesr::Digest) -> Result<Option<cesr::Digest>, kels_core::KelsError> {
+            async fn event_prefix_by_said(&self, said: &cesr::Digest256) -> Result<Option<cesr::Digest256>, kels_core::KelsError> {
                 use verifiable_storage::ChainedRepository;
                 let event: Option<kels_core::KeyEvent> = self.get_by_said(said).await.map_err(kels_core::KelsError::from)?;
                 Ok(event.map(|e| e.prefix))

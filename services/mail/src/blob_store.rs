@@ -15,7 +15,7 @@ pub enum BlobStoreError {
     #[error("S3 error: {0}")]
     S3(String),
     #[error("Blob not found: {0}")]
-    NotFound(cesr::Digest),
+    NotFound(cesr::Digest256),
 }
 
 /// S3-compatible blob store for ESSR envelopes.
@@ -77,7 +77,11 @@ impl BlobStore {
     }
 
     /// Store an envelope blob by its digest.
-    pub async fn put(&self, blob_digest: &cesr::Digest, data: &[u8]) -> Result<(), BlobStoreError> {
+    pub async fn put(
+        &self,
+        blob_digest: &cesr::Digest256,
+        data: &[u8],
+    ) -> Result<(), BlobStoreError> {
         let key = format!("messages/{}", blob_digest);
         self.client
             .put_object()
@@ -94,7 +98,7 @@ impl BlobStore {
     }
 
     /// Retrieve an envelope blob by its digest.
-    pub async fn get(&self, blob_digest: &cesr::Digest) -> Result<Vec<u8>, BlobStoreError> {
+    pub async fn get(&self, blob_digest: &cesr::Digest256) -> Result<Vec<u8>, BlobStoreError> {
         let key = format!("messages/{}", blob_digest);
         let response = match self
             .client
@@ -124,7 +128,7 @@ impl BlobStore {
     }
 
     /// Delete an envelope blob by its digest.
-    pub async fn delete(&self, blob_digest: &cesr::Digest) -> Result<(), BlobStoreError> {
+    pub async fn delete(&self, blob_digest: &cesr::Digest256) -> Result<(), BlobStoreError> {
         let key = format!("messages/{}", blob_digest);
         self.client
             .delete_object()

@@ -1,6 +1,6 @@
 //! Caching & sync types
 
-use cesr::Digest;
+use cesr::Digest256;
 use serde::{Deserialize, Serialize};
 
 /// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Used for deterministic effective SAIDs for divergent and contested KELs:
 /// - `hash_effective_said("divergent:{prefix}")` — all divergent nodes agree
 /// - `hash_effective_said("contested:{prefix}")` — all contested nodes agree
-pub fn hash_effective_said(input: &str) -> cesr::Digest {
-    Digest::blake3_256(input.as_bytes())
+pub fn hash_effective_said(input: &str) -> cesr::Digest256 {
+    Digest256::blake3_256(input.as_bytes())
 }
 
 /// Request payload for authenticated prefix listing.
@@ -17,8 +17,8 @@ pub fn hash_effective_said(input: &str) -> cesr::Digest {
 #[serde(rename_all = "camelCase")]
 pub struct PaginatedSelfAddressedRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub cursor: Option<cesr::Digest>,
+    pub nonce: cesr::Nonce256,
+    pub cursor: Option<cesr::Digest256>,
     pub limit: Option<usize>,
 }
 
@@ -30,7 +30,7 @@ pub struct PaginatedSelfAddressedRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AdminRequest {
     pub timestamp: i64,
-    pub nonce: String,
+    pub nonce: cesr::Nonce256,
 }
 
 /// Response for paginated prefix listing
@@ -38,12 +38,12 @@ pub struct AdminRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PrefixListResponse {
     pub prefixes: Vec<PrefixState>,
-    pub next_cursor: Option<cesr::Digest>,
+    pub next_cursor: Option<cesr::Digest256>,
 }
 
 /// A prefix with its latest SAID, used for bootstrap sync
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrefixState {
-    pub prefix: cesr::Digest,
-    pub said: cesr::Digest,
+    pub prefix: cesr::Digest256,
+    pub said: cesr::Digest256,
 }

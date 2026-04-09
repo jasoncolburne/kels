@@ -58,10 +58,10 @@ pub struct AppState {
     pub blob_store: Arc<BlobStore>,
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
-    pub node_prefix: cesr::Digest,
-    pub sender_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
+    pub node_prefix: cesr::Digest256,
+    pub sender_rate_limits: DashMap<cesr::Digest256, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
-    pub nonce_cache: DashMap<String, Instant>,
+    pub nonce_cache: DashMap<cesr::Nonce256, Instant>,
 }
 
 /// Spawn a background task that periodically removes expired entries.
@@ -111,8 +111,8 @@ pub fn spawn_reaper(state: Arc<AppState>) {
 // ==================== Rate Limiting ====================
 
 fn check_sender_rate_limit(
-    limits: &DashMap<cesr::Digest, (u32, Instant)>,
-    sender: &cesr::Digest,
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    sender: &cesr::Digest256,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max = max_messages_per_sender_per_day();
@@ -170,19 +170,14 @@ async fn authenticate_request<T: serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
     timestamp: i64,
-    nonce: &str,
+    nonce: &cesr::Nonce256,
 ) -> Result<AuthResult, (StatusCode, String)> {
     if !kels_core::validate_timestamp(timestamp, 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
     }
 
     let window = nonce_window_secs();
-    if window > 0
-        && state
-            .nonce_cache
-            .insert(nonce.to_string(), Instant::now())
-            .is_some()
-    {
+    if window > 0 && state.nonce_cache.insert(*nonce, Instant::now()).is_some() {
         return Err((StatusCode::FORBIDDEN, "Duplicate nonce".into()));
     }
 
@@ -345,7 +340,7 @@ pub async fn send_mail(
     );
 
     let mut mail_message = MailMessage {
-        said: cesr::Digest::default(),
+        said: cesr::Digest256::default(),
         sender_kel_prefix: *sender,
         source_node_prefix: state.node_prefix,
         recipient_kel_prefix: payload.recipient_kel_prefix,
@@ -539,7 +534,7 @@ pub async fn ack(
 #[serde(rename_all = "camelCase")]
 pub struct ReplicateRequest {
     pub timestamp: i64,
-    pub nonce: String,
+    pub nonce: cesr::Nonce256,
     pub message: kels_exchange::MailMessage,
 }
 
@@ -574,8 +569,8 @@ pub async fn replicate(
 #[serde(rename_all = "camelCase")]
 pub struct RemoveRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub said: cesr::Digest,
+    pub nonce: cesr::Nonce256,
+    pub said: cesr::Digest256,
 }
 
 pub async fn remove(

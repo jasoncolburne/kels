@@ -31,8 +31,8 @@ use crate::{KelVerifier, KelsError, SadPointerVerification, error::read_error_bo
 pub trait PagedSadSource: Send + Sync {
     async fn fetch_page(
         &self,
-        prefix: &cesr::Digest,
-        since: Option<&cesr::Digest>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedSadPointer>, bool), KelsError>;
 }
@@ -80,8 +80,8 @@ impl HttpSadSource {
 impl PagedSadSource for HttpSadSource {
     async fn fetch_page(
         &self,
-        prefix: &cesr::Digest,
-        since: Option<&cesr::Digest>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedSadPointer>, bool), KelsError> {
         let mut url = format!(
@@ -166,13 +166,13 @@ impl PagedSadSink for HttpSadSink {
 /// When `verifier` is provided, full structural + signature checks run inline
 /// per page. The verifier must see the full chain (no `since` with verification).
 async fn transfer_sad_pointer(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
     mut verifier: Option<&mut SadChainVerifier>,
     page_size: usize,
     max_pages: usize,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
     if verifier.is_some() && since.is_some() {
         return Err(KelsError::InvalidKel(
@@ -180,7 +180,7 @@ async fn transfer_sad_pointer(
         ));
     }
 
-    let mut since: Option<cesr::Digest> = since.cloned();
+    let mut since: Option<cesr::Digest256> = since.cloned();
 
     for _ in 0..max_pages {
         let (pointers, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
@@ -217,7 +217,7 @@ async fn transfer_sad_pointer(
 /// 2. Verify KEL with collected serials to obtain establishment keys.
 /// 3. Full verification: page through again with `SadChainVerifier` (structure + signatures).
 pub async fn verify_sad_pointer(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     kels_source: &(dyn crate::PagedKelSource + Sync),
     page_size: usize,
@@ -272,12 +272,12 @@ pub async fn verify_sad_pointer(
 ///
 /// Used by gossip sync to replicate chains between nodes.
 pub async fn forward_sad_pointer(
-    prefix: &cesr::Digest,
+    prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
     page_size: usize,
     max_pages: usize,
-    since: Option<&cesr::Digest>,
+    since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
     transfer_sad_pointer(prefix, source, sink, None, page_size, max_pages, since).await
 }

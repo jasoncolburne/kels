@@ -198,7 +198,7 @@ impl SchemaField {
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -217,7 +217,7 @@ impl Schema {
 
     /// Fetch a schema from a SAD store by its SAID.
     pub async fn fetch(
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
         sad_store: &dyn crate::store::SADStore,
     ) -> Result<Self, CredentialError> {
         let chunk = sad_store.get_chunk(said.as_ref()).await?.ok_or_else(|| {

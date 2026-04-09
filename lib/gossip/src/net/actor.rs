@@ -33,9 +33,9 @@ use super::{Error, PeerVerifier, Signer, codec, transport};
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A peer joined our active view for a topic.
-    NeighborUp(cesr::Digest),
+    NeighborUp(cesr::Digest256),
     /// A peer left our active view for a topic.
-    NeighborDown(cesr::Digest),
+    NeighborDown(cesr::Digest256),
     /// A gossip message was received.
     Received(GossipMessage),
 }
@@ -48,7 +48,7 @@ pub struct GossipMessage {
     /// The message content.
     pub content: Bytes,
     /// The peer that delivered this message.
-    pub delivered_from: cesr::Digest,
+    pub delivered_from: cesr::Digest256,
 }
 
 /// Commands sent from the application to the gossip actor.
@@ -74,12 +74,12 @@ pub(crate) enum Command {
 enum PeerMessage {
     /// A protocol message was received from a peer.
     Received {
-        peer_kel_prefix: cesr::Digest,
-        message: proto::Message<cesr::Digest>,
+        peer_kel_prefix: cesr::Digest256,
+        message: proto::Message<cesr::Digest256>,
     },
     /// A peer disconnected (reader task exited).
     Disconnected {
-        peer_kel_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest256,
         /// Connection generation at time of spawn, used to ignore stale disconnects
         /// from replaced connections.
         generation: u64,
@@ -93,7 +93,7 @@ enum DialResult {
     Success(transport::PeerConnection),
     /// Dial failed.
     Failure {
-        peer_kel_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest256,
         error: Error,
     },
 }
@@ -101,7 +101,7 @@ enum DialResult {
 /// State for an active peer connection.
 struct ActivePeer {
     /// Channel to send outbound protocol messages.
-    msg_tx: mpsc::Sender<proto::Message<cesr::Digest>>,
+    msg_tx: mpsc::Sender<proto::Message<cesr::Digest256>>,
     /// Reader task handle.
     _reader: JoinHandle<()>,
     /// Writer task handle.
@@ -120,22 +120,22 @@ struct ActivePeer {
 /// PeerData), queues the message, and dials on demand — matching the
 /// pattern from iroh-gossip.
 pub(crate) struct GossipActor<S, V> {
-    state: proto::State<cesr::Digest, StdRng>,
+    state: proto::State<cesr::Digest256, StdRng>,
     signer: Arc<S>,
     verifier: Arc<V>,
     listener: Option<TcpListener>,
     /// Active peer connections.
-    peers: HashMap<cesr::Digest, ActivePeer>,
+    peers: HashMap<cesr::Digest256, ActivePeer>,
     /// Messages queued for peers being dialed.
-    pending_dials: HashMap<cesr::Digest, Vec<proto::Message<cesr::Digest>>>,
+    pending_dials: HashMap<cesr::Digest256, Vec<proto::Message<cesr::Digest256>>>,
     /// Known peer addresses from PeerData events (advertised host:port).
-    peer_addrs: HashMap<cesr::Digest, String>,
+    peer_addrs: HashMap<cesr::Digest256, String>,
     cmd_rx: mpsc::Receiver<Command>,
     event_tx: broadcast::Sender<Event>,
     peer_msg_tx: mpsc::Sender<PeerMessage>,
     peer_msg_rx: mpsc::Receiver<PeerMessage>,
-    timer_tx: mpsc::Sender<proto::Timer<cesr::Digest>>,
-    timer_rx: mpsc::Receiver<proto::Timer<cesr::Digest>>,
+    timer_tx: mpsc::Sender<proto::Timer<cesr::Digest256>>,
+    timer_rx: mpsc::Receiver<proto::Timer<cesr::Digest256>>,
     dial_tx: mpsc::Sender<DialResult>,
     dial_rx: mpsc::Receiver<DialResult>,
     /// Monotonically increasing counter for connection generations.
@@ -344,7 +344,7 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     }
 
     /// Handle an expired timer.
-    fn handle_timer(&mut self, timer: proto::Timer<cesr::Digest>) {
+    fn handle_timer(&mut self, timer: proto::Timer<cesr::Digest256>) {
         let now = Instant::now();
         let in_event = proto::InEvent::TimerExpired(timer);
         let events: Vec<_> = self.state.handle(in_event, now).collect();
@@ -418,8 +418,8 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     /// Drain queued messages to a newly connected peer.
     fn drain_queued_messages(
         &self,
-        peer_kel_prefix: cesr::Digest,
-        messages: Vec<proto::Message<cesr::Digest>>,
+        peer_kel_prefix: cesr::Digest256,
+        messages: Vec<proto::Message<cesr::Digest256>>,
     ) {
         if let Some(peer_state) = self.peers.get(&peer_kel_prefix) {
             let msg_tx = peer_state.msg_tx.clone();
@@ -445,8 +445,8 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     ///
     /// Messages to connected peers are sent concurrently (one task per peer)
     /// so a slow peer cannot block sends to other peers.
-    fn process_out_events(&mut self, events: Vec<proto::OutEvent<cesr::Digest>>) {
-        let mut peer_messages: HashMap<cesr::Digest, Vec<proto::Message<cesr::Digest>>> =
+    fn process_out_events(&mut self, events: Vec<proto::OutEvent<cesr::Digest256>>) {
+        let mut peer_messages: HashMap<cesr::Digest256, Vec<proto::Message<cesr::Digest256>>> =
             HashMap::new();
 
         for event in events {
@@ -548,14 +548,14 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         self.connection_generation += 1;
         let generation = self.connection_generation;
 
-        let (msg_tx, mut msg_rx) = mpsc::channel::<proto::Message<cesr::Digest>>(64);
+        let (msg_tx, mut msg_rx) = mpsc::channel::<proto::Message<cesr::Digest256>>(64);
         let peer_msg_tx = self.peer_msg_tx.clone();
 
         // Reader task: reads protocol messages and forwards to the actor.
         let reader = tokio::spawn(async move {
             let mut reader = read_half;
             loop {
-                match codec::read_message::<_, proto::Message<cesr::Digest>>(&mut reader).await {
+                match codec::read_message::<_, proto::Message<cesr::Digest256>>(&mut reader).await {
                     Ok(msg) => {
                         if peer_msg_tx
                             .send(PeerMessage::Received {

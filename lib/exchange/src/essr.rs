@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use base64::Engine;
-use cesr::{DecapsulationKey, EncapsulationKey, Matter, Nonce, SigningKey, VerificationKey};
+use cesr::{DecapsulationKey, EncapsulationKey, Matter, Nonce96, SigningKey, VerificationKey};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};
@@ -26,7 +26,7 @@ const ESSR_KDF_CONTEXT: &str = "kels/exchange/v1/protocols/essr";
 #[serde(rename_all = "camelCase")]
 pub struct EssrInner {
     /// Sender's KEL prefix (must match envelope sender for consistency).
-    pub sender: cesr::Digest,
+    pub sender: cesr::Digest256,
     /// Topic for payload interpretation (e.g. `"kels/exchange/v1/topics/exchange"`).
     pub topic: String,
     /// Opaque content, interpretation determined by topic.
@@ -38,19 +38,19 @@ pub struct EssrInner {
 #[serde(rename_all = "camelCase")]
 pub struct EssrEnvelope {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     /// Sender's KEL prefix (plaintext, for routing).
-    pub sender: cesr::Digest,
+    pub sender: cesr::Digest256,
     /// Serial of sender's latest establishment event at signing time.
     pub sender_serial: u64,
     /// Recipient's KEL prefix (signed plaintext, anti-KCI).
-    pub recipient: cesr::Digest,
+    pub recipient: cesr::Digest256,
     /// CESR-encoded ML-KEM ciphertext.
     pub kem_ciphertext: cesr::KemCiphertext,
     /// Base64-encoded AES-GCM-256 ciphertext.
     pub encrypted_payload: String,
     /// CESR-encoded AES-GCM nonce (12 bytes, code 1AAN).
-    pub nonce: cesr::Nonce,
+    pub nonce: cesr::Nonce96,
     #[created_at]
     pub created_at: StorageDatetime,
 }
@@ -76,7 +76,7 @@ pub struct SignedEssrEnvelope {
 pub fn seal(
     inner: &EssrInner,
     sender_serial: u64,
-    recipient_prefix: &cesr::Digest,
+    recipient_prefix: &cesr::Digest256,
     recipient_encap_key: &EncapsulationKey,
     sender_signing_key: &SigningKey,
 ) -> Result<SignedEssrEnvelope, ExchangeError> {
@@ -92,14 +92,14 @@ pub fn seal(
     let aes_key = derive_aes_key(ESSR_KDF_CONTEXT, &shared_secret);
 
     // 4. Generate random nonce and encrypt
-    let nonce = Nonce::generate();
+    let nonce = Nonce96::generate();
 
     let ciphertext = aes_gcm_encrypt(&aes_key, &nonce.to_bytes(), &inner_json)
         .map_err(|e| ExchangeError::SealFailed(e.to_string()))?;
 
     // 5. Build envelope with SAID
     let mut envelope = EssrEnvelope {
-        said: cesr::Digest::default(),
+        said: cesr::Digest256::default(),
         sender: inner.sender,
         sender_serial,
         recipient: *recipient_prefix,
@@ -210,8 +210,8 @@ mod tests {
         (sk, vk, ek, dk)
     }
 
-    fn test_digest(label: &str) -> cesr::Digest {
-        cesr::Digest::blake3_256(label.as_bytes())
+    fn test_digest(label: &str) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label.as_bytes())
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         let signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
 
         // Verify SAID is set
-        assert_ne!(signed.envelope.said, cesr::Digest::default());
+        assert_ne!(signed.envelope.said, cesr::Digest256::default());
         assert_eq!(signed.envelope.sender, sender_prefix);
         assert_eq!(signed.envelope.recipient, recipient_prefix);
 

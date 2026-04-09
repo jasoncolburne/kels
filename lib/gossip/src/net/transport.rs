@@ -26,7 +26,7 @@ use super::{
 /// An established, authenticated, encrypted connection to a peer.
 pub struct PeerConnection {
     /// The authenticated peer identity.
-    pub peer_kel_prefix: cesr::Digest,
+    pub peer_kel_prefix: cesr::Digest256,
     /// The encrypted bidirectional stream.
     pub stream: EncryptedStream<Compat<TcpStream>>,
 }
@@ -101,9 +101,9 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
 /// Exchange 44-byte prefixes between peers.
 async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     stream: &mut S,
-    our_id: &cesr::Digest,
+    our_id: &cesr::Digest256,
     is_initiator: bool,
-) -> Result<cesr::Digest, Error> {
+) -> Result<cesr::Digest256, Error> {
     let mut their_bytes = [0u8; 44];
 
     if is_initiator {
@@ -116,7 +116,7 @@ async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
         stream.flush().await?;
     }
 
-    cesr::Digest::from_qb64b(their_bytes)
+    cesr::Digest256::from_qb64b(their_bytes)
         .map_err(|e| Error::Handshake(format!("Invalid peer prefix: {}", e)))
 }
 
@@ -202,7 +202,7 @@ async fn exchange_signatures<S: futures::AsyncRead + futures::AsyncWrite + Unpin
 }
 
 /// Build the JSON handshake payload that each side signs.
-fn handshake_payload(our_ek: &str, their_ek: &str, their_prefix: &cesr::Digest) -> String {
+fn handshake_payload(our_ek: &str, their_ek: &str, their_prefix: &cesr::Digest256) -> String {
     serde_json::json!({
         "our_ek": our_ek,
         "their_ek": their_ek,

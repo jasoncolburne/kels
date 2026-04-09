@@ -210,7 +210,7 @@ impl FederationNode {
     }
 
     /// Get the current leader's prefix, if known.
-    pub async fn leader_prefix(&self) -> Option<cesr::Digest> {
+    pub async fn leader_prefix(&self) -> Option<cesr::Digest256> {
         self.leader()
             .await
             .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix))
@@ -323,7 +323,7 @@ impl FederationNode {
     /// Vote on a peer proposal (leader only).
     pub async fn vote_peer(
         &self,
-        proposal_prefix: cesr::Digest,
+        proposal_prefix: cesr::Digest256,
         vote: Vote,
     ) -> Result<FederationResponse, FederationError> {
         if !self.is_leader().await {
@@ -351,8 +351,8 @@ impl FederationNode {
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
     pub async fn verify_anchoring(
         &self,
-        said: &cesr::Digest,
-        member_prefix: &cesr::Digest,
+        said: &cesr::Digest256,
+        member_prefix: &cesr::Digest256,
     ) -> Result<(), String> {
         self.state_machine
             .verify_member_anchoring(said, member_prefix)
@@ -408,7 +408,7 @@ impl FederationNode {
     /// Get a specific addition proposal by ID (raw, for chain building).
     pub async fn get_addition_proposal(
         &self,
-        proposal_prefix: &cesr::Digest,
+        proposal_prefix: &cesr::Digest256,
     ) -> Option<PeerAdditionProposal> {
         self.state_machine
             .inner()
@@ -422,7 +422,7 @@ impl FederationNode {
     /// Get a specific removal proposal by ID (raw, for chain building).
     pub async fn get_removal_proposal(
         &self,
-        proposal_prefix: &cesr::Digest,
+        proposal_prefix: &cesr::Digest256,
     ) -> Option<PeerRemovalProposal> {
         self.state_machine
             .inner()
@@ -436,7 +436,7 @@ impl FederationNode {
     /// Get a specific addition proposal with its votes (searches pending and completed).
     pub async fn get_addition_proposal_with_votes(
         &self,
-        proposal_prefix: &cesr::Digest,
+        proposal_prefix: &cesr::Digest256,
     ) -> Option<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
@@ -482,7 +482,7 @@ impl FederationNode {
     /// Get a specific removal proposal with its votes (searches pending and completed).
     pub async fn get_removal_proposal_with_votes(
         &self,
-        proposal_prefix: &cesr::Digest,
+        proposal_prefix: &cesr::Digest256,
     ) -> Option<RemovalWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
@@ -589,7 +589,7 @@ impl FederationNode {
     }
 
     /// Get the trusted member prefixes.
-    pub fn member_prefixes(&self) -> Vec<cesr::Digest> {
+    pub fn member_prefixes(&self) -> Vec<cesr::Digest256> {
         self.config.member_prefixes()
     }
 

@@ -19,7 +19,7 @@ pub struct MailClient {
 #[serde(rename_all = "camelCase")]
 pub struct ReplicateRequest {
     pub timestamp: i64,
-    pub nonce: String,
+    pub nonce: cesr::Nonce256,
     pub message: MailMessage,
 }
 
@@ -28,8 +28,8 @@ pub struct ReplicateRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RemoveRequest {
     pub timestamp: i64,
-    pub nonce: String,
-    pub said: cesr::Digest,
+    pub nonce: cesr::Nonce256,
+    pub said: cesr::Digest256,
 }
 
 impl MailClient {
@@ -52,7 +52,7 @@ impl MailClient {
     ) -> Result<(), MailClientError> {
         let payload = ReplicateRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             message: message.clone(),
         };
         let signed = sign_request(signer, &payload)
@@ -77,12 +77,12 @@ impl MailClient {
     /// Remove a mail message by SAID (gossip-received removal).
     pub async fn remove(
         &self,
-        said: &cesr::Digest,
+        said: &cesr::Digest256,
         signer: &dyn PeerSigner,
     ) -> Result<(), MailClientError> {
         let payload = RemoveRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             said: *said,
         };
         let signed = sign_request(signer, &payload)
@@ -119,14 +119,14 @@ impl MailClient {
     /// Send an ESSR-encrypted envelope to a recipient.
     pub async fn send(
         &self,
-        prefix: &cesr::Digest,
-        recipient: &cesr::Digest,
+        prefix: &cesr::Digest256,
+        recipient: &cesr::Digest256,
         envelope_bytes: &[u8],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
         let send_request = crate::SendRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             recipient_kel_prefix: *recipient,
             blob: base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
         };
@@ -162,12 +162,12 @@ impl MailClient {
     /// Check inbox for messages.
     pub async fn inbox(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         provider: &dyn KeyProvider,
     ) -> Result<crate::InboxResponse, MailClientError> {
         let inbox_request = crate::InboxRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             limit: None,
             offset: None,
         };
@@ -203,13 +203,13 @@ impl MailClient {
     /// Fetch a mail blob by SAID.
     pub async fn fetch(
         &self,
-        prefix: &cesr::Digest,
-        mail_said: &cesr::Digest,
+        prefix: &cesr::Digest256,
+        mail_said: &cesr::Digest256,
         provider: &dyn KeyProvider,
     ) -> Result<Vec<u8>, MailClientError> {
         let fetch_request = crate::FetchRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             mail_said: *mail_said,
         };
 
@@ -244,13 +244,13 @@ impl MailClient {
     /// Acknowledge (delete) messages by SAIDs.
     pub async fn ack(
         &self,
-        prefix: &cesr::Digest,
-        saids: &[cesr::Digest],
+        prefix: &cesr::Digest256,
+        saids: &[cesr::Digest256],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
         let ack_request = crate::AckRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce().to_string(),
+            nonce: kels_core::crypto::generate_nonce(),
             saids: saids.to_vec(),
         };
 

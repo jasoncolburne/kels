@@ -27,21 +27,21 @@ use verifiable_storage::{SelfAddressed, StorageError};
 #[serde(rename_all = "camelCase")]
 pub struct SadPointer {
     #[said]
-    pub said: cesr::Digest,
+    pub said: cesr::Digest256,
     #[prefix]
-    pub prefix: cesr::Digest,
+    pub prefix: cesr::Digest256,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<cesr::Digest>,
+    pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
     /// The owning KEL's prefix.
-    pub kel_prefix: cesr::Digest,
+    pub kel_prefix: cesr::Digest256,
     /// The pointer kind (e.g., `"kels/exchange/v1/keys/mlkem"`).
     pub kind: String,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_said: Option<cesr::Digest>,
+    pub content_said: Option<cesr::Digest256>,
 }
 
 /// Compute the SAD chain prefix for a given KEL prefix and kind.
@@ -50,9 +50,9 @@ pub struct SadPointer {
 /// the v0 inception pointer content (with said+prefix as placeholders), which
 /// contains only deterministic fields.
 pub fn compute_sad_pointer_prefix(
-    kel_prefix: cesr::Digest,
+    kel_prefix: cesr::Digest256,
     kind: &str,
-) -> Result<cesr::Digest, StorageError> {
+) -> Result<cesr::Digest256, StorageError> {
     let pointer = SadPointer::create(kel_prefix, kind.to_string(), None)?;
     Ok(pointer.prefix)
 }
@@ -67,8 +67,8 @@ pub fn compute_sad_pointer_prefix(
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerSignature {
     #[said]
-    pub said: cesr::Digest,
-    pub pointer_said: cesr::Digest,
+    pub said: cesr::Digest256,
+    pub pointer_said: cesr::Digest256,
     pub signature: cesr::Signature,
     pub establishment_serial: u64,
 }
@@ -112,7 +112,7 @@ impl SadPointerVerification {
     }
 
     /// The SAID of the content object referenced by the current pointer.
-    pub fn current_content_said(&self) -> Option<&cesr::Digest> {
+    pub fn current_content_said(&self) -> Option<&cesr::Digest256> {
         self.tip.content_said.as_ref()
     }
 
@@ -122,12 +122,12 @@ impl SadPointerVerification {
     }
 
     /// The chain prefix.
-    pub fn prefix(&self) -> &cesr::Digest {
+    pub fn prefix(&self) -> &cesr::Digest256 {
         &self.tip.prefix
     }
 
     /// The owning KEL prefix.
-    pub fn kel_prefix(&self) -> &cesr::Digest {
+    pub fn kel_prefix(&self) -> &cesr::Digest256 {
         &self.tip.kel_prefix
     }
 
@@ -152,8 +152,8 @@ mod tests {
 
     use super::*;
 
-    fn test_digest(label: &[u8]) -> cesr::Digest {
-        cesr::Digest::blake3_256(label)
+    fn test_digest(label: &[u8]) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label)
     }
 
     #[test]

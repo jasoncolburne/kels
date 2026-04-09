@@ -11,7 +11,7 @@ use crate::{error::KelsError, types::SignedKeyEvent};
 /// Events are stored as newline-delimited JSON (one JSON object per line).
 pub struct FileKelStore {
     kel_dir: std::path::PathBuf,
-    owner_prefix: std::sync::RwLock<Option<cesr::Digest>>,
+    owner_prefix: std::sync::RwLock<Option<cesr::Digest256>>,
 }
 
 impl FileKelStore {
@@ -27,7 +27,7 @@ impl FileKelStore {
     /// Owner prefix protects authoritative KEL from being overwritten by server-fetched data.
     pub fn with_owner(
         kel_dir: impl Into<std::path::PathBuf>,
-        owner_prefix: cesr::Digest,
+        owner_prefix: cesr::Digest256,
     ) -> Result<Self, KelsError> {
         let kel_dir = kel_dir.into();
         std::fs::create_dir_all(&kel_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -44,10 +44,10 @@ impl FileKelStore {
 
 #[async_trait]
 impl KelStore for FileKelStore {
-    fn owner_prefix(&self) -> Option<cesr::Digest> {
+    fn owner_prefix(&self) -> Option<cesr::Digest256> {
         self.owner_prefix.read().ok().and_then(|g| *g)
     }
-    fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {
+    fn set_owner_prefix(&self, prefix: Option<&cesr::Digest256>) {
         if let Ok(mut guard) = self.owner_prefix.write() {
             *guard = prefix.cloned();
         }
@@ -55,7 +55,7 @@ impl KelStore for FileKelStore {
 
     async fn load(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -94,7 +94,7 @@ impl KelStore for FileKelStore {
 
     async fn load_tail(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         limit: u64,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let path = self.kel_path(prefix.as_ref());
@@ -127,7 +127,7 @@ impl KelStore for FileKelStore {
 
     async fn append(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         let path = self.kel_path(prefix.as_ref());
@@ -151,7 +151,7 @@ impl KelStore for FileKelStore {
 
     async fn overwrite(
         &self,
-        prefix: &cesr::Digest,
+        prefix: &cesr::Digest256,
         events: &[SignedKeyEvent],
     ) -> Result<(), KelsError> {
         let path = self.kel_path(prefix.as_ref());
