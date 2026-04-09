@@ -316,7 +316,7 @@ async fn test_get_sad_object_not_found() {
 
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/Knonexistent_said_should_return_404_______"))
+        .get(harness.url(&format!("/api/v1/sad/{}", test_digest("nonexistent"))))
         .send()
         .await
         .unwrap();
