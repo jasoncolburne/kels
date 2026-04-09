@@ -113,7 +113,7 @@ pub async fn apply_disclosure(
     // Start fully compacted
     let digest = cesr::Digest256::from_qb64(said)?;
     let mut value = sad_store.load(&digest).await?.ok_or_else(|| {
-        CredentialError::ExpansionError("Couldn't find value in SAD store".to_string())
+        CredentialError::ExpansionError(format!("chunk not found in SAD store for SAID: {digest}"))
     })?;
 
     // Verify the credential references this schema
