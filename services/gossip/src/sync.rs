@@ -998,9 +998,9 @@ fn decode_stale_value(value: &str) -> (String, u32, u64) {
         };
         (parts[2].to_string(), retries, not_before)
     } else {
-        // Malformed entry — treat as first attempt due immediately
+        // Malformed entry — fail-secure: max retries so it gets cleaned up
         warn!("Malformed stale entry value: {}", value);
-        (value.to_string(), 0, 0)
+        (value.to_string(), MAX_STALE_RETRIES, 0)
     }
 }
 

@@ -336,10 +336,10 @@ pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
 /// * `state_dir` - Directory for storing local state (KELs, keys)
 /// * `key_namespace` - Namespace for Secure Enclave key labels (e.g., "com.myapp.kels")
 /// * `prefix` - Optional existing KEL prefix to load (NULL for new)
-/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). NULL defaults to "secp256r1".
-///   Supported on all platforms including Secure Enclave.
-/// * `recovery_algorithm` - Recovery key algorithm. NULL defaults to "secp256r1".
-///   Supported on all platforms including Secure Enclave.
+/// * `signing_algorithm` - Signing algorithm (e.g., "secp256r1" or "ml-dsa-65"). Required.
+///   Returns NULL on error if absent or unrecognized.
+/// * `recovery_algorithm` - Recovery key algorithm. Required.
+///   Returns NULL on error if absent or unrecognized.
 ///
 /// # Returns
 /// Pointer to context, or NULL on error. Check kels_last_error() for details.
