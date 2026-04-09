@@ -52,6 +52,7 @@ Note: some older files may not follow this convention perfectly. When touching a
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
 - Never hardcode event kind strings (`"icp"`, `"kels/events/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 - Never use `.unwrap()`. If a failure is truly impossible, use `.expect("reason")` with `#[allow(clippy::expect_used)]` on the enclosing scope.
+- Use `cesr` types (`cesr::Digest256`, `cesr::Signature`, `cesr::VerificationKey`, `cesr::SigningKey`, etc.) wherever possible instead of raw `String` or `&str` for cryptographic material. Parse into cesr types at system boundaries and pass typed values throughout.
 
 ## Core Concepts
 
