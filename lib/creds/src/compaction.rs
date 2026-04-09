@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use verifiable_storage::compute_said_from_value;
-
 use cesr::Matter;
 use kels_core::SadStore;
+use verifiable_storage::compute_said_from_value;
 
 use crate::{
     error::CredentialError,
@@ -45,17 +44,18 @@ fn compact_single_node(
     accumulator: &mut HashMap<cesr::Digest256, serde_json::Value>,
 ) -> Result<(), CredentialError> {
     let said = compute_said_from_value(value)?;
+    let said_str = said.to_string();
 
     // Set the said field on the object before storing
     if let Some(obj) = value.as_object_mut() {
         obj.insert(
             "said".to_string(),
-            serde_json::Value::String(said.to_string()),
+            serde_json::Value::String(said_str.clone()),
         );
     }
 
     accumulator.insert(said, value.clone());
-    *value = serde_json::Value::String(said.to_string());
+    *value = serde_json::Value::String(said_str);
 
     Ok(())
 }

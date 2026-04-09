@@ -2,10 +2,9 @@
 
 use std::os::raw::c_char;
 
-use tokio::runtime::Runtime;
-
 use cesr::Matter;
 use kels_core::SadStore;
+use tokio::runtime::Runtime;
 
 use crate::{clear_last_error, from_c_string, set_last_error, to_c_string};
 

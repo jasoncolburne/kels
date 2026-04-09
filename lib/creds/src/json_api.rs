@@ -90,7 +90,7 @@ pub async fn build(
     .await?;
 
     let credential_json = serde_json::to_string(&credential)?;
-    Ok((credential_json, canonical_said))
+    Ok((credential_json, canonical_said.to_string()))
 }
 
 /// Store a JSON credential in the SAD store.

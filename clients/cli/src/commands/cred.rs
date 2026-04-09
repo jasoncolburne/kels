@@ -74,10 +74,8 @@ pub(crate) async fn cmd_cred_issue(
     )
     .await?;
 
-    let anchor_digest =
-        cesr::Digest256::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
     let signed = builder
-        .interact(&anchor_digest)
+        .interact(&canonical_said)
         .await
         .context("Failed to anchor credential SAID in KEL")?;
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
