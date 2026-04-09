@@ -1,6 +1,6 @@
 # kels-creds: Credential Framework Design
 
-A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Defines a storage trait (`SADStore`) but provides only an in-memory implementation — production storage is the caller's responsibility. Data (credentials, schemas, claims, edges, rules) can be stored in the `SADStore` as content-addressable chunks keyed by SAID.
+A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Uses the `SadStore` trait from kels-core for content-addressable storage — production storage is the caller's responsibility. Data (credentials, schemas, claims, edges, rules) can be stored in the `SadStore` as content-addressable chunks keyed by SAID.
 
 All JSON-serializable types use `#[serde(rename_all = "camelCase")]` for consistent field naming across the FFI boundary.
 
@@ -174,23 +174,26 @@ pub struct Rules {
 
 Same deserialization guard pattern as `Edges` — `RawRules` with `TryFrom` enforcing reserved label validation. `Rules::new_validated()` derives SAIDs on all inner `Rule` values before deriving the container's SAID.
 
-### SADStore
+### SadStore
 
-Content-addressable store for all SelfAddressed JSON data (credentials, schemas, claims, edges, rules, etc.), keyed by SAID. The single source of truth for all credential data. Batch operations are the required trait methods; single-item convenience methods are provided as defaults.
+Content-addressable store for all SelfAddressed JSON data (credentials, schemas, claims, edges, rules, etc.), keyed by `cesr::Digest256`. Defined in kels-core (`lib/kels/src/store/sad.rs`), re-exported by kels-creds. Single-item methods are the required trait methods; batch and convenience methods are provided as defaults.
 
 ```rust
 #[async_trait]
-pub trait SADStore: Send + Sync {
-    async fn store_chunks(&self, chunks: &HashMap<String, Value>) -> Result<(), CredentialError>;
-    async fn get_chunks(&self, saids: &HashSet<String>) -> Result<HashMap<String, Value>, CredentialError>;
+pub trait SadStore: Send + Sync {
+    async fn store(&self, said: &cesr::Digest256, value: &Value) -> Result<(), KelsError>;
+    async fn load(&self, said: &cesr::Digest256) -> Result<Option<Value>, KelsError>;
+    async fn list(&self, since: Option<&cesr::Digest256>, limit: usize) -> Result<(Vec<cesr::Digest256>, bool), KelsError>;
+    async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError>;
 
-    // Default convenience methods (delegate to batch operations)
-    async fn get_chunk(&self, said: &str) -> Result<Option<Value>, CredentialError>;
-    async fn store_chunk(&self, said: &str, value: &Value) -> Result<(), CredentialError>;
+    // Default convenience/batch methods
+    async fn load_or_not_found(&self, said: &cesr::Digest256) -> Result<Value, KelsError>;
+    async fn store_batch(&self, items: &HashMap<cesr::Digest256, Value>) -> Result<(), KelsError>;
+    async fn load_batch(&self, saids: &HashSet<cesr::Digest256>) -> Result<HashMap<cesr::Digest256, Value>, KelsError>;
 }
 ```
 
-An `InMemorySADStore` (`tokio::sync::RwLock<HashMap>`-based) is provided for tests, CLI tools, and lightweight use cases.
+An `InMemorySadStore` (`tokio::sync::RwLock<HashMap>`-based) is provided for tests, CLI tools, and lightweight use cases. A `FileSadStore` (JSON files on disk) is provided for CLI and desktop apps.
 
 ## Schema-Aware Compaction and Expansion
 
@@ -335,7 +338,7 @@ pub fn parse_disclosure(expr: &str) -> Result<Vec<PathToken>, CredentialError>;
 pub async fn apply_disclosure(
     said: &str,
     tokens: &[PathToken],
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
     schema: &Schema,
 ) -> Result<serde_json::Value, CredentialError>;
 ```
@@ -406,8 +409,8 @@ All recursive operations share a single depth constant:
 5. **Schema validation** — Validate the credential against the schema via `validate_credential_report`. Compacted fields are accepted (type checking is skipped for SAID strings in compactable fields).
 6. **Policy evaluation** — Call `evaluate_policy(policy, &canonical_said, source, resolver)`. This walks the policy AST, checking each endorser's KEL for credential SAID anchoring and (unless immune) poison hash anchoring. Returns a `PolicyVerification` with per-endorser status and overall satisfaction.
 7. **Expiration** — Check if `expires_at` is present and in the past.
-8. **Edge verification** — If a `SADStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
-   - Look up the referenced credential by SAID in the SADStore
+8. **Edge verification** — If a `SadStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
+   - Look up the referenced credential by SAID in the SadStore
    - Verify the credential's schema matches the edge's schema reference
    - Expand using schema-aware expansion with the edge's schema
    - Parse as `Credential<Value>` and recursively verify
@@ -438,7 +441,7 @@ pub async fn verify_credential<T: Claims>(
     policy: &Policy,
     source: &dyn PagedKelSource,
     resolver: &dyn PolicyResolver,
-    sad_store: Option<&dyn SADStore>,
+    sad_store: Option<&dyn SadStore>,
     edge_schemas: &BTreeMap<String, Schema>,
 ) -> Result<CredentialVerification, CredentialError>;
 ```
@@ -447,7 +450,7 @@ pub async fn verify_credential<T: Claims>(
 
 `policy_verification` contains the full result of policy evaluation: per-endorser `EndorsementStatus` (Endorsed, NotEndorsed, Poisoned, KelError) and nested policy verification results.
 
-When a `SADStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **canonical policy matching**: the presented credential's policy is compacted to canonical form and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
+When a `SadStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **canonical policy matching**: the presented credential's policy is compacted to canonical form and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
 
 `Credential::verify()` is a convenience method that delegates to `verify_credential`.
 
@@ -526,7 +529,7 @@ lib/creds/
     ├── schema.rs           # Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult, validation
     ├── edge.rs             # Edge, Edges types (with deserialization guards)
     ├── rule.rs             # Rule, Rules types (with deserialization guards)
-    ├── store.rs            # SADStore trait + InMemorySADStore + store_credentials
+    ├── store.rs            # store_credentials (SadStore trait + InMemorySadStore are in kels-core)
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact/expand (schema-aware, depth-bounded, with _fields variants for sub-trees)
     ├── verification.rs     # verify_credential, CredentialVerification (policy-based)
