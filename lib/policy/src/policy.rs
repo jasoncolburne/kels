@@ -90,10 +90,7 @@ impl Policy {
 
     /// Parse this policy's poison expression into an AST, if present.
     pub fn parse_poison(&self) -> Result<Option<PolicyNode>, PolicyError> {
-        match &self.poison {
-            Some(expr) => Ok(Some(parse(expr)?)),
-            None => Ok(None),
-        }
+        self.poison.as_ref().map(|expr| parse(expr)).transpose()
     }
 
     /// Whether this policy is immune to poisoning.

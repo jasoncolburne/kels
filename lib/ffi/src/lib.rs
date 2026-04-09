@@ -476,14 +476,16 @@ pub extern "C" fn kels_init(
     };
 
     // Create builder
-    let prefix_digest = prefix_opt.as_deref().map(cesr::Digest::from_qb64);
-    let prefix_digest = match prefix_digest {
-        Some(Ok(d)) => Some(d),
-        Some(Err(e)) => {
+    let prefix_digest = match prefix_opt
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+    {
+        Ok(d) => d,
+        Err(e) => {
             set_last_error(&format!("Invalid prefix CESR: {}", e));
             return std::ptr::null_mut();
         }
-        None => None,
     };
     let builder = runtime.block_on(async {
         KeyEventBuilder::with_dependencies(
