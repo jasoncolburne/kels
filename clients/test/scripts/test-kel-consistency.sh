@@ -81,9 +81,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     while true; do
         # Build JSON body for signed prefixes request
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         else
-            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/prefixes" 2>/dev/null)
