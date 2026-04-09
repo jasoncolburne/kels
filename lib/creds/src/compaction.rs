@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
+use cesr::Matter;
+use kels_core::SadStore;
 use verifiable_storage::compute_said_from_value;
 
 use crate::{
     error::CredentialError,
     schema::{Schema, SchemaField, SchemaFieldType},
-    store::SADStore,
 };
 
 /// Maximum recursion depth for compaction, expansion, and schema validation.
@@ -18,7 +19,7 @@ pub const MAX_RECURSION_DEPTH: usize = 32;
 pub fn compact_with_schema(
     value: &mut serde_json::Value,
     schema: &Schema,
-) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
+) -> Result<HashMap<cesr::Digest256, serde_json::Value>, CredentialError> {
     compact_with_fields(value, &schema.fields)
 }
 
@@ -28,7 +29,7 @@ pub fn compact_with_schema(
 pub fn compact_with_fields(
     value: &mut serde_json::Value,
     fields: &std::collections::BTreeMap<String, SchemaField>,
-) -> Result<HashMap<String, serde_json::Value>, CredentialError> {
+) -> Result<HashMap<cesr::Digest256, serde_json::Value>, CredentialError> {
     let mut accumulator = HashMap::new();
     compact_object_with_schema(value, fields, true, &mut accumulator, MAX_RECURSION_DEPTH)?;
     Ok(accumulator)
@@ -40,17 +41,21 @@ pub fn compact_with_fields(
 /// for compacting children first via the schema-aware walk.
 fn compact_single_node(
     value: &mut serde_json::Value,
-    accumulator: &mut HashMap<String, serde_json::Value>,
+    accumulator: &mut HashMap<cesr::Digest256, serde_json::Value>,
 ) -> Result<(), CredentialError> {
-    let said = compute_said_from_value(value)?.to_string();
+    let said = compute_said_from_value(value)?;
+    let said_str = said.to_string();
 
     // Set the said field on the object before storing
     if let Some(obj) = value.as_object_mut() {
-        obj.insert("said".to_string(), serde_json::Value::String(said.clone()));
+        obj.insert(
+            "said".to_string(),
+            serde_json::Value::String(said_str.clone()),
+        );
     }
 
-    accumulator.insert(said.clone(), value.clone());
-    *value = serde_json::Value::String(said);
+    accumulator.insert(said, value.clone());
+    *value = serde_json::Value::String(said_str);
 
     Ok(())
 }
@@ -59,7 +64,7 @@ fn compact_object_with_schema(
     value: &mut serde_json::Value,
     schema_fields: &std::collections::BTreeMap<String, SchemaField>,
     compactable: bool,
-    accumulator: &mut HashMap<String, serde_json::Value>,
+    accumulator: &mut HashMap<cesr::Digest256, serde_json::Value>,
     remaining_depth: usize,
 ) -> Result<(), CredentialError> {
     if remaining_depth == 0 {
@@ -98,7 +103,7 @@ fn compact_object_with_schema(
 fn compact_field_with_schema(
     value: &mut serde_json::Value,
     field: &SchemaField,
-    accumulator: &mut HashMap<String, serde_json::Value>,
+    accumulator: &mut HashMap<cesr::Digest256, serde_json::Value>,
     remaining_depth: usize,
 ) -> Result<(), CredentialError> {
     match field.field_type {
@@ -138,7 +143,7 @@ fn compact_field_with_schema(
 pub fn expand_with_schema<'a>(
     value: &'a mut serde_json::Value,
     schema: &'a Schema,
-    sad_store: &'a dyn SADStore,
+    sad_store: &'a dyn SadStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     expand_with_fields(value, &schema.fields, sad_store)
 }
@@ -149,7 +154,7 @@ pub fn expand_with_schema<'a>(
 pub fn expand_with_fields<'a>(
     value: &'a mut serde_json::Value,
     fields: &'a std::collections::BTreeMap<String, SchemaField>,
-    sad_store: &'a dyn SADStore,
+    sad_store: &'a dyn SadStore,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
         expand_object_with_schema(value, fields, sad_store, MAX_RECURSION_DEPTH).await
@@ -159,7 +164,7 @@ pub fn expand_with_fields<'a>(
 fn expand_object_with_schema<'a>(
     value: &'a mut serde_json::Value,
     schema_fields: &'a std::collections::BTreeMap<String, SchemaField>,
-    sad_store: &'a dyn SADStore,
+    sad_store: &'a dyn SadStore,
     remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
@@ -179,15 +184,16 @@ fn expand_object_with_schema<'a>(
             if field.compactable
                 && let Some(child) = obj.get(key.as_str())
                 && let Some(said) = child.as_str()
+                && let Ok(digest) = cesr::Digest256::from_qb64(said)
             {
-                candidate_saids.insert(said.to_string());
+                candidate_saids.insert(digest);
             }
         }
 
         let fetched = if candidate_saids.is_empty() {
             HashMap::new()
         } else {
-            sad_store.get_chunks(&candidate_saids).await?
+            sad_store.load_batch(&candidate_saids).await?
         };
 
         // Expand compactable fields and recurse into all object/array children
@@ -201,7 +207,8 @@ fn expand_object_with_schema<'a>(
             if field.compactable
                 && let Some(child) = obj.get(&key)
                 && let Some(said) = child.as_str()
-                && let Some(expanded) = fetched.get(said)
+                && let Ok(digest) = cesr::Digest256::from_qb64(said)
+                && let Some(expanded) = fetched.get(&digest)
             {
                 obj.insert(key.clone(), expanded.clone());
             }
@@ -230,7 +237,7 @@ fn expand_object_with_schema<'a>(
 fn expand_field_with_schema<'a>(
     value: &'a mut serde_json::Value,
     field: &'a SchemaField,
-    sad_store: &'a dyn SADStore,
+    sad_store: &'a dyn SadStore,
     remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CredentialError>> + Send + 'a>> {
     Box::pin(async move {
@@ -248,21 +255,24 @@ fn expand_field_with_schema<'a>(
                         let mut candidate_saids = HashSet::new();
                         if let Some(arr) = value.as_array() {
                             for elem in arr {
-                                if let Some(said) = elem.as_str() {
-                                    candidate_saids.insert(said.to_string());
+                                if let Some(said) = elem.as_str()
+                                    && let Ok(digest) = cesr::Digest256::from_qb64(said)
+                                {
+                                    candidate_saids.insert(digest);
                                 }
                             }
                         }
                         let fetched = if candidate_saids.is_empty() {
                             HashMap::new()
                         } else {
-                            sad_store.get_chunks(&candidate_saids).await?
+                            sad_store.load_batch(&candidate_saids).await?
                         };
 
                         if let Some(arr) = value.as_array_mut() {
                             for elem in arr.iter_mut() {
-                                if let Some(said) = elem.as_str().map(|s| s.to_string())
-                                    && let Some(expanded) = fetched.get(&said)
+                                if let Some(said) = elem.as_str()
+                                    && let Ok(digest) = cesr::Digest256::from_qb64(said)
+                                    && let Some(expanded) = fetched.get(&digest)
                                 {
                                     *elem = expanded.clone();
                                 }
@@ -362,7 +372,8 @@ mod tests {
 
         // Both root and child are in the accumulator
         assert_eq!(chunks.len(), 2);
-        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        let root_said = cesr::Digest256::from_qb64(value.as_str().unwrap()).unwrap();
+        let root = chunks.get(&root_said).unwrap();
         assert!(root.is_object());
         assert!(root.get("child").unwrap().is_string());
     }
@@ -396,7 +407,8 @@ mod tests {
         assert!(value.is_string());
         // Only root in accumulator — child was NOT compacted
         assert_eq!(chunks.len(), 1);
-        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        let root_said = cesr::Digest256::from_qb64(value.as_str().unwrap()).unwrap();
+        let root = chunks.get(&root_said).unwrap();
         // child remains as an object (not a SAID string)
         assert!(root.get("child").unwrap().is_object());
     }
@@ -432,9 +444,9 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert!(value.is_string());
 
-        for (said, chunk) in chunks {
+        for (said, chunk) in &chunks {
             let chunk_said = chunk.get("said").unwrap().as_str().unwrap();
-            assert_eq!(chunk_said, said);
+            assert_eq!(chunk_said, said.as_ref());
         }
     }
 
@@ -506,7 +518,8 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert!(value.is_string());
 
-        let root = chunks.get(value.as_str().unwrap()).unwrap();
+        let root_said = cesr::Digest256::from_qb64(value.as_str().unwrap()).unwrap();
+        let root = chunks.get(&root_said).unwrap();
         let items = root.get("items").unwrap().as_array().unwrap();
         assert!(items[0].is_string());
         assert!(items[1].is_string());
@@ -515,7 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_aware_compact_expand_roundtrip() {
-        use crate::store::InMemorySADStore;
+        use kels_core::InMemorySadStore;
 
         let schema = crate::schema::Schema::create(
             "Test".to_string(),
@@ -553,12 +566,12 @@ mod tests {
         assert!(value.is_string());
 
         // Store chunks
-        let store = InMemorySADStore::new();
-        store.store_chunks(&chunks).await.unwrap();
+        let store = InMemorySadStore::new();
+        store.store_batch(&chunks).await.unwrap();
 
         // Get root object back
-        let root_said = value.as_str().unwrap();
-        let mut root = store.get_chunk(root_said).await.unwrap().unwrap();
+        let root_said = cesr::Digest256::from_qb64(value.as_str().unwrap()).unwrap();
+        let mut root = store.load(&root_said).await.unwrap().unwrap();
 
         // Child should be a SAID string (compacted)
         assert!(root.get("child").unwrap().is_string());
@@ -583,7 +596,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_aware_expand_skips_non_compactable() {
-        use crate::store::InMemorySADStore;
+        use cesr::test_digest;
+        use kels_core::InMemorySadStore;
 
         // Schema where "ref_said" is a Said type (not compactable)
         let schema = crate::schema::Schema::create(
@@ -606,27 +620,20 @@ mod tests {
         )
         .unwrap();
 
-        let store = InMemorySADStore::new();
+        let store = InMemorySadStore::new();
 
-        // Store a chunk that matches the ref_said value
-        let ref_value =
-            json!({"said": "KRef_1234567890123456789012345678901234567", "extra": "data"});
-        store
-            .store_chunk("KRef_1234567890123456789012345678901234567", &ref_value)
-            .await
-            .unwrap();
+        let ref_said = test_digest("ref_said");
+        let ref_value = json!({"said": ref_said.as_ref(), "extra": "data"});
+        store.store(&ref_said, &ref_value).await.unwrap();
 
-        let child_value =
-            json!({"said": "KChild234567890123456789012345678901234567", "data": "leaf"});
-        store
-            .store_chunk("KChild234567890123456789012345678901234567", &child_value)
-            .await
-            .unwrap();
+        let child_said = test_digest("child_said");
+        let child_value = json!({"said": child_said.as_ref(), "data": "leaf"});
+        store.store(&child_said, &child_value).await.unwrap();
 
         let mut value = json!({
             "said": "",
-            "ref_said": "KRef_1234567890123456789012345678901234567",
-            "child": "KChild234567890123456789012345678901234567"
+            "ref_said": ref_said.as_ref(),
+            "child": child_said.as_ref()
         });
 
         expand_with_schema(&mut value, &schema, &store)
@@ -637,7 +644,7 @@ mod tests {
         assert!(value.get("ref_said").unwrap().is_string());
         assert_eq!(
             value.get("ref_said").unwrap().as_str().unwrap(),
-            "KRef_1234567890123456789012345678901234567"
+            ref_said.as_ref()
         );
 
         // child SHOULD be expanded (it's compactable)

@@ -207,20 +207,18 @@ pub struct Schema {
 
 impl Schema {
     /// Store this schema in a SAD store as a single chunk keyed by its SAID.
-    pub async fn store(
-        &self,
-        sad_store: &dyn crate::store::SADStore,
-    ) -> Result<(), CredentialError> {
+    pub async fn store(&self, sad_store: &dyn kels_core::SadStore) -> Result<(), CredentialError> {
         let value = serde_json::to_value(self)?;
-        sad_store.store_chunk(self.said.as_ref(), &value).await
+        sad_store.store(&self.said, &value).await?;
+        Ok(())
     }
 
     /// Fetch a schema from a SAD store by its SAID.
     pub async fn fetch(
         said: &cesr::Digest256,
-        sad_store: &dyn crate::store::SADStore,
+        sad_store: &dyn kels_core::SadStore,
     ) -> Result<Self, CredentialError> {
-        let chunk = sad_store.get_chunk(said.as_ref()).await?.ok_or_else(|| {
+        let chunk = sad_store.load(said).await?.ok_or_else(|| {
             CredentialError::ExpansionError(format!("schema {} not found in store", said))
         })?;
         Ok(serde_json::from_value(chunk)?)

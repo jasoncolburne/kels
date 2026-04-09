@@ -2,9 +2,9 @@
 
 use std::os::raw::c_char;
 
+use cesr::Matter;
+use kels_core::SadStore;
 use tokio::runtime::Runtime;
-
-use kels_creds::SADStore;
 
 use crate::{clear_last_error, from_c_string, set_last_error, to_c_string};
 
@@ -269,8 +269,8 @@ pub unsafe extern "C" fn kels_credential_disclose(
         return std::ptr::null_mut();
     };
 
-    // Load chunks into InMemorySADStore
-    let chunks: std::collections::HashMap<String, serde_json::Value> =
+    // Load chunks into InMemorySadStore — JSON keys are qb64 SAIDs
+    let string_chunks: std::collections::HashMap<String, serde_json::Value> =
         match serde_json::from_str(&chunks_str) {
             Ok(c) => c,
             Err(e) => {
@@ -278,14 +278,26 @@ pub unsafe extern "C" fn kels_credential_disclose(
                 return std::ptr::null_mut();
             }
         };
+    let mut chunks = std::collections::HashMap::new();
+    for (key, value) in string_chunks {
+        match cesr::Digest256::from_qb64(&key) {
+            Ok(digest) => {
+                chunks.insert(digest, value);
+            }
+            Err(e) => {
+                set_last_error(&format!("Invalid SAID key '{key}': {e}"));
+                return std::ptr::null_mut();
+            }
+        }
+    }
 
     let Ok(runtime) = Runtime::new() else {
         set_last_error("Failed to create async runtime");
         return std::ptr::null_mut();
     };
 
-    let sad_store = kels_creds::InMemorySADStore::new();
-    let store_result = runtime.block_on(sad_store.store_chunks(&chunks));
+    let sad_store = kels_core::InMemorySadStore::new();
+    let store_result = runtime.block_on(sad_store.store_batch(&chunks));
     if let Err(e) = store_result {
         set_last_error(&format!("Failed to load chunks: {e}"));
         return std::ptr::null_mut();

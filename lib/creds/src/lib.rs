@@ -18,12 +18,13 @@ pub use credential::{Compactable, Credential};
 pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
 pub use edge::{Edge, Edges};
 pub use error::CredentialError;
+pub use kels_core::{InMemorySadStore, SadStore};
 pub use rule::{Rule, Rules};
 pub use schema::{
     Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult,
     validate_schema, validate_schema_compliance, validate_schema_structure,
 };
-pub use store::{InMemorySADStore, SADStore, store_credentials};
+pub use store::store_credentials;
 pub use verification::{CredentialVerification, verify_credential};
 
 // Re-export kels-policy types for convenience

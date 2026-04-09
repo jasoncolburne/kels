@@ -1,10 +1,12 @@
+use cesr::Matter;
+use kels_core::SadStore;
+
 use crate::{
     compaction::{
         compact_with_fields, compact_with_schema, expand_with_fields, expand_with_schema,
     },
     error::CredentialError,
     schema::Schema,
-    store::SADStore,
 };
 
 /// AST node for the disclosure path DSL.
@@ -105,16 +107,14 @@ fn parse_token(raw: &str) -> Result<PathToken, CredentialError> {
 pub async fn apply_disclosure(
     said: &str,
     tokens: &[PathToken],
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
     schema: &Schema,
 ) -> Result<serde_json::Value, CredentialError> {
     // Start fully compacted
-    let chunk = sad_store.get_chunk(said).await?;
-    let Some(mut value) = chunk else {
-        return Err(CredentialError::ExpansionError(
-            "Couldn't find value in SAD store".to_string(),
-        ));
-    };
+    let digest = cesr::Digest256::from_qb64(said)?;
+    let mut value = sad_store.load(&digest).await?.ok_or_else(|| {
+        CredentialError::ExpansionError(format!("chunk not found in SAD store for SAID: {digest}"))
+    })?;
 
     // Verify the credential references this schema
     let cred_schema = value
@@ -193,7 +193,7 @@ fn resolve_schema_fields_at_path(
 async fn expand_at_path(
     value: &mut serde_json::Value,
     path: &[String],
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
 ) -> Result<(), CredentialError> {
     let (parent, last) = navigate_to_field(value, path)?;
 
@@ -201,10 +201,13 @@ async fn expand_at_path(
         .get(last)
         .ok_or_else(|| CredentialError::InvalidDisclosure(format!("field '{}' not found", last)))?;
 
-    if let Some(said) = current.as_str() {
-        // Field is compacted (SAID string) — look it up
-        let expanded = sad_store.get_chunk(said).await?.ok_or_else(|| {
-            CredentialError::ExpansionError(format!("chunk not found in store for SAID: {}", said))
+    if let Some(said_str) = current.as_str() {
+        let digest = cesr::Digest256::from_qb64(said_str)?;
+        let expanded = sad_store.load(&digest).await?.ok_or_else(|| {
+            CredentialError::ExpansionError(format!(
+                "chunk not found in store for SAID: {}",
+                said_str
+            ))
         })?;
         parent.insert(last.to_string(), expanded);
     }
@@ -249,11 +252,12 @@ fn compact_at_path(
 /// accumulator — its children remain as SAID strings.
 fn compact_children(value: &mut serde_json::Value, schema: &Schema) -> Result<(), CredentialError> {
     let accumulator = compact_with_schema(value, schema)?;
-    let said = value.as_str().ok_or(CredentialError::CompactionError(
+    let said_str = value.as_str().ok_or(CredentialError::CompactionError(
         "Could not compact children".to_string(),
     ))?;
+    let digest = cesr::Digest256::from_qb64(said_str)?;
     *value = accumulator
-        .get(said)
+        .get(&digest)
         .ok_or(CredentialError::CompactionError(
             "Could not find value in accumulator".to_string(),
         ))?
@@ -293,9 +297,10 @@ mod tests {
 
     use serde_json::json;
 
+    use kels_core::InMemorySadStore;
+
     use crate::compaction::compact_with_schema;
     use crate::schema::{Schema, SchemaField};
-    use crate::store::InMemorySADStore;
 
     // -- parse_disclosure tests --
 
@@ -412,7 +417,10 @@ mod tests {
     fn compact_and_collect(
         value: &mut serde_json::Value,
         schema: &Schema,
-    ) -> (String, std::collections::HashMap<String, serde_json::Value>) {
+    ) -> (
+        String,
+        std::collections::HashMap<cesr::Digest256, serde_json::Value>,
+    ) {
         let chunks = compact_with_schema(value, schema).unwrap();
         let said = value.as_str().unwrap().to_string();
         (said, chunks)
@@ -420,10 +428,10 @@ mod tests {
 
     /// Build a store from all chunks in the accumulator.
     async fn store_from_chunks(
-        chunks: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> InMemorySADStore {
-        let store = InMemorySADStore::new();
-        store.store_chunks(chunks).await.unwrap();
+        chunks: &std::collections::HashMap<cesr::Digest256, serde_json::Value>,
+    ) -> InMemorySadStore {
+        let store = InMemorySadStore::new();
+        store.store_batch(chunks).await.unwrap();
         store
     }
 

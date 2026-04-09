@@ -74,10 +74,8 @@ pub(crate) async fn cmd_cred_issue(
     )
     .await?;
 
-    let anchor_digest =
-        cesr::Digest256::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
     let signed = builder
-        .interact(&anchor_digest)
+        .interact(&canonical_said)
         .await
         .context("Failed to anchor credential SAID in KEL")?;
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
@@ -147,7 +145,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
             .await?;
 
         for said in &saids {
-            if let Ok(value) = sad_store.load(said).await
+            if let Ok(Some(value)) = sad_store.load(said).await
                 && value.get("schema").is_some()
                 && value.get("policy").is_some()
             {
@@ -176,7 +174,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
     let said = cesr::Digest256::from_qb64(said).context("Invalid SAID")?;
-    let value = sad_store.load(&said).await?;
+    let value = sad_store.load_or_not_found(&said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }

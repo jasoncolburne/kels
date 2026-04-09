@@ -6,7 +6,7 @@ pub mod sad;
 
 pub use file::FileKelStore;
 pub use repository::RepositoryKelStore;
-pub use sad::{FileSadStore, SadStore};
+pub use sad::{FileSadStore, InMemorySadStore, SadStore};
 
 use async_trait::async_trait;
 
