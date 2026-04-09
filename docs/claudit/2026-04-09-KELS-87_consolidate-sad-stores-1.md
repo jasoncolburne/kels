@@ -8,7 +8,7 @@ Consolidates two SADStore traits into one, moves InMemorySadStore to kels-core, 
 |----------|------|----------|
 | High     | 0    | 0        |
 | Medium   | 0    | 2        |
-| Low      | 2    | 1        |
+| Low      | 0    | 3        |
 
 ---
 
@@ -34,13 +34,13 @@ Consolidates two SADStore traits into one, moves InMemorySadStore to kels-core, 
 
 ## Low Priority
 
-### 3. Unused `cesr::Matter` import in disclosure.rs
+### ~~3. Unused `cesr::Matter` import in disclosure.rs~~
 
 **File:** `lib/creds/src/disclosure.rs:1`
 
-`use cesr::Matter;` is imported but the only usage of `cesr::Digest256` in this file is via `from_qb64()` (which is on the `Matter` trait). However, `from_qb64` is the only `Matter` method used — if the `Matter` import is needed, it's fine, but worth confirming clippy didn't flag it (it didn't because it's used through the trait method).
+~~`use cesr::Matter;` is imported but the only usage of `cesr::Digest256` in this file is via `from_qb64()` (which is on the `Matter` trait). However, `from_qb64` is the only `Matter` method used — if the `Matter` import is needed, it's fine, but worth confirming clippy didn't flag it (it didn't because it's used through the trait method).~~
 
-**Suggested fix:** No action needed — the import is required for `from_qb64`. This is a non-issue on closer inspection.
+**Resolution:** No action needed — the import is required for `from_qb64`. This is a non-issue on closer inspection.
 
 ### ~~4. `compact_single_node` calls `said.to_string()` twice~~ — RESOLVED
 
@@ -50,13 +50,13 @@ Consolidates two SADStore traits into one, moves InMemorySadStore to kels-core, 
 
 **Resolution:** Extracted `let said_str = said.to_string();` and reused it for both the object insert and the replacement value.
 
-### 5. FFI disclose function parses JSON chunks into String keys then converts to Digest256
+### ~~5. FFI disclose function parses JSON chunks into String keys then converts to Digest256~~
 
 **File:** `lib/ffi/src/credential.rs:273-293`
 
-The FFI `kels_disclose` deserializes JSON into `HashMap<String, Value>` then converts each key to `Digest256`. This is correct and necessary since JSON keys are always strings, but the intermediate `string_chunks` HashMap is an extra allocation. A minor optimization would be to deserialize directly into a `HashMap<cesr::Digest256, Value>` using serde's `Deserialize` impl on `Digest256` — but JSON object keys always deserialize as strings, so the current approach is actually the only correct one.
+~~The FFI `kels_disclose` deserializes JSON into `HashMap<String, Value>` then converts each key to `Digest256`. This is correct and necessary since JSON keys are always strings, but the intermediate `string_chunks` HashMap is an extra allocation. A minor optimization would be to deserialize directly into a `HashMap<cesr::Digest256, Value>` using serde's `Deserialize` impl on `Digest256` — but JSON object keys always deserialize as strings, so the current approach is actually the only correct one.~~
 
-**Suggested fix:** No action needed — current approach is correct. This is a non-issue.
+**Resolution:** No action needed — current approach is correct. This is a non-issue.
 
 ---
 
