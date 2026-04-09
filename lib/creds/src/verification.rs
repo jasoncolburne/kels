@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
-use kels_core::PagedKelSource;
+use kels_core::{PagedKelSource, SadStore};
 use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
 
 use crate::{
@@ -11,7 +11,6 @@ use crate::{
     credential::{Claims, Credential},
     error::CredentialError,
     schema::{Schema, SchemaValidationReport, validate_credential_report},
-    store::SADStore,
 };
 
 /// The result of verifying a single credential.
@@ -76,7 +75,7 @@ pub async fn verify_credential<T: Claims>(
     policy: &kels_policy::Policy,
     resolver: &dyn PolicyResolver,
     source: &(dyn PagedKelSource + Sync),
-    sad_store: Option<&dyn SADStore>,
+    sad_store: Option<&dyn SadStore>,
     edge_schemas: &BTreeMap<String, Schema>,
 ) -> Result<CredentialVerification, CredentialError> {
     verify_credential_bounded(
@@ -99,7 +98,7 @@ fn verify_credential_bounded<'a, T: Claims>(
     policy: &'a kels_policy::Policy,
     resolver: &'a dyn PolicyResolver,
     source: &'a (dyn PagedKelSource + Sync),
-    sad_store: Option<&'a dyn SADStore>,
+    sad_store: Option<&'a dyn SadStore>,
     edge_schemas: &'a BTreeMap<String, Schema>,
     remaining_depth: usize,
 ) -> std::pin::Pin<
@@ -194,7 +193,7 @@ async fn verify_edges<T: Claims>(
     credential: &Credential<T>,
     resolver: &dyn PolicyResolver,
     source: &(dyn PagedKelSource + Sync),
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
     edge_schemas: &BTreeMap<String, Schema>,
     remaining_depth: usize,
 ) -> Result<BTreeMap<String, CredentialVerification>, CredentialError> {
@@ -220,15 +219,12 @@ async fn verify_edges<T: Claims>(
             ))
         })?;
 
-        // Look up and expand the referenced credential from the SADStore
-        let root_chunk = sad_store
-            .get_chunk(credential_said.as_ref())
-            .await?
-            .ok_or_else(|| {
-                CredentialError::VerificationError(format!(
-                    "edge '{label}': referenced credential {credential_said} not found in store"
-                ))
-            })?;
+        // Look up and expand the referenced credential from the SAD store
+        let root_chunk = sad_store.load(credential_said).await?.ok_or_else(|| {
+            CredentialError::VerificationError(format!(
+                "edge '{label}': referenced credential {credential_said} not found in store"
+            ))
+        })?;
 
         // Verify the edge credential references the expected schema before expanding
         let cred_schema_said = root_chunk

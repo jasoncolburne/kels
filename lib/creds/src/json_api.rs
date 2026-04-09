@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, str::FromStr};
 use cesr::Matter;
 use serde::Deserialize;
 
-use kels_core::PagedKelSource;
+use kels_core::{PagedKelSource, SadStore};
 use kels_policy::{InMemoryPolicyResolver, Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
@@ -15,7 +15,6 @@ use crate::{
     error::CredentialError,
     rule::{Rule, Rules},
     schema::{Schema, SchemaValidationReport, validate_credential_report},
-    store::SADStore,
     verification::verify_credential,
 };
 
@@ -101,7 +100,7 @@ pub async fn build(
 pub async fn store(
     json_credential: &str,
     json_schema: &str,
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
 ) -> Result<String, CredentialError> {
     let schema: Schema = serde_json::from_str(json_schema)?;
     let mut value: serde_json::Value = serde_json::from_str(json_credential)?;
@@ -118,7 +117,7 @@ pub async fn store(
         )));
     }
     let chunks = compact_with_schema(&mut value, &schema)?;
-    sad_store.store_chunks(&chunks).await?;
+    sad_store.store_batch(&chunks).await?;
 
     let compacted_said = value
         .as_str()
@@ -148,7 +147,7 @@ pub async fn verify(
     json_policy: &str,
     json_policies: Option<&str>,
     source: &(dyn PagedKelSource + Sync),
-    sad_store: Option<&dyn SADStore>,
+    sad_store: Option<&dyn SadStore>,
     json_edge_schemas: Option<&str>,
 ) -> Result<String, CredentialError> {
     let schema: Schema = serde_json::from_str(json_schema)?;
@@ -186,7 +185,7 @@ pub async fn verify(
 pub async fn disclose(
     compacted_said: &str,
     disclosure_statement: &str,
-    sad_store: &dyn SADStore,
+    sad_store: &dyn SadStore,
     json_schema: &str,
 ) -> Result<String, CredentialError> {
     let schema: Schema = serde_json::from_str(json_schema)?;
@@ -267,10 +266,9 @@ mod tests {
     use kels_policy::Policy;
     use verifiable_storage::SelfAddressed;
 
-    use crate::{
-        schema::{Schema, SchemaField},
-        store::InMemorySADStore,
-    };
+    use kels_core::InMemorySadStore;
+
+    use crate::schema::{Schema, SchemaField};
 
     fn test_schema() -> Schema {
         let claims_fields = BTreeMap::from([
@@ -328,7 +326,7 @@ mod tests {
         .unwrap();
         let credential_json = serde_json::to_string(&cred).unwrap();
 
-        let sad_store = InMemorySADStore::new();
+        let sad_store = InMemorySadStore::new();
         let compacted_said = store(&credential_json, &schema_json, &sad_store)
             .await
             .unwrap();

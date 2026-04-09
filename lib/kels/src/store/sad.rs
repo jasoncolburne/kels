@@ -1,7 +1,10 @@
 //! Self-Addressed Data storage trait and file-based implementation
 
+use std::collections::{HashMap, HashSet};
+
 use async_trait::async_trait;
 use cesr::Matter;
+use tokio::sync::RwLock;
 
 use crate::error::KelsError;
 
@@ -15,8 +18,8 @@ pub trait SadStore: Send + Sync {
         value: &serde_json::Value,
     ) -> Result<(), KelsError>;
 
-    /// Load a self-addressed JSON object by SAID.
-    async fn load(&self, said: &cesr::Digest256) -> Result<serde_json::Value, KelsError>;
+    /// Load a self-addressed JSON object by SAID. Returns None if not found.
+    async fn load(&self, said: &cesr::Digest256) -> Result<Option<serde_json::Value>, KelsError>;
 
     /// List stored SAIDs (paginated). Returns `(saids, has_more)`.
     /// SAIDs are returned in sorted order after `since` (exclusive).
@@ -28,6 +31,41 @@ pub trait SadStore: Send + Sync {
 
     /// Delete a self-addressed object by SAID. No-op if not found.
     async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError>;
+
+    /// Load, returning NotFound error if missing.
+    async fn load_or_not_found(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<serde_json::Value, KelsError> {
+        self.load(said)
+            .await?
+            .ok_or_else(|| KelsError::NotFound(said.to_string()))
+    }
+
+    /// Batch store. Default iterates over entries.
+    async fn store_batch(
+        &self,
+        items: &HashMap<cesr::Digest256, serde_json::Value>,
+    ) -> Result<(), KelsError> {
+        for (said, value) in items {
+            self.store(said, value).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch load. Default iterates; returns only found items.
+    async fn load_batch(
+        &self,
+        saids: &HashSet<cesr::Digest256>,
+    ) -> Result<HashMap<cesr::Digest256, serde_json::Value>, KelsError> {
+        let mut result = HashMap::new();
+        for said in saids {
+            if let Some(value) = self.load(said).await? {
+                result.insert(*said, value);
+            }
+        }
+        Ok(result)
+    }
 }
 
 /// File-based SAD store for CLI and desktop apps.
@@ -62,16 +100,17 @@ impl SadStore for FileSadStore {
         Ok(())
     }
 
-    async fn load(&self, said: &cesr::Digest256) -> Result<serde_json::Value, KelsError> {
+    async fn load(&self, said: &cesr::Digest256) -> Result<Option<serde_json::Value>, KelsError> {
         let path = self.sad_path(said);
-        let data = std::fs::read_to_string(&path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                KelsError::NotFound(said.to_string())
-            } else {
-                KelsError::StorageError(e.to_string())
+        match std::fs::read_to_string(&path) {
+            Ok(data) => {
+                let value = serde_json::from_str(&data)
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+                Ok(Some(value))
             }
-        })?;
-        serde_json::from_str(&data).map_err(|e| KelsError::StorageError(e.to_string()))
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(KelsError::StorageError(e.to_string())),
+        }
     }
 
     async fn list(
@@ -112,6 +151,84 @@ impl SadStore for FileSadStore {
     }
 }
 
+/// In-memory SAD store for tests and lightweight use cases.
+pub struct InMemorySadStore {
+    chunks: RwLock<HashMap<cesr::Digest256, serde_json::Value>>,
+}
+
+impl InMemorySadStore {
+    pub fn new() -> Self {
+        Self {
+            chunks: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for InMemorySadStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SadStore for InMemorySadStore {
+    async fn store(
+        &self,
+        said: &cesr::Digest256,
+        value: &serde_json::Value,
+    ) -> Result<(), KelsError> {
+        self.chunks.write().await.insert(*said, value.clone());
+        Ok(())
+    }
+
+    async fn load(&self, said: &cesr::Digest256) -> Result<Option<serde_json::Value>, KelsError> {
+        Ok(self.chunks.read().await.get(said).cloned())
+    }
+
+    async fn list(
+        &self,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<(Vec<cesr::Digest256>, bool), KelsError> {
+        let store = self.chunks.read().await;
+        let mut saids: Vec<cesr::Digest256> = store.keys().copied().collect();
+        saids.sort();
+
+        if let Some(cursor) = since {
+            saids.retain(|s| s > cursor);
+        }
+
+        let has_more = saids.len() > limit;
+        saids.truncate(limit);
+        Ok((saids, has_more))
+    }
+
+    async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError> {
+        self.chunks.write().await.remove(said);
+        Ok(())
+    }
+
+    async fn store_batch(
+        &self,
+        items: &HashMap<cesr::Digest256, serde_json::Value>,
+    ) -> Result<(), KelsError> {
+        let mut store = self.chunks.write().await;
+        store.extend(items.iter().map(|(k, v)| (*k, v.clone())));
+        Ok(())
+    }
+
+    async fn load_batch(
+        &self,
+        saids: &HashSet<cesr::Digest256>,
+    ) -> Result<HashMap<cesr::Digest256, serde_json::Value>, KelsError> {
+        let store = self.chunks.read().await;
+        Ok(saids
+            .iter()
+            .filter_map(|said| store.get(said).map(|v| (*said, v.clone())))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use cesr::test_digest;
@@ -139,7 +256,7 @@ mod tests {
         store.store(&said, &value).await.unwrap();
 
         let loaded = store.load(&said).await.unwrap();
-        assert_eq!(loaded, value);
+        assert_eq!(loaded, Some(value));
     }
 
     #[tokio::test]
@@ -147,7 +264,16 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).unwrap();
 
-        let result = store.load(&test_digest("nonexistent")).await;
+        let result = store.load(&test_digest("nonexistent")).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_load_or_not_found() {
+        let temp = TempDir::new().unwrap();
+        let store = FileSadStore::new(temp.path()).unwrap();
+
+        let result = store.load_or_not_found(&test_digest("nonexistent")).await;
         assert!(matches!(result, Err(KelsError::NotFound(_))));
     }
 
@@ -239,5 +365,84 @@ mod tests {
         let store = FileSadStore::new(temp.path()).unwrap();
 
         store.delete(&test_digest("nonexistent")).await.unwrap();
+    }
+
+    // InMemorySadStore tests
+
+    #[tokio::test]
+    async fn test_in_memory_roundtrip() {
+        let store = InMemorySadStore::new();
+        let said = test_digest("abc");
+        let value = serde_json::json!({"said": said.as_ref(), "data": "test"});
+
+        store.store(&said, &value).await.unwrap();
+        let loaded = store.load(&said).await.unwrap();
+        assert_eq!(loaded, Some(value));
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_missing() {
+        let store = InMemorySadStore::new();
+        let result = store.load(&test_digest("nonexistent")).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_overwrite() {
+        let store = InMemorySadStore::new();
+        let said = test_digest("abc");
+        let v1 = serde_json::json!({"said": said.as_ref(), "data": "first"});
+        let v2 = serde_json::json!({"said": said.as_ref(), "data": "second"});
+
+        store.store(&said, &v1).await.unwrap();
+        store.store(&said, &v2).await.unwrap();
+
+        let loaded = store.load(&said).await.unwrap();
+        assert_eq!(loaded, Some(v2));
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_batch() {
+        let store = InMemorySadStore::new();
+        let said_a = test_digest("aaa");
+        let said_b = test_digest("bbb");
+        let mut items = HashMap::new();
+        items.insert(
+            said_a,
+            serde_json::json!({"said": said_a.as_ref(), "data": "a"}),
+        );
+        items.insert(
+            said_b,
+            serde_json::json!({"said": said_b.as_ref(), "data": "b"}),
+        );
+
+        store.store_batch(&items).await.unwrap();
+
+        let saids = HashSet::from([said_a, said_b]);
+        let loaded = store.load_batch(&saids).await.unwrap();
+        assert_eq!(loaded.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_list() {
+        let store = InMemorySadStore::new();
+        let said_a = test_digest("aaa");
+        let said_b = test_digest("bbb");
+        store.store(&said_a, &serde_json::json!({})).await.unwrap();
+        store.store(&said_b, &serde_json::json!({})).await.unwrap();
+
+        let (saids, has_more) = store.list(None, 100).await.unwrap();
+        assert_eq!(saids.len(), 2);
+        assert!(!has_more);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_delete() {
+        let store = InMemorySadStore::new();
+        let said = test_digest("abc");
+        store.store(&said, &serde_json::json!({})).await.unwrap();
+
+        store.delete(&said).await.unwrap();
+        assert_eq!(store.load(&said).await.unwrap(), None);
     }
 }

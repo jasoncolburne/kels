@@ -10,13 +10,14 @@ use kels_core::{PagedKelSource, generate_nonce};
 use kels_policy::{Policy, PolicyResolver};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
+use kels_core::{InMemorySadStore, SadStore};
+
 use crate::{
     compaction::{compact_with_schema, expand_with_schema},
     edge::Edges,
     error::CredentialError,
     rule::Rules,
     schema::Schema,
-    store::{InMemorySADStore, SADStore},
     verification::{CredentialVerification, verify_credential},
 };
 
@@ -136,11 +137,11 @@ impl<T: Claims> Credential<T> {
             .to_string();
 
         // Expand back using schema-aware expansion from the accumulator
-        let temp_store = InMemorySADStore::new();
-        temp_store.store_chunks(&chunks).await?;
+        let temp_store = InMemorySadStore::new();
+        temp_store.store_batch(&chunks).await?;
 
-        let said_str: &str = compacted_said.as_ref();
-        let root_chunk = chunks.get(said_str).ok_or_else(|| {
+        let compacted_digest = cesr::Digest256::from_qb64(&compacted_said)?;
+        let root_chunk = chunks.get(&compacted_digest).ok_or_else(|| {
             CredentialError::CompactionError(
                 "compacted credential not found in accumulator".to_string(),
             )
@@ -158,10 +159,10 @@ impl<T: Claims> Credential<T> {
     pub async fn store(
         &self,
         schema: &Schema,
-        sad_store: &dyn SADStore,
+        sad_store: &dyn SadStore,
     ) -> Result<cesr::Digest256, CredentialError> {
         let (compacted_said, chunks) = self.compact(schema)?;
-        sad_store.store_chunks(&chunks).await?;
+        sad_store.store_batch(&chunks).await?;
         Ok(compacted_said)
     }
 
@@ -171,7 +172,8 @@ impl<T: Claims> Credential<T> {
     pub fn compact(
         &self,
         schema: &Schema,
-    ) -> Result<(cesr::Digest256, HashMap<String, serde_json::Value>), CredentialError> {
+    ) -> Result<(cesr::Digest256, HashMap<cesr::Digest256, serde_json::Value>), CredentialError>
+    {
         if self.schema != schema.said {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
@@ -185,7 +187,7 @@ impl<T: Claims> Credential<T> {
     }
 
     /// Verify a typed credential against the KEL.
-    /// If a SADStore is provided, recursively verifies edge-referenced credentials.
+    /// If a SadStore is provided, recursively verifies edge-referenced credentials.
     /// Delegates to [`verify_credential`](crate::verification::verify_credential).
     pub async fn verify(
         &self,
@@ -193,7 +195,7 @@ impl<T: Claims> Credential<T> {
         policy: &Policy,
         resolver: &dyn PolicyResolver,
         source: &(dyn PagedKelSource + Sync),
-        sad_store: Option<&dyn SADStore>,
+        sad_store: Option<&dyn SadStore>,
         edge_schemas: &BTreeMap<String, Schema>,
     ) -> Result<CredentialVerification, CredentialError> {
         verify_credential(
@@ -321,8 +323,8 @@ mod tests {
         let (cred, _) = test_credential().await;
         let (compacted_said, chunks) = cred.compact(&test_schema()).unwrap();
         // Compacted credential is in the accumulator keyed by compacted SAID
-        assert!(chunks.contains_key(compacted_said.as_ref()));
-        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         // schema is always a SAID string
@@ -449,13 +451,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(compacted_said.as_ref()));
-        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.edges.is_some());
         let edges_said = compacted_cred.edges.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(edges_said.as_ref()));
+        assert!(chunks.contains_key(&edges_said));
     }
 
     #[tokio::test]
@@ -525,13 +527,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(compacted_said.as_ref()));
-        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
+        assert!(chunks.contains_key(&compacted_said));
+        let compacted_value = chunks.get(&compacted_said).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.rules.is_some());
         let rules_said = compacted_cred.rules.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(rules_said.as_ref()));
+        assert!(chunks.contains_key(&rules_said));
     }
 
     #[tokio::test]
@@ -926,7 +928,7 @@ mod tests {
         }
 
         // Store credential A in a shared SADStore
-        let sad_store = InMemorySADStore::new();
+        let sad_store = InMemorySadStore::new();
         cred_a.store(&schema_a, &sad_store).await.unwrap();
 
         // Issuer B issues a credential with an edge referencing A's credential
@@ -1091,7 +1093,7 @@ mod tests {
         let (mut builder_mid, prefix_mid, kel_store_mid, _dir_mid) = setup_kel().await;
         let (mut builder_leaf, prefix_leaf, kel_store_leaf, _dir_leaf) = setup_kel().await;
 
-        let sad_store = InMemorySADStore::new();
+        let sad_store = InMemorySadStore::new();
         let root_schema = test_schema();
         let root_policy = test_policy(prefix_root);
 
