@@ -1,7 +1,5 @@
 //! kels-bench - KELS Load Testing Tool
 
-#![allow(clippy::expect_used)]
-
 use std::{
     process,
     sync::{
@@ -116,6 +114,7 @@ impl Stats {
     fn new(throughput_only: bool) -> Self {
         Self {
             histogram: Mutex::new(
+                #[allow(clippy::expect_used)]
                 Histogram::new_with_bounds(1, 60_000_000, 3).expect("Failed to create histogram"),
             ),
             success_count: AtomicU64::new(0),
@@ -126,6 +125,7 @@ impl Stats {
 
     async fn record_success(&self, latency_us: u64) {
         if !self.throughput_only {
+            #[allow(clippy::expect_used)]
             self.histogram
                 .lock()
                 .await
@@ -201,6 +201,7 @@ async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
         None,
     )
     .await?;
+    #[allow(clippy::expect_used)]
     let kel_bytes = serde_json::to_string(&events)
         .map(|s| s.len() as u64)
         .expect("failed to serialize events for size calculation");
@@ -369,6 +370,7 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
 
+    #[allow(clippy::expect_used)]
     let health_uri: hyper::Uri = format!("{}/api/v1/health", args.url)
         .parse()
         .expect("Invalid health URL");
@@ -383,6 +385,7 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
     .await?;
     stats.reset().await;
 
+    #[allow(clippy::expect_used)]
     for config in singular_kels {
         let kel_uri: hyper::Uri = format!(
             "{}/api/v1/kels/kel/{}?limit={}",
