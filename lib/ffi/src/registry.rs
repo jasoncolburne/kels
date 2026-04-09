@@ -136,7 +136,7 @@ pub unsafe extern "C" fn kels_discover_nodes(
         // Use a fresh temp directory for each discovery to avoid stale data
         let store_dir = std::env::temp_dir().join("kels-ffi-discovery");
         let _ = std::fs::remove_dir_all(&store_dir);
-        let store = FileKelStore::new(&store_dir)?;
+        let store = FileKelStore::new(&store_dir).await?;
 
         let peers =
             kels_core::peers_sorted_by_latency(&urls, std::time::Duration::from_secs(2), &store)

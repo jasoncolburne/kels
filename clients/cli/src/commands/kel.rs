@@ -28,7 +28,7 @@ pub(crate) async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
         format!("Discovering nodes from {}...", cli.registry).green()
     );
 
-    let store = create_kel_store(cli, "registry-discovery")?;
+    let store = create_kel_store(cli, "registry-discovery").await?;
     let peers = kels_core::peers_sorted_by_latency(
         &registry_urls,
         std::time::Duration::from_secs(2),
@@ -82,7 +82,9 @@ pub(crate) async fn cmd_incept(
 
     // Pass a kel_store to the builder so add_and_flush saves automatically
     let kel_dir = kel_dir(cli)?;
-    let kel_store = FileKelStore::new(&kel_dir).context("Failed to create KEL store")?;
+    let kel_store = FileKelStore::new(&kel_dir)
+        .await
+        .context("Failed to create KEL store")?;
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
         Some(client),
@@ -118,7 +120,7 @@ pub(crate) async fn cmd_rotate(
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -172,7 +174,7 @@ pub(crate) async fn cmd_rotate_recovery(
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -223,7 +225,7 @@ pub(crate) async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()
     let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -268,7 +270,7 @@ pub(crate) async fn cmd_recover(
     }
 
     let prefix_digest = parse_prefix(prefix)?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -317,7 +319,7 @@ pub(crate) async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
     let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -348,7 +350,7 @@ pub(crate) async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
     let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -505,7 +507,7 @@ pub(crate) async fn cmd_list(cli: &Cli) -> Result<()> {
 
 pub(crate) async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let prefix_digest = parse_prefix(prefix)?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let kel_verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),

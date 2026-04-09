@@ -53,7 +53,7 @@ pub(crate) fn parse_kem_algorithm(
 
 async fn current_establishment_serial(cli: &Cli, prefix: &str) -> Result<u64> {
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
     let verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),
         &prefix_digest,
@@ -331,7 +331,7 @@ pub(crate) async fn cmd_exchange_send(
 
     // Get sender's latest establishment event serial from local KEL
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
     let kel_verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),
         &prefix_digest,
@@ -450,7 +450,7 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
 
     // Resolve source node's base domain via registry
     let registry_urls = parse_registry_urls(&cli.registry);
-    let kel_store = create_kel_store(cli, "registry-discovery")?;
+    let kel_store = create_kel_store(cli, "registry-discovery").await?;
     let peers = kels_core::peers_sorted_by_latency(
         &registry_urls,
         std::time::Duration::from_secs(2),

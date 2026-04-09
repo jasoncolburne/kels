@@ -368,7 +368,7 @@ mod tests {
         tempfile::TempDir,
     ) {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         let mut builder = KeyEventBuilder::with_dependencies(
             SoftwareKeyProvider::new(
                 VerificationKeyCode::Secp256r1,
@@ -450,7 +450,7 @@ mod tests {
         // Actually, FileKelStore is per-directory. We need a single source that has all KELs.
         // For simplicity, use a shared temp dir and write all KELs there.
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
 
         // Copy events from each store into the shared store
         copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
@@ -593,7 +593,7 @@ mod tests {
         builder_b.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
         copy_kel_events(kel_store_b.as_ref(), &prefix_b, shared_store.as_ref()).await;
 
@@ -700,7 +700,7 @@ mod tests {
         builder_admin.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
         copy_kel_events(
             kel_store_admin.as_ref(),
@@ -742,7 +742,7 @@ mod tests {
         builder_b.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
         copy_kel_events(kel_store_b.as_ref(), &prefix_b, shared_store.as_ref()).await;
 
@@ -781,7 +781,7 @@ mod tests {
         builder_admin1.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let shared_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         copy_kel_events(kel_store_a.as_ref(), &prefix_a, shared_store.as_ref()).await;
         copy_kel_events(
             kel_store_admin1.as_ref(),

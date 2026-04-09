@@ -379,8 +379,8 @@ mod tests {
 
     // ==================== KelsPeerVerifier Tests ====================
 
-    #[test]
-    fn test_kels_peer_verifier_verify_valid_signature() {
+    #[tokio::test]
+    async fn test_kels_peer_verifier_verify_valid_signature() {
         let (cesr_pubkey, cesr_privkey) = cesr::generate_ml_dsa_65().unwrap();
 
         let data = b"test data to sign";
@@ -388,8 +388,11 @@ mod tests {
         let sig_qb64 = cesr_sig.qb64().into_bytes();
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let store: Arc<dyn kels_core::KelStore> =
-            Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let store: Arc<dyn kels_core::KelStore> = Arc::new(
+            kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path())
+                .await
+                .unwrap(),
+        );
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",
@@ -402,15 +405,18 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_kels_peer_verifier_verify_bad_signature() {
+    #[tokio::test]
+    async fn test_kels_peer_verifier_verify_bad_signature() {
         let (cesr_pubkey, _) = cesr::generate_ml_dsa_65().unwrap();
 
         let bad_sig = b"0BAAbadbadbadbadbad";
 
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
-        let store: Arc<dyn kels_core::KelStore> =
-            Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
+        let store: Arc<dyn kels_core::KelStore> = Arc::new(
+            kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path())
+                .await
+                .unwrap(),
+        );
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",

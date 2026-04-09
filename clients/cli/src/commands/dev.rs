@@ -15,7 +15,7 @@ pub(crate) async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> R
     );
 
     let prefix_digest = cesr::Digest256::from_qb64(prefix).map_err(|e| anyhow!("{}", e))?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
     let source = kels_core::StoreKelSource::new(&kel_store);
 
     let mut events = kels_core::resolve_key_events(
@@ -51,7 +51,7 @@ pub(crate) async fn cmd_dev_truncate(cli: &Cli, prefix: &str, count: usize) -> R
 
 pub(crate) async fn cmd_dev_dump_kel(cli: &Cli, prefix: &str) -> Result<()> {
     let prefix_digest = cesr::Digest256::from_qb64(prefix).map_err(|e| anyhow!("{}", e))?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
     let source = kels_core::StoreKelSource::new(&kel_store);
     let all_events = kels_core::resolve_key_events(
         &prefix_digest,
@@ -85,7 +85,7 @@ pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &s
 
     // Load the local KEL to get the chain state (dev-tools, not production)
     let prefix_digest = cesr::Digest256::from_qb64(prefix).map_err(|e| anyhow!("{}", e))?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
     let source = kels_core::StoreKelSource::new(&kel_store);
     let events = kels_core::resolve_key_events(
         &prefix_digest,

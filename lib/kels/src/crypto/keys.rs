@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tokio::task::spawn_blocking;
+
 use cesr::{
     Signature, SigningKey, VerificationKey, VerificationKeyCode, generate_ml_dsa_65,
     generate_ml_dsa_87, generate_secp256r1,
@@ -61,7 +63,7 @@ impl ProviderConfig for SoftwareProviderConfig {
         let key_dir = self.key_dir.clone();
         let signing_algorithm = self.signing_algorithm;
         let recovery_algorithm = self.recovery_algorithm;
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             if key_dir.exists() {
                 SoftwareKeyProvider::load_from_dir(&key_dir)
             } else {
@@ -193,7 +195,7 @@ impl KeyStateStore for FileKeyStateStore {
         let dir = self.dir.clone();
         let path = self.dir.join(format!("{}.keys.json", key));
         let data = data.to_vec();
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             ensure_private_dir(&dir)?;
             std::fs::write(&path, &data).map_err(|e| {
                 KelsError::StorageError(format!("Failed to write key state: {}", e))
@@ -218,7 +220,7 @@ impl KeyStateStore for FileKeyStateStore {
 
     async fn load(&self, key: &cesr::Digest256) -> Result<Option<Vec<u8>>, KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
-        tokio::task::spawn_blocking(move || match std::fs::read(&path) {
+        spawn_blocking(move || match std::fs::read(&path) {
             Ok(data) => Ok(Some(data)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(KelsError::StorageError(format!(
@@ -232,7 +234,7 @@ impl KeyStateStore for FileKeyStateStore {
 
     async fn delete(&self, key: &cesr::Digest256) -> Result<(), KelsError> {
         let path = self.dir.join(format!("{}.keys.json", key));
-        tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
+        spawn_blocking(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(KelsError::StorageError(format!(
@@ -505,7 +507,7 @@ impl SoftwareKeyProvider {
             .qb64();
 
         let dir = dir.to_path_buf();
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             ensure_private_dir(&dir)?;
             write_key_file(&dir.join("current.key"), &current_qb64)?;
             write_key_file(&dir.join("next.key"), &next_qb64)?;
