@@ -156,18 +156,15 @@ async fn get_verified_peer(
                 format!("Redis error: {}", e),
             )
         })?;
-    match json {
-        Some(j) => {
-            let peer: kels_core::Peer = serde_json::from_str(&j).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Deserialization failed: {}", e),
-                )
-            })?;
-            Ok(Some(peer))
-        }
-        None => Ok(None),
-    }
+    json.map(|j| {
+        serde_json::from_str::<kels_core::Peer>(&j).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Deserialization failed: {}", e),
+            )
+        })
+    })
+    .transpose()
 }
 
 /// Fetch verified peers from the registry and store records in Redis.
