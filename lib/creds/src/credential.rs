@@ -544,7 +544,7 @@ mod tests {
         tempfile::TempDir,
     ) {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).unwrap());
+        let kel_store = Arc::new(FileKelStore::new(temp_dir.path()).await.unwrap());
         let mut builder = KeyEventBuilder::with_dependencies(
             SoftwareKeyProvider::new(
                 VerificationKeyCode::Secp256r1,

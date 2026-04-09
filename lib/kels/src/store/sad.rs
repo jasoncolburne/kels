@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use cesr::Matter;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, task::spawn_blocking};
 
 use crate::error::KelsError;
 
@@ -75,9 +75,14 @@ pub struct FileSadStore {
 }
 
 impl FileSadStore {
-    pub fn new(sad_dir: impl Into<std::path::PathBuf>) -> Result<Self, KelsError> {
+    pub async fn new(sad_dir: impl Into<std::path::PathBuf>) -> Result<Self, KelsError> {
         let sad_dir = sad_dir.into();
-        std::fs::create_dir_all(&sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
+        let dir = sad_dir.clone();
+        spawn_blocking(move || {
+            std::fs::create_dir_all(&dir).map_err(|e| KelsError::StorageError(e.to_string()))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))??;
         Ok(Self { sad_dir })
     }
 
@@ -96,13 +101,16 @@ impl SadStore for FileSadStore {
         let path = self.sad_path(said);
         let json = serde_json::to_string_pretty(value)
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
-        std::fs::write(&path, json).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        Ok(())
+        spawn_blocking(move || {
+            std::fs::write(&path, json).map_err(|e| KelsError::StorageError(e.to_string()))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn load(&self, said: &cesr::Digest256) -> Result<Option<serde_json::Value>, KelsError> {
         let path = self.sad_path(said);
-        match std::fs::read_to_string(&path) {
+        spawn_blocking(move || match std::fs::read_to_string(&path) {
             Ok(data) => {
                 let value = serde_json::from_str(&data)
                     .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -110,7 +118,9 @@ impl SadStore for FileSadStore {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(KelsError::StorageError(e.to_string())),
-        }
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn list(
@@ -118,36 +128,45 @@ impl SadStore for FileSadStore {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<cesr::Digest256>, bool), KelsError> {
-        let mut saids = Vec::new();
-        let entries =
-            std::fs::read_dir(&self.sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| KelsError::StorageError(e.to_string()))?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && let Ok(digest) = cesr::Digest256::from_qb64(stem)
-            {
-                saids.push(digest);
+        let sad_dir = self.sad_dir.clone();
+        let since = since.copied();
+        spawn_blocking(move || {
+            let mut saids = Vec::new();
+            let entries =
+                std::fs::read_dir(&sad_dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| KelsError::StorageError(e.to_string()))?;
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "json")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && let Ok(digest) = cesr::Digest256::from_qb64(stem)
+                {
+                    saids.push(digest);
+                }
             }
-        }
-        saids.sort();
+            saids.sort();
 
-        if let Some(cursor) = since {
-            saids.retain(|s| s > cursor);
-        }
+            if let Some(cursor) = since.as_ref() {
+                saids.retain(|s| s > cursor);
+            }
 
-        let has_more = saids.len() > limit;
-        saids.truncate(limit);
-        Ok((saids, has_more))
+            let has_more = saids.len() > limit;
+            saids.truncate(limit);
+            Ok((saids, has_more))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 
     async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError> {
         let path = self.sad_path(said);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| KelsError::StorageError(e.to_string()))?;
-        }
-        Ok(())
+        spawn_blocking(move || match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(KelsError::StorageError(e.to_string())),
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
 }
 
@@ -236,20 +255,20 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_new_creates_directory() {
+    #[tokio::test]
+    async fn test_new_creates_directory() {
         let temp = TempDir::new().unwrap();
         let subdir = temp.path().join("sad");
         assert!(!subdir.exists());
 
-        let _store = FileSadStore::new(&subdir).unwrap();
+        let _store = FileSadStore::new(&subdir).await.unwrap();
         assert!(subdir.exists());
     }
 
     #[tokio::test]
     async fn test_store_and_load_roundtrip() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let said = test_digest("abc123");
         let value = serde_json::json!({"said": said.as_ref(), "data": "hello"});
@@ -262,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_not_found() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let result = store.load(&test_digest("nonexistent")).await.unwrap();
         assert_eq!(result, None);
@@ -271,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_or_not_found() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let result = store.load_or_not_found(&test_digest("nonexistent")).await;
         assert!(matches!(result, Err(KelsError::NotFound(_))));
@@ -280,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_returns_saids() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let said_a = test_digest("aaa");
         let said_b = test_digest("bbb");
@@ -303,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_empty() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let (saids, has_more) = store.list(None, 100).await.unwrap();
         assert!(saids.is_empty());
@@ -313,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_pagination() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         // Use SAIDs that sort deterministically
         let said_a = test_digest("aaa");
@@ -346,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_removes_file() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let said = test_digest("abc");
         store
@@ -362,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent_succeeds() {
         let temp = TempDir::new().unwrap();
-        let store = FileSadStore::new(temp.path()).unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
 
         store.delete(&test_digest("nonexistent")).await.unwrap();
     }

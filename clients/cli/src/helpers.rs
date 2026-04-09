@@ -65,7 +65,7 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
             return Err(anyhow!("No registry URLs provided"));
         }
 
-        let store = create_kel_store(cli, "registry-discovery")?;
+        let store = create_kel_store(cli, "registry-discovery").await?;
         let peers = kels_core::peers_sorted_by_latency(
             &registry_urls,
             std::time::Duration::from_secs(2),
@@ -90,20 +90,24 @@ pub(crate) async fn create_client(cli: &Cli) -> Result<KelsClient> {
     }
 }
 
-pub(crate) fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
+pub(crate) async fn create_kel_store(cli: &Cli, prefix: &str) -> Result<FileKelStore> {
     let dir = kel_dir(cli)?;
     match cesr::Digest256::from_qb64(prefix) {
-        Ok(prefix_digest) => {
-            FileKelStore::with_owner(dir, prefix_digest).context("Failed to create KEL store")
-        }
+        Ok(prefix_digest) => FileKelStore::with_owner(dir, prefix_digest)
+            .await
+            .context("Failed to create KEL store"),
         Err(_) => {
             // Non-CESR prefix (e.g., "registry-discovery") — create without owner
-            FileKelStore::new(dir).context("Failed to create KEL store")
+            FileKelStore::new(dir)
+                .await
+                .context("Failed to create KEL store")
         }
     }
 }
 
-pub(crate) fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
+pub(crate) async fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
     let dir = sad_dir(cli)?;
-    FileSadStore::new(dir).context("Failed to create SAD store")
+    FileSadStore::new(dir)
+        .await
+        .context("Failed to create SAD store")
 }

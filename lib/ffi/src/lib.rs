@@ -401,7 +401,7 @@ pub extern "C" fn kels_init(
     };
 
     // Create store
-    let store = match FileKelStore::new(&state_path) {
+    let store = match runtime.block_on(FileKelStore::new(&state_path)) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             set_last_error(&format!("Failed to create store: {}", e));

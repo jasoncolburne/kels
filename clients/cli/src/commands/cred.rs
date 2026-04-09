@@ -64,7 +64,7 @@ pub(crate) async fn cmd_cred_issue(
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
@@ -81,7 +81,7 @@ pub(crate) async fn cmd_cred_issue(
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
 
     // Store credential, schema, and policy locally
-    let sad_store = create_sad_store(cli)?;
+    let sad_store = create_sad_store(cli).await?;
     let cred_value = serde_json::to_value(&credential)?;
     sad_store.store(&credential.said, &cred_value).await?;
     let schema_value = serde_json::to_value(&schema)?;
@@ -117,7 +117,7 @@ pub(crate) async fn cmd_cred_store(
     let said = value.get_said();
 
     // Store credential and schema
-    let sad_store = create_sad_store(cli)?;
+    let sad_store = create_sad_store(cli).await?;
     sad_store.store(&said, &value).await?;
 
     let schema_data = std::fs::read_to_string(schema_path)
@@ -135,7 +135,7 @@ pub(crate) async fn cmd_cred_store(
 }
 
 pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
-    let sad_store = create_sad_store(cli)?;
+    let sad_store = create_sad_store(cli).await?;
 
     let mut count = 0;
     let mut since: Option<cesr::Digest256> = None;
@@ -172,7 +172,7 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 }
 
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
-    let sad_store = create_sad_store(cli)?;
+    let sad_store = create_sad_store(cli).await?;
     let said = cesr::Digest256::from_qb64(said).context("Invalid SAID")?;
     let value = sad_store.load_or_not_found(&said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
@@ -189,7 +189,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
-    let kel_store = create_kel_store(cli, prefix)?;
+    let kel_store = create_kel_store(cli, prefix).await?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
