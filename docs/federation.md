@@ -67,20 +67,20 @@ Adding a new registry to the federation is a multi-step process: the new registr
 # Trusted registry members for federation - MUST be set at compile time
 # TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by the registry
 # service for Raft node identity (compile-time, registry only).
-TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":2,"prefix":"ERegistryBeta...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'
+TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"KRegistryAcme...","active":true},{"id":2,"prefix":"KRegistryBeta...","active":true},{"id":3,"prefix":"KRegistryGamma...","active":true}]'
 
 # TRUSTED_REGISTRY_PREFIXES is used by gossip nodes and client binaries (via the
 # `federation` feature on kels-core). Not needed by kels or identity services.
-TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
+TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryBeta...,KRegistryGamma...
 ```
 
 **Runtime (container environment):**
 ```bash
 # This registry's identity (must be in TRUSTED_REGISTRY_PREFIXES)
-FEDERATION_SELF_PREFIX=ERegistryAcme_______________________________
+FEDERATION_SELF_PREFIX=KRegistryAcme_______________________________
 
 # URLs for reaching federation members (prefix=url pairs)
-FEDERATION_URLS=ERegistryAcme...=https://registry.acme.com,ERegistryBeta...=https://registry.beta.io,ERegistryGamma...=https://registry.gamma.net
+FEDERATION_URLS=KRegistryAcme...=https://registry.acme.com,KRegistryBeta...=https://registry.beta.io,KRegistryGamma...=https://registry.gamma.net
 ```
 
 Registries verify incoming federation messages by:
@@ -92,7 +92,7 @@ Registries verify incoming federation messages by:
 **Compile-time (via Dockerfile build args):**
 ```bash
 # Trusted registry prefixes - MUST be set at compile time
-TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryBeta...,ERegistryGamma...
+TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryBeta...,KRegistryGamma...
 ```
 
 **Runtime (container environment):**
@@ -115,18 +115,18 @@ registry-admin federation status
 Federation Status
 ==================================================
 Node ID:       1
-Self Prefix:   ERegistryAcme...
+Self Prefix:   KRegistryAcme...
 Is Leader:     Yes
 Leader ID:     1
-Leader Prefix: ERegistryAcme...
+Leader Prefix: KRegistryAcme...
 Term:          3
 Last Log Idx:  42
 Last Applied:  42
 
 Federation Members:
-  ERegistryAcme... (leader)
-  ERegistryBeta...
-  ERegistryGamma...
+  KRegistryAcme... (leader)
+  KRegistryBeta...
+  KRegistryGamma...
 ```
 
 ### Adding Peers (Multi-Party Approval)
@@ -150,7 +150,7 @@ Any federation member can propose a new peer:
 ```bash
 # From any registry in the federation
 registry-admin peer propose \
-  --peer-prefix Qm... \
+  --peer-kel-prefix Qm... \
   --node-id node-1 \
   --kels-url http://kels.node-1.example.com \
   --gossip-addr gossip.node-1.example.com:4001
@@ -166,7 +166,7 @@ Other federation members vote to approve:
 
 ```bash
 # On another registry
-registry-admin peer vote --proposal-id EProposal123... --approve
+registry-admin peer vote --proposal-prefix EProposal123... --approve
 
 # Output:
 # Vote recorded. Status: 2/2 approvals - APPROVED
@@ -180,7 +180,7 @@ registry-admin peer vote --proposal-id EProposal123... --approve
 registry-admin peer proposals
 
 # Check specific proposal status
-registry-admin peer proposal-status --proposal-id EProposal123...
+registry-admin peer proposal-status --proposal-prefix EProposal123...
 ```
 
 **Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
@@ -194,7 +194,7 @@ Peer removal follows the same multi-party approval process as additions.
 ```bash
 # From any registry in the federation
 registry-admin peer propose-removal \
-  --peer-prefix Qm...
+  --peer-kel-prefix Km...
 
 # Output:
 # Removal proposal created: EProposal456...
@@ -205,7 +205,7 @@ registry-admin peer propose-removal \
 
 ```bash
 # On another registry
-registry-admin peer vote --proposal-id EProposal456... --approve
+registry-admin peer vote --proposal-prefix KProposal456... --approve
 
 # Output:
 # Removal approved! Peer Qm... removed from peer set.
@@ -249,8 +249,8 @@ If a federation member is compromised:
 
 2. **Isolation**: Update `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` on honest services to exclude the rogue:
    ```bash
-   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"ERegistryAcme...","active":true},{"id":3,"prefix":"ERegistryGamma...","active":true}]'  # Beta removed
-   TRUSTED_REGISTRY_PREFIXES=ERegistryAcme...,ERegistryGamma...  # Beta removed
+   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"KRegistryAcme...","active":true},{"id":3,"prefix":"KRegistryGamma...","active":true}]'  # Beta removed
+   TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryGamma...  # Beta removed
    ```
 
 3. **Redeploy**: Restart honest registries with updated config
@@ -310,8 +310,8 @@ Peer proposal management:
 ```
 POST   /api/v1/admin/addition-proposals              # Propose a new peer (addition)
 POST   /api/v1/admin/removal-proposals              # Propose removal of a peer
-GET    /api/v1/federation/proposals/:proposal_id     # Get proposal details (unauthenticated)
-POST   /api/v1/admin/proposals/:proposal_id/vote    # Vote on a proposal (addition or removal)
+GET    /api/v1/federation/proposals/:proposal_prefix     # Get proposal details (unauthenticated)
+POST   /api/v1/admin/proposals/:proposal_prefix/vote    # Vote on a proposal (addition or removal)
 ```
 
 ### Federation RPC (Internal)
@@ -349,9 +349,9 @@ garden deploy --env=node-c
 # Add peers (requires multi-party approval)
 # Step 1: Propose from registry-a
 garden run propose-add-node-a --env=registry-a
-# Output includes proposal ID
+# Output includes proposal prefix
 
-# Step 2: Vote from registry-b (use proposal ID from above)
+# Step 2: Vote from registry-b (use proposal prefix from above)
 garden run vote-peer --env=registry-b --var proposal=EProposal...
 
 # Repeat for node-b and node-c
@@ -367,9 +367,9 @@ Registry prefixes are stored in `.kels/federated-registries.json`:
 
 ```json
 {
-  "registry-a": "ERegistryAcme...",
-  "registry-b": "ERegistryBeta...",
-  "registry-c": "ERegistryGamma..."
+  "registry-a": "KRegistryAcme...",
+  "registry-b": "KRegistryBeta...",
+  "registry-c": "KRegistryGamma..."
 }
 ```
 

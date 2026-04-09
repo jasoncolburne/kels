@@ -6,7 +6,7 @@ NODE_NAME="$1"
 if [ -z "$NODE_NAME" ]; then
     echo "Usage: propose-remove-peer.sh <node-name>"
     echo "  Proposes removal of a peer for the given node."
-    echo "  Outputs the proposal ID on success."
+    echo "  Outputs the proposal prefix on success."
     exit 1
 fi
 
@@ -33,17 +33,17 @@ echo "Creating removal proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 # Create removal proposal on leader
 PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -- \
     /app/registry-admin peer propose-removal \
-    --peer-prefix "$PEER_PREFIX" 2>&1)
+    --peer-kel-prefix "$PEER_PREFIX" 2>&1)
 
 echo "$PROPOSE_OUTPUT" >&2
 
-# Extract proposal ID from "Removal proposal created: <id>" line
-PROPOSAL_ID=$(echo "$PROPOSE_OUTPUT" | grep "proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')
+# Extract proposal prefix from "Removal proposal created: <id>" line
+PROPOSAL_PREFIX=$(echo "$PROPOSE_OUTPUT" | grep "proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')
 
-if [ -z "$PROPOSAL_ID" ]; then
-    echo "Error: Could not extract proposal ID from output" >&2
+if [ -z "$PROPOSAL_PREFIX" ]; then
+    echo "Error: Could not extract proposal prefix from output" >&2
     exit 1
 fi
 
-# Output just the proposal ID to stdout for piping
-echo "$PROPOSAL_ID"
+# Output just the proposal prefix to stdout for piping
+echo "$PROPOSAL_PREFIX"

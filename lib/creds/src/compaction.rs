@@ -42,7 +42,7 @@ fn compact_single_node(
     value: &mut serde_json::Value,
     accumulator: &mut HashMap<String, serde_json::Value>,
 ) -> Result<(), CredentialError> {
-    let said = compute_said_from_value(value)?;
+    let said = compute_said_from_value(value)?.to_string();
 
     // Set the said field on the object before storing
     if let Some(obj) = value.as_object_mut() {
@@ -216,7 +216,10 @@ fn expand_object_with_schema<'a>(
         if obj.contains_key("said") {
             let recomputed = compute_said_from_value(value)?;
             if let Some(obj) = value.as_object_mut() {
-                obj.insert("said".to_string(), serde_json::Value::String(recomputed));
+                obj.insert(
+                    "said".to_string(),
+                    serde_json::Value::String(recomputed.to_string()),
+                );
             }
         }
 
@@ -296,7 +299,7 @@ mod tests {
             "name": "test"
         });
         let said = compute_said_from_value(&value).unwrap();
-        assert_eq!(said.len(), 44);
+        assert_eq!(said.to_string().len(), 44);
     }
 
     #[test]

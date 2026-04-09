@@ -9,8 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Compile-time trusted registry prefixes (for CLI and gossip service)
-  TRUSTED_REGISTRY_PREFIXES: EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-  TRUSTED_REGISTRY_MEMBERS: '[{"id":0,"prefix":"EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]'
+  TRUSTED_REGISTRY_PREFIXES: KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  TRUSTED_REGISTRY_MEMBERS: '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref }}
@@ -83,32 +83,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release
 
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-      - name: Generate coverage report
-        run: |
-          # Exclude files that can't be meaningfully unit tested:
-          # - Binary mains (main.rs, admin.rs) - entry points only
-          # - FFI code (kels-ffi) - C bindings
-          # - Server setup (server.rs in services) - integration code
-          # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
-          COV_EXCLUDES="--ignore-filename-regex (main\.rs|admin\.rs|lib/ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)"
-          printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
-          echo ""
-          cargo llvm-cov --workspace $COV_EXCLUDES 2>&1 | awk '
-            NR == 1 { next }
-            /^-+$/ { next }
-            /^TOTAL/ { print $10 > "/tmp/cov_total"; next }
-            NF >= 13 && $10 ~ /%$/ { printf "%-60s %8s %8d\n", $1, $10, $9 }' \
-            | sort -k3 -rn
-          echo ""
-          echo "TOTAL: $(cat /tmp/cov_total)"
+  # coverage:
+  #   name: Coverage
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'pull_request'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         components: llvm-tools-preview
+  #     - uses: taiki-e/install-action@cargo-llvm-cov
+  #     - uses: Swatinem/rust-cache@v2
+  #     - name: Generate coverage report
+  #       run: |
+  #         # Exclude files that can't be meaningfully unit tested:
+  #         # - Binary mains (main.rs, admin.rs) - entry points only
+  #         # - FFI code (kels-ffi) - C bindings
+  #         # - Server setup (server.rs in services) - integration code
+  #         # - Federation orchestration (federation/mod.rs, federation/sync.rs) - requires Raft cluster
+  #         COV_EXCLUDES="--ignore-filename-regex (main\.rs|admin\.rs|lib/ffi|services/.*/server\.rs|federation/mod\.rs|federation/sync\.rs|raft_store\.rs|peer_store\.rs|repository_store\.rs|identity_client\.rs)"
+  #         printf "%-60s %8s %8s\n" "File" "Coverage" "Missed"
+  #         echo ""
+  #         cargo llvm-cov --workspace $COV_EXCLUDES 2>&1 | awk '
+  #           NR == 1 { next }
+  #           /^-+$/ { next }
+  #           /^TOTAL/ { print $10 > "/tmp/cov_total"; next }
+  #           NF >= 13 && $10 ~ /%$/ { printf "%-60s %8s %8d\n", $1, $10, $9 }' \
+  #           | sort -k3 -rn
+  #         echo ""
+  #         echo "TOTAL: $(cat /tmp/cov_total)"

@@ -2,6 +2,7 @@
 
 use std::os::raw::c_char;
 
+use cesr::Matter;
 use tokio::runtime::Runtime;
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
 ///
 /// # Arguments
 /// * `kel_prefix` - The KEL prefix (owner of the pointer chain)
-/// * `kind` - The pointer kind (e.g., "kels/v1/mlkem-encap-key")
+/// * `kind` - The pointer kind (e.g., "kels/exchange/v1/keys/mlkem")
 ///
 /// # Returns
 /// The computed pointer prefix string, or NULL on error.
@@ -41,8 +42,16 @@ pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
         return std::ptr::null_mut();
     };
 
-    match kels_core::compute_sad_pointer_prefix(&prefix, &kind_str) {
-        Ok(pointer_prefix) => to_c_string(&pointer_prefix),
+    let prefix_digest = match cesr::Digest::from_qb64(&prefix) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid KEL prefix CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    match kels_core::compute_sad_pointer_prefix(prefix_digest, &kind_str) {
+        Ok(pointer_prefix) => to_c_string(pointer_prefix.as_ref()),
         Err(e) => {
             set_last_error(&format!("Prefix computation failed: {e}"));
             std::ptr::null_mut()
@@ -102,7 +111,7 @@ pub unsafe extern "C" fn kels_sad_post_object(
     };
 
     match runtime.block_on(client.post_sad_object(&object)) {
-        Ok(said) => to_c_string(&said),
+        Ok(said) => to_c_string(said.as_ref()),
         Err(e) => {
             set_last_error(&e.to_string());
             std::ptr::null_mut()
@@ -137,6 +146,13 @@ pub unsafe extern "C" fn kels_sad_get_object(
         set_last_error("Invalid SAID");
         return std::ptr::null_mut();
     };
+    let said_digest = match cesr::Digest::from_qb64(&said_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid SAID CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
 
     let Ok(runtime) = Runtime::new() else {
         set_last_error("Failed to create async runtime");
@@ -151,7 +167,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
         }
     };
 
-    match runtime.block_on(client.get_sad_object(&said_str)) {
+    match runtime.block_on(client.get_sad_object(&said_digest)) {
         Ok(value) => match serde_json::to_string(&value) {
             Ok(json) => to_c_string(&json),
             Err(e) => {
@@ -289,6 +305,8 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use crate::kels_free_string;
 
@@ -296,8 +314,9 @@ mod tests {
 
     #[test]
     fn test_compute_sad_pointer_prefix() {
-        let prefix = CString::new("KMyPrefix0000000000000000000000000000000000").expect("cstring");
-        let kind = CString::new("kels/v1/mlkem-encap-key").expect("cstring");
+        let digest = test_digest("test-prefix");
+        let prefix = CString::new(digest.as_ref()).expect("cstring");
+        let kind = CString::new("kels/exchange/v1/keys/mlkem").expect("cstring");
 
         let result = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };
 

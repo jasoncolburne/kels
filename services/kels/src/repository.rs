@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cesr::Matter;
 use verifiable_storage::{ColumnQuery, StorageError, Value};
 use verifiable_storage_postgres::{Filter, Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -40,7 +41,7 @@ impl KeyEventRepository {
     /// Paginated query of archived adversary events for a prefix.
     pub async fn get_archived_events(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -91,7 +92,10 @@ impl KeyEventRepository {
             return Ok((vec![], false));
         }
 
-        let event_saids: Vec<String> = join_records.iter().map(|r| r.event_said.clone()).collect();
+        let event_saids: Vec<String> = join_records
+            .iter()
+            .map(|r| r.event_said.to_string())
+            .collect();
 
         // Fetch the archived events by their SAIDs.
         let events_query = Query::<KeyEvent>::for_table("kels_archived_events")
@@ -108,20 +112,24 @@ impl KeyEventRepository {
 
         let mut sig_map: HashMap<String, Vec<kels_core::EventSignature>> = HashMap::new();
         for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+            sig_map
+                .entry(sig.event_said.to_string())
+                .or_default()
+                .push(sig);
         }
 
         tx.commit().await?;
 
         let mut result = Vec::with_capacity(events.len());
         for event in events {
-            let sigs = sig_map.get(&event.said).ok_or_else(|| {
+            let said_str = event.said.to_string();
+            let sigs = sig_map.get(&said_str).ok_or_else(|| {
                 kels_core::KelsError::StorageError(format!(
                     "No signatures found for event {}",
                     event.said
                 ))
             })?;
-            let sig_pairs: Vec<(String, String)> = sigs
+            let sig_pairs: Vec<(String, cesr::Signature)> = sigs
                 .iter()
                 .map(|s| (s.label.clone(), s.signature.clone()))
                 .collect();
@@ -145,7 +153,7 @@ impl KeyEventRepository {
     /// have the same divergent branches. See [`kels_core::compute_effective_said`] for details.
     pub async fn list_prefixes(
         &self,
-        since: Option<&str>,
+        since: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<PrefixListResponse, StorageError> {
         // DISTINCT ON (prefix) with secondary sort by serial DESC ensures we
@@ -157,10 +165,7 @@ impl KeyEventRepository {
             .limit(limit as u64 + 1);
 
         if let Some(cursor) = since {
-            query = query.filter(Filter::Gt(
-                "prefix".to_string(),
-                Value::String(cursor.to_string()),
-            ));
+            query = query.gt("prefix", cursor.as_ref());
         }
 
         let events: Vec<KeyEvent> = self.pool.fetch(query).await?;
@@ -176,7 +181,7 @@ impl KeyEventRepository {
         // Check if there are more results beyond the limit
         let next_cursor = if prefix_states.len() > limit {
             prefix_states.pop();
-            prefix_states.last().map(|s| s.prefix.clone())
+            prefix_states.last().map(|s| s.prefix)
         } else if let Some(cursor) = since {
             // Wrap around: fill remaining slots from prefixes <= cursor
             // (the beginning of the prefix space). No duplicates because
@@ -187,7 +192,7 @@ impl KeyEventRepository {
                     .distinct_on("prefix")
                     .order_by("prefix", Order::Asc)
                     .order_by("serial", Order::Desc)
-                    .lte("prefix", cursor)
+                    .lte("prefix", cursor.as_ref())
                     .limit(remaining as u64);
                 let wrap_events: Vec<KeyEvent> = self.pool.fetch(wrap_query).await?;
                 prefix_states.extend(wrap_events.into_iter().map(|e| PrefixState {
@@ -202,18 +207,20 @@ impl KeyEventRepository {
 
         // Batch divergence check: find all prefixes in this page that have
         // duplicate serials, in a single query.
-        let page_prefixes: Vec<String> = prefix_states.iter().map(|s| s.prefix.clone()).collect();
+        let page_prefixes: Vec<String> =
+            prefix_states.iter().map(|s| s.prefix.to_string()).collect();
         let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
             .distinct()
             .r#in("prefix", page_prefixes)
             .group_by("prefix")
             .group_by("serial")
             .having_count_gt(1);
-        let divergent_prefixes: HashSet<String> = self
+        let divergent_prefixes: HashSet<cesr::Digest> = self
             .pool
-            .fetch_column(divergent_query)
+            .fetch_column::<String>(divergent_query)
             .await?
-            .into_iter()
+            .iter()
+            .filter_map(|s| cesr::Digest::from_qb64(s).ok())
             .collect();
 
         // For divergent prefixes, replace the single tip SAID with a deterministic

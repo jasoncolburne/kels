@@ -68,7 +68,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         key_provider: K,
         kels_client: Option<KelsClient>,
         kel_store: Option<std::sync::Arc<dyn KelStore>>,
-        prefix: Option<&str>,
+        prefix: Option<&cesr::Digest>,
     ) -> Result<Self, KelsError> {
         let kel_verification = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
@@ -77,7 +77,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                     p,
                     crate::page_size(),
                     crate::max_pages(),
-                    std::iter::empty::<String>(),
+                    std::iter::empty::<cesr::Digest>(),
                 )
                 .await?;
                 if verification.is_empty() {
@@ -109,8 +109,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let kel_verification = if events.is_empty() {
             None
         } else {
-            let prefix = events[0].event.prefix.clone();
-            let mut verifier = crate::KelVerifier::new(&prefix);
+            let mut verifier = crate::KelVerifier::new(&events[0].event.prefix);
             match verifier.verify_page(&events) {
                 Ok(()) => verifier.into_verification().ok(),
                 Err(_) => None,
@@ -188,23 +187,23 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             .map(|bt| &bt.tip.event)
     }
 
-    pub fn last_said(&self) -> Option<&str> {
+    pub fn last_said(&self) -> Option<&cesr::Digest> {
         if let Some(last) = self.pending_events.last() {
-            return Some(last.event.said.as_str());
+            return Some(&last.event.said);
         }
         self.kel_verification
             .as_ref()
             .and_then(|v| v.branch_tips().first())
-            .map(|bt| bt.tip.event.said.as_str())
+            .map(|bt| &bt.tip.event.said)
     }
 
     pub fn pending_events(&self) -> &[SignedKeyEvent] {
         &self.pending_events
     }
 
-    pub fn prefix(&self) -> Option<&str> {
+    pub fn prefix(&self) -> Option<&cesr::Digest> {
         if let Some(first) = self.pending_events.first() {
-            return Some(first.event.prefix.as_str());
+            return Some(&first.event.prefix);
         }
         self.kel_verification.as_ref().map(|v| v.prefix())
     }
@@ -215,7 +214,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let Some(ref store) = self.kel_store else {
             return Ok(());
         };
-        let Some(prefix) = self.prefix().map(|s| s.to_string()) else {
+        let Some(prefix) = self.prefix().cloned() else {
             return Ok(());
         };
         let verification = crate::completed_verification(
@@ -223,7 +222,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             &prefix,
             crate::page_size(),
             crate::max_pages(),
-            std::iter::empty::<String>(),
+            std::iter::empty::<cesr::Digest>(),
         )
         .await?;
         if !verification.is_empty() {
@@ -258,7 +257,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
     pub async fn incept_delegated(
         &mut self,
-        delegating_prefix: &str,
+        delegating_prefix: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
         let signed_event = self
             .create_signed_delegated_inception_event(delegating_prefix)
@@ -268,7 +267,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(signed_event)
     }
 
-    pub async fn interact(&mut self, anchor: &str) -> Result<SignedKeyEvent, KelsError> {
+    pub async fn interact(&mut self, anchor: &cesr::Digest) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
@@ -522,8 +521,8 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         if accepted {
             // Append new events to store
             if let Some(ref store) = self.kel_store
-                && let Some(prefix) = self.prefix().map(|s| s.to_string())
-                && let Err(e) = store.append(&prefix, signed_events).await
+                && let Some(prefix) = self.prefix()
+                && let Err(e) = store.append(prefix, signed_events).await
             {
                 self.pending_events.truncate(old_pending_len);
                 self.rollback(has_staged).await?;
@@ -551,7 +550,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         }
 
-        let prefix = self.prefix().ok_or(KelsError::NotIncepted)?.to_string();
+        let prefix = *self.prefix().ok_or(KelsError::NotIncepted)?;
 
         let mut verifier = if let Some(ref v) = self.kel_verification {
             crate::KelVerifier::resume(&prefix, v)?
@@ -649,19 +648,19 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let (current_recovery_pub, _recovery_hash) =
             self.key_provider.stage_recovery_rotation().await?;
 
-        let cnt_event =
-            KeyEvent::create_contest(base_event, rotation_key.qb64(), current_recovery_pub.qb64())?;
+        let cnt_event = KeyEvent::create_contest(base_event, rotation_key, current_recovery_pub)?;
 
-        let cnt_primary_signature = self.key_provider.sign(cnt_event.said.as_bytes()).await?;
+        let said_bytes = cnt_event.said.qb64();
+        let cnt_primary_signature = self.key_provider.sign(said_bytes.as_bytes()).await?;
         let cnt_secondary_signature = self
             .key_provider
-            .sign_with_recovery(cnt_event.said.as_bytes())
+            .sign_with_recovery(said_bytes.as_bytes())
             .await?;
 
         Ok(SignedKeyEvent::new_recovery(
             cnt_event,
-            cnt_primary_signature.qb64(),
-            cnt_secondary_signature.qb64(),
+            cnt_primary_signature,
+            cnt_secondary_signature,
         ))
     }
 
@@ -669,51 +668,39 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let (current_key, rotation_hash, recovery_hash) =
             self.key_provider.generate_initial_keys().await?;
 
-        let event = KeyEvent::create_inception(current_key.qb64(), rotation_hash, recovery_hash)?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let event = KeyEvent::create_inception(current_key, rotation_hash, recovery_hash)?;
+        let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
-        Ok(SignedKeyEvent::new(
-            event,
-            "signing".to_string(),
-            signature.qb64(),
-        ))
+        Ok(SignedKeyEvent::new(event, "signing".to_string(), signature))
     }
 
     async fn create_signed_delegated_inception_event(
         &mut self,
-        delegating_prefix: &str,
+        delegating_prefix: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
         let (current_key, rotation_hash, recovery_hash) =
             self.key_provider.generate_initial_keys().await?;
 
         let event = KeyEvent::create_delegated_inception(
-            current_key.qb64(),
+            current_key,
             rotation_hash,
             recovery_hash,
-            delegating_prefix.to_string(),
+            *delegating_prefix,
         )?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
-        Ok(SignedKeyEvent::new(
-            event,
-            "signing".to_string(),
-            signature.qb64(),
-        ))
+        Ok(SignedKeyEvent::new(event, "signing".to_string(), signature))
     }
 
     async fn create_signed_interaction_event(
         &self,
         base_event: &KeyEvent,
-        anchor: &str,
+        anchor: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
-        let event = KeyEvent::create_interaction(base_event, anchor.to_string())?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let event = KeyEvent::create_interaction(base_event, *anchor)?;
+        let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
-        Ok(SignedKeyEvent::new(
-            event,
-            "signing".to_string(),
-            signature.qb64(),
-        ))
+        Ok(SignedKeyEvent::new(event, "signing".to_string(), signature))
     }
 
     async fn create_signed_rotation_event(
@@ -722,14 +709,10 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     ) -> Result<SignedKeyEvent, KelsError> {
         let (new_current, rotation_hash) = self.key_provider.stage_rotation().await?;
 
-        let event = KeyEvent::create_rotation(base_event, new_current.qb64(), Some(rotation_hash))?;
-        let signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let event = KeyEvent::create_rotation(base_event, new_current, Some(rotation_hash))?;
+        let signature = self.key_provider.sign(event.said.qb64().as_bytes()).await?;
 
-        Ok(SignedKeyEvent::new(
-            event,
-            "signing".to_string(),
-            signature.qb64(),
-        ))
+        Ok(SignedKeyEvent::new(event, "signing".to_string(), signature))
     }
 
     async fn create_signed_decommission_event(
@@ -740,22 +723,19 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let (current_recovery_pub, _recovery_hash) =
             self.key_provider.stage_recovery_rotation().await?;
 
-        let event = KeyEvent::create_decommission(
-            base_event,
-            new_current.qb64(),
-            current_recovery_pub.qb64(),
-        )?;
+        let event = KeyEvent::create_decommission(base_event, new_current, current_recovery_pub)?;
 
-        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let said_bytes = event.said.qb64();
+        let primary_signature = self.key_provider.sign(said_bytes.as_bytes()).await?;
         let secondary_signature = self
             .key_provider
-            .sign_with_recovery(event.said.as_bytes())
+            .sign_with_recovery(said_bytes.as_bytes())
             .await?;
 
         Ok(SignedKeyEvent::new_recovery(
             event,
-            primary_signature.qb64(),
-            secondary_signature.qb64(),
+            primary_signature,
+            secondary_signature,
         ))
     }
 
@@ -770,22 +750,23 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
         let event = KeyEvent::create_recovery_rotation(
             base_event,
-            new_current.qb64(),
+            new_current,
             rotation_hash,
-            current_recovery_pub.qb64(),
+            current_recovery_pub,
             new_recovery_hash,
         )?;
 
-        let primary_signature = self.key_provider.sign(event.said.as_bytes()).await?;
+        let said_bytes = event.said.qb64();
+        let primary_signature = self.key_provider.sign(said_bytes.as_bytes()).await?;
         let secondary_signature = self
             .key_provider
-            .sign_with_recovery(event.said.as_bytes())
+            .sign_with_recovery(said_bytes.as_bytes())
             .await?;
 
         Ok(SignedKeyEvent::new_recovery(
             event,
-            primary_signature.qb64(),
-            secondary_signature.qb64(),
+            primary_signature,
+            secondary_signature,
         ))
     }
 
@@ -799,22 +780,23 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
 
         let rec_event = KeyEvent::create_recovery(
             base_event,
-            rotation_key.qb64(),
+            rotation_key,
             new_rotation_hash,
-            current_recovery_pub.qb64(),
+            current_recovery_pub,
             new_recovery_hash,
         )?;
 
-        let rec_primary_signature = self.key_provider.sign(rec_event.said.as_bytes()).await?;
+        let said_bytes = rec_event.said.qb64();
+        let rec_primary_signature = self.key_provider.sign(said_bytes.as_bytes()).await?;
         let rec_secondary_signature = self
             .key_provider
-            .sign_with_recovery(rec_event.said.as_bytes())
+            .sign_with_recovery(said_bytes.as_bytes())
             .await?;
 
         Ok(SignedKeyEvent::new_recovery(
             rec_event,
-            rec_primary_signature.qb64(),
-            rec_secondary_signature.qb64(),
+            rec_primary_signature,
+            rec_secondary_signature,
         ))
     }
 }

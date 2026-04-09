@@ -10,12 +10,12 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
     #[said]
-    pub said: String,
-    pub schema: String,
+    pub said: cesr::Digest,
+    pub schema: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
+    pub policy: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
+    pub credential: Option<cesr::Digest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 }
@@ -24,7 +24,7 @@ pub struct Edge {
 #[serde(rename_all = "camelCase")]
 pub struct Edges {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[serde(flatten)]
     pub edges: BTreeMap<String, Edge>,
 }
@@ -32,7 +32,7 @@ pub struct Edges {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawEdges {
-    said: String,
+    said: cesr::Digest,
     #[serde(flatten)]
     edges: BTreeMap<String, Edge>,
 }
@@ -79,7 +79,7 @@ impl Edges {
             edge.derive_said()?;
         }
         let mut instance = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             edges,
         };
         instance.derive_said()?;
@@ -89,25 +89,21 @@ impl Edges {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     use verifiable_storage::SelfAddressed;
 
     fn test_edge() -> Edge {
-        Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            None,
-            None,
-            None,
-        )
-        .unwrap()
+        Edge::create(test_digest("test-schema"), None, None, None).unwrap()
     }
 
     #[test]
     fn test_edge_said_derivation() {
         let edge = test_edge();
-        assert!(!edge.said.is_empty());
-        assert_eq!(edge.said.len(), 44);
+        assert!(!edge.said.to_string().is_empty());
+        assert_eq!(edge.said.to_string().len(), 44);
     }
 
     #[test]
@@ -119,9 +115,9 @@ mod tests {
     #[test]
     fn test_edge_with_optional_fields() {
         let edge = Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            Some("KPolicy23456789012345678901234567890abcdefg".to_string()),
-            Some("KCred12345678901234567890123456789012abcdef".to_string()),
+            test_digest("test-schema"),
+            Some(test_digest("test-policy")),
+            Some(test_digest("test-credential")),
             Some("KNonce12345678901234567890123456789012abcde".to_string()),
         )
         .unwrap();
@@ -149,8 +145,8 @@ mod tests {
         edges_map.insert("license".to_string(), test_edge());
 
         let edges = Edges::new_validated(edges_map).unwrap();
-        assert!(!edges.said.is_empty());
-        assert_eq!(edges.said.len(), 44);
+        assert!(!edges.said.to_string().is_empty());
+        assert_eq!(edges.said.to_string().len(), 44);
         assert!(edges.verify_said().is_ok());
     }
 
@@ -213,7 +209,7 @@ mod tests {
     #[test]
     fn test_edges_try_from_rejects_reserved_label() {
         let raw = super::RawEdges {
-            said: "KAbc1234567890123456789012345678901234567890".to_string(),
+            said: test_digest("reserved-label-test"),
             edges: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_edge());

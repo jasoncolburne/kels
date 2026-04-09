@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cesr::Matter;
 use colored::Colorize;
 use kels_core::{KeyEventBuilder, ProviderConfig, SadStore};
 use verifiable_storage::SelfAddressed;
@@ -43,7 +44,10 @@ pub(crate) async fn cmd_cred_issue(
     let (credential, canonical_said) = kels_creds::Credential::build(
         &schema,
         &policy,
-        subject.map(|s| s.to_string()),
+        subject
+            .map(cesr::Digest::from_qb64)
+            .transpose()
+            .context("Invalid subject prefix")?,
         claims,
         unique,
         None, // edges
@@ -57,6 +61,7 @@ pub(crate) async fn cmd_cred_issue(
     println!("  Canonical SAID:  {}", canonical_said);
 
     // Anchor the canonical SAID in the KEL via ixn
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -65,12 +70,14 @@ pub(crate) async fn cmd_cred_issue(
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
+    let anchor_digest =
+        cesr::Digest::from_qb64(&canonical_said).context("Invalid credential SAID CESR")?;
     let signed = builder
-        .interact(&canonical_said)
+        .interact(&anchor_digest)
         .await
         .context("Failed to anchor credential SAID in KEL")?;
     println!("  Anchored in KEL: {} (ixn)", signed.event.said);
@@ -120,7 +127,7 @@ pub(crate) async fn cmd_cred_store(
     let schema_value: serde_json::Value =
         serde_json::from_str(&schema_data).context("Failed to parse schema")?;
     let schema_said = schema_value.get_said();
-    if !schema_said.is_empty() {
+    if !schema_said.as_ref().is_empty() {
         sad_store.store(&schema_said, &schema_value).await?;
     }
 
@@ -133,10 +140,10 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
 
     let mut count = 0;
-    let mut since: Option<String> = None;
+    let mut since: Option<cesr::Digest> = None;
     loop {
         let (saids, has_more) = sad_store
-            .list(since.as_deref(), kels_core::page_size())
+            .list(since.as_ref(), kels_core::page_size())
             .await?;
 
         for said in &saids {
@@ -168,7 +175,8 @@ pub(crate) async fn cmd_cred_list(cli: &Cli) -> Result<()> {
 
 pub(crate) async fn cmd_cred_show(cli: &Cli, said: &str) -> Result<()> {
     let sad_store = create_sad_store(cli)?;
-    let value = sad_store.load(said).await?;
+    let said = cesr::Digest::from_qb64(said).context("Invalid SAID")?;
+    let value = sad_store.load(&said).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
@@ -180,6 +188,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
     println!("  Poison hash: {}", poison);
 
     // Anchor poison hash in KEL via ixn
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -188,7 +197,7 @@ pub(crate) async fn cmd_cred_poison(cli: &Cli, prefix: &str, said: &str) -> Resu
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 

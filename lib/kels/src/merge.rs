@@ -11,7 +11,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cesr::{Matter, Signature};
+use cesr::Matter;
 use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
@@ -26,7 +26,7 @@ use crate::{
 pub struct MergeOutcome {
     pub result: KelMergeResult,
     pub diverged_at: Option<u64>,
-    pub tip_said: Option<String>,
+    pub tip_said: Option<cesr::Digest>,
     /// Number of new events actually inserted (excludes duplicates).
     pub new_event_count: usize,
 }
@@ -50,7 +50,7 @@ impl MergeOutcome {
 /// derive macro).
 pub struct MergeTransaction<T: TransactionExecutor> {
     tx: T,
-    prefix: String,
+    prefix: cesr::Digest,
     events_table: &'static str,
     signatures_table: &'static str,
     recovery_table: &'static str,
@@ -63,7 +63,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tx: T,
-        prefix: String,
+        prefix: cesr::Digest,
         events_table: &'static str,
         signatures_table: &'static str,
         recovery_table: &'static str,
@@ -83,8 +83,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
     }
 
-    pub fn prefix(&self) -> &str {
+    pub fn prefix(&self) -> &cesr::Digest {
         &self.prefix
+    }
+
+    fn prefix_digest(&self) -> Result<cesr::Digest, KelsError> {
+        Ok(self.prefix)
     }
 
     // ==================== Assembly helpers ====================
@@ -94,10 +98,11 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         event: KeyEvent,
     ) -> Result<SignedKeyEvent, KelsError> {
+        let said_str = event.said.qb64();
         let query =
-            Query::<EventSignature>::for_table(self.signatures_table).eq("event_said", &event.said);
+            Query::<EventSignature>::for_table(self.signatures_table).eq("event_said", &said_str);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let sig_map = HashMap::from([(event.said.clone(), signatures)]);
+        let sig_map = HashMap::from([(event.said, signatures)]);
         zip_events_with_signatures(vec![event], &sig_map).map(|mut v| v.remove(0))
     }
 
@@ -109,13 +114,13 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if events.is_empty() {
             return Ok(vec![]);
         }
-        let saids: Vec<String> = events.iter().map(|e| e.said.clone()).collect();
+        let saids: Vec<String> = events.iter().map(|e| e.said.qb64()).collect();
         let query =
             Query::<EventSignature>::for_table(self.signatures_table).r#in("event_said", saids);
         let signatures: Vec<EventSignature> = self.tx.fetch(query).await?;
-        let mut sig_map: HashMap<String, Vec<EventSignature>> = HashMap::new();
+        let mut sig_map: HashMap<cesr::Digest, Vec<EventSignature>> = HashMap::new();
         for sig in signatures {
-            sig_map.entry(sig.event_said.clone()).or_default().push(sig);
+            sig_map.entry(sig.event_said).or_default().push(sig);
         }
         zip_events_with_signatures(events, &sig_map)
     }
@@ -153,13 +158,17 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     /// Check which of the given SAIDs already exist in the database.
-    pub async fn existing_saids(&mut self, saids: &[String]) -> Result<HashSet<String>, KelsError> {
+    pub async fn existing_saids(
+        &mut self,
+        saids: &[cesr::Digest],
+    ) -> Result<HashSet<cesr::Digest>, KelsError> {
         if saids.is_empty() {
             return Ok(HashSet::new());
         }
+        let said_strings: Vec<String> = saids.iter().map(|s| s.qb64()).collect();
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
-            .r#in("said", saids.to_vec());
+            .r#in("said", said_strings);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
         Ok(events.into_iter().map(|e| e.said).collect())
     }
@@ -167,11 +176,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// Get a single signed event by SAID.
     pub async fn get_event_by_said(
         &mut self,
-        said: &str,
+        said: &cesr::Digest,
     ) -> Result<Option<SignedKeyEvent>, KelsError> {
+        let said_str = said.qb64();
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
-            .eq("said", said)
+            .eq("said", &said_str)
             .limit(1);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
 
@@ -266,11 +276,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     }
 
     /// Delete events by SAID.
-    pub async fn delete_events_by_said(&mut self, saids: Vec<String>) -> Result<u64, KelsError> {
+    pub async fn delete_events_by_said(
+        &mut self,
+        saids: Vec<cesr::Digest>,
+    ) -> Result<u64, KelsError> {
         if saids.is_empty() {
             return Ok(0);
         }
-        let delete = Delete::<KeyEvent>::for_table(self.events_table).r#in("said", saids);
+        let said_strings: Vec<String> = saids.iter().map(|s| s.qb64()).collect();
+        let delete = Delete::<KeyEvent>::for_table(self.events_table).r#in("said", said_strings);
         Ok(self.tx.delete(delete).await?)
     }
 
@@ -288,21 +302,24 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// chain fits in one page.
     async fn archive_adversary_events(
         &mut self,
-        recovery_said: &str,
-        adversary_saids: Vec<String>,
+        recovery_said: &cesr::Digest,
+        adversary_saids: Vec<cesr::Digest>,
     ) -> Result<(), KelsError> {
         if adversary_saids.is_empty() {
             return Ok(());
         }
 
+        let adversary_said_strings: Vec<String> =
+            adversary_saids.iter().map(|s| s.qb64()).collect();
+
         // Fetch events and signatures to archive
         let event_query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
-            .r#in("said", adversary_saids.clone());
+            .r#in("said", adversary_said_strings.clone());
         let events: Vec<KeyEvent> = self.tx.fetch(event_query).await?;
 
         let sig_query = Query::<EventSignature>::for_table(self.signatures_table)
-            .r#in("event_said", adversary_saids.clone());
+            .r#in("event_said", adversary_said_strings.clone());
         let signatures: Vec<EventSignature> = self.tx.fetch(sig_query).await?;
 
         // Insert into archive tables and create recovery-event links
@@ -310,9 +327,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             self.tx
                 .insert_with_table(event, self.archived_events_table)
                 .await?;
-            let recovery_event =
-                KelRecoveryEvent::create(recovery_said.to_string(), event.said.clone())
-                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            let recovery_event = KelRecoveryEvent::create(*recovery_said, event.said)
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
             self.tx
                 .insert_with_table(&recovery_event, self.recovery_events_table)
                 .await?;
@@ -325,7 +341,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
         // Delete from live tables — signatures cascade via FK ON DELETE CASCADE
         let event_delete =
-            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_saids);
+            Delete::<KeyEvent>::for_table(self.events_table).r#in("said", adversary_said_strings);
         self.tx.delete(event_delete).await?;
 
         Ok(())
@@ -340,10 +356,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     ///   use `find_adversary_event` to identify the adversary branch.
     async fn archive_adversary_chain(
         &mut self,
-        recovery_said: &str,
+        recovery_said: &cesr::Digest,
         first_serial: u64,
         diverged_at: u64,
-        rec_previous: &str,
+        rec_previous: &cesr::Digest,
     ) -> Result<(), KelsError> {
         let adversary_saids = if first_serial <= diverged_at {
             // Owner has no events at divergence — all existing events from
@@ -367,18 +383,19 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn collect_all_adversary_saids(
         &mut self,
         diverged_at: u64,
-        rec_previous: &str,
-    ) -> Result<Vec<String>, KelsError> {
+        rec_previous: &cesr::Digest,
+    ) -> Result<Vec<cesr::Digest>, KelsError> {
         // Build owner SAID set by walking backward from rec_previous.
         // Since rec/rot haven't been inserted yet, only pre-existing owner
         // events are in the DB.
-        let mut owner_saids: HashSet<String> = HashSet::new();
-        let mut walk = Some(rec_previous.to_string());
+        let mut owner_saids: HashSet<cesr::Digest> = HashSet::new();
+        let mut walk: Option<cesr::Digest> = Some(*rec_previous);
         for _ in 0..crate::MINIMUM_PAGE_SIZE {
             let Some(said) = walk.take() else { break };
+            let said_str = said.qb64();
             let q = Query::<KeyEvent>::for_table(self.events_table)
                 .eq("prefix", &self.prefix)
-                .eq("said", &said)
+                .eq("said", &said_str)
                 .limit(1);
             let events: Vec<KeyEvent> = self.tx.fetch(q).await?;
             let Some(event) = events.into_iter().next() else {
@@ -387,7 +404,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             if event.serial < diverged_at {
                 break;
             }
-            owner_saids.insert(event.said.clone());
+            owner_saids.insert(event.said);
             walk = event.previous;
         }
 
@@ -410,27 +427,28 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn collect_adversary_chain_saids(
         &mut self,
         diverged_at: u64,
-        rec_previous: &str,
-    ) -> Result<Vec<String>, KelsError> {
+        rec_previous: &cesr::Digest,
+    ) -> Result<Vec<cesr::Digest>, KelsError> {
         let (adversary, adversary_has_chain) =
             self.find_adversary_event(diverged_at, rec_previous).await?;
 
-        let mut saids = vec![adversary.event.said.clone()];
+        let mut saids = vec![adversary.event.said];
 
         if adversary_has_chain {
             // Walk forward from adversary event to collect the chain
-            let mut current_said = adversary.event.said.clone();
+            let mut current_said = adversary.event.said;
             for _ in 0..crate::MINIMUM_PAGE_SIZE {
+                let current_said_str = current_said.qb64();
                 let child_query = Query::<KeyEvent>::for_table(self.events_table)
                     .eq("prefix", &self.prefix)
-                    .eq("previous", &current_said)
+                    .eq("previous", &current_said_str)
                     .limit(2);
                 let children: Vec<KeyEvent> = self.tx.fetch(child_query).await?;
                 match children.len() {
                     0 => break,
                     1 => {
-                        current_said = children[0].said.clone();
-                        saids.push(current_said.clone());
+                        current_said = children[0].said;
+                        saids.push(current_said);
                     }
                     _ => {
                         return Err(KelsError::StorageError(format!(
@@ -505,17 +523,12 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             }
         }
 
-        // Validate signatures upfront
+        // Validate signatures upfront — typed fields ensure valid CESR format
         for signed_event in events {
             if signed_event.signatures.is_empty() {
                 return Err(KelsError::InvalidSignature(
                     "Event missing signature".to_string(),
                 ));
-            }
-            for sig in &signed_event.signatures {
-                Signature::from_qb64(&sig.signature).map_err(|e| {
-                    KelsError::InvalidSignature(format!("Invalid signature format: {}", e))
-                })?;
             }
             if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
                 return Err(KelsError::InvalidSignature(
@@ -524,10 +537,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             }
         }
 
-        let prefix = self.prefix.clone();
-
         // Re-verify the entire KEL on every submission. We cannot cache KelVerification
         // tokens because the DB cannot be trusted (verification invariant).
+        let prefix = self.prefix;
         let kel_verification = completed_verification(
             self,
             &prefix,
@@ -564,10 +576,9 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Route based on verified context
-        let first_previous = events[0].event.previous.clone();
+        let first_previous = events[0].event.previous;
         let is_normal_append = kel_verification.branch_tips().len() == 1
-            && first_previous.as_deref()
-                == Some(kel_verification.branch_tips()[0].tip.event.said.as_str())
+            && first_previous.as_ref() == Some(&kel_verification.branch_tips()[0].tip.event.said)
             && !kel_verification.is_contested();
 
         if is_normal_append {
@@ -575,8 +586,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         } else if kel_verification.is_empty() && first_previous.is_none() {
             self.handle_new_kel(events).await
         } else {
-            self.handle_full_path(&kel_verification, events, &prefix)
-                .await
+            self.handle_full_path(&kel_verification, events).await
         }
     }
 
@@ -597,8 +607,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         }
 
-        let prefix = &self.prefix;
-        let mut verifier = KelVerifier::resume(prefix, kel_verification).map_err(|e| {
+        let prefix_digest = self.prefix_digest()?;
+        let mut verifier = KelVerifier::resume(&prefix_digest, kel_verification).map_err(|e| {
             KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
         })?;
         verifier
@@ -612,7 +622,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         }
 
-        let tip = events.last().map(|e| e.event.said.clone());
+        let tip = events.last().map(|e| e.event.said);
         let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
@@ -631,8 +641,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         events: &[SignedKeyEvent],
     ) -> Result<MergeOutcome, KelsError> {
-        let prefix = &self.prefix;
-        let mut verifier = KelVerifier::new(prefix);
+        let prefix_digest = self.prefix_digest()?;
+        let mut verifier = KelVerifier::new(&prefix_digest);
         verifier
             .verify_page(events)
             .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
@@ -643,7 +653,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             ));
         }
 
-        let tip = events.last().map(|e| e.event.said.clone());
+        let tip = events.last().map(|e| e.event.said);
         let count = events.len();
         for event in events {
             self.insert_signed_event(event).await?;
@@ -662,7 +672,6 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         events: &[SignedKeyEvent],
-        prefix: &str,
     ) -> Result<MergeOutcome, KelsError> {
         // Contested KELs reject all submissions
         if kel_verification.is_contested() {
@@ -672,7 +681,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Filter duplicates
-        let submitted_saids: Vec<String> = events.iter().map(|e| e.event.said.clone()).collect();
+        let submitted_saids: Vec<cesr::Digest> = events.iter().map(|e| e.event.said).collect();
         let existing = self.existing_saids(&submitted_saids).await?;
         let new_events: Vec<SignedKeyEvent> = events
             .iter()
@@ -690,7 +699,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         }
 
         // Re-route after dedup
-        let new_first_previous = new_events[0].event.previous.as_deref();
+        let new_first_previous = new_events[0].event.previous.as_ref();
 
         if new_first_previous.is_none() {
             return Err(KelsError::InvalidKeyEvent(
@@ -701,11 +710,13 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         // Check if dedup turned this into a normal append
         if !kel_verification.is_divergent()
             && kel_verification.branch_tips().len() == 1
-            && new_first_previous == Some(kel_verification.branch_tips()[0].tip.event.said.as_str())
+            && new_first_previous == Some(&kel_verification.branch_tips()[0].tip.event.said)
         {
-            let mut verifier = KelVerifier::resume(prefix, kel_verification).map_err(|e| {
-                KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
-            })?;
+            let prefix_digest = self.prefix_digest()?;
+            let mut verifier =
+                KelVerifier::resume(&prefix_digest, kel_verification).map_err(|e| {
+                    KelsError::VerificationFailed(format!("KEL verification failed: {}", e))
+                })?;
             verifier
                 .verify_page(&new_events)
                 .map_err(|e| KelsError::VerificationFailed(format!("KEL merge failed: {}", e)))?;
@@ -714,7 +725,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                     "Proactive recovery rotation required: too many events since last recovery-revealing event".to_string(),
                 ));
             }
-            let tip = new_events.last().map(|e| e.event.said.clone());
+            let tip = new_events.last().map(|e| e.event.said);
             let count = new_events.len();
             for event in &new_events {
                 self.insert_signed_event(event).await?;
@@ -730,7 +741,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let new_count = new_events.len();
         if kel_verification.is_divergent() {
             let (result, diverged_at) = self
-                .handle_divergent_submission(kel_verification, &new_events, prefix)
+                .handle_divergent_submission(kel_verification, &new_events)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -740,7 +751,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             })
         } else {
             let (result, diverged_at) = self
-                .handle_overlap_submission(kel_verification, &new_events, prefix)
+                .handle_overlap_submission(kel_verification, &new_events)
                 .await?;
             Ok(MergeOutcome {
                 result,
@@ -758,8 +769,8 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
-        prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
+        let prefix_digest = self.prefix_digest()?;
         let Some(diverged_at) = kel_verification.diverged_at_serial() else {
             return Err(KelsError::StorageError(
                 "Divergent KEL missing diverged_at_serial".to_string(),
@@ -800,7 +811,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             }
 
             let first_serial = new_events[0].event.serial;
-            let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
+            let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
             })?;
 
@@ -825,7 +836,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             };
 
             let mut event_verifier = KelVerifier::from_branch_tip(
-                prefix,
+                &prefix_digest,
                 &anchor_tip,
                 kel_verification.events_since_last_revealing(),
             )
@@ -864,7 +875,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 return Err(KelsError::ContestRequired);
             }
 
-            let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
+            let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
             })?;
 
@@ -889,7 +900,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             };
 
             let mut event_verifier = KelVerifier::from_branch_tip(
-                prefix,
+                &prefix_digest,
                 &anchor_tip,
                 kel_verification.events_since_last_revealing(),
             )
@@ -905,7 +916,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 ));
             }
 
-            let rec_previous = rec_event.event.previous.as_deref().ok_or_else(|| {
+            let rec_previous = rec_event.event.previous.as_ref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Recovery event has no previous".to_string())
             })?;
 
@@ -916,10 +927,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             // Create the recovery audit record first so we have its SAID for
             // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
-                self.prefix.clone(),
+                prefix_digest,
                 rec_event.event.serial,
                 diverged_at,
-                rec_previous.to_string(),
+                *rec_previous,
                 first_serial,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -952,15 +963,15 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         kel_verification: &KelVerification,
         new_events: &[SignedKeyEvent],
-        prefix: &str,
     ) -> Result<(KelMergeResult, Option<u64>), KelsError> {
+        let prefix_digest = self.prefix_digest()?;
         if kel_verification.is_divergent() || kel_verification.is_contested() {
             return Err(KelsError::StorageError(
                 "handle_overlap_submission called with divergent or contested KEL".to_string(),
             ));
         }
 
-        let first_previous = new_events[0].event.previous.as_deref().ok_or_else(|| {
+        let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
             KelsError::InvalidKeyEvent("Inception event SAID mismatch".to_string())
         })?;
 
@@ -984,7 +995,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         };
 
         let mut verifier = KelVerifier::from_branch_tip(
-            prefix,
+            &prefix_digest,
             &branch_tip,
             kel_verification.events_since_last_revealing(),
         )
@@ -1028,7 +1039,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         if let Some(rec_idx) = new_events.iter().position(|e| e.event.is_recover()) {
             let rec_event = &new_events[rec_idx];
 
-            let rec_previous = rec_event.event.previous.as_deref().ok_or_else(|| {
+            let rec_previous = rec_event.event.previous.as_ref().ok_or_else(|| {
                 KelsError::InvalidKeyEvent("Recovery event has no previous".to_string())
             })?;
 
@@ -1041,10 +1052,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             // Create the recovery audit record first so we have its SAID for
             // linking archived events. Order doesn't matter — all within one tx.
             let recovery_record = RecoveryRecord::create(
-                self.prefix.clone(),
+                prefix_digest,
                 rec_event.event.serial,
                 diverged_at,
-                rec_previous.to_string(),
+                *rec_previous,
                 first_serial,
             )
             .map_err(|e| KelsError::StorageError(e.to_string()))?;
@@ -1071,7 +1082,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         // No recovery event — insert single forking event to establish divergence
         let divergent_event = new_events
             .iter()
-            .find(|e| e.event.previous.as_deref() == Some(first_previous))
+            .find(|e| e.event.previous.as_ref() == Some(first_previous))
             .ok_or_else(|| KelsError::InvalidKeyEvent("Cannot find divergent event".to_string()))?;
 
         self.insert_signed_event(divergent_event).await?;
@@ -1095,7 +1106,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     async fn find_adversary_event(
         &mut self,
         diverged_at: u64,
-        rec_previous: &str,
+        rec_previous: &cesr::Digest,
     ) -> Result<(SignedKeyEvent, bool), KelsError> {
         let (events, _) = self
             .get_signed_history_since(diverged_at, crate::page_size() as u64)
@@ -1134,16 +1145,16 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let d1 = &divergent[1].event.said;
         let d0_has_child = events
             .iter()
-            .any(|e| e.event.serial > diverged_at && e.event.previous.as_deref() == Some(d0));
+            .any(|e| e.event.serial > diverged_at && e.event.previous.as_ref() == Some(d0));
         let d1_has_child = events
             .iter()
-            .any(|e| e.event.serial > diverged_at && e.event.previous.as_deref() == Some(d1));
+            .any(|e| e.event.serial > diverged_at && e.event.previous.as_ref() == Some(d1));
 
         // Direct match: rec/cnt previous points to one of the divergent events
-        if rec_previous == divergent[0].event.said {
+        if rec_previous == &divergent[0].event.said {
             return Ok((divergent[1].clone(), d1_has_child));
         }
-        if rec_previous == divergent[1].event.said {
+        if rec_previous == &divergent[1].event.said {
             return Ok((divergent[0].clone(), d0_has_child));
         }
 
@@ -1167,7 +1178,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         &mut self,
         first_serial: u64,
         diverged_at: u64,
-        rec_previous: &str,
+        rec_previous: &cesr::Digest,
     ) -> Result<(), KelsError> {
         if first_serial <= diverged_at {
             // Owner has no events at the divergence serial — all events
@@ -1217,10 +1228,10 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
     /// an establishment event.
     async fn trace_establishment_backward(
         &mut self,
-        start_said: &str,
+        start_said: &cesr::Digest,
     ) -> Result<SignedKeyEvent, KelsError> {
         let max_steps = crate::max_pages() * crate::page_size();
-        let mut current_said = Some(start_said.to_string());
+        let mut current_said: Option<cesr::Digest> = Some(*start_said);
 
         for _ in 0..max_steps {
             let Some(said) = current_said.take() else {
@@ -1235,7 +1246,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             if event.event.is_establishment() {
                 return Ok(event);
             }
-            current_said = event.event.previous.clone();
+            current_said = event.event.previous;
         }
 
         Err(KelsError::StorageError(
@@ -1281,7 +1292,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 impl<T: TransactionExecutor> PageLoader for MergeTransaction<T> {
     async fn load_page(
         &mut self,
-        _prefix: &str,
+        _prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {

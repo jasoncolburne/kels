@@ -58,8 +58,8 @@ pub struct AppState {
     pub blob_store: Arc<BlobStore>,
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
-    pub node_prefix: String,
-    pub sender_rate_limits: DashMap<String, (u32, Instant)>,
+    pub node_prefix: cesr::Digest,
+    pub sender_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
     pub nonce_cache: DashMap<String, Instant>,
 }
@@ -91,7 +91,7 @@ pub fn spawn_reaper(state: Arc<AppState>) {
                         let _ = gc_state.blob_store.delete(blob_digest).await;
                         // Gossip removal
                         if let Some(ref redis) = gc_state.redis_conn {
-                            let announcement = MailAnnouncement::Removal { said: said.clone() };
+                            let announcement = MailAnnouncement::Removal { said: *said };
                             if let Ok(json) = serde_json::to_string(&announcement) {
                                 let mut conn = redis.clone();
                                 let _: Result<(), _> = conn.publish("mail_updates", &json).await;
@@ -111,12 +111,12 @@ pub fn spawn_reaper(state: Arc<AppState>) {
 // ==================== Rate Limiting ====================
 
 fn check_sender_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    sender: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    sender: &cesr::Digest,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max = max_messages_per_sender_per_day();
-    let mut entry = limits.entry(sender.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*sender).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
@@ -345,11 +345,11 @@ pub async fn send_mail(
     );
 
     let mut mail_message = MailMessage {
-        said: String::new(),
-        sender_kel_prefix: sender.clone(),
-        source_node_prefix: state.node_prefix.clone(),
-        recipient_kel_prefix: payload.recipient_kel_prefix.clone(),
-        blob_digest: blob_digest.clone(),
+        said: cesr::Digest::default(),
+        sender_kel_prefix: *sender,
+        source_node_prefix: state.node_prefix,
+        recipient_kel_prefix: payload.recipient_kel_prefix,
+        blob_digest,
         blob_size: blob.len() as i64,
         created_at: now,
         expires_at,
@@ -383,7 +383,7 @@ pub async fn send_mail(
 
     // Gossip announcement
     if let Some(ref redis) = state.redis_conn {
-        let announcement = MailAnnouncement::Message(mail_message.clone());
+        let announcement = MailAnnouncement::Message(Box::new(mail_message.clone()));
         if let Ok(json) = serde_json::to_string(&announcement) {
             let mut conn = redis.clone();
             let _: Result<(), _> = conn.publish("mail_updates", &json).await;
@@ -520,7 +520,7 @@ pub async fn ack(
 
         // Gossip removal
         if let Some(ref redis) = state.redis_conn {
-            let announcement = MailAnnouncement::Removal { said: said.clone() };
+            let announcement = MailAnnouncement::Removal { said: *said };
             if let Ok(json) = serde_json::to_string(&announcement) {
                 let mut conn = redis.clone();
                 let _: Result<(), _> = conn.publish("mail_updates", &json).await;
@@ -575,7 +575,7 @@ pub async fn replicate(
 pub struct RemoveRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub said: String,
+    pub said: cesr::Digest,
 }
 
 pub async fn remove(

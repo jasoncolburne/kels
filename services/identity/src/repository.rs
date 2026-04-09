@@ -14,15 +14,15 @@ use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 #[storable(table = "identity_hsm_key_bindings")]
 pub struct HsmKeyBinding {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
-    pub kel_prefix: String,
+    pub kel_prefix: cesr::Digest,
     pub current_key_handle: String,
     pub next_key_handle: String,
     pub recovery_key_handle: String,
@@ -45,7 +45,7 @@ pub struct HsmBindingRepository {
 impl HsmBindingRepository {
     pub async fn get_latest_by_kel_prefix(
         &self,
-        kel_prefix: &str,
+        kel_prefix: &cesr::Digest,
     ) -> Result<Option<HsmKeyBinding>, StorageError> {
         let query = Query::<HsmKeyBinding>::for_table(Self::TABLE_NAME)
             .eq("kel_prefix", kel_prefix)
@@ -56,7 +56,7 @@ impl HsmBindingRepository {
 
     pub async fn get_all_by_kel_prefix(
         &self,
-        kel_prefix: &str,
+        kel_prefix: &cesr::Digest,
     ) -> Result<Vec<HsmKeyBinding>, StorageError> {
         let query = Query::<HsmKeyBinding>::for_table(Self::TABLE_NAME)
             .eq("kel_prefix", kel_prefix)
@@ -73,17 +73,17 @@ pub const AUTHORITY_IDENTITY_NAME: &str = "identity";
 #[storable(table = "identity_authority")]
 pub struct AuthorityMapping {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub version: u64,
     pub name: String,
-    pub kel_prefix: String,
-    pub last_said: String,
+    pub kel_prefix: cesr::Digest,
+    pub last_said: cesr::Digest,
     #[created_at]
     pub created_at: StorageDatetime,
 }
@@ -122,13 +122,13 @@ impl KeyEventRepository {
     /// Lock is held until the transaction is committed or rolled back.
     pub async fn begin_locked_transaction(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<LockedKelTransaction, StorageError> {
         let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix).await?;
+        tx.acquire_advisory_lock(prefix.as_ref()).await?;
         Ok(LockedKelTransaction {
             tx,
-            prefix: prefix.to_string(),
+            prefix: *prefix,
         })
     }
 }
@@ -137,7 +137,7 @@ impl KeyEventRepository {
 /// Reads from this transaction see a consistent snapshot under the lock.
 pub struct LockedKelTransaction {
     tx: <PgPool as QueryExecutor>::Transaction,
-    prefix: String,
+    prefix: cesr::Digest,
 }
 
 impl LockedKelTransaction {
@@ -168,7 +168,7 @@ impl LockedKelTransaction {
 impl kels_core::PageLoader for LockedKelTransaction {
     async fn load_page(
         &mut self,
-        _prefix: &str,
+        _prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<kels_core::SignedKeyEvent>, bool), kels_core::KelsError> {
@@ -188,8 +188,9 @@ pub struct IdentityRepository {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
-    use cesr::{Digest, Matter};
     use ctor::dtor;
     use std::sync::OnceLock;
     use testcontainers::{ContainerAsync, core::ImageExt, runners::AsyncRunner};
@@ -213,11 +214,6 @@ mod tests {
                         .output();
                 }
             });
-    }
-
-    /// Generate a valid 44-char SAID from a readable name
-    fn said(name: &str) -> String {
-        Digest::blake3_256(name.as_bytes()).qb64()
     }
 
     /// Shared test harness - initialized once, used by all tests.
@@ -343,12 +339,13 @@ mod tests {
 
     #[test]
     fn test_hsm_key_binding_struct() {
+        let kel_prefix = test_digest("key-binding-kel-test-prefix");
         let binding = HsmKeyBinding {
-            said: said("key_binding_test_said"),
-            prefix: said("key_binding_test_prefix"),
+            said: test_digest("key-binding-test-said"),
+            prefix: test_digest("key-binding-test-prefix"),
             previous: None,
             version: 0,
-            kel_prefix: said("key_binding_kel_test_prefix"),
+            kel_prefix,
             current_key_handle: "current_handle".to_string(),
             next_key_handle: "next_handle".to_string(),
             recovery_key_handle: "recovery_handle".to_string(),
@@ -357,7 +354,7 @@ mod tests {
             created_at: StorageDatetime::now(),
         };
 
-        assert_eq!(binding.kel_prefix, said("key_binding_kel_test_prefix"));
+        assert_eq!(binding.kel_prefix, kel_prefix);
         assert_eq!(binding.version, 0);
         assert_eq!(binding.signing_generation, 1);
         assert_eq!(binding.recovery_generation, 0);
@@ -365,29 +362,30 @@ mod tests {
 
     #[test]
     fn test_authority_mapping_struct() {
+        let kel_prefix = test_digest("auth-mapping-kel");
         let mapping = AuthorityMapping {
-            said: said("auth_mapping_said"),
-            prefix: said("auth_mapping_prefix"),
+            said: test_digest("auth-mapping-said"),
+            prefix: test_digest("auth-mapping-prefix"),
             previous: None,
             version: 0,
             name: "auth_mapping_authority".to_string(),
-            kel_prefix: said("auth_mapping_kel"),
-            last_said: said("auth_mapping_last_event_said"),
+            kel_prefix,
+            last_said: test_digest("auth-mapping-last-event-said"),
             created_at: StorageDatetime::now(),
         };
 
         assert_eq!(mapping.name, "auth_mapping_authority");
-        assert_eq!(mapping.kel_prefix, said("auth_mapping_kel"));
+        assert_eq!(mapping.kel_prefix, kel_prefix);
     }
 
     #[test]
     fn test_hsm_key_binding_serialization_camel_case() {
         let binding = HsmKeyBinding {
-            said: said("ser_said"),
-            prefix: said("ser_prefix"),
+            said: test_digest("ser-said"),
+            prefix: test_digest("ser-prefix"),
             previous: None,
             version: 0,
-            kel_prefix: said("ser_kel"),
+            kel_prefix: test_digest("ser-kel"),
             current_key_handle: "ser_cur".to_string(),
             next_key_handle: "ser_nxt".to_string(),
             recovery_key_handle: "ser_rec".to_string(),
@@ -409,13 +407,13 @@ mod tests {
     #[test]
     fn test_authority_mapping_serialization_camel_case() {
         let mapping = AuthorityMapping {
-            said: said("ser_auth"),
-            prefix: said("ser_auth_prefix"),
+            said: test_digest("ser-auth"),
+            prefix: test_digest("ser-auth-prefix"),
             previous: None,
             version: 0,
             name: "ser_authority".to_string(),
-            kel_prefix: said("ser_auth_kel"),
-            last_said: said("ser_last"),
+            kel_prefix: test_digest("ser-auth-kel"),
+            last_said: test_digest("ser-last"),
             created_at: StorageDatetime::now(),
         };
 
@@ -434,7 +432,7 @@ mod tests {
 
         let result = repo
             .hsm_bindings
-            .get_latest_by_kel_prefix("nonexistent_prefix_empty")
+            .get_latest_by_kel_prefix(&test_digest("nonexistent-prefix-empty"))
             .await
             .expect("Query failed");
 
@@ -448,13 +446,12 @@ mod tests {
         };
         let repo = harness.repo().await;
 
-        let kel_prefix = said("hsm_store_kel");
-        let cur = said("hsm_store_cur");
-        let nxt = said("hsm_store_nxt");
-        let rec = said("hsm_store_rec");
+        let kel_prefix = test_digest("hsm-store-kel");
+        let cur = test_digest("hsm-store-cur").to_string();
+        let nxt = test_digest("hsm-store-nxt").to_string();
+        let rec = test_digest("hsm-store-rec").to_string();
 
-        let binding =
-            HsmKeyBinding::create(kel_prefix.clone(), cur.clone(), nxt, rec, 0, 0).unwrap();
+        let binding = HsmKeyBinding::create(kel_prefix, cur.clone(), nxt, rec, 0, 0).unwrap();
 
         repo.hsm_bindings
             .insert(binding.clone())
@@ -480,15 +477,14 @@ mod tests {
         };
         let repo = harness.repo().await;
 
-        let kel_prefix = said("hsm_ver_kel");
-        let cur_v0 = said("hsm_ver_cur_v0");
-        let nxt_v0 = said("hsm_ver_nxt_v0");
-        let rec_v0 = said("hsm_ver_rec_v0");
-        let cur_v1 = said("hsm_ver_cur_v1");
-        let nxt_v1 = said("hsm_ver_nxt_v1");
+        let kel_prefix = test_digest("hsm-ver-kel");
+        let cur_v0 = test_digest("hsm-ver-cur-v0").to_string();
+        let nxt_v0 = test_digest("hsm-ver-nxt-v0").to_string();
+        let rec_v0 = test_digest("hsm-ver-rec-v0").to_string();
+        let cur_v1 = test_digest("hsm-ver-cur-v1").to_string();
+        let nxt_v1 = test_digest("hsm-ver-nxt-v1").to_string();
 
-        let binding_v0 =
-            HsmKeyBinding::create(kel_prefix.clone(), cur_v0, nxt_v0, rec_v0, 0, 0).unwrap();
+        let binding_v0 = HsmKeyBinding::create(kel_prefix, cur_v0, nxt_v0, rec_v0, 0, 0).unwrap();
 
         repo.hsm_bindings
             .insert(binding_v0.clone())
@@ -541,12 +537,10 @@ mod tests {
         let repo = harness.repo().await;
 
         let name = "auth_store_test";
-        let kel_prefix = said("auth_store_kel");
-        let last_said = said("auth_store_last");
+        let kel_prefix = test_digest("auth-store-kel");
+        let last_said = test_digest("auth-store-last");
 
-        let mapping =
-            AuthorityMapping::create(name.to_string(), kel_prefix.clone(), last_said.clone())
-                .unwrap();
+        let mapping = AuthorityMapping::create(name.to_string(), kel_prefix, last_said).unwrap();
 
         repo.authority
             .insert(mapping.clone())
@@ -573,17 +567,13 @@ mod tests {
         let repo = harness.repo().await;
 
         let name = "auth_versioned_test";
-        let kel_prefix_v0 = said("auth_ver_kel_v0");
-        let last_said_v0 = said("auth_ver_last_v0");
-        let kel_prefix_v1 = said("auth_ver_kel_v1");
-        let last_said_v1 = said("auth_ver_last_v1");
+        let kel_prefix_v0 = test_digest("auth-ver-kel-v0");
+        let last_said_v0 = test_digest("auth-ver-last-v0");
+        let kel_prefix_v1 = test_digest("auth-ver-kel-v1");
+        let last_said_v1 = test_digest("auth-ver-last-v1");
 
-        let mapping_v0 = AuthorityMapping::create(
-            name.to_string(),
-            kel_prefix_v0.clone(),
-            last_said_v0.clone(),
-        )
-        .unwrap();
+        let mapping_v0 =
+            AuthorityMapping::create(name.to_string(), kel_prefix_v0, last_said_v0).unwrap();
 
         repo.authority
             .insert(mapping_v0.clone())
@@ -591,8 +581,8 @@ mod tests {
             .expect("Failed to store v0");
 
         let mut mapping_v1 = mapping_v0.clone();
-        mapping_v1.kel_prefix = kel_prefix_v1.clone();
-        mapping_v1.last_said = last_said_v1.clone();
+        mapping_v1.kel_prefix = kel_prefix_v1;
+        mapping_v1.last_said = last_said_v1;
 
         repo.authority
             .update(mapping_v1)

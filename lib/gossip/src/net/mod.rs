@@ -28,8 +28,6 @@ pub mod transport;
 
 use std::future::Future;
 
-use crate::identity::NodePrefix;
-
 /// Error type for networking and gossip operations.
 #[derive(Debug)]
 pub enum Error {
@@ -82,7 +80,7 @@ impl From<std::io::Error> for Error {
 /// internally and returns raw bytes.
 pub trait Signer: Send + Sync + 'static {
     /// Our node identity (KELS prefix).
-    fn node_prefix(&self) -> NodePrefix;
+    fn node_prefix(&self) -> cesr::Digest;
 
     /// Sign the given data. Returns the signature as raw bytes.
     fn sign(&self, data: &[u8]) -> impl Future<Output = Result<Vec<u8>, Error>> + Send;
@@ -109,7 +107,7 @@ pub trait PeerVerifier: Send + Sync + 'static {
     /// 4. On verification failure (rotation), re-fetch the KEL and retry
     fn verify_peer(
         &self,
-        peer: &NodePrefix,
+        peer: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> impl Future<Output = Result<(), Error>> + Send;

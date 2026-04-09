@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use cesr::{Digest, Matter};
+use cesr::{Digest, test_digest, test_signature};
 use chrono::Utc;
 use ctor::dtor;
 use kels_core::{
@@ -242,14 +242,14 @@ async fn create_inception() -> (SignedKeyEvent, KeyEventBuilder<SoftwareKeyProvi
 }
 
 /// Generate a valid CESR Blake3 digest to use as an anchor.
-fn make_anchor(data: &str) -> String {
-    Digest::blake3_256(data.as_bytes()).qb64()
+fn make_anchor(data: &str) -> Digest {
+    Digest::blake3_256(data.as_bytes())
 }
 
 /// Helper to create a signed interaction event.
 async fn create_interaction(
     builder: &mut KeyEventBuilder<SoftwareKeyProvider>,
-    anchor: &str,
+    anchor: &cesr::Digest,
 ) -> SignedKeyEvent {
     builder.interact(anchor).await.unwrap()
 }
@@ -280,7 +280,7 @@ async fn test_submit_and_get_kel() {
 
     // Create an inception event
     let (inception, _builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit the event
     let response = harness
@@ -319,7 +319,7 @@ async fn test_submit_multiple_events() {
 
     // Create inception + interactions
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
     let ixn1 = create_interaction(&mut builder, &make_anchor("credential1")).await;
     let ixn2 = create_interaction(&mut builder, &make_anchor("credential2")).await;
 
@@ -357,7 +357,10 @@ async fn test_get_nonexistent_kel() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_that_does_not_exist"))
+        .get(harness.url(&format!(
+            "/api/v1/kels/kel/{}",
+            test_digest("nonexistent-prefix")
+        )))
         .send()
         .await
         .expect("Failed to send request");
@@ -385,12 +388,12 @@ async fn test_list_prefixes() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: None,
         },
-        prefix: "mock".to_string(),
-        signature: "mock".to_string(),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -414,7 +417,7 @@ async fn test_idempotent_submit() {
     };
 
     let (inception, _) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit the same event twice
     for _ in 0..2 {
@@ -469,7 +472,7 @@ async fn test_get_kel_with_audit() {
     };
 
     let (inception, _) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit
     harness
@@ -529,12 +532,12 @@ async fn test_list_prefixes_with_limit() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: Some(2),
         },
-        prefix: "mock".to_string(),
-        signature: "mock".to_string(),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -577,21 +580,22 @@ async fn test_submit_event_invalid_signature_format() {
         return;
     };
 
-    // Create inception and corrupt signature format
-    let (mut inception, _) = create_inception().await;
-    inception.signatures[0].signature = "invalid_not_cesr_signature".to_string();
+    // Create inception, serialize to JSON, then corrupt the signature field
+    let (inception, _) = create_inception().await;
+    let mut json_value: serde_json::Value = serde_json::to_value(vec![inception]).unwrap();
+    json_value[0]["signatures"][0]["signature"] =
+        serde_json::Value::String("invalid_not_cesr_signature".to_string());
 
     let response = harness
         .client()
         .post(harness.url("/api/v1/kels/events"))
-        .json(&vec![inception])
+        .json(&json_value)
         .send()
         .await
         .expect("Failed to submit events");
 
-    assert_eq!(response.status(), 400);
-    let error: kels_core::ErrorResponse = response.json().await.unwrap();
-    assert!(error.error.contains("Invalid signature format"));
+    // Invalid CESR signature strings are rejected at deserialization (422 Unprocessable Entity)
+    assert_eq!(response.status(), 422);
 }
 
 #[tokio::test]
@@ -602,7 +606,7 @@ async fn test_submit_rotation_event() {
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit inception
     harness
@@ -651,7 +655,7 @@ async fn test_list_prefixes_pagination_with_cursor() {
     let mut prefixes = Vec::new();
     for _ in 0..3 {
         let (inception, _) = create_inception().await;
-        prefixes.push(inception.event.prefix.clone());
+        prefixes.push(inception.event.prefix);
         harness
             .client()
             .post(harness.url("/api/v1/kels/events"))
@@ -665,12 +669,12 @@ async fn test_list_prefixes_pagination_with_cursor() {
     let request = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: Some(1),
         },
-        prefix: "mock".to_string(),
-        signature: "mock".to_string(),
+        prefix: test_digest("mock"),
+        signature: test_signature("mock"),
     };
 
     let response = harness
@@ -690,12 +694,12 @@ async fn test_list_prefixes_pagination_with_cursor() {
         let request = kels_core::SignedRequest {
             payload: kels_core::PaginatedSelfAddressedRequest {
                 timestamp: Utc::now().timestamp(),
-                nonce: kels_core::generate_nonce(),
-                cursor: Some(cursor.clone()),
+                nonce: kels_core::generate_nonce().to_string(),
+                cursor: Some(*cursor),
                 limit: Some(1),
             },
-            prefix: "mock".to_string(),
-            signature: "mock".to_string(),
+            prefix: test_digest("mock"),
+            signature: test_signature("mock"),
         };
 
         let response = harness
@@ -723,7 +727,7 @@ async fn test_submit_decommission_event() {
 
     // Create inception
     let (inception, mut builder) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     // Submit inception
     harness
@@ -774,7 +778,10 @@ async fn test_get_kel_not_found_with_audit() {
 
     let response = harness
         .client()
-        .get(harness.url("/api/v1/kels/kel/Enonexistent_prefix_for_audit?audit=true"))
+        .get(harness.url(&format!(
+            "/api/v1/kels/kel/{}?audit=true",
+            test_digest("nonexistent-prefix-for-audit")
+        )))
         .send()
         .await
         .expect("Failed to send request");
@@ -835,7 +842,7 @@ async fn test_divergence_creation() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("ixn2")).await;
@@ -912,7 +919,7 @@ async fn test_recovery_from_divergence() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("rec-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("rec-ixn2")).await;
@@ -1012,8 +1019,8 @@ async fn test_recovery_from_divergence() {
     assert_eq!(record.recovery_serial, 4);
     assert_eq!(record.owner_first_serial, 4);
     assert_eq!(record.kel_prefix, prefix);
-    assert!(!record.said.is_empty());
-    assert!(!record.rec_previous.is_empty());
+    assert!(!record.said.to_string().is_empty());
+    assert!(!record.rec_previous.to_string().is_empty());
 
     // Archived events endpoint should have adversary events (archived synchronously)
     let response = harness
@@ -1040,7 +1047,7 @@ async fn test_contest_freezes_kel() {
 
     // Create KEL: icp + 2 interactions
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt-ixn2")).await;
@@ -1129,7 +1136,7 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
 
     // Step 1: Create KEL: icp + ixn1 + ixn2
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cnt3-ixn2")).await;
@@ -1236,7 +1243,7 @@ async fn test_contest_creates_divergence_on_linear_kel() {
 
     // Step 1: Create KEL: icp + ixn1 + ixn2
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("cntlin-ixn2")).await;
@@ -1327,7 +1334,7 @@ async fn test_overlap_submission_creates_divergence() {
 
     // Create KEL: icp + 2 interactions, then fork
     let (inception, mut builder_a) = create_inception().await;
-    let prefix = inception.event.prefix.clone();
+    let prefix = inception.event.prefix;
 
     let ixn1 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn1")).await;
     let ixn2 = create_interaction(&mut builder_a, &make_anchor("ovl-ixn2")).await;

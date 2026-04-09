@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, str::FromStr};
 
+use cesr::Matter;
 use serde::Deserialize;
 
 use kels_core::PagedKelSource;
@@ -77,7 +78,10 @@ pub async fn build(
     let (credential, canonical_said) = Credential::build(
         &schema,
         &policy,
-        subject.map(String::from),
+        subject
+            .map(cesr::Digest::from_qb64)
+            .transpose()
+            .map_err(|e| CredentialError::VerificationError(format!("Invalid subject: {}", e)))?,
         claims,
         unique,
         edges,
@@ -107,7 +111,7 @@ pub async fn store(
         .ok_or_else(|| {
             CredentialError::InvalidCredential("credential has no schema field".to_string())
         })?;
-    if cred_schema != schema.said {
+    if cred_schema != schema.said.to_string() {
         return Err(CredentialError::InvalidSchema(format!(
             "schema SAID mismatch: credential references {cred_schema}, provided schema has {}",
             schema.said
@@ -213,7 +217,28 @@ pub fn parse_edges(json: &str) -> Result<Edges, CredentialError> {
     let mut edges = BTreeMap::new();
 
     for (label, input) in inputs {
-        let edge = Edge::create(input.schema, input.policy, input.credential, input.nonce)?;
+        let schema = cesr::Digest::from_qb64(&input.schema).map_err(|e| {
+            CredentialError::VerificationError(format!("edge '{label}': invalid schema CESR: {e}"))
+        })?;
+        let policy = input
+            .policy
+            .map(|s| cesr::Digest::from_qb64(&s))
+            .transpose()
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': invalid policy CESR: {e}"
+                ))
+            })?;
+        let credential = input
+            .credential
+            .map(|s| cesr::Digest::from_qb64(&s))
+            .transpose()
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': invalid credential CESR: {e}"
+                ))
+            })?;
+        let edge = Edge::create(schema, policy, credential, input.nonce)?;
         edges.insert(label, edge);
     }
 
@@ -234,6 +259,8 @@ pub fn parse_rules(json: &str) -> Result<Rules, CredentialError> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -288,12 +315,8 @@ mod tests {
     async fn test_store_and_disclose() {
         let schema = test_schema();
         let schema_json = test_schema_json();
-        let policy = Policy::build(
-            "endorse(KIssuer123456789012345678901234567890abcde)",
-            None,
-            false,
-        )
-        .unwrap();
+        let issuer = test_digest("issuer");
+        let policy = Policy::build(&format!("endorse({issuer})"), None, false).unwrap();
 
         // Build a credential via the typed API
         let mut claims = serde_json::json!({"said": "", "name": "Alice", "age": 30});
@@ -332,19 +355,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_edges() {
-        let json = r#"{
+        let schema_said = test_digest("test-schema").to_string();
+        let policy_said = test_digest("test-policy").to_string();
+        let cred_said = test_digest("test-credential").to_string();
+        let json = serde_json::json!({
             "license": {
-                "schema": "KAbc1234567890123456789012345678901234567890",
-                "policy": "KPolicy23456789012345678901234567890abcdefg",
-                "credential": "KCred12345678901234567890123456789012abcdef"
+                "schema": schema_said,
+                "policy": policy_said,
+                "credential": cred_said
             }
-        }"#;
+        })
+        .to_string();
 
-        let edges = super::parse_edges(json).unwrap();
+        let edges = super::parse_edges(&json).unwrap();
         assert_eq!(edges.edges.len(), 1);
         assert!(edges.edges.contains_key("license"));
         let edge = edges.edges.get("license").unwrap();
-        assert_eq!(edge.said.len(), 44);
+        assert_eq!(edge.said.as_ref().len(), 44);
     }
 
     #[tokio::test]
@@ -355,6 +382,6 @@ mod tests {
         assert_eq!(rules.rules.len(), 1);
         assert!(rules.rules.contains_key("terms"));
         let rule = rules.rules.get("terms").unwrap();
-        assert_eq!(rule.said.len(), 44);
+        assert_eq!(rule.said.as_ref().len(), 44);
     }
 }

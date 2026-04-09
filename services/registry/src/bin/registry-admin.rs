@@ -5,6 +5,7 @@
 //! Connects via localhost HTTP to the registry for proposals and via identity service for signing.
 
 use anyhow::{Context, anyhow};
+use cesr::Matter;
 use clap::{Parser, Subcommand};
 
 use verifiable_storage::{Chained, StorageDatetime};
@@ -55,7 +56,7 @@ enum PeerAction {
     Propose {
         /// Peer identity (KELS prefix)
         #[arg(long)]
-        peer_prefix: String,
+        peer_kel_prefix: String,
         /// Human-readable node name
         #[arg(long)]
         node_id: String,
@@ -70,13 +71,13 @@ enum PeerAction {
     ProposeRemoval {
         /// Peer prefix of the peer to remove
         #[arg(long)]
-        peer_prefix: String,
+        peer_kel_prefix: String,
     },
     /// Vote on a pending proposal
     Vote {
-        /// Proposal ID
+        /// Proposal prefix
         #[arg(long)]
-        proposal_id: String,
+        proposal_prefix: String,
         /// Vote to approve (pass --approve) or reject (omit flag)
         #[arg(long)]
         approve: bool,
@@ -85,15 +86,15 @@ enum PeerAction {
     Proposals,
     /// Get status of a specific proposal
     ProposalStatus {
-        /// Proposal ID
+        /// Proposal prefix
         #[arg(long)]
-        proposal_id: String,
+        proposal_prefix: String,
     },
     /// Withdraw a pending proposal (proposer only)
     Withdraw {
-        /// Proposal ID
+        /// Proposal prefix
         #[arg(long)]
-        proposal_id: String,
+        proposal_prefix: String,
     },
 }
 
@@ -131,7 +132,7 @@ enum FederationAction {
 /// Shared context for all commands
 struct AdminContext {
     identity_client: IdentityClient,
-    self_prefix: String,
+    self_prefix: cesr::Digest,
     registry_url: String,
     registry_client: KelsRegistryClient,
 }
@@ -227,11 +228,14 @@ where
 
 async fn propose_peer(
     ctx: &AdminContext,
-    peer_prefix: &str,
+    peer_kel_prefix: &str,
     node_id: &str,
     base_domain: &str,
     gossip_addr: &str,
 ) -> anyhow::Result<()> {
+    let peer_kel_prefix_digest =
+        cesr::Digest::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
+
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
@@ -247,11 +251,11 @@ async fn propose_peer(
 
     // Create payload for signing
     let peer_proposal = PeerAdditionProposal::empty(
-        peer_prefix,
+        peer_kel_prefix_digest,
         node_id,
         base_domain,
         gossip_addr,
-        &proposer,
+        proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
     )?;
@@ -268,12 +272,15 @@ async fn propose_peer(
     })
     .await?;
 
-    println!("Proposal created: {}", result.proposal_id);
+    println!("Proposal created: {}", result.proposal_prefix);
     println!("{}", result.message);
     Ok(())
 }
 
-async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Result<()> {
+async fn propose_removal(ctx: &AdminContext, peer_kel_prefix: &str) -> anyhow::Result<()> {
+    let peer_kel_prefix_digest =
+        cesr::Digest::from_qb64(peer_kel_prefix).context("Invalid peer prefix CESR")?;
+
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
@@ -289,8 +296,8 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
 
     // Create removal proposal
     let removal_proposal = PeerRemovalProposal::empty(
-        peer_prefix,
-        &proposer,
+        peer_kel_prefix_digest,
+        proposer,
         threshold,
         &StorageDatetime(chrono::Utc::now() + chrono::Duration::days(7)),
     )?;
@@ -307,12 +314,16 @@ async fn propose_removal(ctx: &AdminContext, peer_prefix: &str) -> anyhow::Resul
     })
     .await?;
 
-    println!("Removal proposal created: {}", result.proposal_id);
+    println!("Removal proposal created: {}", result.proposal_prefix);
     println!("{}", result.message);
     Ok(())
 }
 
-async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> anyhow::Result<()> {
+async fn vote_proposal(
+    ctx: &AdminContext,
+    proposal_prefix: &str,
+    approve: bool,
+) -> anyhow::Result<()> {
     // Get this registry's prefix
     let voter = ctx
         .identity_client
@@ -321,8 +332,9 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .context("Failed to get voter prefix")?;
 
     // Create vote (SAID is auto-derived)
-    let vote =
-        Vote::create(proposal_id.to_string(), voter, approve).context("Failed to create vote")?;
+    let proposal_digest =
+        cesr::Digest::from_qb64(proposal_prefix).context("Invalid proposal prefix CESR")?;
+    let vote = Vote::create(proposal_digest, voter, approve).context("Failed to create vote")?;
 
     // Anchor the vote's SAID in our KEL (this IS the signature)
     ctx.identity_client
@@ -330,7 +342,7 @@ async fn vote_proposal(ctx: &AdminContext, proposal_id: &str, approve: bool) -> 
         .await
         .context("Failed to anchor vote in KEL")?;
 
-    let pid = proposal_id.to_string();
+    let pid = proposal_prefix.to_string();
     let result = with_leader_retry(ctx, |client| {
         let v = vote.clone();
         let id = pid.clone();
@@ -371,8 +383,8 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
                 let status = pwv.status(p.threshold);
                 let expires = p.expires_at.to_string();
                 let expires = expires.split('T').next().unwrap_or(&expires);
-                println!("Proposal:  {}", pwv.proposal_id());
-                println!("Peer ID:   {}", p.peer_prefix);
+                println!("Proposal:  {}", pwv.proposal_prefix());
+                println!("Peer ID:   {}", p.peer_kel_prefix);
                 println!("Proposer:  {}", p.proposer);
                 println!("Status:    {:?}", status);
                 println!("Approvals: {}", pwv.approval_count());
@@ -390,8 +402,8 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
                 let status = rwv.status(p.threshold);
                 let expires = p.expires_at.to_string();
                 let expires = expires.split('T').next().unwrap_or(&expires);
-                println!("Proposal:  {}", rwv.proposal_id());
-                println!("Peer ID:   {}", p.peer_prefix);
+                println!("Proposal:  {}", rwv.proposal_prefix());
+                println!("Peer ID:   {}", p.peer_kel_prefix);
                 println!("Proposer:  {}", p.proposer);
                 println!("Status:    {:?}", status);
                 println!("Approvals: {}", rwv.approval_count());
@@ -404,20 +416,20 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
+async fn get_proposal_status(ctx: &AdminContext, proposal_prefix: &str) -> anyhow::Result<()> {
     let proposal = ctx
         .registry_client
-        .fetch_proposal(proposal_id)
+        .fetch_proposal(proposal_prefix)
         .await
         .map_err(|e| anyhow!("Failed to get proposal: {}", e))?;
 
     match proposal {
         ProposalWithVotes::Addition(pwv) => {
             if let Some(p) = pwv.history.inception() {
-                println!("Addition Proposal: {}", pwv.proposal_id());
+                println!("Addition Proposal: {}", pwv.proposal_prefix());
                 println!("{}", "=".repeat(50));
                 println!("SAID:       {}", p.said);
-                println!("Peer ID:    {}", p.peer_prefix);
+                println!("Peer ID:    {}", p.peer_kel_prefix);
                 println!("Node ID:    {}", p.node_id);
                 println!("Proposer:   {}", p.proposer);
                 println!("Approvals:  {}", pwv.approval_count());
@@ -434,10 +446,10 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
         }
         ProposalWithVotes::Removal(rwv) => {
             if let Some(p) = rwv.history.inception() {
-                println!("Removal Proposal: {}", rwv.proposal_id());
+                println!("Removal Proposal: {}", rwv.proposal_prefix());
                 println!("{}", "=".repeat(50));
                 println!("SAID:       {}", p.said);
-                println!("Peer ID:    {}", p.peer_prefix);
+                println!("Peer ID:    {}", p.peer_kel_prefix);
                 println!("Proposer:   {}", p.proposer);
                 println!("Approvals:  {}", rwv.approval_count());
                 println!("Rejections: {}", rwv.rejection_count());
@@ -456,11 +468,11 @@ async fn get_proposal_status(ctx: &AdminContext, proposal_id: &str) -> anyhow::R
     Ok(())
 }
 
-async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Result<()> {
+async fn withdraw_proposal(ctx: &AdminContext, proposal_prefix: &str) -> anyhow::Result<()> {
     // Fetch the current proposal from the registry
     let proposal = ctx
         .registry_client
-        .fetch_proposal(proposal_id)
+        .fetch_proposal(proposal_prefix)
         .await
         .map_err(|e| anyhow!("Failed to fetch proposal: {}", e))?;
 
@@ -480,7 +492,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
             }
 
             if pwv.history.is_withdrawn() {
-                return Err(anyhow!("Proposal {} is already withdrawn", proposal_id));
+                return Err(anyhow!("Proposal {} is already withdrawn", proposal_prefix));
             }
 
             let mut withdrawal = current.clone();
@@ -518,7 +530,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_id: &str) -> anyhow::Res
             }
 
             if rwv.history.is_withdrawn() {
-                return Err(anyhow!("Proposal {} is already withdrawn", proposal_id));
+                return Err(anyhow!("Proposal {} is already withdrawn", proposal_prefix));
             }
 
             let mut withdrawal = current.clone();
@@ -567,10 +579,7 @@ async fn list_peers(ctx: &AdminContext) -> anyhow::Result<()> {
 
     for peer in peers {
         let status = if peer.active { "active" } else { "inactive" };
-        println!(
-            "{:<20} {:<50} {:<8}",
-            peer.node_id, peer.peer_prefix, status
-        );
+        println!("{:<20} {:<50} {:<8}", peer.node_id, peer.kel_prefix, status);
     }
 
     Ok(())
@@ -594,7 +603,7 @@ async fn show_allowlist(ctx: &AdminContext) -> anyhow::Result<()> {
     println!("{}", "=".repeat(60));
 
     for peer in &active_peers {
-        println!("  {} ({})", peer.peer_prefix, peer.node_id);
+        println!("  {} ({})", peer.kel_prefix, peer.node_id);
     }
 
     println!("{}", "=".repeat(60));
@@ -622,7 +631,7 @@ async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
                 let status = pwv.status(p.threshold);
                 println!(
                     "  {} - {:?} (proposer: {}, votes: {})",
-                    p.peer_prefix,
+                    p.peer_kel_prefix,
                     status,
                     p.proposer,
                     pwv.approval_count()
@@ -639,7 +648,7 @@ async fn show_history(ctx: &AdminContext) -> anyhow::Result<()> {
                 let status = rwv.status(p.threshold);
                 println!(
                     "  {} - {:?} (proposer: {}, votes: {})",
-                    p.peer_prefix,
+                    p.peer_kel_prefix,
                     status,
                     p.proposer,
                     rwv.approval_count()
@@ -679,7 +688,7 @@ async fn show_federation_status(ctx: &AdminContext, json: bool) -> anyhow::Resul
                 println!();
                 println!("Federation Members:");
                 for member in &status.members {
-                    let marker = if Some(member.clone()) == status.leader_prefix {
+                    let marker = if Some(*member) == status.leader_prefix {
                         " (leader)"
                     } else {
                         ""
@@ -723,14 +732,15 @@ async fn show_identity_status(
         if page.events.is_empty() {
             break;
         }
-        since = page.events.last().map(|e| e.event.said.clone());
+        since = page.events.last().map(|e| e.event.said.to_string());
         all_events.extend(page.events);
         if !page.has_more {
             break;
         }
     }
     let event_count = all_events.len();
-    let mut verifier = kels_core::KelVerifier::new(&prefix);
+    let prefix_digest = prefix;
+    let mut verifier = kels_core::KelVerifier::new(&prefix_digest);
     let verification = if verifier.verify_page(&all_events).is_ok() {
         verifier.into_verification().ok()
     } else {
@@ -775,30 +785,30 @@ async fn main() -> anyhow::Result<()> {
                 list_peers(&ctx).await?;
             }
             PeerAction::Propose {
-                peer_prefix,
+                peer_kel_prefix,
                 node_id,
                 base_domain,
                 gossip_addr,
             } => {
-                propose_peer(&ctx, &peer_prefix, &node_id, &base_domain, &gossip_addr).await?;
+                propose_peer(&ctx, &peer_kel_prefix, &node_id, &base_domain, &gossip_addr).await?;
             }
-            PeerAction::ProposeRemoval { peer_prefix } => {
-                propose_removal(&ctx, &peer_prefix).await?;
+            PeerAction::ProposeRemoval { peer_kel_prefix } => {
+                propose_removal(&ctx, &peer_kel_prefix).await?;
             }
             PeerAction::Vote {
-                proposal_id,
+                proposal_prefix,
                 approve,
             } => {
-                vote_proposal(&ctx, &proposal_id, approve).await?;
+                vote_proposal(&ctx, &proposal_prefix, approve).await?;
             }
             PeerAction::Proposals => {
                 list_proposals(&ctx).await?;
             }
-            PeerAction::ProposalStatus { proposal_id } => {
-                get_proposal_status(&ctx, &proposal_id).await?;
+            PeerAction::ProposalStatus { proposal_prefix } => {
+                get_proposal_status(&ctx, &proposal_prefix).await?;
             }
-            PeerAction::Withdraw { proposal_id } => {
-                withdraw_proposal(&ctx, &proposal_id).await?;
+            PeerAction::Withdraw { proposal_prefix } => {
+                withdraw_proposal(&ctx, &proposal_prefix).await?;
             }
         },
         Commands::Allowlist { action } => match action {

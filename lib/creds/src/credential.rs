@@ -3,6 +3,7 @@ use std::{
     str::FromStr,
 };
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kels_core::{PagedKelSource, generate_nonce};
@@ -22,14 +23,14 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Compactable<T> {
-    Said(String),
+    Said(cesr::Digest),
     Expanded(T),
 }
 
 impl<T> Compactable<T> {
-    pub fn as_said(&self) -> Option<&str> {
+    pub fn as_said(&self) -> Option<cesr::Digest> {
         match self {
-            Compactable::Said(s) => Some(s),
+            Compactable::Said(s) => Some(*s),
             Compactable::Expanded(_) => None,
         }
     }
@@ -67,11 +68,11 @@ impl<T: Serialize + DeserializeOwned + SelfAddressed + Clone + Sync> Claims for 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
-    pub said: String,
-    pub schema: String,
-    pub policy: String,
+    pub said: cesr::Digest,
+    pub schema: cesr::Digest,
+    pub policy: cesr::Digest,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub subject: Option<cesr::Digest>,
     pub issued_at: StorageDatetime,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
@@ -94,7 +95,7 @@ impl<T: Claims> Credential<T> {
     pub async fn build(
         schema: &Schema,
         policy: &Policy,
-        subject: Option<String>,
+        subject: Option<cesr::Digest>,
         claims: T,
         unique: bool,
         edges: Option<Edges>,
@@ -103,12 +104,16 @@ impl<T: Claims> Credential<T> {
     ) -> Result<(Self, String), CredentialError> {
         let issued_at = StorageDatetime::now();
 
-        let nonce = if unique { Some(generate_nonce()) } else { None };
+        let nonce = if unique {
+            Some(generate_nonce().to_string())
+        } else {
+            None
+        };
 
         let credential = Self {
-            said: String::new(),
-            schema: schema.said.clone(),
-            policy: policy.said.clone(),
+            said: cesr::Digest::default(),
+            schema: schema.said,
+            policy: policy.said,
             subject,
             issued_at,
             nonce,
@@ -138,7 +143,8 @@ impl<T: Claims> Credential<T> {
         let temp_store = InMemorySADStore::new();
         temp_store.store_chunks(&chunks).await?;
 
-        let root_chunk = chunks.get(&compacted_said).ok_or_else(|| {
+        let said_str: &str = compacted_said.as_ref();
+        let root_chunk = chunks.get(said_str).ok_or_else(|| {
             CredentialError::CompactionError(
                 "compacted credential not found in accumulator".to_string(),
             )
@@ -157,7 +163,7 @@ impl<T: Claims> Credential<T> {
         &self,
         schema: &Schema,
         sad_store: &dyn SADStore,
-    ) -> Result<String, CredentialError> {
+    ) -> Result<cesr::Digest, CredentialError> {
         let (compacted_said, chunks) = self.compact(schema)?;
         sad_store.store_chunks(&chunks).await?;
         Ok(compacted_said)
@@ -169,7 +175,7 @@ impl<T: Claims> Credential<T> {
     pub fn compact(
         &self,
         schema: &Schema,
-    ) -> Result<(String, HashMap<String, serde_json::Value>), CredentialError> {
+    ) -> Result<(cesr::Digest, HashMap<String, serde_json::Value>), CredentialError> {
         if self.schema != schema.said {
             return Err(CredentialError::InvalidSchema(format!(
                 "schema SAID mismatch: credential references {}, provided schema has {}",
@@ -178,7 +184,7 @@ impl<T: Claims> Credential<T> {
         }
         let mut value = serde_json::to_value(self)?;
         let accumulator = compact_with_schema(&mut value, schema)?;
-        let compacted_said = Self::string_from_value(value)?;
+        let compacted_said = Self::said_from_value(value)?;
         Ok((compacted_said, accumulator))
     }
 
@@ -206,15 +212,15 @@ impl<T: Claims> Credential<T> {
         .await
     }
 
-    fn string_from_value(value: serde_json::Value) -> Result<String, CredentialError> {
-        Ok(value
-            .as_str()
-            .ok_or_else(|| {
-                CredentialError::CompactionError(
-                    "compact_value did not produce a SAID string".to_string(),
-                )
-            })?
-            .to_string())
+    fn said_from_value(value: serde_json::Value) -> Result<cesr::Digest, CredentialError> {
+        let s = value.as_str().ok_or_else(|| {
+            CredentialError::CompactionError(
+                "compact_value did not produce a SAID string".to_string(),
+            )
+        })?;
+        cesr::Digest::from_qb64(s).map_err(|e| {
+            CredentialError::CompactionError(format!("invalid CESR SAID from compaction: {e}"))
+        })
     }
 }
 
@@ -228,7 +234,11 @@ impl<T: Claims> FromStr for Credential<T> {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
+
+    use cesr::Matter;
 
     use crate::schema::SchemaField;
 
@@ -236,7 +246,7 @@ mod tests {
     #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
     struct TestClaims {
         #[said]
-        said: String,
+        said: cesr::Digest,
         name: String,
         age: u32,
     }
@@ -276,7 +286,7 @@ mod tests {
         .unwrap()
     }
 
-    fn test_policy(prefix: &str) -> Policy {
+    fn test_policy(prefix: cesr::Digest) -> Policy {
         Policy::build(&format!("endorse({prefix})"), None, false).unwrap()
     }
 
@@ -285,11 +295,11 @@ mod tests {
     }
 
     async fn test_credential() -> (Credential<TestClaims>, String) {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         Credential::build(
             &test_schema(),
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -306,8 +316,8 @@ mod tests {
         assert!(!compacted_said.is_empty());
         assert_eq!(compacted_said.len(), 44);
         // Expanded SAID differs from compacted SAID
-        assert_ne!(cred.said, compacted_said);
-        assert_eq!(cred.said.len(), 44);
+        assert_ne!(cred.said.to_string(), compacted_said);
+        assert_eq!(cred.said.as_ref().len(), 44);
     }
 
     #[tokio::test]
@@ -315,12 +325,12 @@ mod tests {
         let (cred, _) = test_credential().await;
         let (compacted_said, chunks) = cred.compact(&test_schema()).unwrap();
         // Compacted credential is in the accumulator keyed by compacted SAID
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         // schema is always a SAID string
-        assert_eq!(compacted_cred.schema.len(), 44);
+        assert_eq!(compacted_cred.schema.as_ref().len(), 44);
         assert!(compacted_cred.claims.as_said().is_some());
     }
 
@@ -334,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unique_credential() {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &test_schema(),
             &policy,
@@ -353,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deterministic_credential() {
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &test_schema(),
             &policy,
@@ -374,13 +384,7 @@ mod tests {
     async fn test_credential_with_edges() {
         use crate::edge::{Edge, Edges};
 
-        let edge = Edge::create(
-            "KAbc1234567890123456789012345678901234567890".to_string(),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let edge = Edge::create(test_digest("test-schema"), None, None, None).unwrap();
 
         let mut edges_map = BTreeMap::new();
         edges_map.insert("license".to_string(), edge);
@@ -434,7 +438,7 @@ mod tests {
             .unwrap()
         };
 
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &schema,
             &policy,
@@ -449,13 +453,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.edges.is_some());
         let edges_said = compacted_cred.edges.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(edges_said));
+        assert!(chunks.contains_key(edges_said.as_ref()));
     }
 
     #[tokio::test]
@@ -510,7 +514,7 @@ mod tests {
             .unwrap()
         };
 
-        let policy = test_policy("KIssuer123456789012345678901234567890abcde");
+        let policy = test_policy(test_digest("issuer"));
         let (cred, _) = Credential::build(
             &schema,
             &policy,
@@ -525,13 +529,13 @@ mod tests {
         .unwrap();
 
         let (compacted_said, chunks) = cred.compact(&schema).unwrap();
-        assert!(chunks.contains_key(&compacted_said));
-        let compacted_value = chunks.get(&compacted_said).unwrap();
+        assert!(chunks.contains_key(compacted_said.as_ref()));
+        let compacted_value = chunks.get(compacted_said.as_ref()).unwrap();
         let compacted_cred: Credential<TestClaims> =
             serde_json::from_value(compacted_value.clone()).unwrap();
         assert!(compacted_cred.rules.is_some());
         let rules_said = compacted_cred.rules.as_ref().unwrap().as_said().unwrap();
-        assert!(chunks.contains_key(rules_said));
+        assert!(chunks.contains_key(rules_said.as_ref()));
     }
 
     #[tokio::test]
@@ -553,7 +557,7 @@ mod tests {
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
-        String,
+        cesr::Digest,
         Arc<FileKelStore>,
         tempfile::TempDir,
     ) {
@@ -571,16 +575,18 @@ mod tests {
         .await
         .unwrap();
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         (builder, prefix, kel_store, temp_dir)
     }
 
-    async fn credential_for_prefix(prefix: &str) -> (Credential<TestClaims>, String, Policy) {
-        let policy = test_policy(prefix);
+    async fn credential_for_prefix(
+        prefix: &cesr::Digest,
+    ) -> (Credential<TestClaims>, String, Policy) {
+        let policy = test_policy(*prefix);
         let (cred, said) = Credential::build(
             &test_schema(),
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -596,12 +602,12 @@ mod tests {
     async fn test_verify_issued_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(&prefix);
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -610,7 +616,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         let result = cred
             .verify(
@@ -653,13 +665,13 @@ mod tests {
     async fn test_verify_poisoned_credential() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(&prefix);
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -668,7 +680,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         // Anchor poison hash
         let p_hash = kels_policy::poison_hash(&compacted_said);
@@ -708,7 +726,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         // Anchor the poison hash — should be ignored for immune policy
         let p_hash = kels_policy::poison_hash(&compacted_said);
@@ -734,7 +758,7 @@ mod tests {
 
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(&prefix);
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         let far_future = StorageDatetime::now() + Duration::from_secs(3600);
@@ -750,7 +774,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         let result = cred
             .verify(
@@ -770,12 +800,12 @@ mod tests {
     async fn test_verify_schema_validation_expanded() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(&prefix);
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -784,7 +814,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         let result = cred
             .verify(
@@ -804,7 +840,7 @@ mod tests {
     async fn test_verify_schema_validation_compacted() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = test_policy(&prefix);
+        let policy = test_policy(prefix);
         let resolver = InMemoryPolicyResolver::empty();
 
         // Build via the expanded API — Credential::build() takes expanded types
@@ -814,7 +850,7 @@ mod tests {
         let (cred, compacted_said) = Credential::build(
             &schema,
             &policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -823,7 +859,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder.interact(&compacted_said).await.unwrap();
+        {
+            use cesr::Matter;
+            builder
+                .interact(&cesr::Digest::from_qb64(&compacted_said).unwrap())
+                .await
+                .unwrap();
+        }
 
         // Get the compacted form and verify schema validation works on it
         let (_, chunks) = cred.compact(&schema).unwrap();
@@ -832,7 +874,7 @@ mod tests {
             .find(|v| {
                 v.get("policy")
                     .and_then(|p| p.as_str())
-                    .is_some_and(|p| p == policy.said)
+                    .is_some_and(|p| p == policy.said.as_ref())
             })
             .unwrap();
         let compacted_cred: Credential<TestClaims> =
@@ -864,13 +906,13 @@ mod tests {
         let (mut builder_b, prefix_b, kel_store_b, _dir_b) = setup_kel().await;
 
         let schema_a = test_schema();
-        let policy_a = test_policy(&prefix_a);
+        let policy_a = test_policy(prefix_a);
 
         // Issuer A issues a base credential
         let (cred_a, compacted_said_a) = Credential::build(
             &schema_a,
             &policy_a,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -879,7 +921,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder_a.interact(&compacted_said_a).await.unwrap();
+        {
+            use cesr::Matter;
+            builder_a
+                .interact(&cesr::Digest::from_qb64(&compacted_said_a).unwrap())
+                .await
+                .unwrap();
+        }
 
         // Store credential A in a shared SADStore
         let sad_store = InMemorySADStore::new();
@@ -887,9 +935,9 @@ mod tests {
 
         // Issuer B issues a credential with an edge referencing A's credential
         let edge = Edge::create(
-            cred_a.schema.clone(),
-            Some(policy_a.said.clone()),
-            Some(compacted_said_a.clone()),
+            cred_a.schema,
+            Some(policy_a.said),
+            Some(cesr::Digest::from_qb64(&compacted_said_a).unwrap()),
             None,
         )
         .unwrap();
@@ -945,11 +993,11 @@ mod tests {
         )
         .unwrap();
 
-        let policy_b = test_policy(&prefix_b);
+        let policy_b = test_policy(prefix_b);
         let (cred_b, compacted_said_b) = Credential::build(
             &schema_b,
             &policy_b,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             Some(edges),
@@ -958,12 +1006,18 @@ mod tests {
         )
         .await
         .unwrap();
-        builder_b.interact(&compacted_said_b).await.unwrap();
+        {
+            use cesr::Matter;
+            builder_b
+                .interact(&cesr::Digest::from_qb64(&compacted_said_b).unwrap())
+                .await
+                .unwrap();
+        }
 
         cred_b.store(&schema_b, &sad_store).await.unwrap();
 
         // Edge schemas map for recursive verification
-        let edge_schemas = BTreeMap::from([(schema_a.said.clone(), schema_a.clone())]);
+        let edge_schemas = BTreeMap::from([(schema_a.said.to_string(), schema_a.clone())]);
 
         // Verify A alone works:
         let resolver_a = InMemoryPolicyResolver::empty();
@@ -1043,13 +1097,13 @@ mod tests {
 
         let sad_store = InMemorySADStore::new();
         let root_schema = test_schema();
-        let root_policy = test_policy(&prefix_root);
+        let root_policy = test_policy(prefix_root);
 
         // Root credential (no edges)
         let (cred_root, compacted_root) = Credential::build(
             &root_schema,
             &root_policy,
-            Some("KSubject23456789012345678901234567890abcde".to_string()),
+            Some(test_digest("test-subject")),
             test_claims(),
             false,
             None,
@@ -1058,7 +1112,13 @@ mod tests {
         )
         .await
         .unwrap();
-        builder_root.interact(&compacted_root).await.unwrap();
+        {
+            use cesr::Matter;
+            builder_root
+                .interact(&cesr::Digest::from_qb64(&compacted_root).unwrap())
+                .await
+                .unwrap();
+        }
         cred_root.store(&root_schema, &sad_store).await.unwrap();
 
         // Helper to build a schema with edge fields
@@ -1112,9 +1172,9 @@ mod tests {
 
         // Intermediate credential with edge to root
         let edge_to_root = Edge::create(
-            cred_root.schema.clone(),
-            Some(root_policy.said.clone()),
-            Some(compacted_root.clone()),
+            cred_root.schema,
+            Some(root_policy.said),
+            Some(cesr::Digest::from_qb64(&compacted_root).unwrap()),
             None,
         )
         .unwrap();
@@ -1122,7 +1182,7 @@ mod tests {
         mid_edges.insert("root".to_string(), edge_to_root);
 
         let mid_schema = make_edge_schema("root");
-        let mid_policy = test_policy(&prefix_mid);
+        let mid_policy = test_policy(prefix_mid);
         let (cred_mid, compacted_mid) = Credential::build(
             &mid_schema,
             &mid_policy,
@@ -1135,14 +1195,20 @@ mod tests {
         )
         .await
         .unwrap();
-        builder_mid.interact(&compacted_mid).await.unwrap();
+        {
+            use cesr::Matter;
+            builder_mid
+                .interact(&cesr::Digest::from_qb64(&compacted_mid).unwrap())
+                .await
+                .unwrap();
+        }
         cred_mid.store(&mid_schema, &sad_store).await.unwrap();
 
         // Leaf credential with edge to intermediate
         let edge_to_mid = Edge::create(
-            cred_mid.schema.clone(),
-            Some(mid_policy.said.clone()),
-            Some(compacted_mid),
+            cred_mid.schema,
+            Some(mid_policy.said),
+            Some(cesr::Digest::from_qb64(&compacted_mid).unwrap()),
             None,
         )
         .unwrap();
@@ -1150,7 +1216,7 @@ mod tests {
         leaf_edges.insert("authority".to_string(), edge_to_mid);
 
         let leaf_schema = make_edge_schema("authority");
-        let leaf_policy = test_policy(&prefix_leaf);
+        let leaf_policy = test_policy(prefix_leaf);
         let (cred_leaf, compacted_leaf) = Credential::build(
             &leaf_schema,
             &leaf_policy,
@@ -1163,13 +1229,19 @@ mod tests {
         )
         .await
         .unwrap();
-        builder_leaf.interact(&compacted_leaf).await.unwrap();
+        {
+            use cesr::Matter;
+            builder_leaf
+                .interact(&cesr::Digest::from_qb64(&compacted_leaf).unwrap())
+                .await
+                .unwrap();
+        }
         cred_leaf.store(&leaf_schema, &sad_store).await.unwrap();
 
         // All edge schemas for recursive verification
         let edge_schemas = BTreeMap::from([
-            (root_schema.said.clone(), root_schema),
-            (mid_schema.said.clone(), mid_schema),
+            (root_schema.said.to_string(), root_schema),
+            (mid_schema.said.to_string(), mid_schema),
         ]);
 
         // Merge all KEL stores into the leaf store

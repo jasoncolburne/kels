@@ -111,7 +111,7 @@ spec:
 
 ---
 
-# Vote to approve a peer proposal (pass proposal ID via --var proposal=<id>)
+# Vote to approve a peer proposal (pass proposal prefix via --var proposal=<id>)
 
 kind: Run
 name: vote-peer
@@ -135,7 +135,7 @@ spec:
 
 ---
 
-# Vote to reject a peer proposal (pass proposal ID via --var proposal=<id>)
+# Vote to reject a peer proposal (pass proposal prefix via --var proposal=<id>)
 
 kind: Run
 name: reject-peer
@@ -159,7 +159,7 @@ spec:
 
 ---
 
-# Get status of a peer proposal (pass proposal ID via --var proposal=<id>)
+# Get status of a peer proposal (pass proposal prefix via --var proposal=<id>)
 
 kind: Run
 name: proposal-status
@@ -182,7 +182,7 @@ spec:
 
 ---
 
-# Withdraw a peer proposal (pass proposal ID via --var proposal=<id>)
+# Withdraw a peer proposal (pass proposal prefix via --var proposal=<id>)
 
 kind: Run
 name: withdraw-peer

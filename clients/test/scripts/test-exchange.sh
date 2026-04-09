@@ -135,7 +135,7 @@ test_lookup_bob_key() {
 }
 
 test_lookup_nonexistent_key() {
-    OUTPUT=$($CLI exchange lookup-key "Enonexistent00000000000000000000000000000000" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "Knonexistent00000000000000000000000000000000" 2>&1)
     echo "$OUTPUT"
     # Should fail
     return 1
@@ -261,7 +261,7 @@ test_alice_send_to_bob() {
     OUTPUT=$($CLI exchange send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
-        --topic "kels/v1/test" \
+        --topic "kels/exchange/v1/topics/test" \
         --payload "$TEMP_DIR/payload.json" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Message sent" || return 1
@@ -318,7 +318,7 @@ test_alice_send_cross_node() {
     OUTPUT=$($CLI exchange send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
-        --topic "kels/v1/cross-node-test" \
+        --topic "kels/exchange/v1/topics/cross-node-test" \
         --payload "$TEMP_DIR/payload.json" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Message sent" || return 1

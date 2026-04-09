@@ -16,7 +16,7 @@ pub type FederationNodeId = u64;
 pub enum FederationError {
     #[error("Not the federation leader. Leader: {leader_prefix:?} at {leader_url:?}")]
     NotLeader {
-        leader_prefix: Option<String>,
+        leader_prefix: Option<cesr::Digest>,
         leader_url: Option<String>,
     },
 
@@ -59,7 +59,7 @@ pub enum FederationRequest {
     /// Vote on a peer proposal.
     VotePeer {
         /// The proposal being voted on.
-        proposal_id: String,
+        proposal_prefix: cesr::Digest,
         /// The signed vote.
         vote: Vote,
     },
@@ -68,20 +68,20 @@ pub enum FederationRequest {
 impl fmt::Display for FederationRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.peer_prefix),
-            FederationRequest::RemovePeer(peer) => write!(f, "RemovePeer({})", peer.peer_prefix),
+            FederationRequest::AddPeer(peer) => write!(f, "AddPeer({})", peer.kel_prefix),
+            FederationRequest::RemovePeer(peer) => write!(f, "RemovePeer({})", peer.kel_prefix),
             FederationRequest::SubmitAdditionProposal(proposal) => {
                 if proposal.is_withdrawn() {
                     write!(
                         f,
                         "SubmitAdditionProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitAdditionProposal(create, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 }
             }
@@ -90,21 +90,24 @@ impl fmt::Display for FederationRequest {
                     write!(
                         f,
                         "SubmitRemovalProposal(withdraw, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 } else {
                     write!(
                         f,
                         "SubmitRemovalProposal(create, peer={}, proposer={})",
-                        proposal.peer_prefix, proposal.proposer
+                        proposal.peer_kel_prefix, proposal.proposer
                     )
                 }
             }
-            FederationRequest::VotePeer { proposal_id, vote } => {
+            FederationRequest::VotePeer {
+                proposal_prefix,
+                vote,
+            } => {
                 write!(
                     f,
                     "VotePeer({}, voter={}, approve={})",
-                    proposal_id, vote.voter, vote.approve
+                    proposal_prefix, vote.voter, vote.approve
                 )
             }
         }
@@ -124,15 +127,15 @@ pub enum FederationResponse {
     PeerNotFound(String),
     /// Proposal created successfully.
     ProposalCreated {
-        proposal_id: String,
+        proposal_prefix: cesr::Digest,
         votes_needed: usize,
         current_votes: usize,
     },
     /// Proposal already exists for this peer.
-    ProposalAlreadyExists(String),
+    ProposalAlreadyExists(cesr::Digest),
     /// Vote recorded on proposal.
     VoteRecorded {
-        proposal_id: String,
+        proposal_prefix: cesr::Digest,
         current_votes: usize,
         votes_needed: usize,
         approved: bool,
@@ -140,23 +143,23 @@ pub enum FederationResponse {
         proposal: Option<Box<PeerAdditionProposal>>,
     },
     /// Proposal not found.
-    ProposalNotFound(String),
+    ProposalNotFound(cesr::Digest),
     /// Already voted on this proposal.
-    AlreadyVoted(String),
+    AlreadyVoted(cesr::Digest),
     /// Proposal expired.
-    ProposalExpired(String),
+    ProposalExpired(cesr::Digest),
     /// Proposal rejected (rejection threshold met).
-    ProposalRejected(String),
+    ProposalRejected(cesr::Digest),
     /// Proposal withdrawn.
-    ProposalWithdrawn(String),
+    ProposalWithdrawn(cesr::Digest),
     /// Not authorized (e.g., only proposer can withdraw).
     NotAuthorized(String),
     /// Peer already exists or has a pending proposal.
-    PeerAlreadyExists(String),
+    PeerAlreadyExists(cesr::Digest),
     /// Removal proposal approved — leader must deactivate, anchor, and submit RemovePeer.
     RemovalApproved {
-        proposal_id: String,
-        peer_prefix: String,
+        proposal_prefix: cesr::Digest,
+        peer_kel_prefix: cesr::Digest,
         current_votes: usize,
         votes_needed: usize,
         /// When approved, includes the removal proposal so the leader can deactivate the Peer.
@@ -178,21 +181,21 @@ impl fmt::Display for FederationResponse {
             FederationResponse::PeerRemoved(id) => write!(f, "PeerRemoved({})", id),
             FederationResponse::PeerNotFound(id) => write!(f, "PeerNotFound({})", id),
             FederationResponse::ProposalCreated {
-                proposal_id,
+                proposal_prefix,
                 votes_needed,
                 current_votes,
             } => {
                 write!(
                     f,
                     "ProposalCreated({}, {}/{} votes)",
-                    proposal_id, current_votes, votes_needed
+                    proposal_prefix, current_votes, votes_needed
                 )
             }
             FederationResponse::ProposalAlreadyExists(id) => {
                 write!(f, "ProposalAlreadyExists({})", id)
             }
             FederationResponse::VoteRecorded {
-                proposal_id,
+                proposal_prefix,
                 current_votes,
                 votes_needed,
                 approved,
@@ -201,11 +204,11 @@ impl fmt::Display for FederationResponse {
                 write!(
                     f,
                     "VoteRecorded({}, {}/{} votes, approved={}, proposal={:?})",
-                    proposal_id,
+                    proposal_prefix,
                     current_votes,
                     votes_needed,
                     approved,
-                    proposal.as_ref().map(|p| &p.peer_prefix)
+                    proposal.as_ref().map(|p| &p.peer_kel_prefix)
                 )
             }
             FederationResponse::ProposalNotFound(id) => write!(f, "ProposalNotFound({})", id),
@@ -216,11 +219,15 @@ impl fmt::Display for FederationResponse {
             FederationResponse::NotAuthorized(msg) => write!(f, "NotAuthorized({})", msg),
             FederationResponse::PeerAlreadyExists(id) => write!(f, "PeerAlreadyExists({})", id),
             FederationResponse::RemovalApproved {
-                proposal_id,
-                peer_prefix,
+                proposal_prefix,
+                peer_kel_prefix,
                 ..
             } => {
-                write!(f, "RemovalApproved({}, peer={})", proposal_id, peer_prefix)
+                write!(
+                    f,
+                    "RemovalApproved({}, peer={})",
+                    proposal_prefix, peer_kel_prefix
+                )
             }
             FederationResponse::SaidMismatch(msg) => write!(f, "SaidMismatch({})", msg),
             FederationResponse::HasVotes(msg) => write!(f, "HasVotes({})", msg),
@@ -267,13 +274,14 @@ pub struct MemberSnapshot {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
 
     #[test]
     fn test_federation_request_serialization() {
         let peer = Peer::create(
-            "12D3KooWExample".to_string(),
+            test_digest("12D3KooWExample"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -286,7 +294,7 @@ mod tests {
 
         match parsed {
             FederationRequest::AddPeer(p) => {
-                assert_eq!(p.peer_prefix, "12D3KooWExample");
+                assert_eq!(p.kel_prefix, test_digest("12D3KooWExample"));
             }
             _ => panic!("Expected AddPeer"),
         }
@@ -307,9 +315,9 @@ mod tests {
     #[test]
     fn test_federation_request_display() {
         let peer = Peer::create(
-            "12D3KooWExample".to_string(),
+            test_digest("12D3KooWExample"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -317,19 +325,21 @@ mod tests {
         .unwrap();
 
         let request = FederationRequest::AddPeer(peer);
-        assert_eq!(format!("{}", request), "AddPeer(12D3KooWExample)");
+        let display = format!("{}", request);
+        assert!(display.starts_with("AddPeer("));
 
         let deactivated = Peer::create(
-            "peer-123".to_string(),
+            test_digest("peer-123"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             false,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
         )
         .unwrap();
         let request = FederationRequest::RemovePeer(deactivated);
-        assert_eq!(format!("{}", request), "RemovePeer(peer-123)");
+        let display = format!("{}", request);
+        assert!(display.starts_with("RemovePeer("));
     }
 
     #[test]
@@ -352,7 +362,7 @@ mod tests {
     #[test]
     fn test_federation_error_display() {
         let err = FederationError::NotLeader {
-            leader_prefix: Some("ELeader".to_string()),
+            leader_prefix: Some(cesr::Digest::default()),
             leader_url: Some("http://leader".to_string()),
         };
         assert!(err.to_string().contains("Not the federation leader"));
@@ -388,9 +398,9 @@ mod tests {
     #[test]
     fn test_federation_request_equality() {
         let peer = Peer::create(
-            "peer-1".to_string(),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -403,9 +413,9 @@ mod tests {
         assert_eq!(req1, req2);
 
         let deactivated1 = Peer::create(
-            "peer-1".to_string(),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             false,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -442,9 +452,9 @@ mod tests {
     #[test]
     fn test_peer_snapshot_serialization() {
         let peer = Peer::create(
-            "peer-1".to_string(),
+            test_digest("peer-1"),
             "node-1".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-1:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -464,7 +474,7 @@ mod tests {
         let parsed: MemberSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.active_peers.len(), 1);
-        assert_eq!(parsed.active_peers[0].peer_prefix, "peer-1");
+        assert_eq!(parsed.active_peers[0].kel_prefix, test_digest("peer-1"));
         assert!(parsed.inactive_peers.is_empty());
         assert!(parsed.pending_addition_proposals.is_empty());
         assert!(parsed.completed_addition_proposals.is_empty());

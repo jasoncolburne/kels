@@ -125,7 +125,7 @@ async fn sync_own_kel(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let own_prefix = identity_client.get_prefix().await?;
 
-    let since = member_kel_repo
+    let since_digest = member_kel_repo
         .effective_said(&own_prefix)
         .await
         .ok()
@@ -142,7 +142,7 @@ async fn sync_own_kel(
         &sink,
         kels_core::page_size(),
         kels_core::max_pages(),
-        since.as_deref(),
+        since_digest.as_ref(),
     )
     .await?;
 
@@ -198,7 +198,7 @@ async fn push_to_stale_members(
             }
         };
 
-        if member_said.as_deref() == Some(&local_said) {
+        if member_said.as_ref() == Some(&local_said) {
             continue; // Member is up to date
         }
 
@@ -212,15 +212,15 @@ async fn push_to_stale_members(
             };
 
         // Delta fetch with fallback: try since=member_said, fall back to full
-        let since = member_said.as_deref();
-        let result = if since.is_some() {
+        let since_digest = member_said;
+        let result = if since_digest.is_some() {
             match kels_core::forward_key_events(
                 &own_prefix,
                 &repo_source,
                 &member_sink,
                 kels_core::page_size(),
                 kels_core::max_pages(),
-                since,
+                since_digest.as_ref(),
             )
             .await
             {

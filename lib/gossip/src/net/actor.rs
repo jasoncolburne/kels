@@ -25,7 +25,6 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::addr::PeerAddr;
-use crate::identity::NodePrefix;
 use crate::proto::{self, PeerData, Scope, TopicId};
 
 use super::{Error, PeerVerifier, Signer, codec, transport};
@@ -34,9 +33,9 @@ use super::{Error, PeerVerifier, Signer, codec, transport};
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A peer joined our active view for a topic.
-    NeighborUp(NodePrefix),
+    NeighborUp(cesr::Digest),
     /// A peer left our active view for a topic.
-    NeighborDown(NodePrefix),
+    NeighborDown(cesr::Digest),
     /// A gossip message was received.
     Received(GossipMessage),
 }
@@ -49,7 +48,7 @@ pub struct GossipMessage {
     /// The message content.
     pub content: Bytes,
     /// The peer that delivered this message.
-    pub delivered_from: NodePrefix,
+    pub delivered_from: cesr::Digest,
 }
 
 /// Commands sent from the application to the gossip actor.
@@ -75,12 +74,12 @@ pub(crate) enum Command {
 enum PeerMessage {
     /// A protocol message was received from a peer.
     Received {
-        peer_prefix: NodePrefix,
-        message: proto::Message<NodePrefix>,
+        peer_kel_prefix: cesr::Digest,
+        message: proto::Message<cesr::Digest>,
     },
     /// A peer disconnected (reader task exited).
     Disconnected {
-        peer_prefix: NodePrefix,
+        peer_kel_prefix: cesr::Digest,
         /// Connection generation at time of spawn, used to ignore stale disconnects
         /// from replaced connections.
         generation: u64,
@@ -94,7 +93,7 @@ enum DialResult {
     Success(transport::PeerConnection),
     /// Dial failed.
     Failure {
-        peer_prefix: NodePrefix,
+        peer_kel_prefix: cesr::Digest,
         error: Error,
     },
 }
@@ -102,7 +101,7 @@ enum DialResult {
 /// State for an active peer connection.
 struct ActivePeer {
     /// Channel to send outbound protocol messages.
-    msg_tx: mpsc::Sender<proto::Message<NodePrefix>>,
+    msg_tx: mpsc::Sender<proto::Message<cesr::Digest>>,
     /// Reader task handle.
     _reader: JoinHandle<()>,
     /// Writer task handle.
@@ -121,22 +120,22 @@ struct ActivePeer {
 /// PeerData), queues the message, and dials on demand — matching the
 /// pattern from iroh-gossip.
 pub(crate) struct GossipActor<S, V> {
-    state: proto::State<NodePrefix, StdRng>,
+    state: proto::State<cesr::Digest, StdRng>,
     signer: Arc<S>,
     verifier: Arc<V>,
     listener: Option<TcpListener>,
     /// Active peer connections.
-    peers: HashMap<NodePrefix, ActivePeer>,
+    peers: HashMap<cesr::Digest, ActivePeer>,
     /// Messages queued for peers being dialed.
-    pending_dials: HashMap<NodePrefix, Vec<proto::Message<NodePrefix>>>,
+    pending_dials: HashMap<cesr::Digest, Vec<proto::Message<cesr::Digest>>>,
     /// Known peer addresses from PeerData events (advertised host:port).
-    peer_addrs: HashMap<NodePrefix, String>,
+    peer_addrs: HashMap<cesr::Digest, String>,
     cmd_rx: mpsc::Receiver<Command>,
     event_tx: broadcast::Sender<Event>,
     peer_msg_tx: mpsc::Sender<PeerMessage>,
     peer_msg_rx: mpsc::Receiver<PeerMessage>,
-    timer_tx: mpsc::Sender<proto::Timer<NodePrefix>>,
-    timer_rx: mpsc::Receiver<proto::Timer<NodePrefix>>,
+    timer_tx: mpsc::Sender<proto::Timer<cesr::Digest>>,
+    timer_rx: mpsc::Receiver<proto::Timer<cesr::Digest>>,
     dial_tx: mpsc::Sender<DialResult>,
     dial_rx: mpsc::Receiver<DialResult>,
     /// Monotonically increasing counter for connection generations.
@@ -231,34 +230,34 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     async fn handle_incoming(&mut self, tcp: tokio::net::TcpStream, peer_addr: SocketAddr) {
         match transport::accept(tcp, peer_addr, &*self.signer, &*self.verifier).await {
             Ok(conn) => {
-                let peer_prefix = conn.peer_prefix;
+                let peer_kel_prefix = conn.peer_kel_prefix;
 
-                if self.peers.contains_key(&peer_prefix) {
+                if self.peers.contains_key(&peer_kel_prefix) {
                     if self
                         .peers
-                        .get(&peer_prefix)
+                        .get(&peer_kel_prefix)
                         .is_some_and(|p| p._reader.is_finished())
                     {
                         // Existing connection is dead (reader task exited — peer restarted
                         // or network partition resolved). Replace with the new connection.
-                        debug!(%peer_prefix, %peer_addr, "existing connection dead, replacing with incoming");
-                        self.peers.remove(&peer_prefix);
+                        debug!(%peer_kel_prefix, %peer_addr, "existing connection dead, replacing with incoming");
+                        self.peers.remove(&peer_kel_prefix);
                     } else {
                         // Existing connection appears alive. Drop this incoming to avoid
                         // duplicate-connection races (both sides dialing simultaneously).
-                        debug!(%peer_prefix, %peer_addr, "incoming connection but already connected, dropping");
+                        debug!(%peer_kel_prefix, %peer_addr, "incoming connection but already connected, dropping");
                         return;
                     }
                 }
 
                 // If we have a pending dial for this peer (they connected to us first),
                 // cancel the pending dial and drain queued messages via this connection.
-                let queued = self.pending_dials.remove(&peer_prefix);
+                let queued = self.pending_dials.remove(&peer_kel_prefix);
                 self.setup_peer(conn);
                 if let Some(messages) = queued {
-                    self.drain_queued_messages(peer_prefix, messages);
+                    self.drain_queued_messages(peer_kel_prefix, messages);
                 }
-                debug!(%peer_prefix, %peer_addr, "incoming peer connected");
+                debug!(%peer_kel_prefix, %peer_addr, "incoming peer connected");
             }
             Err(e) => warn!(%peer_addr, error = %e, "incoming handshake failed"),
         }
@@ -315,15 +314,15 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         let now = Instant::now();
         match msg {
             PeerMessage::Received {
-                peer_prefix,
+                peer_kel_prefix,
                 message,
             } => {
-                let in_event = proto::InEvent::RecvMessage(peer_prefix, message);
+                let in_event = proto::InEvent::RecvMessage(peer_kel_prefix, message);
                 let events: Vec<_> = self.state.handle(in_event, now).collect();
                 self.process_out_events(events);
             }
             PeerMessage::Disconnected {
-                peer_prefix,
+                peer_kel_prefix,
                 generation,
             } => {
                 // Only inform the protocol if this peer is still tracked AND the
@@ -331,21 +330,21 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                 // (e.g., after a peer restart) are safely ignored.
                 let is_current = self
                     .peers
-                    .get(&peer_prefix)
+                    .get(&peer_kel_prefix)
                     .is_some_and(|p| p.generation == generation);
                 if is_current {
-                    self.peers.remove(&peer_prefix);
-                    let in_event = proto::InEvent::PeerDisconnected(peer_prefix);
+                    self.peers.remove(&peer_kel_prefix);
+                    let in_event = proto::InEvent::PeerDisconnected(peer_kel_prefix);
                     let events: Vec<_> = self.state.handle(in_event, now).collect();
                     self.process_out_events(events);
                 }
-                debug!(%peer_prefix, %generation, %is_current, "peer disconnected");
+                debug!(%peer_kel_prefix, %generation, %is_current, "peer disconnected");
             }
         }
     }
 
     /// Handle an expired timer.
-    fn handle_timer(&mut self, timer: proto::Timer<NodePrefix>) {
+    fn handle_timer(&mut self, timer: proto::Timer<cesr::Digest>) {
         let now = Instant::now();
         let in_event = proto::InEvent::TimerExpired(timer);
         let events: Vec<_> = self.state.handle(in_event, now).collect();
@@ -356,54 +355,60 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     fn handle_dial_result(&mut self, result: DialResult) {
         match result {
             DialResult::Success(conn) => {
-                let peer_prefix = conn.peer_prefix;
-                let queued = self.pending_dials.remove(&peer_prefix).unwrap_or_default();
+                let peer_kel_prefix = conn.peer_kel_prefix;
+                let queued = self
+                    .pending_dials
+                    .remove(&peer_kel_prefix)
+                    .unwrap_or_default();
 
-                if self.peers.contains_key(&peer_prefix) {
+                if self.peers.contains_key(&peer_kel_prefix) {
                     if self
                         .peers
-                        .get(&peer_prefix)
+                        .get(&peer_kel_prefix)
                         .is_some_and(|p| p._reader.is_finished())
                     {
                         // Existing connection is dead. Replace with new dialed connection.
-                        debug!(%peer_prefix, "existing connection dead, replacing with dialed");
-                        self.peers.remove(&peer_prefix);
+                        debug!(%peer_kel_prefix, "existing connection dead, replacing with dialed");
+                        self.peers.remove(&peer_kel_prefix);
                     } else {
                         // Already connected via accept while we were dialing.
                         // Use the existing connection; drain queued messages through it.
-                        debug!(%peer_prefix, "dial succeeded but already connected, using existing");
-                        self.drain_queued_messages(peer_prefix, queued);
+                        debug!(%peer_kel_prefix, "dial succeeded but already connected, using existing");
+                        self.drain_queued_messages(peer_kel_prefix, queued);
                         return;
                     }
                 }
 
                 self.setup_peer(conn);
-                debug!(%peer_prefix, queued = queued.len(), "on-demand dial succeeded");
-                self.drain_queued_messages(peer_prefix, queued);
+                debug!(%peer_kel_prefix, queued = queued.len(), "on-demand dial succeeded");
+                self.drain_queued_messages(peer_kel_prefix, queued);
             }
-            DialResult::Failure { peer_prefix, error } => {
+            DialResult::Failure {
+                peer_kel_prefix,
+                error,
+            } => {
                 let queued_count = self
                     .pending_dials
-                    .remove(&peer_prefix)
+                    .remove(&peer_kel_prefix)
                     .map(|q| q.len())
                     .unwrap_or(0);
                 warn!(
-                    %peer_prefix,
+                    %peer_kel_prefix,
                     queued_count,
                     error = %error,
                     "on-demand dial failed, dropping queued messages"
                 );
 
-                if self.peers.contains_key(&peer_prefix) {
+                if self.peers.contains_key(&peer_kel_prefix) {
                     // Already connected via accept — don't tell the protocol
                     // the peer is gone (the accepted connection is still alive).
-                    debug!(%peer_prefix, "dial failed but already connected via accept, ignoring");
+                    debug!(%peer_kel_prefix, "dial failed but already connected via accept, ignoring");
                     return;
                 }
 
                 // Inform the protocol that this peer is unreachable.
                 let now = Instant::now();
-                let in_event = proto::InEvent::PeerDisconnected(peer_prefix);
+                let in_event = proto::InEvent::PeerDisconnected(peer_kel_prefix);
                 let events: Vec<_> = self.state.handle(in_event, now).collect();
                 self.process_out_events(events);
             }
@@ -413,21 +418,21 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     /// Drain queued messages to a newly connected peer.
     fn drain_queued_messages(
         &self,
-        peer_prefix: NodePrefix,
-        messages: Vec<proto::Message<NodePrefix>>,
+        peer_kel_prefix: cesr::Digest,
+        messages: Vec<proto::Message<cesr::Digest>>,
     ) {
-        if let Some(peer_state) = self.peers.get(&peer_prefix) {
+        if let Some(peer_state) = self.peers.get(&peer_kel_prefix) {
             let msg_tx = peer_state.msg_tx.clone();
             tokio::spawn(async move {
                 for msg in messages {
                     match tokio::time::timeout(SEND_TIMEOUT, msg_tx.send(msg)).await {
                         Ok(Ok(())) => {}
                         Ok(Err(_)) => {
-                            warn!(%peer_prefix, "peer channel closed while draining queued messages");
+                            warn!(%peer_kel_prefix, "peer channel closed while draining queued messages");
                             break;
                         }
                         Err(_) => {
-                            warn!(%peer_prefix, "send timed out while draining queued messages");
+                            warn!(%peer_kel_prefix, "send timed out while draining queued messages");
                             break;
                         }
                     }
@@ -440,8 +445,8 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     ///
     /// Messages to connected peers are sent concurrently (one task per peer)
     /// so a slow peer cannot block sends to other peers.
-    fn process_out_events(&mut self, events: Vec<proto::OutEvent<NodePrefix>>) {
-        let mut peer_messages: HashMap<NodePrefix, Vec<proto::Message<NodePrefix>>> =
+    fn process_out_events(&mut self, events: Vec<proto::OutEvent<cesr::Digest>>) {
+        let mut peer_messages: HashMap<cesr::Digest, Vec<proto::Message<cesr::Digest>>> =
             HashMap::new();
 
         for event in events {
@@ -463,7 +468,7 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                             let result = match resolve_and_dial(&addr, &*signer, &*verifier).await {
                                 Ok(conn) => DialResult::Success(conn),
                                 Err(error) => DialResult::Failure {
-                                    peer_prefix: peer,
+                                    peer_kel_prefix: peer,
                                     error,
                                 },
                             };
@@ -537,24 +542,24 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
 
     /// Set up reader/writer tasks for a newly connected peer.
     fn setup_peer(&mut self, conn: transport::PeerConnection) {
-        let peer_prefix = conn.peer_prefix;
+        let peer_kel_prefix = conn.peer_kel_prefix;
         let (read_half, write_half) = conn.stream.split();
 
         self.connection_generation += 1;
         let generation = self.connection_generation;
 
-        let (msg_tx, mut msg_rx) = mpsc::channel::<proto::Message<NodePrefix>>(64);
+        let (msg_tx, mut msg_rx) = mpsc::channel::<proto::Message<cesr::Digest>>(64);
         let peer_msg_tx = self.peer_msg_tx.clone();
 
         // Reader task: reads protocol messages and forwards to the actor.
         let reader = tokio::spawn(async move {
             let mut reader = read_half;
             loop {
-                match codec::read_message::<_, proto::Message<NodePrefix>>(&mut reader).await {
+                match codec::read_message::<_, proto::Message<cesr::Digest>>(&mut reader).await {
                     Ok(msg) => {
                         if peer_msg_tx
                             .send(PeerMessage::Received {
-                                peer_prefix,
+                                peer_kel_prefix,
                                 message: msg,
                             })
                             .await
@@ -566,7 +571,7 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                     Err(_) => {
                         let _ = peer_msg_tx
                             .send(PeerMessage::Disconnected {
-                                peer_prefix,
+                                peer_kel_prefix,
                                 generation,
                             })
                             .await;
@@ -587,7 +592,7 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         });
 
         self.peers.insert(
-            peer_prefix,
+            peer_kel_prefix,
             ActivePeer {
                 msg_tx,
                 _reader: reader,

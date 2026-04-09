@@ -27,27 +27,27 @@ pub enum ExchangeKind {
 #[serde(rename_all = "camelCase")]
 pub struct ExchangeMessage {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Thread identifier (deterministic from v0 inception).
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     /// SAID of prior message in thread (None for thread inception).
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     /// Message sequence within thread.
     #[version]
     pub message_number: u64,
     /// Message kind.
     pub kind: ExchangeKind,
     /// Sender's KEL prefix.
-    pub sender: String,
+    pub sender: cesr::Digest,
     /// Recipient's KEL prefix.
-    pub recipient: String,
+    pub recipient: cesr::Digest,
     #[created_at]
     pub created_at: StorageDatetime,
-    /// Anti-replay nonce.
-    pub nonce: String,
+    /// Anti-replay nonce (Blake3 hash of random bytes).
+    pub nonce: cesr::Digest,
     /// Kind-specific payload.
     pub payload: ExchangePayload,
 }
@@ -59,10 +59,10 @@ pub enum ExchangePayload {
     /// Apply: request a credential.
     Apply {
         /// Schema SAID being requested.
-        schema: String,
+        schema: cesr::Digest,
         /// Optional policy SAID constraint.
         #[serde(skip_serializing_if = "Option::is_none")]
-        policy: Option<String>,
+        policy: Option<cesr::Digest>,
         /// Optional disclosure expression.
         #[serde(skip_serializing_if = "Option::is_none")]
         disclosure: Option<String>,
@@ -70,9 +70,9 @@ pub enum ExchangePayload {
     /// Offer: propose issuing a credential.
     Offer {
         /// Schema SAID.
-        schema: String,
+        schema: cesr::Digest,
         /// Policy SAID.
-        policy: String,
+        policy: cesr::Digest,
         /// Optional credential preview (partial claims).
         #[serde(skip_serializing_if = "Option::is_none")]
         credential_preview: Option<serde_json::Value>,
@@ -83,7 +83,7 @@ pub enum ExchangePayload {
     /// Agree: accept an offer.
     Agree {
         /// SAID of the accepted offer message.
-        offer: String,
+        offer: cesr::Digest,
     },
     /// Grant: deliver a credential.
     Grant {
@@ -103,7 +103,7 @@ pub enum ExchangePayload {
     /// Admit: acknowledge receipt and verification of a grant.
     Admit {
         /// SAID of the acknowledged grant message.
-        grant: String,
+        grant: cesr::Digest,
     },
     /// Reject: reject a message in the thread.
     Reject {
@@ -114,7 +114,7 @@ pub enum ExchangePayload {
 }
 
 /// ESSR topic for exchange protocol messages.
-pub const EXCHANGE_TOPIC: &str = "kels/v1/exchange";
+pub const EXCHANGE_TOPIC: &str = "kels/exchange/v1/topics/exchange";
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -123,52 +123,59 @@ mod tests {
 
     use super::*;
 
+    fn test_digest(label: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(label.as_bytes())
+    }
+
     #[test]
     fn exchange_message_create() {
         let msg = ExchangeMessage::create(
             ExchangeKind::Apply,
-            "sender-prefix".to_string(),
-            "recipient-prefix".to_string(),
-            "test-nonce".to_string(),
+            test_digest("sender-prefix"),
+            test_digest("recipient-prefix"),
+            test_digest("test-nonce"),
             ExchangePayload::Apply {
-                schema: "schema-said".to_string(),
+                schema: test_digest("schema-said"),
                 policy: None,
                 disclosure: None,
             },
         )
         .unwrap();
 
-        assert!(!msg.said.is_empty());
-        assert!(!msg.prefix.is_empty());
+        assert_ne!(msg.said, cesr::Digest::default());
+        assert_ne!(msg.prefix, cesr::Digest::default());
         assert!(msg.previous.is_none());
         assert_eq!(msg.message_number, 0);
     }
 
     #[test]
     fn chained_messages_share_thread_prefix() {
+        let sender = test_digest("sender");
+        let recipient = test_digest("recipient");
+
         let mut thread = ExchangeMessage::create(
             ExchangeKind::Apply,
-            "sender".to_string(),
-            "recipient".to_string(),
-            "nonce-0".to_string(),
+            sender,
+            recipient,
+            test_digest("nonce-0"),
             ExchangePayload::Apply {
-                schema: "schema".to_string(),
+                schema: test_digest("schema"),
                 policy: None,
                 disclosure: None,
             },
         )
         .unwrap();
 
-        let thread_prefix = thread.prefix.clone();
+        let thread_prefix = thread.prefix;
 
         // Update fields for the reply, then increment
         thread.kind = ExchangeKind::Offer;
-        thread.sender = "recipient".to_string();
-        thread.recipient = "sender".to_string();
-        thread.nonce = "nonce-1".to_string();
+        thread.sender = recipient;
+        thread.recipient = sender;
+        thread.nonce = test_digest("nonce-1");
         thread.payload = ExchangePayload::Offer {
-            schema: "schema".to_string(),
-            policy: "policy".to_string(),
+            schema: test_digest("schema"),
+            policy: test_digest("policy"),
             credential_preview: None,
             rules: None,
         };

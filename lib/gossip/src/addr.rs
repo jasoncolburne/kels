@@ -11,13 +11,13 @@
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 
-use crate::identity::NodePrefix;
+use cesr::Matter;
 
 /// A parsed `kels://` peer address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddr {
-    /// The peer's KELS prefix (44-byte NodePrefix).
-    pub prefix: NodePrefix,
+    /// The peer's KELS prefix (CESR digest).
+    pub prefix: cesr::Digest,
     /// The host (IPv4, IPv6, or DNS name).
     pub host: String,
     /// The port number.
@@ -64,7 +64,7 @@ impl PeerAddr {
             .ok_or(AddrError::InvalidScheme)?;
         let (prefix_str, rest) = stripped.split_once('@').ok_or(AddrError::MissingPrefix)?;
 
-        let prefix = NodePrefix::option_from_str(prefix_str).ok_or(AddrError::InvalidPrefix)?;
+        let prefix = cesr::Digest::from_qb64(prefix_str).map_err(|_| AddrError::InvalidPrefix)?;
 
         // Handle IPv6 bracket notation: [::1]:port
         let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
@@ -118,8 +118,8 @@ impl fmt::Display for PeerAddr {
 mod tests {
     use super::*;
 
-    fn test_prefix() -> NodePrefix {
-        NodePrefix::option_from_str("KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
+    fn test_prefix() -> cesr::Digest {
+        cesr::Digest::from_qb64("KBfxc4RiVY6saIFmUfEtU99OdZMN-TFLV2_oCIAeiY_a").unwrap()
     }
 
     #[test]

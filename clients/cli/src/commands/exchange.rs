@@ -52,10 +52,11 @@ pub(crate) fn parse_kem_algorithm(
 }
 
 async fn current_establishment_serial(cli: &Cli, prefix: &str) -> Result<u64> {
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let kel_store = create_kel_store(cli, prefix)?;
     let verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),
-        prefix,
+        &prefix_digest,
         kels_core::page_size(),
         kels_core::max_pages(),
         std::iter::empty(),
@@ -99,9 +100,9 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     // Build EncapsulationKeyPublication SAD object
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: String::new(),
+        said: cesr::Digest::default(),
         algorithm: kem_algo.to_string(),
-        encapsulation_key: encap_key.qb64(),
+        encapsulation_key: encap_key.clone(),
     };
     publication
         .derive_said()
@@ -117,32 +118,33 @@ pub(crate) async fn cmd_exchange_publish_key(
     println!("  Key publication uploaded (SAID: {})", publication.said);
 
     // Create SadPointer chain (v0 inception + v1 with content)
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let v0 = kels_core::SadPointer::create(
-        prefix.to_string(),
+        prefix_digest,
         kels_exchange::ENCAP_KEY_KIND.to_string(),
         None,
     )
     .context("Failed to create inception pointer")?;
 
     let mut v1 = v0.clone();
-    v1.content_said = Some(publication.said.clone());
+    v1.content_said = Some(publication.said);
     v1.increment().context("Failed to increment pointer")?;
 
-    // Sign both records (signature is over the SAID string, not serialized JSON)
-    let v0_sig = provider.sign(v0.said.as_bytes()).await?;
-    let v1_sig = provider.sign(v1.said.as_bytes()).await?;
+    // Sign both records (signature is over the SAID qb64 bytes)
+    let v0_sig = provider.sign(v0.said.qb64().as_bytes()).await?;
+    let v1_sig = provider.sign(v1.said.qb64().as_bytes()).await?;
 
     let establishment_serial = current_establishment_serial(cli, prefix).await?;
 
     let signed_records = vec![
         kels_core::SignedSadPointer {
             pointer: v0,
-            signature: v0_sig.qb64(),
+            signature: v0_sig,
             establishment_serial,
         },
         kels_core::SignedSadPointer {
             pointer: v1,
-            signature: v1_sig.qb64(),
+            signature: v1_sig,
             establishment_serial,
         },
     ];
@@ -192,9 +194,9 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     // Build new publication
     let mut publication = kels_exchange::EncapsulationKeyPublication {
-        said: String::new(),
+        said: cesr::Digest::default(),
         algorithm: kem_algo.to_string(),
-        encapsulation_key: encap_key.qb64(),
+        encapsulation_key: encap_key.clone(),
     };
     publication
         .derive_said()
@@ -205,10 +207,12 @@ pub(crate) async fn cmd_exchange_rotate_key(
     sad_client.post_sad_object(&pub_json).await?;
 
     // Fetch current chain to get tip for increment
-    let chain_prefix = kels_core::compute_sad_pointer_prefix(prefix, kels_exchange::ENCAP_KEY_KIND)
-        .context("Failed to compute pointer prefix")?;
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let chain_prefix =
+        kels_core::compute_sad_pointer_prefix(prefix_digest, kels_exchange::ENCAP_KEY_KIND)
+            .context("Failed to compute pointer prefix")?;
     let page = sad_client
-        .fetch_sad_pointer(&chain_prefix, None)
+        .fetch_sad_pointer(chain_prefix.as_ref(), None)
         .await
         .context("Failed to fetch current chain")?;
 
@@ -218,16 +222,16 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .ok_or_else(|| anyhow!("No existing key chain found — use publish-key first"))?;
 
     let mut next = tip.pointer.clone();
-    next.content_said = Some(publication.said.clone());
+    next.content_said = Some(publication.said);
     next.increment().context("Failed to increment pointer")?;
 
-    let sig = provider.sign(next.said.as_bytes()).await?;
+    let sig = provider.sign(next.said.qb64().as_bytes()).await?;
 
     let establishment_serial = current_establishment_serial(cli, prefix).await?;
 
     let signed = vec![kels_core::SignedSadPointer {
         pointer: next,
-        signature: sig.qb64(),
+        signature: sig,
         establishment_serial,
     }];
 
@@ -238,13 +242,14 @@ pub(crate) async fn cmd_exchange_rotate_key(
 }
 
 pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Result<()> {
+    let kel_digest = cesr::Digest::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
     let chain_prefix =
-        kels_core::compute_sad_pointer_prefix(kel_prefix, kels_exchange::ENCAP_KEY_KIND)
+        kels_core::compute_sad_pointer_prefix(kel_digest, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
-        .fetch_sad_pointer(&chain_prefix, None)
+        .fetch_sad_pointer(chain_prefix.as_ref(), None)
         .await
         .context("Failed to fetch key chain")?;
 
@@ -272,11 +277,15 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     println!("  Algorithm:   {}", publication.algorithm);
     println!("  Key SAID:    {}", publication.said);
     println!("  Chain Prefix: {}", chain_prefix);
-    let key = &publication.encapsulation_key;
-    if key.len() > 30 {
-        println!("  Encap Key:   {}...{}", &key[..20], &key[key.len() - 10..]);
+    let key_qb64 = publication.encapsulation_key.qb64();
+    if key_qb64.len() > 30 {
+        println!(
+            "  Encap Key:   {}...{}",
+            &key_qb64[..20],
+            &key_qb64[key_qb64.len() - 10..]
+        );
     } else {
-        println!("  Encap Key:   {}", key);
+        println!("  Encap Key:   {}", key_qb64);
     }
 
     Ok(())
@@ -295,10 +304,14 @@ pub(crate) async fn cmd_exchange_send(
     let provider = provider_config(cli, prefix)?.load_provider().await?;
 
     // Look up recipient's encapsulation key
+    let recipient_digest =
+        cesr::Digest::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
     let chain_prefix =
-        kels_core::compute_sad_pointer_prefix(recipient, kels_exchange::ENCAP_KEY_KIND)?;
+        kels_core::compute_sad_pointer_prefix(recipient_digest, kels_exchange::ENCAP_KEY_KIND)?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let page = sad_client.fetch_sad_pointer(&chain_prefix, None).await?;
+    let page = sad_client
+        .fetch_sad_pointer(chain_prefix.as_ref(), None)
+        .await?;
     let tip = page
         .pointers
         .last()
@@ -310,18 +323,18 @@ pub(crate) async fn cmd_exchange_send(
         .ok_or_else(|| anyhow!("Recipient key chain has no content"))?;
     let value = sad_client.get_sad_object(content_said).await?;
     let publication: kels_exchange::EncapsulationKeyPublication = serde_json::from_value(value)?;
-    let encap_key = cesr::EncapsulationKey::from_qb64(&publication.encapsulation_key)
-        .context("Invalid encapsulation key")?;
+    let encap_key = publication.encapsulation_key;
 
     // Read payload
     let payload = std::fs::read(payload_path)
         .with_context(|| format!("Failed to read payload: {}", payload_path.display()))?;
 
     // Get sender's latest establishment event serial from local KEL
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
     let kel_store = create_kel_store(cli, prefix)?;
     let kel_verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),
-        prefix,
+        &prefix_digest,
         kels_core::page_size(),
         kels_core::max_pages(),
         std::iter::empty(),
@@ -341,14 +354,20 @@ pub(crate) async fn cmd_exchange_send(
     let signing_key = cesr::SigningKey::from_qb64(signing_key_qb64.trim())?;
 
     // ESSR seal
+    let sender_digest = cesr::Digest::from_qb64(prefix).context("Invalid sender prefix CESR")?;
     let inner = kels_exchange::EssrInner {
-        sender: prefix.to_string(),
+        sender: sender_digest,
         topic: topic.to_string(),
         payload,
     };
 
-    let signed_envelope =
-        kels_exchange::seal(&inner, sender_serial, recipient, &encap_key, &signing_key)?;
+    let signed_envelope = kels_exchange::seal(
+        &inner,
+        sender_serial,
+        &recipient_digest,
+        &encap_key,
+        &signing_key,
+    )?;
 
     // Serialize and send to mail service
     let envelope_bytes = serde_json::to_vec(&signed_envelope)?;
@@ -362,7 +381,12 @@ pub(crate) async fn cmd_exchange_send(
     let mail_client =
         kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
     mail_client
-        .send(prefix, recipient, &envelope_bytes, &provider)
+        .send(
+            &sender_digest,
+            &recipient_digest,
+            &envelope_bytes,
+            &provider,
+        )
         .await
         .context("Failed to send mail")?;
 
@@ -373,11 +397,12 @@ pub(crate) async fn cmd_exchange_send(
 
 pub(crate) async fn cmd_exchange_inbox(cli: &Cli, prefix: &str) -> Result<()> {
     let provider = provider_config(cli, prefix)?.load_provider().await?;
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
 
     let mail_client =
         kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
     let response = mail_client
-        .inbox(prefix, &provider)
+        .inbox(&prefix_digest, &provider)
         .await
         .context("Failed to check inbox")?;
 
@@ -405,19 +430,21 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
     println!("{}", "Fetching and decrypting message...".green());
 
     let provider = provider_config(cli, prefix)?.load_provider().await?;
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let mail_said_digest = cesr::Digest::from_qb64(mail_said).context("Invalid mail SAID CESR")?;
 
     // Look up message metadata from local inbox to find source node
     let local_mail =
         kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
     let inbox = local_mail
-        .inbox(prefix, &provider)
+        .inbox(&prefix_digest, &provider)
         .await
         .context("Failed to query inbox")?;
 
     let message = inbox
         .messages
         .iter()
-        .find(|m| m.said == mail_said)
+        .find(|m| m.said.as_ref() == mail_said)
         .ok_or_else(|| anyhow!("Message {} not found in inbox", mail_said))?;
 
     // Resolve source node's base domain via registry
@@ -433,7 +460,7 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
 
     let source_peer = peers
         .iter()
-        .find(|p| p.peer_prefix == message.source_node_prefix)
+        .find(|p| p.kel_prefix == message.source_node_prefix)
         .ok_or_else(|| {
             anyhow!(
                 "Source node {} not found in registry",
@@ -448,7 +475,7 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
     let source_mail = kels_exchange::MailClient::new(&source_mail_url)
         .context("Failed to create source mail client")?;
     let blob = source_mail
-        .fetch(prefix, mail_said, &provider)
+        .fetch(&prefix_digest, &mail_said_digest, &provider)
         .await
         .context("Failed to fetch mail")?;
 
@@ -513,11 +540,17 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
 
 pub(crate) async fn cmd_exchange_ack(cli: &Cli, prefix: &str, saids: &[String]) -> Result<()> {
     let provider = provider_config(cli, prefix)?.load_provider().await?;
+    let prefix_digest = cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let said_digests: Vec<cesr::Digest> = saids
+        .iter()
+        .map(|s| cesr::Digest::from_qb64(s))
+        .collect::<Result<_, _>>()
+        .context("Invalid SAID CESR")?;
 
     let mail_client =
         kels_exchange::MailClient::new(&cli.mail_url()).context("Failed to create mail client")?;
     mail_client
-        .ack(prefix, saids, &provider)
+        .ack(&prefix_digest, &said_digests, &provider)
         .await
         .context("Failed to acknowledge messages")?;
 

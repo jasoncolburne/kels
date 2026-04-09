@@ -13,9 +13,9 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerRepair {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// The chain prefix that was repaired.
-    pub pointer_prefix: String,
+    pub pointer_prefix: cesr::Digest,
     /// The version at which divergence occurred.
     pub diverged_at_version: u64,
     /// When the repair was performed.
@@ -39,9 +39,9 @@ pub struct SadPointerRepairPage {
 #[serde(rename_all = "camelCase")]
 pub struct SadPointerRepairRecord {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// The repair this pointer belongs to.
-    pub repair_said: String,
+    pub repair_said: cesr::Digest,
     /// The SAID of the archived pointer.
-    pub pointer_said: String,
+    pub pointer_said: cesr::Digest,
 }

@@ -265,7 +265,7 @@ enum SadCommands {
         /// The KEL prefix
         kel_prefix: String,
 
-        /// The record kind (e.g., "kels/v1/mlkem-pubkey")
+        /// The record kind (e.g., "kels/exchange/v1/keys/mlkem")
         kind: String,
     },
 }
@@ -310,8 +310,8 @@ enum ExchangeCommands {
         #[arg(long)]
         recipient: String,
 
-        /// Topic string (e.g., "kels/v1/exchange")
-        #[arg(long, default_value = "kels/v1/exchange")]
+        /// Topic string (e.g., "kels/exchange/v1/topics/exchange")
+        #[arg(long, default_value = "kels/exchange/v1/topics/exchange")]
         topic: String,
 
         /// Path to file containing the payload (or - for stdin)

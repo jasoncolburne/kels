@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -240,7 +241,7 @@ impl KelsClient {
                 break;
             }
 
-            let last_said = page.events.last().map(|e| e.event.said.clone());
+            let last_said = page.events.last().map(|e| e.event.said);
             all_events.extend(page.events);
 
             if !page.has_more {
@@ -248,7 +249,7 @@ impl KelsClient {
                 break;
             }
 
-            current_since = last_said;
+            current_since = last_said.map(|d| d.qb64());
         }
 
         if !exhausted {
@@ -268,8 +269,8 @@ impl KelsClient {
     /// Returns `None` if the prefix doesn't exist.
     pub async fn fetch_effective_said(
         &self,
-        prefix: &str,
-    ) -> Result<Option<(String, bool)>, KelsError> {
+        prefix: &cesr::Digest,
+    ) -> Result<Option<(cesr::Digest, bool)>, KelsError> {
         let resp = self
             .client
             .get(format!(
@@ -281,7 +282,12 @@ impl KelsClient {
 
         if resp.status().is_success() {
             let body: serde_json::Value = resp.json().await?;
-            let said = body.get("said").and_then(|s| s.as_str()).map(String::from);
+            let said = body
+                .get("said")
+                .and_then(|s| s.as_str())
+                .map(cesr::Digest::from_qb64)
+                .transpose()
+                .map_err(|e| KelsError::HttpError(format!("Invalid effective SAID CESR: {}", e)))?;
             let divergent = body
                 .get("divergent")
                 .and_then(|d| d.as_bool())
@@ -352,13 +358,13 @@ impl KelsClient {
     pub async fn fetch_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
-        cursor: Option<&str>,
+        cursor: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<crate::PrefixListResponse, KelsError> {
         let request = crate::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: crate::generate_nonce(),
-            cursor: cursor.map(|s| s.to_string()),
+            nonce: crate::generate_nonce().qb64(),
+            cursor: cursor.cloned(),
             limit: Some(limit),
         };
         let signed = crate::sign_request(signer, &request).await?;
@@ -378,7 +384,7 @@ impl KelsClient {
     }
 
     /// Check if an event SAID exists on the server.
-    pub async fn event_exists(&self, said: &str) -> Result<bool, KelsError> {
+    pub async fn event_exists(&self, said: &cesr::Digest) -> Result<bool, KelsError> {
         let resp = self
             .client
             .get(format!(
@@ -436,6 +442,8 @@ mod tests {
     // ==================== HTTP Client Tests with Mock Server ====================
 
     mod http_tests {
+        use cesr::test_digest;
+
         use super::*;
         use crate::types::{ErrorCode, ErrorResponse, SubmitEventsResponse};
         use wiremock::matchers::{method, path, path_regex};
@@ -549,8 +557,8 @@ mod tests {
                 None,
             );
             let icp = builder.incept().await.unwrap();
-            let ixn1 = builder.interact("anchor1").await.unwrap();
-            let ixn2 = builder.interact("anchor2").await.unwrap();
+            let ixn1 = builder.interact(&test_digest("anchor1")).await.unwrap();
+            let ixn2 = builder.interact(&test_digest("anchor2")).await.unwrap();
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events_chunked(&[icp, ixn1, ixn2], 1).await;
@@ -665,7 +673,7 @@ mod tests {
                 None,
             );
             let icp = builder.incept().await.unwrap();
-            let prefix = icp.event.prefix.clone();
+            let prefix = icp.event.prefix;
 
             let response = SignedKeyEventPage {
                 events: vec![icp],
@@ -679,7 +687,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
-            let result = client.fetch_key_events(&prefix, None, 32).await;
+            let result = client.fetch_key_events(prefix.as_ref(), None, 32).await;
 
             assert!(result.is_ok());
             let page = result.unwrap();

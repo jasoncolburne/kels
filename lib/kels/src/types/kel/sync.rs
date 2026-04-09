@@ -23,7 +23,7 @@ use crate::store::KelStore;
 pub trait PageLoader: Send + Sync {
     async fn load_page(
         &mut self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
@@ -42,7 +42,7 @@ impl<'a> StorePageLoader<'a> {
 impl PageLoader for StorePageLoader<'_> {
     async fn load_page(
         &mut self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -69,8 +69,8 @@ impl<'a> StoreKelSource<'a> {
 impl PagedKelSource for StoreKelSource<'_> {
     async fn fetch_page(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest,
+        since: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         if let Some(said) = since {
@@ -78,7 +78,7 @@ impl PagedKelSource for StoreKelSource<'_> {
             let (all, _) = self.0.load(prefix, crate::LOAD_ALL, 0).await?;
             let offset = all
                 .iter()
-                .position(|e| e.event.said == said)
+                .position(|e| &e.event.said == said)
                 .ok_or_else(|| KelsError::NotFound(prefix.to_string()))?;
             let start = offset + 1;
             let end = (start + limit).min(all.len());
@@ -103,10 +103,10 @@ impl PagedKelSource for StoreKelSource<'_> {
 /// locked transaction wrapper to read under advisory lock.
 pub async fn completed_verification(
     loader: &mut dyn PageLoader,
-    prefix: &str,
+    prefix: &cesr::Digest,
     page_size: usize,
     max_pages: usize,
-    anchor_saids: impl IntoIterator<Item = String>,
+    anchor_saids: impl IntoIterator<Item = cesr::Digest>,
 ) -> Result<KelVerification, KelsError> {
     let mut verifier = KelVerifier::new(prefix);
     verifier.check_anchors(anchor_saids);
@@ -166,8 +166,8 @@ pub async fn completed_verification(
 pub trait PagedKelSource: Send + Sync {
     async fn fetch_page(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest,
+        since: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 }
@@ -211,11 +211,11 @@ impl HttpKelSource {
 impl PagedKelSource for HttpKelSource {
     async fn fetch_page(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest,
+        since: Option<&cesr::Digest>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let path = self.path.replace("{prefix}", prefix);
+        let path = self.path.replace("{prefix}", prefix.as_ref());
         let mut url = format!("{}{}?limit={}", self.base_url, path, limit);
         if let Some(since_said) = since {
             url.push_str(&format!("&since={}", since_said));
@@ -362,13 +362,13 @@ impl PagedKelSink for HttpKelSink {
 /// For unrecovered divergence (no rec), the recovery-revealing branch is deferred
 /// so the non-revealing branch establishes divergence first.
 async fn transfer_key_events(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     sink: &(dyn PagedKelSink + Sync),
     mut verifier: Option<&mut KelVerifier>,
     page_size: usize,
     max_pages: usize,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
 ) -> Result<(), KelsError> {
     if verifier.is_some() && since.is_some() {
         return Err(KelsError::InvalidKel(
@@ -376,7 +376,7 @@ async fn transfer_key_events(
         ));
     }
 
-    let mut since: Option<String> = since.map(String::from);
+    let mut since: Option<cesr::Digest> = since.cloned();
     // Hold back the last event when has_more is true. If the next page's
     // first event has the same serial, we've found a divergent pair. If not,
     // it's just a normal event and we process it with the next batch.
@@ -388,9 +388,7 @@ async fn transfer_key_events(
     let mut post_divergence: Vec<SignedKeyEvent> = Vec::new();
 
     for _ in 0..max_pages {
-        let (fetched, has_more) = source
-            .fetch_page(prefix, since.as_deref(), page_size)
-            .await?;
+        let (fetched, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
 
         // Prepend held-back event from previous page
         let mut events = if let Some(held) = held_back.take() {
@@ -410,7 +408,7 @@ async fn transfer_key_events(
             if let Some(ref mut v) = verifier {
                 v.verify_page(&events)?;
             }
-            since = events.last().map(|e| e.event.said.clone());
+            since = events.last().map(|e| e.event.said);
             post_divergence.extend(events);
         } else {
             // Phase 1: scan for divergence
@@ -457,15 +455,15 @@ async fn transfer_key_events(
                 // Include held-back event in post-divergence collection and
                 // advance since cursor past it to avoid double-fetching.
                 if let Some(held) = held_back.take() {
-                    since = Some(held.event.said.clone());
+                    since = Some(held.event.said);
                     post_divergence.push(held);
                 } else {
-                    since = post_divergence.last().map(|e| e.event.said.clone());
+                    since = post_divergence.last().map(|e| e.event.said);
                 }
             } else {
                 // No divergence on this page
                 sink.store_page(&events).await?;
-                since = events.last().map(|e| e.event.said.clone());
+                since = events.last().map(|e| e.event.said);
             }
         }
 
@@ -474,7 +472,7 @@ async fn transfer_key_events(
         }
 
         if let Some(ref held) = held_back {
-            since = Some(held.event.said.clone());
+            since = Some(held.event.said);
         }
     }
 
@@ -541,15 +539,15 @@ async fn send_divergent_events(
     // Build two chains by tracing forward from each fork event.
     let mut chain_a_saids = HashSet::new();
     let mut chain_b_saids = HashSet::new();
-    chain_a_saids.insert(post_divergence[0].event.said.clone());
-    chain_b_saids.insert(post_divergence[1].event.said.clone());
+    chain_a_saids.insert(post_divergence[0].event.said);
+    chain_b_saids.insert(post_divergence[1].event.said);
 
     for evt in &post_divergence[2..] {
-        if let Some(prev) = evt.event.previous.as_deref() {
+        if let Some(prev) = evt.event.previous.as_ref() {
             if chain_a_saids.contains(prev) {
-                chain_a_saids.insert(evt.event.said.clone());
+                chain_a_saids.insert(evt.event.said);
             } else if chain_b_saids.contains(prev) {
-                chain_b_saids.insert(evt.event.said.clone());
+                chain_b_saids.insert(evt.event.said);
             }
         }
     }
@@ -642,7 +640,7 @@ async fn send_divergent_events(
 
 /// Verify-only: pages through source, verifies, returns `KelVerification`.
 pub async fn verify_key_events(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -668,7 +666,7 @@ pub async fn verify_key_events(
 ///
 /// The verifier must have been constructed with `with_establishment_key_collection`.
 pub async fn verify_key_events_collecting_establishment_keys(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -696,7 +694,7 @@ pub async fn verify_key_events_collecting_establishment_keys(
 /// than `page_size` due to divergence handling. Completion is signaled by the function
 /// returning.
 pub async fn verify_key_events_with<F>(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     verifier: KelVerifier,
     page_size: usize,
@@ -738,12 +736,12 @@ impl<F: FnMut(&[SignedKeyEvent]) + Send> PagedKelSink for CallbackSink<F> {
 ///
 /// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
 pub async fn forward_key_events(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     sink: &(dyn PagedKelSink + Sync),
     page_size: usize,
     max_pages: usize,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
 ) -> Result<(), KelsError> {
     transfer_key_events(prefix, source, sink, None, page_size, max_pages, since).await
 }
@@ -755,28 +753,15 @@ pub async fn forward_key_events(
 /// **WARNING:** This is an unbounded call, and should be used with care.
 #[cfg(any(test, feature = "dev-tools"))]
 pub async fn resolve_key_events(
-    prefix: &str,
+    prefix: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
 ) -> Result<Vec<SignedKeyEvent>, KelsError> {
     let sink = CollectSink::new();
     transfer_key_events(prefix, source, &sink, None, page_size, max_pages, since).await?;
     Ok(sink.into_events().await)
-}
-
-/// Benchmark: pages through source, discards events (no verification, no collection).
-///
-/// `since` optionally starts the transfer from a specific SAID cursor (delta fetch).
-pub async fn benchmark_key_events(
-    prefix: &str,
-    source: &(dyn PagedKelSource + Sync),
-    page_size: usize,
-    max_pages: usize,
-    since: Option<&str>,
-) -> Result<(), KelsError> {
-    transfer_key_events(prefix, source, &NoOpSink, None, page_size, max_pages, since).await
 }
 
 #[cfg(test)]
@@ -788,7 +773,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use cesr::{Digest, Matter, SigningKey, VerificationKeyCode};
+    use cesr::{Digest, Matter, SigningKey, VerificationKeyCode, test_digest};
     use verifiable_storage::Chained;
 
     use super::super::verification::*;
@@ -808,8 +793,8 @@ mod tests {
     }
 
     /// Create a valid CESR anchor digest from a test label
-    fn anchor(label: &str) -> String {
-        Digest::blake3_256(label.as_bytes()).qb64()
+    fn anchor(label: &str) -> cesr::Digest {
+        Digest::blake3_256(label.as_bytes())
     }
 
     /// Create a SoftwareKeyProvider with random algorithm selection.
@@ -845,8 +830,8 @@ mod tests {
 
     /// Verify events with KelVerifier and return KelVerification
     fn verify(events: &[SignedKeyEvent]) -> KelVerification {
-        let prefix = events[0].event.prefix.clone();
-        let mut verifier = KelVerifier::new(&prefix);
+        let prefix = &events[0].event.prefix;
+        let mut verifier = KelVerifier::new(prefix);
         verifier.verify_page(events).unwrap();
         verifier.into_verification().unwrap()
     }
@@ -854,10 +839,10 @@ mod tests {
     /// Verify events with anchor checking and return KelVerification
     fn verify_with_anchors(
         events: &[SignedKeyEvent],
-        anchors: impl IntoIterator<Item = String>,
+        anchors: impl IntoIterator<Item = cesr::Digest>,
     ) -> KelVerification {
-        let prefix = events[0].event.prefix.clone();
-        let mut verifier = KelVerifier::new(&prefix);
+        let prefix = &events[0].event.prefix;
+        let mut verifier = KelVerifier::new(prefix);
         verifier.check_anchors(anchors);
         verifier.verify_page(events).unwrap();
         verifier.into_verification().unwrap()
@@ -880,12 +865,12 @@ mod tests {
     impl KelStore for MemoryStore {
         async fn load(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
             let guard = self.kels.read().unwrap();
-            match guard.get(prefix) {
+            match guard.get(prefix.as_ref()) {
                 Some(events) => {
                     let start = offset as usize;
                     if start >= events.len() {
@@ -902,11 +887,11 @@ mod tests {
 
         async fn load_tail(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             limit: u64,
         ) -> Result<Vec<SignedKeyEvent>, crate::error::KelsError> {
             let guard = self.kels.read().unwrap();
-            match guard.get(prefix) {
+            match guard.get(prefix.as_ref()) {
                 Some(events) => {
                     let start = events.len().saturating_sub(limit as usize);
                     Ok(events[start..].to_vec())
@@ -917,7 +902,7 @@ mod tests {
 
         async fn append(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             events: &[SignedKeyEvent],
         ) -> Result<(), crate::error::KelsError> {
             self.kels
@@ -931,18 +916,13 @@ mod tests {
 
         async fn overwrite(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             events: &[SignedKeyEvent],
         ) -> Result<(), crate::error::KelsError> {
             self.kels
                 .write()
                 .unwrap()
                 .insert(prefix.to_string(), events.to_vec());
-            Ok(())
-        }
-
-        async fn delete(&self, prefix: &str) -> Result<(), crate::error::KelsError> {
-            self.kels.write().unwrap().remove(prefix);
             Ok(())
         }
     }
@@ -960,18 +940,15 @@ mod tests {
         // Keep adding ixn until we have enough events (including auto-rors)
         while builder.pending_events().len() < target_events {
             builder
-                .interact(
-                    &Digest::blake3_256(
-                        format!("anchor-{}", builder.pending_events().len()).as_bytes(),
-                    )
-                    .qb64(),
-                )
+                .interact(&Digest::blake3_256(
+                    format!("anchor-{}", builder.pending_events().len()).as_bytes(),
+                ))
                 .await
                 .unwrap();
         }
 
         let events = builder.pending_events().to_vec();
-        let prefix = events[0].event.prefix.clone();
+        let prefix = events[0].event.prefix;
         assert!(events.len() >= target_events);
 
         // Save to MemoryStore
@@ -1011,10 +988,7 @@ mod tests {
         let page_size = crate::page_size();
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         builder1.incept().await.unwrap();
-        builder1
-            .interact(&Digest::blake3_256(b"anchor-1").qb64())
-            .await
-            .unwrap();
+        builder1.interact(&test_digest("anchor-1")).await.unwrap();
 
         // Duplicate builder after icp+ixn1 (adversary has same keys)
         let mut builder2 = builder1.clone();
@@ -1022,22 +996,19 @@ mod tests {
         // Owner continues building a long chain (2+ pages worth)
         while builder1.pending_events().len() < 2 * page_size + 1 {
             builder1
-                .interact(
-                    &Digest::blake3_256(
-                        format!("anchor-{}", builder1.pending_events().len()).as_bytes(),
-                    )
-                    .qb64(),
-                )
+                .interact(&Digest::blake3_256(
+                    format!("anchor-{}", builder1.pending_events().len()).as_bytes(),
+                ))
                 .await
                 .unwrap();
         }
 
         let owner_events = builder1.pending_events().to_vec();
-        let prefix = owner_events[0].event.prefix.clone();
+        let prefix = owner_events[0].event.prefix;
 
         // Adversary injects one event at serial 2 (divergence)
         let adversary_ixn = builder2
-            .interact(&Digest::blake3_256(b"adversary-anchor").qb64())
+            .interact(&test_digest("adversary-anchor"))
             .await
             .unwrap();
         assert_eq!(adversary_ixn.event.serial, 2);
@@ -1069,14 +1040,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_completed_verification_with_anchor_checking() {
-        use cesr::{Digest, Matter};
-
-        let target_anchor = Digest::blake3_256(b"target-anchor").qb64();
-        let missing_anchor = Digest::blake3_256(b"missing-anchor").qb64();
+        let target_anchor = test_digest("target-anchor");
+        let missing_anchor = test_digest("missing-anchor");
 
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         let ixn = builder.interact(&target_anchor).await.unwrap();
 
         let store = MemoryStore::new();
@@ -1088,7 +1057,7 @@ mod tests {
             &prefix,
             crate::page_size(),
             100,
-            iter::once(target_anchor.clone()),
+            iter::once(target_anchor),
         )
         .await
         .unwrap();
@@ -1102,7 +1071,7 @@ mod tests {
             &prefix,
             crate::page_size(),
             100,
-            iter::once(missing_anchor.clone()),
+            iter::once(missing_anchor),
         )
         .await
         .unwrap();
@@ -1116,12 +1085,12 @@ mod tests {
         // Build a KEL larger than max_pages * page_size
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         let mut events = vec![icp];
         for i in 0..20 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -1154,10 +1123,7 @@ mod tests {
     async fn test_truncate_incomplete_generation_basic() {
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         let icp = builder1.incept().await.unwrap();
-        let ixn1 = builder1
-            .interact(&Digest::blake3_256(b"a1").qb64())
-            .await
-            .unwrap();
+        let ixn1 = builder1.interact(&test_digest("a1")).await.unwrap();
 
         // Create adversary builder with same keys, reset to icp state
         let mut builder2 = KeyEventBuilder::with_events(
@@ -1166,10 +1132,7 @@ mod tests {
             None,
             vec![icp.clone()],
         );
-        let ixn2 = builder2
-            .interact(&Digest::blake3_256(b"a2").qb64())
-            .await
-            .unwrap();
+        let ixn2 = builder2.interact(&test_digest("a2")).await.unwrap();
 
         // Two events at serial 1, simulating divergence
         // If a page ends with only one of them, truncate should remove it
@@ -1192,11 +1155,11 @@ mod tests {
 
     #[test]
     fn test_compute_rotation_hash() {
-        let public_key = "1AAACk1SoB-PO_xcbaR6LgKHVgojABYjAhd4kEk7-qeS";
-        let hash = compute_rotation_hash(public_key);
-        assert_eq!(hash.len(), 44);
+        let (public_key, _) = cesr::generate_secp256r1().unwrap();
+        let hash = compute_rotation_hash(&public_key);
+        assert_eq!(hash.as_ref().len(), 44);
 
-        let hash2 = compute_rotation_hash(public_key);
+        let hash2 = compute_rotation_hash(&public_key);
         assert_eq!(hash, hash2);
     }
 
@@ -1209,20 +1172,21 @@ mod tests {
         let icp = builder.incept().await.unwrap();
 
         assert!(icp.event.is_inception());
-        assert!(!icp.event.said.is_empty());
         assert!(icp.event.previous.is_none());
         assert!(icp.event.public_key.is_some());
         assert!(icp.event.rotation_hash.is_some());
 
         let public_key = builder.current_public_key().await.unwrap();
-        let signature = cesr::Signature::from_qb64(&icp.signatures[0].signature).unwrap();
         assert!(
             public_key
-                .verify(icp.event.said.as_bytes(), &signature)
+                .verify(
+                    icp.event.said.qb64().as_bytes(),
+                    &icp.signatures[0].signature
+                )
                 .is_ok()
         );
 
-        assert_eq!(builder.prefix(), Some(icp.event.prefix.as_str()));
+        assert_eq!(builder.prefix(), Some(&icp.event.prefix));
     }
 
     #[tokio::test]
@@ -1237,7 +1201,7 @@ mod tests {
         assert!(ixn.event.is_interaction());
         assert_ne!(ixn.event.said, icp.event.said);
         assert_eq!(ixn.event.prefix, icp.event.prefix);
-        assert_eq!(ixn.event.previous, Some(icp.event.said.clone()));
+        assert_eq!(ixn.event.previous, Some(icp.event.said));
         assert_eq!(ixn.event.anchor, Some(a));
         assert!(ixn.event.public_key.is_none());
         assert!(ixn.event.rotation_hash.is_none());
@@ -1255,7 +1219,7 @@ mod tests {
         assert!(rot.event.is_rotation());
         assert_ne!(rot.event.said, icp.event.said);
         assert_eq!(rot.event.prefix, icp.event.prefix);
-        assert_eq!(rot.event.previous, Some(icp.event.said.clone()));
+        assert_eq!(rot.event.previous, Some(icp.event.said));
         assert!(rot.event.public_key.is_some());
         assert!(rot.event.rotation_hash.is_some());
 
@@ -1263,14 +1227,14 @@ mod tests {
         assert_ne!(original_public_key.qb64(), new_public_key.qb64());
 
         let rotation_hash = icp.event.rotation_hash.unwrap();
-        let expected_hash = compute_rotation_hash(&new_public_key.qb64());
+        let expected_hash = compute_rotation_hash(&new_public_key);
         assert_eq!(rotation_hash, expected_hash);
     }
 
     #[tokio::test]
     async fn test_interact_before_incept_fails() {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
-        let result = builder.interact("some_anchor").await;
+        let result = builder.interact(&anchor("some_anchor")).await;
         assert!(result.is_err());
     }
 
@@ -1310,7 +1274,7 @@ mod tests {
 
         let ixn = builder2.interact(&anchor("test")).await.unwrap();
         assert_eq!(ixn.event.prefix, icp.event.prefix);
-        assert_eq!(ixn.event.previous, Some(icp.event.said.clone()));
+        assert_eq!(ixn.event.previous, Some(icp.event.said));
     }
 
     #[tokio::test]
@@ -1335,7 +1299,7 @@ mod tests {
         );
 
         let rot = builder2.rotate().await.unwrap();
-        assert_eq!(rot.event.previous, Some(ixn2.event.said.clone()));
+        assert_eq!(rot.event.previous, Some(ixn2.event.said));
     }
 
     #[tokio::test]
@@ -1430,7 +1394,7 @@ mod tests {
         // only inserts one divergent event. The verifier must reject this as invalid.
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         let icp = builder1.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix_digest = icp.event.prefix;
         let mut builder2 = builder1.clone();
         let mut builder3 = builder1.clone();
 
@@ -1441,7 +1405,7 @@ mod tests {
         let mut events = vec![icp, ixn1, ixn2, ixn3];
         sort_events(&mut events);
 
-        let mut verifier = KelVerifier::new(&prefix);
+        let mut verifier = KelVerifier::new(&prefix_digest);
         let result = verifier.verify_page(&events);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("max 2 allowed"));
@@ -1453,7 +1417,7 @@ mod tests {
         // A second divergence (2 events at a serial after the divergence point) is invalid.
         let mut builder1 = KeyEventBuilder::new(random_provider(), None);
         let icp = builder1.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix_digest = icp.event.prefix;
         let mut builder2 = builder1.clone();
 
         // Diverge at serial 1
@@ -1467,7 +1431,7 @@ mod tests {
         let mut events = vec![icp, ixn1a, ixn1b, ixn2a, ixn2b];
         sort_events(&mut events);
 
-        let mut verifier = KelVerifier::new(&prefix);
+        let mut verifier = KelVerifier::new(&prefix_digest);
         let result = verifier.verify_page(&events);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("after divergence"));
@@ -1515,9 +1479,9 @@ mod tests {
 
         let tips = kel_verification.branch_tips();
         assert_eq!(tips.len(), 2);
-        let tip_saids: HashSet<_> = tips.iter().map(|t| t.tip.event.said.as_str()).collect();
-        assert!(tip_saids.contains(owner_ixn.event.said.as_str()));
-        assert!(tip_saids.contains(adversary_rot.event.said.as_str()));
+        let tip_saids: HashSet<_> = tips.iter().map(|t| &t.tip.event.said).collect();
+        assert!(tip_saids.contains(&owner_ixn.event.said));
+        assert!(tip_saids.contains(&adversary_rot.event.said));
     }
 
     // ==================== KelVerifier — decommission / contest ====================
@@ -1576,7 +1540,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.pending_events(), [a.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [a]);
         assert!(kel_verification.is_said_anchored(&a));
         assert!(kel_verification.anchors_all_saids());
     }
@@ -1589,7 +1553,7 @@ mod tests {
         builder.incept().await.unwrap();
         builder.interact(&a).await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.pending_events(), [missing.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [missing]);
         assert!(!kel_verification.is_said_anchored(&missing));
         assert!(!kel_verification.anchors_all_saids());
     }
@@ -1600,7 +1564,7 @@ mod tests {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         builder.incept().await.unwrap();
 
-        let kel_verification = verify_with_anchors(builder.pending_events(), [missing.clone()]);
+        let kel_verification = verify_with_anchors(builder.pending_events(), [missing]);
         assert!(!kel_verification.is_said_anchored(&missing));
     }
 
@@ -1620,7 +1584,7 @@ mod tests {
         events.push(adversary_ixn2);
         sort_events(&mut events);
 
-        let kel_verification = verify_with_anchors(&events, [a_pre.clone()]);
+        let kel_verification = verify_with_anchors(&events, [a_pre]);
         assert!(kel_verification.is_divergent());
         assert_eq!(kel_verification.diverged_at_serial(), Some(2));
         assert!(kel_verification.is_said_anchored(&a_pre));
@@ -1647,8 +1611,7 @@ mod tests {
         events.push(adversary_ixn);
         sort_events(&mut events);
 
-        let kel_verification =
-            verify_with_anchors(&events, [a_pre.clone(), a_owner.clone(), a_adv.clone()]);
+        let kel_verification = verify_with_anchors(&events, [a_pre, a_owner, a_adv]);
         assert!(kel_verification.is_divergent());
         // Pre-divergence anchor is trusted
         assert!(kel_verification.is_said_anchored(&a_pre));
@@ -1680,7 +1643,7 @@ mod tests {
         events.push(adv_ixn);
         sort_events(&mut events);
 
-        let kel_verification = verify_with_anchors(&events, [a_pre.clone(), a_post.clone()]);
+        let kel_verification = verify_with_anchors(&events, [a_pre, a_post]);
         assert!(kel_verification.is_divergent());
         assert_eq!(kel_verification.diverged_at_serial(), Some(2));
         // Pre-divergence anchor is trusted
@@ -1694,12 +1657,12 @@ mod tests {
         // Boundary: KEL fits exactly within max_pages * page_size — should succeed.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         let mut events = vec![icp];
         for i in 0..9 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -1727,12 +1690,12 @@ mod tests {
         // One event over max_pages * page_size — should fail secure.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         let mut events = vec![icp];
         for i in 0..10 {
             let ixn = builder
-                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()).qb64())
+                .interact(&Digest::blake3_256(format!("anchor-{}", i).as_bytes()))
                 .await
                 .unwrap();
             events.push(ixn);
@@ -1763,10 +1726,7 @@ mod tests {
         let ixn = builder.interact(&anchor("test")).await.unwrap();
 
         let kel_verification = verify(builder.pending_events());
-        assert_eq!(
-            kel_verification.effective_tail_said(),
-            Some(ixn.event.said.clone())
-        );
+        assert_eq!(kel_verification.effective_tail_said(), Some(ixn.event.said));
     }
 
     #[tokio::test]
@@ -1848,8 +1808,8 @@ mod tests {
 
         let ixn2 = builder.interact(&anchor("a2")).await.unwrap();
 
-        let prefix = kel_verification.prefix().to_string();
-        let mut verifier = KelVerifier::resume(&prefix, &kel_verification).unwrap();
+        let mut verifier =
+            KelVerifier::resume(kel_verification.prefix(), &kel_verification).unwrap();
         verifier.verify_page(slice::from_ref(&ixn2)).unwrap();
         let kel_verification2 = verifier.into_verification().unwrap();
 
@@ -1942,7 +1902,7 @@ mod tests {
         // tracked correctly across page boundaries.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         for i in 0..39 {
             if i % 10 == 9 {
@@ -1999,7 +1959,7 @@ mod tests {
         // Verify both are found with completed_verification.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         let early_anchor = anchor("early-target");
         let late_anchor = anchor("late-target");
@@ -2038,7 +1998,7 @@ mod tests {
             &prefix,
             crate::page_size(),
             10,
-            vec![early_anchor.clone(), late_anchor.clone()],
+            vec![early_anchor, late_anchor],
         )
         .await
         .unwrap();
@@ -2057,7 +2017,7 @@ mod tests {
         let page_size = crate::page_size();
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         owner.incept().await.unwrap();
-        let prefix = owner.pending_events()[0].event.prefix.clone();
+        let prefix = owner.pending_events()[0].event.prefix;
 
         // Fill first page (page_size events including icp)
         while owner.pending_events().len() < page_size {
@@ -2107,7 +2067,7 @@ mod tests {
         let page_size = crate::page_size();
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         owner.incept().await.unwrap();
-        let prefix = owner.pending_events()[0].event.prefix.clone();
+        let prefix = owner.pending_events()[0].event.prefix;
         let mut adversary = owner.clone();
 
         // Owner builds long chain (2+ pages including auto-rors)
@@ -2147,10 +2107,10 @@ mod tests {
         let tip_saids: HashSet<_> = kel_verification
             .branch_tips()
             .iter()
-            .map(|t| t.tip.event.said.as_str())
+            .map(|t| &t.tip.event.said)
             .collect();
-        assert!(tip_saids.contains(owner_tip.event.said.as_str()));
-        assert!(tip_saids.contains(adv_ixn.event.said.as_str()));
+        assert!(tip_saids.contains(&owner_tip.event.said));
+        assert!(tip_saids.contains(&adv_ixn.event.said));
     }
 
     // ---- Divergence with rotations on both branches ----
@@ -2315,14 +2275,14 @@ mod tests {
         assert_eq!(kel_verification1.branch_tips()[0].tip.event.serial, 9);
 
         // Resume and verify next 10
-        let prefix = kel_verification1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
+        let prefix_digest = *kel_verification1.prefix();
+        let mut v2 = KelVerifier::resume(&prefix_digest, &kel_verification1).unwrap();
         v2.verify_page(&events[10..20]).unwrap();
         let kel_verification2 = v2.into_verification().unwrap();
         assert_eq!(kel_verification2.branch_tips()[0].tip.event.serial, 19);
 
         // Resume and verify last 10
-        let mut v3 = KelVerifier::resume(&prefix, &kel_verification2).unwrap();
+        let mut v3 = KelVerifier::resume(&prefix_digest, &kel_verification2).unwrap();
         v3.verify_page(&events[20..30]).unwrap();
         let kel_verification3 = v3.into_verification().unwrap();
         assert_eq!(kel_verification3.branch_tips()[0].tip.event.serial, 29);
@@ -2357,8 +2317,8 @@ mod tests {
         let owner_ixn2 = owner.interact(&anchor("o2")).await.unwrap();
         let page2 = vec![owner_ixn2.clone()];
 
-        let prefix = kel_verification1.prefix().to_string();
-        let mut v2 = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
+        let prefix_digest = *kel_verification1.prefix();
+        let mut v2 = KelVerifier::resume(&prefix_digest, &kel_verification1).unwrap();
         v2.verify_page(&page2).unwrap();
         let kel_verification2 = v2.into_verification().unwrap();
 
@@ -2379,16 +2339,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_delegated_inception_verifies() {
+        let delegating_prefix = anchor("delegating");
         let mut builder = KeyEventBuilder::new(random_provider(), None);
-        let dip = builder
-            .incept_delegated("KDelegatingPrefix________________________________")
-            .await
-            .unwrap();
+        let dip = builder.incept_delegated(&delegating_prefix).await.unwrap();
 
         assert!(dip.event.is_delegated_inception());
         assert_eq!(
-            dip.event.delegating_prefix.as_deref(),
-            Some("KDelegatingPrefix________________________________")
+            dip.event.delegating_prefix.as_ref(),
+            Some(&delegating_prefix)
         );
 
         let ixn = builder.interact(&anchor("delegated-data")).await.unwrap();
@@ -2513,7 +2471,7 @@ mod tests {
         // Page 2: serials 6-7 (2 events).
         let mut b1 = KeyEventBuilder::new(random_provider(), None);
         let icp = b1.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         // 4 linear events (serials 1-4)
         for i in 0..4 {
@@ -2571,7 +2529,7 @@ mod tests {
         // verify divergence, owner recovers, verify recovery.
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         // Normal operations
         owner.interact(&anchor("data-1")).await.unwrap();
@@ -2697,7 +2655,7 @@ mod tests {
         let store = MemoryStore::new();
         let kel_verification = completed_verification(
             &mut StorePageLoader::new(&store),
-            "KNonexistent_Prefix_________________________",
+            &test_digest("nonexistent-prefix"),
             crate::page_size(),
             10,
             iter::empty(),
@@ -2746,7 +2704,7 @@ mod tests {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         builder.incept().await.unwrap();
 
-        let mut verifier = KelVerifier::new("KWrongPrefix____________________________________");
+        let mut verifier = KelVerifier::new(&anchor("wrong_prefix"));
         let result = verifier.verify_page(builder.pending_events());
         assert!(result.is_err());
     }
@@ -2762,8 +2720,8 @@ mod tests {
 
         let events = builder.pending_events().to_vec();
         // Skip serial 1, feed serial 0 then serial 2
-        let prefix = events[0].event.prefix.clone();
-        let mut verifier = KelVerifier::new(&prefix);
+        let prefix_digest = events[0].event.prefix;
+        let mut verifier = KelVerifier::new(&prefix_digest);
         verifier.verify_page(slice::from_ref(&events[0])).unwrap();
         let result = verifier.verify_page(slice::from_ref(&events[2]));
         assert!(result.is_err());
@@ -2777,7 +2735,7 @@ mod tests {
         // pagination loop in completed_verification.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         for i in 0..29 {
             builder
@@ -2825,24 +2783,24 @@ mod tests {
         /// Compute effective SAID matching the real serving layer:
         /// single tip → its SAID, contested → hash("contested:{prefix}"),
         /// divergent → hash("divergent:{prefix}").
-        fn effective_said(&self) -> Option<String> {
+        fn effective_said(&self) -> Option<cesr::Digest> {
             if self.events.is_empty() {
                 return None;
             }
             let prefix = &self.events[0].event.prefix;
-            let referenced: std::collections::HashSet<&str> = self
+            let referenced: std::collections::HashSet<&cesr::Digest> = self
                 .events
                 .iter()
-                .filter_map(|e| e.event.previous.as_deref())
+                .filter_map(|e| e.event.previous.as_ref())
                 .collect();
             let tips: Vec<&SignedKeyEvent> = self
                 .events
                 .iter()
-                .filter(|e| !referenced.contains(e.event.said.as_str()))
+                .filter(|e| !referenced.contains(&e.event.said))
                 .collect();
             match tips.len() {
                 0 => None,
-                1 => Some(tips[0].event.said.clone()),
+                1 => Some(tips[0].event.said),
                 _ => {
                     if tips.iter().any(|e| e.event.is_contest()) {
                         Some(crate::hash_effective_said(&format!("contested:{}", prefix)))
@@ -2858,15 +2816,15 @@ mod tests {
     impl PagedKelSource for MemoryKelSource {
         async fn fetch_page(
             &self,
-            _prefix: &str,
-            since: Option<&str>,
+            _prefix: &cesr::Digest,
+            since: Option<&cesr::Digest>,
             limit: usize,
         ) -> Result<(Vec<SignedKeyEvent>, bool), crate::error::KelsError> {
             let start = match since {
                 Some(said) => {
-                    if let Some(i) = self.events.iter().position(|e| e.event.said == said) {
+                    if let Some(i) = self.events.iter().position(|e| &e.event.said == said) {
                         i + 1
-                    } else if self.effective_said().as_deref() == Some(said) {
+                    } else if self.effective_said().as_ref() == Some(said) {
                         // Composite SAID matches effective — caller is in sync
                         return Ok((vec![], false));
                     } else {
@@ -2890,7 +2848,7 @@ mod tests {
     async fn test_verify_key_events_linear() {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         builder.interact(&anchor("a1")).await.unwrap();
         builder.interact(&anchor("a2")).await.unwrap();
 
@@ -2914,7 +2872,7 @@ mod tests {
     async fn test_resolve_key_events_linear() {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         builder.interact(&anchor("a1")).await.unwrap();
 
         let source = MemoryKelSource::new(builder.pending_events().to_vec());
@@ -2929,7 +2887,7 @@ mod tests {
     async fn test_forward_key_events_linear() {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         builder.interact(&anchor("a1")).await.unwrap();
 
         let source = MemoryKelSource::new(builder.pending_events().to_vec());
@@ -2948,7 +2906,7 @@ mod tests {
         // Adversary: a1 at serial 2 (diverges from o1)
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         let o1 = owner.interact(&anchor("o1")).await.unwrap();
 
         // Clone builder for adversary after serial 1
@@ -2988,7 +2946,7 @@ mod tests {
         // Test divergence at the end of a page boundary
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         owner.interact(&anchor("o1")).await.unwrap();
 
         let mut adversary = owner.clone();
@@ -3021,7 +2979,7 @@ mod tests {
         // Structural divergence detection works without crypto verification
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         owner.interact(&anchor("o1")).await.unwrap();
 
         let mut adversary = owner.clone();
@@ -3040,8 +2998,9 @@ mod tests {
 
         assert_eq!(events.len(), 4); // icp(0) + o1(1) + o2(2) + a1(2) = 4
         // Both serial-2 events present, one deferred to last position
-        let last_two_saids: Vec<&str> = events[2..].iter().map(|e| e.event.said.as_str()).collect();
-        assert!(last_two_saids.contains(&a1.event.said.as_str()));
+        let last_two_saids: Vec<&cesr::Digest> =
+            events[2..].iter().map(|e| &e.event.said).collect();
+        assert!(last_two_saids.contains(&&a1.event.said));
     }
 
     // ==================== Divergent Transfer: Exhaustive Cases ====================
@@ -3061,13 +3020,13 @@ mod tests {
         recovery: &str, // "none", "rec", "rec+rot", "cnt"
     ) -> (
         Vec<SignedKeyEvent>,
-        String,         // prefix
-        Vec<String>,    // owner chain SAIDs (includes rec/rot if present)
-        Option<String>, // adversary fork SAID
+        cesr::Digest,         // prefix
+        Vec<cesr::Digest>,    // owner chain SAIDs (includes rec/rot if present)
+        Option<cesr::Digest>, // adversary fork SAID
     ) {
         let mut owner = KeyEventBuilder::new(random_provider(), None);
         let icp = owner.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         // Pre-divergence event
         owner.interact(&anchor("shared")).await.unwrap();
@@ -3088,7 +3047,7 @@ mod tests {
                 .interact(&anchor(&format!("owner-{i}")))
                 .await
                 .unwrap();
-            owner_saids.push(evt.event.said.clone());
+            owner_saids.push(evt.event.said);
         }
 
         // Adversary events after fork point
@@ -3105,26 +3064,26 @@ mod tests {
             };
             adversary_events.push(evt);
         }
-        let adversary_fork_said = adversary_events.first().map(|e| e.event.said.clone());
+        let adversary_fork_said = adversary_events.first().map(|e| e.event.said);
 
         // Recovery
         match recovery {
             "rec" => {
                 let rec = owner.recover(false).await.unwrap();
-                owner_saids.push(rec.event.said.clone());
+                owner_saids.push(rec.event.said);
             }
             "rec+rot" => {
                 let rot = owner.recover(true).await.unwrap();
                 // recover(true) returns the rot, but both rec+rot are in pending_events
                 let pending = owner.pending_events();
                 // rec is second-to-last, rot is last
-                let rec_said = pending[pending.len() - 2].event.said.clone();
+                let rec_said = pending[pending.len() - 2].event.said;
                 owner_saids.push(rec_said);
-                owner_saids.push(rot.event.said.clone());
+                owner_saids.push(rot.event.said);
             }
             "cnt" => {
                 let cnt = owner.contest().await.unwrap();
-                owner_saids.push(cnt.event.said.clone());
+                owner_saids.push(cnt.event.said);
             }
             _ => {} // "none"
         }
@@ -3141,8 +3100,8 @@ mod tests {
     /// Shorter fork should be last.
     fn verify_transfer_ordering(
         collected: &[SignedKeyEvent],
-        owner_saids: &[String],
-        adversary_fork_said: Option<&str>,
+        owner_saids: &[cesr::Digest],
+        adversary_fork_said: Option<&cesr::Digest>,
         owner_event_count: usize,
         adversary_event_count: usize,
     ) {
@@ -3150,7 +3109,7 @@ mod tests {
         if owner_event_count > adversary_event_count {
             assert_eq!(
                 collected.last().unwrap().event.said,
-                adversary_fork_said.unwrap(),
+                *adversary_fork_said.unwrap(),
                 "Expected adversary fork last (shorter chain)"
             );
         } else if adversary_event_count > owner_event_count {
@@ -3259,7 +3218,7 @@ mod tests {
             .unwrap();
 
         let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 5, 1);
+        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_ref(), 5, 1);
     }
 
     // Case 10: Contested KEL (adversary reveals recovery key, owner contests)
@@ -3273,7 +3232,7 @@ mod tests {
             .unwrap();
 
         let collected = sink.into_events().await;
-        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_deref(), 1, 1);
+        verify_transfer_ordering(&collected, &owner_saids, adv_fork.as_ref(), 1, 1);
     }
 
     // Regression: contested KEL must transfer the cnt event, not just the fork
@@ -3352,7 +3311,7 @@ mod tests {
     async fn test_transfer_key_events_max_pages() {
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         for i in 0..10 {
             builder.interact(&anchor(&format!("a{}", i))).await.unwrap();
         }
@@ -3372,7 +3331,7 @@ mod tests {
         // Phase 2: add more events with new anchors, resume, verify new anchors.
         let mut builder = KeyEventBuilder::new(random_provider(), None);
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
 
         let anchor1 = anchor("phase1-anchor");
         builder.interact(&anchor1).await.unwrap();
@@ -3395,7 +3354,7 @@ mod tests {
             &prefix,
             5,
             100,
-            vec![anchor1.clone()],
+            vec![anchor1],
         )
         .await
         .unwrap();
@@ -3414,8 +3373,9 @@ mod tests {
 
         // Resume from kel_verification1 and check new anchor
         let new_events = &builder.pending_events()[10..]; // events after kel_verification1
-        let mut verifier = KelVerifier::resume(&prefix, &kel_verification1).unwrap();
-        verifier.check_anchors(vec![anchor2.clone()]);
+        let mut verifier =
+            KelVerifier::resume(kel_verification1.prefix(), &kel_verification1).unwrap();
+        verifier.check_anchors(vec![anchor2]);
         verifier.verify_page(new_events).unwrap();
         let kel_verification2 = verifier.into_verification().unwrap();
 

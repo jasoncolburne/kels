@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use kels_gossip_core::Gossip;
-use kels_gossip_core::identity::NodePrefix;
 use kels_gossip_core::net::actor::Event;
 use kels_gossip_core::proto::TopicId;
 use thiserror::Error;
@@ -18,13 +17,13 @@ use kels_exchange::MailAnnouncement;
 use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
 
 /// Default gossip topic name for KEL announcements
-pub const DEFAULT_TOPIC: &str = "kels/events/v1";
+pub const DEFAULT_TOPIC: &str = "kels/gossip/v1/topics/events";
 
 /// Gossip topic name for SAD store announcements
-pub const SAD_TOPIC: &str = "kels/sad/v1";
+pub const SAD_TOPIC: &str = "kels/gossip/v1/topics/sad";
 
 /// Gossip topic name for mail announcements
-pub const MAIL_TOPIC: &str = "kels/mail/v1";
+pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
 
 #[derive(Error, Debug)]
 pub enum GossipError {
@@ -56,7 +55,7 @@ pub async fn run_gossip(
     mail_topic: TopicId,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
-    local_node_prefix: NodePrefix,
+    local_node_prefix: cesr::Digest,
 ) -> Result<(), GossipError> {
     let mut event_rx = gossip_handle.subscribe();
 
@@ -105,11 +104,9 @@ pub async fn run_gossip(
                         if msg.topic == kel_topic {
                             match serde_json::from_slice::<KelAnnouncement>(&msg.content) {
                                 Ok(announcement) => {
-                                    let delivered_from_str = msg.delivered_from.to_option_string()
-                                        .unwrap_or_else(|| "<invalid>".to_string());
                                     debug!(
                                         "Received KEL announcement via {}: prefix={}, said={}",
-                                        delivered_from_str, announcement.prefix, announcement.said
+                                        msg.delivered_from, announcement.prefix, announcement.said
                                     );
                                     event_tx
                                         .send(GossipEvent::KelAnnouncementReceived { announcement })
@@ -150,17 +147,13 @@ pub async fn run_gossip(
                             debug!("Received message for unknown topic");
                         }
                     }
-                    Ok(Event::NeighborUp(id)) => {
-                        let prefix_str = id.to_option_string()
-                            .unwrap_or_else(|| "<invalid>".to_string());
-                        debug!("Connected to peer: {}", prefix_str);
-                        let _ = event_tx.send(GossipEvent::PeerConnected(prefix_str)).await;
+                    Ok(Event::NeighborUp(prefix)) => {
+                        debug!("Connected to peer: {}", prefix);
+                        let _ = event_tx.send(GossipEvent::PeerConnected(prefix)).await;
                     }
-                    Ok(Event::NeighborDown(id)) => {
-                        let prefix_str = id.to_option_string()
-                            .unwrap_or_else(|| "<invalid>".to_string());
-                        debug!("Disconnected from peer: {}", prefix_str);
-                        let _ = event_tx.send(GossipEvent::PeerDisconnected(prefix_str)).await;
+                    Ok(Event::NeighborDown(prefix)) => {
+                        debug!("Disconnected from peer: {}", prefix);
+                        let _ = event_tx.send(GossipEvent::PeerDisconnected(prefix)).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!("Gossip event subscriber lagged by {} messages", n);
@@ -181,12 +174,12 @@ mod tests {
 
     #[test]
     fn test_default_topic_constant() {
-        assert_eq!(DEFAULT_TOPIC, "kels/events/v1");
+        assert_eq!(DEFAULT_TOPIC, "kels/gossip/v1/topics/events");
     }
 
     #[test]
     fn test_sad_topic_constant() {
-        assert_eq!(SAD_TOPIC, "kels/sad/v1");
+        assert_eq!(SAD_TOPIC, "kels/gossip/v1/topics/sad");
     }
 
     #[test]

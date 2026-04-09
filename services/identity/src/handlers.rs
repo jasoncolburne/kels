@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cesr::Matter;
 use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
     ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
@@ -23,13 +24,13 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRequest {
-    pub said: String,
+    pub said: cesr::Digest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorResponse {
-    pub event_said: String,
+    pub event_said: cesr::Digest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,9 +101,7 @@ pub async fn get_identity(
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    Ok(Json(IdentityInfo {
-        prefix: prefix.to_string(),
-    }))
+    Ok(Json(IdentityInfo { prefix: *prefix }))
 }
 
 pub async fn get_status(
@@ -110,7 +109,7 @@ pub async fn get_status(
 ) -> Result<Json<kels_core::IdentityStatus>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = match builder.prefix() {
-        Some(p) => p.to_string(),
+        Some(p) => *p,
         None => {
             return Ok(Json(kels_core::IdentityStatus {
                 initialized: false,
@@ -160,10 +159,16 @@ pub async fn get_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
+    let since_digest = query
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
         prefix,
-        query.since.as_deref(),
+        since_digest.as_ref(),
         limit,
     )
     .await?;
@@ -172,7 +177,7 @@ pub async fn get_key_events(
 }
 
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
-pub(crate) async fn forward_kel(state: &AppState, prefix: &str) {
+pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest) {
     let forward_url = match state.forward_url.as_ref() {
         Some(url) => url,
         None => return,
@@ -223,10 +228,9 @@ pub async fn anchor(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to reload KEL: {}", e)))?;
 
-    let prefix = builder
+    let prefix = *builder
         .prefix()
-        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-        .to_string();
+        .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
     let ixn = builder
         .interact(&request.said)
@@ -258,7 +262,6 @@ pub async fn sign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SignRequest>,
 ) -> Result<Json<SignResponse>, ApiError> {
-    use cesr::Matter;
     use kels_core::KeyProvider;
 
     let builder = state.builder.read().await;
@@ -269,9 +272,7 @@ pub async fn sign(
         .await
         .map_err(|e| ApiError::internal(format!("Signing failed: {}", e)))?;
 
-    Ok(Json(SignResponse {
-        signature: signature.qb64(),
-    }))
+    Ok(Json(SignResponse { signature }))
 }
 
 pub async fn manage_kel(
@@ -280,10 +281,9 @@ pub async fn manage_kel(
 ) -> Result<Json<ManageKelResponse>, ApiError> {
     let prefix = {
         let builder = state.builder.read().await;
-        builder
+        *builder
             .prefix()
             .ok_or_else(|| ApiError::internal("Builder has no prefix"))?
-            .to_string()
     };
 
     if signed.payload.prefix != prefix {
@@ -335,6 +335,8 @@ pub async fn manage_kel(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     // ==================== ApiError Tests ====================
@@ -372,29 +374,28 @@ mod tests {
 
     #[test]
     fn test_anchor_request_deserialization() {
-        let json = r#"{"said": "ESAID123456"}"#;
-        let request: AnchorRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.said, "ESAID123456");
+        let digest = test_digest("test-anchor");
+        let json = serde_json::to_string(&AnchorRequest { said: digest }).unwrap();
+        let request: AnchorRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.said, digest);
     }
 
     #[test]
     fn test_anchor_response_serialization() {
-        let response = AnchorResponse {
-            event_said: "ENEWEVENT789".to_string(),
-        };
+        let digest = test_digest("new-event-789");
+        let response = AnchorResponse { event_said: digest };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("eventSaid")); // camelCase
-        assert!(json.contains("ENEWEVENT789"));
+        assert!(json.contains(digest.as_ref()));
     }
 
     #[test]
     fn test_identity_info_serialization() {
-        let info = IdentityInfo {
-            prefix: "EPREFIX123".to_string(),
-        };
+        let prefix = test_digest("prefix-123");
+        let info = IdentityInfo { prefix };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("prefix"));
-        assert!(json.contains("EPREFIX123"));
+        assert!(json.contains(prefix.as_ref()));
     }
 
     #[test]
@@ -445,7 +446,7 @@ mod tests {
     #[test]
     fn test_anchor_request_roundtrip() {
         let original = AnchorRequest {
-            said: "ESAID123".to_string(),
+            said: test_digest("said-123"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorRequest = serde_json::from_str(&json).unwrap();
@@ -455,7 +456,7 @@ mod tests {
     #[test]
     fn test_anchor_response_roundtrip() {
         let original = AnchorResponse {
-            event_said: "EEVENT456".to_string(),
+            event_said: test_digest("event-456"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: AnchorResponse = serde_json::from_str(&json).unwrap();
@@ -465,7 +466,7 @@ mod tests {
     #[test]
     fn test_identity_info_roundtrip() {
         let original = IdentityInfo {
-            prefix: "EPREFIX".to_string(),
+            prefix: test_digest("prefix"),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();

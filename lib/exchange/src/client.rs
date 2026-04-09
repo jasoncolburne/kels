@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use base64::Engine;
-use cesr::Matter;
 use kels_core::{KeyProvider, PeerSigner, SignedRequest, sign_request};
 
 use crate::{MailAnnouncement, MailMessage};
@@ -30,7 +29,7 @@ pub struct ReplicateRequest {
 pub struct RemoveRequest {
     pub timestamp: i64,
     pub nonce: String,
-    pub said: String,
+    pub said: cesr::Digest,
 }
 
 impl MailClient {
@@ -53,7 +52,7 @@ impl MailClient {
     ) -> Result<(), MailClientError> {
         let payload = ReplicateRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
             message: message.clone(),
         };
         let signed = sign_request(signer, &payload)
@@ -78,11 +77,15 @@ impl MailClient {
     }
 
     /// Remove a mail message by SAID (gossip-received removal).
-    pub async fn remove(&self, said: &str, signer: &dyn PeerSigner) -> Result<(), MailClientError> {
+    pub async fn remove(
+        &self,
+        said: &cesr::Digest,
+        signer: &dyn PeerSigner,
+    ) -> Result<(), MailClientError> {
         let payload = RemoveRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            said: said.to_string(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
+            said: *said,
         };
         let signed = sign_request(signer, &payload)
             .await
@@ -120,15 +123,15 @@ impl MailClient {
     /// Send an ESSR-encrypted envelope to a recipient.
     pub async fn send(
         &self,
-        prefix: &str,
-        recipient: &str,
+        prefix: &cesr::Digest,
+        recipient: &cesr::Digest,
         envelope_bytes: &[u8],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
         let send_request = crate::SendRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            recipient_kel_prefix: recipient.to_string(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
+            recipient_kel_prefix: *recipient,
             blob: base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
         };
 
@@ -141,8 +144,8 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: send_request,
-            prefix: prefix.to_string(),
-            signature: signature.qb64(),
+            prefix: *prefix,
+            signature,
         };
 
         let resp = self
@@ -165,12 +168,12 @@ impl MailClient {
     /// Check inbox for messages.
     pub async fn inbox(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         provider: &dyn KeyProvider,
     ) -> Result<crate::InboxResponse, MailClientError> {
         let inbox_request = crate::InboxRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
             limit: None,
             offset: None,
         };
@@ -184,8 +187,8 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: inbox_request,
-            prefix: prefix.to_string(),
-            signature: signature.qb64(),
+            prefix: *prefix,
+            signature,
         };
 
         let resp = self
@@ -208,14 +211,14 @@ impl MailClient {
     /// Fetch a mail blob by SAID.
     pub async fn fetch(
         &self,
-        prefix: &str,
-        mail_said: &str,
+        prefix: &cesr::Digest,
+        mail_said: &cesr::Digest,
         provider: &dyn KeyProvider,
     ) -> Result<Vec<u8>, MailClientError> {
         let fetch_request = crate::FetchRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            mail_said: mail_said.to_string(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
+            mail_said: *mail_said,
         };
 
         let request_json = serde_json::to_vec(&fetch_request)
@@ -227,8 +230,8 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: fetch_request,
-            prefix: prefix.to_string(),
-            signature: signature.qb64(),
+            prefix: *prefix,
+            signature,
         };
 
         let resp = self
@@ -251,13 +254,13 @@ impl MailClient {
     /// Acknowledge (delete) messages by SAIDs.
     pub async fn ack(
         &self,
-        prefix: &str,
-        saids: &[String],
+        prefix: &cesr::Digest,
+        saids: &[cesr::Digest],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
         let ack_request = crate::AckRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
+            nonce: kels_core::crypto::generate_nonce().to_string(),
             saids: saids.to_vec(),
         };
 
@@ -270,8 +273,8 @@ impl MailClient {
 
         let signed_request = SignedRequest {
             payload: ack_request,
-            prefix: prefix.to_string(),
-            signature: signature.qb64(),
+            prefix: *prefix,
+            signature,
         };
 
         let resp = self

@@ -1,19 +1,15 @@
 //! Allowlist-based peer authorization.
 //!
-//! Manages the shared allowlist of authorized peers, keyed by peer_prefix (KELS prefix string).
+//! Manages the shared allowlist of authorized peers, keyed by peer KEL prefix.
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use cesr::Matter;
 use thiserror::Error;
 use verifiable_storage::Chained;
 
@@ -25,12 +21,8 @@ pub enum AllowlistRefreshError {
     KelVerificationFailed(String),
 }
 
-/// Shared allowlist type - maps peer_prefix (KELS prefix string) to full Peer data
-pub type SharedAllowlist = Arc<RwLock<HashMap<String, kels_core::Peer>>>;
-
-/// Shared flag: true if any peer in the federation uses ML-DSA-87, requiring ML-KEM-1024.
-/// Initialized to `true` (fail secure — use KEM-1024 until federation algorithms are known).
-pub type RequiresKem1024 = Arc<AtomicBool>;
+/// Shared allowlist type - maps peer KEL prefix to full Peer data
+pub type SharedAllowlist = Arc<RwLock<HashMap<cesr::Digest, kels_core::Peer>>>;
 
 /// Fetch peers from registry and update the allowlist with full KEL verification.
 ///
@@ -41,20 +33,15 @@ pub type RequiresKem1024 = Arc<AtomicBool>;
 /// 4. For peers: verifies an approved proposal exists with sufficient votes,
 ///    where each vote passes SAID integrity (`verify()`) and KEL anchoring checks
 ///
-/// Also checks each authorized peer's KEL signing algorithm via the local KELS service.
-/// If any peer uses ML-DSA-87, sets `requires_kem_1024` to true (all connections use ML-KEM-1024).
-///
 /// Returns the number of authorized peers in the updated allowlist.
 pub async fn refresh_allowlist(
     registry_urls: &[String],
     registry_kel_store: &(dyn kels_core::KelStore + Sync),
     allowlist: &SharedAllowlist,
     exclude_node_id: Option<&str>,
-    requires_kem_1024: &RequiresKem1024,
-    kels_url: &str,
 ) -> Result<usize, AllowlistRefreshError> {
     let original_peers = allowlist.read().await;
-    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said.clone()).collect();
+    let original_saids: HashSet<_> = original_peers.values().map(|p| p.said).collect();
     drop(original_peers);
 
     let trusted = kels_core::trusted_prefixes();
@@ -92,7 +79,7 @@ pub async fn refresh_allowlist(
             // Verify the peer record's SAID matches its content
             if let Err(e) = latest.verify() {
                 warn!(
-                    peer_prefix = %latest.peer_prefix,
+                    peer_kel_prefix = %latest.kel_prefix,
                     said = %latest.said,
                     error = %e,
                     "Peer record SAID verification failed, skipping"
@@ -106,7 +93,7 @@ pub async fn refresh_allowlist(
                 Ok(true) => {}
                 Ok(false) => {
                     warn!(
-                        peer_prefix = %latest.peer_prefix,
+                        peer_kel_prefix = %latest.kel_prefix,
                         said = %latest.said,
                         "Peer SAID not anchored in registry KEL, skipping"
                     );
@@ -114,7 +101,7 @@ pub async fn refresh_allowlist(
                 }
                 Err(e) => {
                     warn!(
-                        peer_prefix = %latest.peer_prefix,
+                        peer_kel_prefix = %latest.kel_prefix,
                         error = %e,
                         "Failed to verify peer anchoring, skipping"
                     );
@@ -122,13 +109,13 @@ pub async fn refresh_allowlist(
                 }
             }
 
-            debug!(peer_prefix = %latest.peer_prefix, "allowlist: peer anchoring OK, checking votes...");
+            debug!(peer_kel_prefix = %latest.kel_prefix, "allowlist: peer anchoring OK, checking votes...");
 
             // Verify the proposal has sufficient verified votes
             let tv = std::time::Instant::now();
             if !kels_core::verify_peer_votes(
                 registry_kel_store,
-                &latest.peer_prefix,
+                &latest.kel_prefix,
                 &proposals_response,
                 &trusted,
                 registry_urls,
@@ -136,77 +123,22 @@ pub async fn refresh_allowlist(
             .await
             {
                 warn!(
-                    peer_prefix = %latest.peer_prefix,
+                    peer_kel_prefix = %latest.kel_prefix,
                     "Peer not backed by sufficient verified votes, skipping"
                 );
                 continue;
             }
 
             debug!(
-                peer_prefix = %latest.peer_prefix,
+                peer_kel_prefix = %latest.kel_prefix,
                 elapsed = ?tv.elapsed(),
                 "allowlist: vote verification complete"
             );
 
             if latest.active {
-                authorized_peers.insert(latest.peer_prefix.clone(), latest.clone());
+                authorized_peers.insert(latest.kel_prefix, latest.clone());
             }
         }
-    }
-
-    // Check all authorized peers' signing algorithms (including self, before exclusion).
-    // If any peer uses ML-DSA-87, all connections must use ML-KEM-1024.
-    let mut any_dsa_87 = false;
-    for peer_prefix in authorized_peers.keys() {
-        let source = match kels_core::HttpKelSource::new(kels_url, "/api/v1/kels/kel/{prefix}") {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(peer_prefix, error = %e, "Failed to build HTTP client for algorithm check, assuming ML-DSA-87 (fail secure)");
-                any_dsa_87 = true;
-                break;
-            }
-        };
-        match kels_core::verify_key_events(
-            peer_prefix,
-            &source,
-            kels_core::KelVerifier::new(peer_prefix),
-            kels_core::page_size(),
-            kels_core::max_pages(),
-        )
-        .await
-        {
-            Ok(verification) => {
-                if let Some(qb64_key) = verification.current_public_key()
-                    && let Ok(pk) = cesr::VerificationKey::from_qb64(qb64_key)
-                    && pk.code() == cesr::VerificationKeyCode::MlDsa87.code()
-                {
-                    debug!(peer_prefix, "Peer uses ML-DSA-87, requiring ML-KEM-1024");
-                    any_dsa_87 = true;
-                }
-            }
-            Err(e) => {
-                warn!(peer_prefix, error = %e, "Failed to verify peer KEL for algorithm check, assuming ML-DSA-87 (fail secure)");
-                any_dsa_87 = true;
-            }
-        }
-
-        if any_dsa_87 {
-            break;
-        }
-    }
-
-    let previous = requires_kem_1024.load(Ordering::Relaxed);
-    requires_kem_1024.store(any_dsa_87, Ordering::Relaxed);
-    if previous != any_dsa_87 {
-        info!(
-            "KEM algorithm updated: {} (any peer ML-DSA-87: {})",
-            if any_dsa_87 {
-                "ML-KEM-1024"
-            } else {
-                "ML-KEM-768"
-            },
-            any_dsa_87,
-        );
     }
 
     // Filter out the excluded node (e.g., self) from the authorized peers
@@ -249,8 +181,6 @@ pub async fn run_allowlist_refresh_loop(
     allowlist: SharedAllowlist,
     refresh_interval: Duration,
     node_id: &str,
-    requires_kem_1024: RequiresKem1024,
-    kels_url: &str,
 ) {
     info!(
         "Starting allowlist refresh loop (interval: {:?})",
@@ -258,15 +188,7 @@ pub async fn run_allowlist_refresh_loop(
     );
 
     loop {
-        match refresh_allowlist(
-            registry_urls,
-            registry_kel_store,
-            &allowlist,
-            Some(node_id),
-            &requires_kem_1024,
-            kels_url,
-        )
-        .await
+        match refresh_allowlist(registry_urls, registry_kel_store, &allowlist, Some(node_id)).await
         {
             Ok(count) => {
                 debug!("Allowlist refresh successful: {} peers", count);
@@ -282,18 +204,20 @@ pub async fn run_allowlist_refresh_loop(
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
-    fn _create_test_peer(peer_prefix: &str) -> kels_core::Peer {
+    fn _create_test_peer(peer_kel_prefix: &str) -> kels_core::Peer {
         kels_core::Peer {
-            said: "test-said".to_string(),
-            prefix: "test-prefix".to_string(),
+            said: test_digest("test-said"),
+            prefix: test_digest("test-prefix"),
             previous: None,
             version: 1,
             created_at: verifiable_storage::StorageDatetime::now(),
-            peer_prefix: peer_prefix.to_string(),
+            kel_prefix: cesr::Digest::blake3_256(peer_kel_prefix.as_bytes()),
             node_id: "test-node".to_string(),
-            authorizing_kel: "EAuthorizingKel_____________________________".to_string(),
+            authorizing_kel: test_digest("authorizing-kel"),
             active: true,
             base_domain: "test.kels".to_string(),
             gossip_addr: "127.0.0.1:4001".to_string(),

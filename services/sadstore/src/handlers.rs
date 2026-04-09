@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use cesr::{Matter, Signature};
+use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -75,13 +75,13 @@ pub fn max_sad_object_size() -> usize {
 /// records would exceed the daily limit. Does NOT update the counter — call
 /// `accrue_prefix_rate_limit` after storage with the actual new record count.
 fn check_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     record_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max_records = max_records_per_prefix_per_day();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
@@ -97,12 +97,12 @@ fn check_prefix_rate_limit(
 
 /// Accrue the actual number of new records after storage completes.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     new_record_count: u32,
 ) {
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
         entry.1 = now;
@@ -134,7 +134,7 @@ pub struct AppState {
     pub kels_client: kels_core::KelsClient,
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub registry_urls: Vec<String>,
-    pub prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    pub prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
     pub ip_rate_limits: DashMap<IpAddr, (u32, Instant)>,
     pub nonce_cache: DashMap<String, Instant>,
 }
@@ -144,11 +144,11 @@ pub struct AppState {
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_prefix: &str,
+    peer_kel_prefix: &cesr::Digest,
 ) -> Result<Option<kels_core::Peer>, (StatusCode, String)> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
-        .get(format!("kels:verified-peer:{}", peer_prefix))
+        .get(format!("kels:verified-peer:{}", peer_kel_prefix))
         .await
         .map_err(|e| {
             (
@@ -205,7 +205,7 @@ async fn refresh_verified_peers(
                 )
             })?;
             conn.set_ex::<_, _, ()>(
-                format!("kels:verified-peer:{}", peer.peer_prefix),
+                format!("kels:verified-peer:{}", peer.kel_prefix),
                 peer_json,
                 3600,
             )
@@ -334,14 +334,11 @@ pub async fn post_sad_object(
         }
     };
 
-    let said = value.get_said();
-    if said.is_empty() {
-        return (StatusCode::BAD_REQUEST, "Missing said field").into_response();
-    }
-
     if value.verify_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
     }
+
+    let said = value.get_said();
 
     // HEAD check — short-circuit if already exists
     match state.object_store.exists(&said).await {
@@ -372,7 +369,7 @@ pub async fn post_sad_object(
         let mut conn = conn.clone();
         if let Err(e) = redis::cmd("PUBLISH")
             .arg("sad_updates")
-            .arg(&said)
+            .arg(said.as_ref())
             .query_async::<()>(&mut conn)
             .await
         {
@@ -384,9 +381,13 @@ pub async fn post_sad_object(
 }
 
 pub async fn get_sad_object(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.object_store.get(&said).await {
         Ok(data) => (
             StatusCode::OK,
@@ -405,9 +406,13 @@ pub async fn get_sad_object(
 }
 
 pub async fn sad_object_exists(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.object_store.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -419,9 +424,13 @@ pub async fn sad_object_exists(
 }
 
 pub async fn sad_pointer_exists(
-    Path(said): Path<String>,
+    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let said = match cesr::Digest::from_qb64(&said_string) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
+    };
     match state.repo.sad_records.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
@@ -485,8 +494,12 @@ pub async fn submit_sad_pointer(
     }
 
     // All records must be for the same KEL prefix
-    let kel_prefix = &records[0].pointer.kel_prefix;
-    if records.iter().any(|r| r.pointer.kel_prefix != *kel_prefix) {
+    let kel_prefix_digest = &records[0].pointer.kel_prefix;
+    let kel_prefix = kel_prefix_digest.to_string();
+    if records
+        .iter()
+        .any(|r| r.pointer.kel_prefix != *kel_prefix_digest)
+    {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same kel_prefix",
@@ -523,7 +536,7 @@ pub async fn submit_sad_pointer(
     }
 
     // Verify KEL once, collecting establishment keys for all serials
-    let verifier = match kels_core::KelVerifier::new(kel_prefix)
+    let verifier = match kels_core::KelVerifier::new(kel_prefix_digest)
         .with_establishment_key_collection(establishment_serials, kels_core::max_collected_keys())
     {
         Ok(v) => v,
@@ -545,7 +558,7 @@ pub async fn submit_sad_pointer(
 
     let (verification, establishment_keys) =
         match kels_core::verify_key_events_collecting_establishment_keys(
-            kel_prefix,
+            kel_prefix_digest,
             &kel_source,
             verifier,
             kels_core::page_size(),
@@ -581,19 +594,8 @@ pub async fn submit_sad_pointer(
                 .into_response();
         };
 
-        let sig = match Signature::from_qb64(&r.signature) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid signature on record {}: {}", r.pointer.said, e),
-                )
-                    .into_response();
-            }
-        };
-
         if verification_key
-            .verify(r.pointer.said.as_bytes(), &sig)
+            .verify(r.pointer.said.qb64().as_bytes(), &r.signature)
             .is_err()
         {
             return (
@@ -622,7 +624,7 @@ pub async fn submit_sad_pointer(
     let mut pairs = Vec::with_capacity(records.len());
     for r in &records {
         let sig_record = match kels_core::SadPointerSignature::create(
-            r.pointer.said.clone(),
+            r.pointer.said,
             r.signature.clone(),
             r.establishment_serial,
         ) {
@@ -774,9 +776,13 @@ pub async fn get_sad_pointer(
 }
 
 pub async fn get_sad_pointer_effective_said(
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let prefix = match cesr::Digest::from_qb64(&prefix_string) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid prefix").into_response(),
+    };
     match state.repo.sad_records.effective_said(&prefix).await {
         Ok(Some((said, divergent))) => (
             StatusCode::OK,
@@ -798,7 +804,7 @@ const MAX_PREFIX_PAGE_SIZE: usize = 100;
 /// Shared query logic for listing SAD objects.
 async fn query_sad_objects(
     state: &AppState,
-    cursor: Option<&str>,
+    cursor: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit
@@ -817,7 +823,7 @@ async fn query_sad_objects(
 /// Shared query logic for listing SAD chain prefixes.
 async fn query_sad_prefixes(
     state: &AppState,
-    cursor: Option<&str>,
+    cursor: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> impl IntoResponse {
     let limit = limit
@@ -856,7 +862,7 @@ pub async fn list_sad_objects(
 
     query_sad_objects(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -886,7 +892,7 @@ pub async fn list_sad_pointer_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -972,7 +978,7 @@ pub async fn test_list_sad_objects(
 
     query_sad_objects(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -992,7 +998,7 @@ pub async fn test_list_sad_pointer_prefixes(
 
     query_sad_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await

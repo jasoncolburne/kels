@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use base64::Engine;
-use cesr::{Matter, Signature, VerificationKey, VerificationKeyCode};
+use cesr::{Signature, VerificationKey, VerificationKeyCode};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -217,10 +217,10 @@ impl KeyProvider for HardwareKeyProvider {
 
     async fn generate_initial_keys(
         &mut self,
-    ) -> Result<(VerificationKey, String, String), KelsError> {
+    ) -> Result<(VerificationKey, cesr::Digest, cesr::Digest), KelsError> {
         let current_pub = self.generate_internal().await?;
-        let next_pub = self.generate_internal().await?.qb64();
-        let recovery_pub = self.generate_recovery_internal().await?.qb64();
+        let next_pub = self.generate_internal().await?;
+        let recovery_pub = self.generate_recovery_internal().await?;
 
         let next_hash = compute_rotation_hash(&next_pub);
         let recovery_hash = compute_rotation_hash(&recovery_pub);
@@ -253,7 +253,7 @@ impl KeyProvider for HardwareKeyProvider {
         key_handles.len() > 1
     }
 
-    async fn stage_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_rotation(&mut self) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if !self.has_next().await {
             return Err(KelsError::NoNextKey);
         }
@@ -273,12 +273,14 @@ impl KeyProvider for HardwareKeyProvider {
             self.enclave.generate_key(&label, self.signing_algorithm)?;
         let mut key_handles = self.key_handles.write().await;
         key_handles.push(new_next_handle);
-        let next_hash = compute_rotation_hash(&new_next_pub.qb64());
+        let next_hash = compute_rotation_hash(&new_next_pub);
 
         Ok((new_current_pub, next_hash))
     }
 
-    async fn stage_recovery_rotation(&mut self) -> Result<(VerificationKey, String), KelsError> {
+    async fn stage_recovery_rotation(
+        &mut self,
+    ) -> Result<(VerificationKey, cesr::Digest), KelsError> {
         if self.has_staged_recovery().await {
             return Err(KelsError::AlreadyStagedRecovery);
         }
@@ -298,8 +300,7 @@ impl KeyProvider for HardwareKeyProvider {
         let mut key_handles = self.recovery_handles.write().await;
         key_handles.push(handle);
 
-        let new_pub_qb64 = new_recovery_pub.qb64();
-        let recovery_hash = compute_rotation_hash(&new_pub_qb64);
+        let recovery_hash = compute_rotation_hash(&new_recovery_pub);
 
         Ok((current_recovery, recovery_hash))
     }
@@ -396,7 +397,11 @@ impl KeyProvider for HardwareKeyProvider {
         Ok(())
     }
 
-    async fn save_state(&self, store: &dyn KeyStateStore, prefix: &str) -> Result<(), KelsError> {
+    async fn save_state(
+        &self,
+        store: &dyn KeyStateStore,
+        prefix: &cesr::Digest,
+    ) -> Result<(), KelsError> {
         let key_handles = self.key_handles.read().await;
         let recovery_handles = self.recovery_handles.read().await;
 
@@ -424,7 +429,7 @@ impl KeyProvider for HardwareKeyProvider {
     async fn restore_state(
         &mut self,
         store: &dyn KeyStateStore,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<bool, KelsError> {
         let Some(data) = store.load(prefix)? else {
             return Ok(false);

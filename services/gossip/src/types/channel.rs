@@ -15,9 +15,9 @@ pub(crate) enum GossipEvent {
     /// Received a mail announcement from a peer
     MailAnnouncementReceived { announcement: MailAnnouncement },
     /// New peer connected
-    PeerConnected(String),
+    PeerConnected(cesr::Digest),
     /// Peer disconnected
-    PeerDisconnected(String),
+    PeerDisconnected(cesr::Digest),
 }
 
 /// Commands sent from sync layer to gossip layer

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The gossip service (`services/gossip`) synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). The KEM algorithm is auto-negotiated: if any peer in the federation uses ML-DSA-87, all connections use ML-KEM-1024; otherwise ML-KEM-768. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
+The gossip service (`services/gossip`) synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). All gossip connections use ML-KEM-1024 regardless of peer signing algorithm — peers using ML-DSA-65 get stronger transport security than their signing keys require, while ML-DSA-87 peers get matched security. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
 
 ## Architecture
 
@@ -120,8 +120,8 @@ enum SadGossipMessage {
 
 | Protocol | Transport | Purpose |
 |----------|-----------|---------|
-| PlumTree broadcast | TCP + ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
-| HyParView membership | TCP + ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
+| PlumTree broadcast | TCP + ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 | Epidemic broadcast of announcements to all peers |
+| HyParView membership | TCP + ML-KEM-1024 + ML-DSA-65/87 + AES-GCM-256 | Mesh overlay maintenance (join, shuffle, forward-join) |
 | HTTP fetch | HTTP | Fetch KEL events from peer's KELS service |
 
 ## Configuration
@@ -164,9 +164,9 @@ Gossip nodes use persistent HSM-backed identities:
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh
 - Unauthorized peers are rejected during the gossip handshake
 - Only ML-DSA-65/87 peers are accepted (P-256 peers are rejected)
-- The handshake uses ML-KEM-768/1024 (auto-negotiated) key exchange + ML-DSA-65/87 signature authentication:
+- The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
   1. Exchange 44-byte prefixes
-  2. Initiator generates ML-KEM-768/1024 keypair, sends encapsulation key (qb64)
+  2. Initiator generates ML-KEM-1024 keypair, sends encapsulation key (qb64)
   3. Acceptor encapsulates, sends ciphertext back (qb64)
   4. Both derive 32-byte shared secret
   5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65/87

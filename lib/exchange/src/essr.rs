@@ -5,11 +5,10 @@
 //! - **RUF-PTXT**: Receiver can't forge sender attribution (sender inside ciphertext)
 //! - **RUF-CTXT**: Attacker can't strip/replace signature (recipient in signed plaintext)
 
-use base64::Engine;
-use cesr::{
-    DecapsulationKey, EncapsulationKey, Matter, Nonce, Signature, SigningKey, VerificationKey,
-};
 use serde::{Deserialize, Serialize};
+
+use base64::Engine;
+use cesr::{DecapsulationKey, EncapsulationKey, Matter, Nonce, SigningKey, VerificationKey};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};
@@ -17,7 +16,7 @@ use kels_core::{aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key};
 use crate::error::ExchangeError;
 
 /// Blake3 KDF context for ESSR key derivation.
-const ESSR_KDF_CONTEXT: &str = "kels/v1/essr";
+const ESSR_KDF_CONTEXT: &str = "kels/exchange/v1/protocols/essr";
 
 /// Inner payload (encrypted). Sender inside ciphertext provides RUF-PTXT.
 ///
@@ -27,8 +26,8 @@ const ESSR_KDF_CONTEXT: &str = "kels/v1/essr";
 #[serde(rename_all = "camelCase")]
 pub struct EssrInner {
     /// Sender's KEL prefix (must match envelope sender for consistency).
-    pub sender: String,
-    /// Topic for payload interpretation (e.g. `"kels/v1/exchange"`, `"kels/v1/document"`).
+    pub sender: cesr::Digest,
+    /// Topic for payload interpretation (e.g. `"kels/exchange/v1/topics/exchange"`).
     pub topic: String,
     /// Opaque content, interpretation determined by topic.
     pub payload: Vec<u8>,
@@ -39,19 +38,19 @@ pub struct EssrInner {
 #[serde(rename_all = "camelCase")]
 pub struct EssrEnvelope {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Sender's KEL prefix (plaintext, for routing).
-    pub sender: String,
+    pub sender: cesr::Digest,
     /// Serial of sender's latest establishment event at signing time.
     pub sender_serial: u64,
     /// Recipient's KEL prefix (signed plaintext, anti-KCI).
-    pub recipient: String,
+    pub recipient: cesr::Digest,
     /// CESR-encoded ML-KEM ciphertext.
-    pub kem_ciphertext: String,
+    pub kem_ciphertext: cesr::KemCiphertext,
     /// Base64-encoded AES-GCM-256 ciphertext.
     pub encrypted_payload: String,
     /// CESR-encoded AES-GCM nonce (12 bytes, code 1AAN).
-    pub nonce: String,
+    pub nonce: cesr::Nonce,
     #[created_at]
     pub created_at: StorageDatetime,
 }
@@ -62,7 +61,7 @@ pub struct EssrEnvelope {
 pub struct SignedEssrEnvelope {
     pub envelope: EssrEnvelope,
     /// CESR-encoded ML-DSA signature over the serialized envelope.
-    pub signature: String,
+    pub signature: cesr::Signature,
 }
 
 /// Seal an inner payload into a signed ESSR envelope.
@@ -77,7 +76,7 @@ pub struct SignedEssrEnvelope {
 pub fn seal(
     inner: &EssrInner,
     sender_serial: u64,
-    recipient_prefix: &str,
+    recipient_prefix: &cesr::Digest,
     recipient_encap_key: &EncapsulationKey,
     sender_signing_key: &SigningKey,
 ) -> Result<SignedEssrEnvelope, ExchangeError> {
@@ -100,13 +99,13 @@ pub fn seal(
 
     // 5. Build envelope with SAID
     let mut envelope = EssrEnvelope {
-        said: String::new(),
-        sender: inner.sender.clone(),
+        said: cesr::Digest::default(),
+        sender: inner.sender,
         sender_serial,
-        recipient: recipient_prefix.to_string(),
-        kem_ciphertext: kem_ciphertext.qb64(),
+        recipient: *recipient_prefix,
+        kem_ciphertext,
         encrypted_payload: base64_encode(&ciphertext),
-        nonce: nonce.qb64(),
+        nonce,
         created_at: StorageDatetime::now(),
     };
 
@@ -116,12 +115,12 @@ pub fn seal(
 
     // 6. Sign the envelope SAID (commits to all content)
     let signature = sender_signing_key
-        .sign(envelope.said.as_bytes())
+        .sign(envelope.said.qb64().as_bytes())
         .map_err(|e| ExchangeError::SealFailed(format!("ML-DSA sign failed: {e}")))?;
 
     Ok(SignedEssrEnvelope {
         envelope,
-        signature: signature.qb64(),
+        signature,
     })
 }
 
@@ -146,40 +145,39 @@ pub fn open(
         .map_err(|e| ExchangeError::SaidVerification(e.to_string()))?;
 
     // 2. Verify signature (over the SAID, which commits to all content)
-    let signature = Signature::from_qb64(&signed_envelope.signature)
-        .map_err(|e| ExchangeError::SignatureVerification(format!("invalid signature: {e}")))?;
     sender_verification_key
-        .verify(signed_envelope.envelope.said.as_bytes(), &signature)
+        .verify(
+            signed_envelope.envelope.said.qb64().as_bytes(),
+            &signed_envelope.signature,
+        )
         .map_err(|e| ExchangeError::SignatureVerification(e.to_string()))?;
 
     // 3. ML-KEM decapsulate
-    let kem_ciphertext =
-        cesr::KemCiphertext::from_qb64(&signed_envelope.envelope.kem_ciphertext)
-            .map_err(|e| ExchangeError::OpenFailed(format!("invalid KEM ciphertext: {e}")))?;
     let shared_secret = recipient_decap_key
-        .decapsulate(&kem_ciphertext)
+        .decapsulate(&signed_envelope.envelope.kem_ciphertext)
         .map_err(|e| ExchangeError::OpenFailed(format!("ML-KEM decapsulate failed: {e}")))?;
 
     // 4. Derive AES key
     let aes_key = derive_aes_key(ESSR_KDF_CONTEXT, &shared_secret);
 
     // 5. Decrypt
-    let nonce = Nonce::from_qb64(&signed_envelope.envelope.nonce)
-        .map_err(|e| ExchangeError::OpenFailed(format!("invalid nonce: {e}")))?;
-
     let ciphertext = base64_decode(&signed_envelope.envelope.encrypted_payload)
         .map_err(|e| ExchangeError::OpenFailed(format!("invalid ciphertext: {e}")))?;
 
-    let plaintext = aes_gcm_decrypt(&aes_key, &nonce.to_bytes(), &ciphertext)
-        .map_err(|e| ExchangeError::OpenFailed(e.to_string()))?;
+    let plaintext = aes_gcm_decrypt(
+        &aes_key,
+        &signed_envelope.envelope.nonce.to_bytes(),
+        &ciphertext,
+    )
+    .map_err(|e| ExchangeError::OpenFailed(e.to_string()))?;
 
     // 6. Deserialize and verify sender consistency
     let inner: EssrInner = serde_json::from_slice(&plaintext)?;
 
     if inner.sender != signed_envelope.envelope.sender {
         return Err(ExchangeError::SenderMismatch {
-            envelope: signed_envelope.envelope.sender.clone(),
-            inner: inner.sender,
+            envelope: signed_envelope.envelope.sender.qb64(),
+            inner: inner.sender.qb64(),
         });
     }
 
@@ -212,22 +210,28 @@ mod tests {
         (sk, vk, ek, dk)
     }
 
+    fn test_digest(label: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(label.as_bytes())
+    }
+
     #[test]
     fn seal_open_roundtrip() {
         let (sender_sk, sender_vk, recipient_ek, recipient_dk) = test_keypairs();
+        let sender_prefix = test_digest("sender-prefix-abc");
+        let recipient_prefix = test_digest("recipient-prefix-xyz");
 
         let inner = EssrInner {
-            sender: "sender-prefix-abc".to_string(),
-            topic: "kels/v1/exchange".to_string(),
+            sender: sender_prefix,
+            topic: "kels/exchange/v1/topics/exchange".to_string(),
             payload: b"hello world".to_vec(),
         };
 
-        let signed = seal(&inner, 0, "recipient-prefix-xyz", &recipient_ek, &sender_sk).unwrap();
+        let signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
 
         // Verify SAID is set
-        assert!(!signed.envelope.said.is_empty());
-        assert_eq!(signed.envelope.sender, "sender-prefix-abc");
-        assert_eq!(signed.envelope.recipient, "recipient-prefix-xyz");
+        assert_ne!(signed.envelope.said, cesr::Digest::default());
+        assert_eq!(signed.envelope.sender, sender_prefix);
+        assert_eq!(signed.envelope.recipient, recipient_prefix);
 
         let opened = open(&signed, &recipient_dk, &sender_vk).unwrap();
         assert_eq!(opened.sender, inner.sender);
@@ -239,14 +243,15 @@ mod tests {
     fn wrong_decapsulation_key_fails() {
         let (sender_sk, _sender_vk, recipient_ek, _recipient_dk) = test_keypairs();
         let (_other_ek, other_dk) = cesr::generate_ml_kem_768().unwrap();
+        let recipient_prefix = test_digest("recipient");
 
         let inner = EssrInner {
-            sender: "sender".to_string(),
+            sender: test_digest("sender"),
             topic: "test".to_string(),
             payload: b"secret".to_vec(),
         };
 
-        let signed = seal(&inner, 0, "recipient", &recipient_ek, &sender_sk).unwrap();
+        let signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
         let result = open(&signed, &other_dk, &_sender_vk);
         assert!(result.is_err());
     }
@@ -255,14 +260,15 @@ mod tests {
     fn wrong_verification_key_fails() {
         let (sender_sk, _sender_vk, recipient_ek, recipient_dk) = test_keypairs();
         let (other_vk, _other_sk) = cesr::generate_ml_dsa_65().unwrap();
+        let recipient_prefix = test_digest("recipient");
 
         let inner = EssrInner {
-            sender: "sender".to_string(),
+            sender: test_digest("sender"),
             topic: "test".to_string(),
             payload: b"secret".to_vec(),
         };
 
-        let signed = seal(&inner, 0, "recipient", &recipient_ek, &sender_sk).unwrap();
+        let signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
         let result = open(&signed, &recipient_dk, &other_vk);
         assert!(result.is_err());
     }
@@ -270,14 +276,15 @@ mod tests {
     #[test]
     fn tampered_ciphertext_fails() {
         let (sender_sk, sender_vk, recipient_ek, recipient_dk) = test_keypairs();
+        let recipient_prefix = test_digest("recipient");
 
         let inner = EssrInner {
-            sender: "sender".to_string(),
+            sender: test_digest("sender"),
             topic: "test".to_string(),
             payload: b"secret".to_vec(),
         };
 
-        let mut signed = seal(&inner, 0, "recipient", &recipient_ek, &sender_sk).unwrap();
+        let mut signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
 
         // Tamper with encrypted payload — signature will fail
         signed.envelope.encrypted_payload = base64_encode(b"tampered");
@@ -288,17 +295,18 @@ mod tests {
     #[test]
     fn sender_mismatch_detected() {
         let (sender_sk, sender_vk, recipient_ek, recipient_dk) = test_keypairs();
+        let recipient_prefix = test_digest("recipient");
 
         let inner = EssrInner {
-            sender: "real-sender".to_string(),
+            sender: test_digest("real-sender"),
             topic: "test".to_string(),
             payload: b"data".to_vec(),
         };
 
-        let mut signed = seal(&inner, 0, "recipient", &recipient_ek, &sender_sk).unwrap();
+        let mut signed = seal(&inner, 0, &recipient_prefix, &recipient_ek, &sender_sk).unwrap();
 
         // Change envelope sender after signing — SAID check will catch this
-        signed.envelope.sender = "fake-sender".to_string();
+        signed.envelope.sender = test_digest("fake-sender");
         let result = open(&signed, &recipient_dk, &sender_vk);
         assert!(result.is_err());
     }

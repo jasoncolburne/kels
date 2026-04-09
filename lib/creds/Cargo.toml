@@ -37,6 +37,7 @@ tokio = { version = "1", features = ["sync"] }
 async-trait = "0.1"
 
 [dev-dependencies]
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 tokio = { version = "1", features = ["full"] }
 tokio-test = "0.4"
 tempfile = "3"

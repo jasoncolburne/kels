@@ -210,10 +210,10 @@ impl FederationNode {
     }
 
     /// Get the current leader's prefix, if known.
-    pub async fn leader_prefix(&self) -> Option<String> {
+    pub async fn leader_prefix(&self) -> Option<cesr::Digest> {
         self.leader()
             .await
-            .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix.clone()))
+            .and_then(|id| self.config.member_by_id(id).map(|m| m.prefix))
     }
 
     /// Get the current leader's URL, if known.
@@ -323,7 +323,7 @@ impl FederationNode {
     /// Vote on a peer proposal (leader only).
     pub async fn vote_peer(
         &self,
-        proposal_id: String,
+        proposal_prefix: cesr::Digest,
         vote: Vote,
     ) -> Result<FederationResponse, FederationError> {
         if !self.is_leader().await {
@@ -333,7 +333,10 @@ impl FederationNode {
             });
         }
 
-        let request = FederationRequest::VotePeer { proposal_id, vote };
+        let request = FederationRequest::VotePeer {
+            proposal_prefix,
+            vote,
+        };
 
         let result = self
             .raft
@@ -346,7 +349,11 @@ impl FederationNode {
 
     /// Verify a SAID is anchored in a federation member's KEL.
     /// Delegates to StateMachineStore which has built-in retry (checks cache, refreshes if not found).
-    pub async fn verify_anchoring(&self, said: &str, member_prefix: &str) -> Result<(), String> {
+    pub async fn verify_anchoring(
+        &self,
+        said: &cesr::Digest,
+        member_prefix: &cesr::Digest,
+    ) -> Result<(), String> {
         self.state_machine
             .verify_member_anchoring(said, member_prefix)
             .await
@@ -366,7 +373,7 @@ impl FederationNode {
                     .collect();
                 AdditionWithVotes {
                     history: AdditionHistory {
-                        prefix: p.prefix.clone(),
+                        prefix: p.prefix,
                         records: vec![p.clone()],
                     },
                     votes,
@@ -389,7 +396,7 @@ impl FederationNode {
                     .collect();
                 RemovalWithVotes {
                     history: RemovalHistory {
-                        prefix: p.prefix.clone(),
+                        prefix: p.prefix,
                         records: vec![p.clone()],
                     },
                     votes,
@@ -399,36 +406,42 @@ impl FederationNode {
     }
 
     /// Get a specific addition proposal by ID (raw, for chain building).
-    pub async fn get_addition_proposal(&self, proposal_id: &str) -> Option<PeerAdditionProposal> {
+    pub async fn get_addition_proposal(
+        &self,
+        proposal_prefix: &cesr::Digest,
+    ) -> Option<PeerAdditionProposal> {
         self.state_machine
             .inner()
             .lock()
             .await
             .pending_addition_proposals
-            .get(proposal_id)
+            .get(proposal_prefix)
             .cloned()
     }
 
     /// Get a specific removal proposal by ID (raw, for chain building).
-    pub async fn get_removal_proposal(&self, proposal_id: &str) -> Option<PeerRemovalProposal> {
+    pub async fn get_removal_proposal(
+        &self,
+        proposal_prefix: &cesr::Digest,
+    ) -> Option<PeerRemovalProposal> {
         self.state_machine
             .inner()
             .lock()
             .await
             .pending_removal_proposals
-            .get(proposal_id)
+            .get(proposal_prefix)
             .cloned()
     }
 
     /// Get a specific addition proposal with its votes (searches pending and completed).
     pub async fn get_addition_proposal_with_votes(
         &self,
-        proposal_id: &str,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<AdditionWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
         // Check pending first
-        if let Some(p) = sm.pending_addition_proposals.get(proposal_id) {
+        if let Some(p) = sm.pending_addition_proposals.get(proposal_prefix) {
             let votes: Vec<Vote> = sm
                 .votes
                 .values()
@@ -437,7 +450,7 @@ impl FederationNode {
                 .collect();
             return Some(AdditionWithVotes {
                 history: AdditionHistory {
-                    prefix: p.prefix.clone(),
+                    prefix: p.prefix,
                     records: vec![p.clone()],
                 },
                 votes,
@@ -447,9 +460,9 @@ impl FederationNode {
         // Check completed
         sm.completed_addition_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
-                let prefix = chain[0].prefix.clone();
+                let prefix = chain[0].prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -469,12 +482,12 @@ impl FederationNode {
     /// Get a specific removal proposal with its votes (searches pending and completed).
     pub async fn get_removal_proposal_with_votes(
         &self,
-        proposal_id: &str,
+        proposal_prefix: &cesr::Digest,
     ) -> Option<RemovalWithVotes> {
         let sm = self.state_machine.inner().lock().await;
 
         // Check pending first
-        if let Some(p) = sm.pending_removal_proposals.get(proposal_id) {
+        if let Some(p) = sm.pending_removal_proposals.get(proposal_prefix) {
             let votes: Vec<Vote> = sm
                 .votes
                 .values()
@@ -483,7 +496,7 @@ impl FederationNode {
                 .collect();
             return Some(RemovalWithVotes {
                 history: RemovalHistory {
-                    prefix: p.prefix.clone(),
+                    prefix: p.prefix,
                     records: vec![p.clone()],
                 },
                 votes,
@@ -493,9 +506,9 @@ impl FederationNode {
         // Check completed
         sm.completed_removal_proposals
             .iter()
-            .find(|chain| chain.first().is_some_and(|p| p.prefix == proposal_id))
+            .find(|chain| chain.first().is_some_and(|p| p.prefix == *proposal_prefix))
             .map(|chain| {
-                let prefix = chain[0].prefix.clone();
+                let prefix = chain[0].prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -533,7 +546,7 @@ impl FederationNode {
         sm.completed_addition_proposals
             .iter()
             .filter_map(|chain| {
-                let prefix = chain.first()?.prefix.clone();
+                let prefix = chain.first()?.prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -557,7 +570,7 @@ impl FederationNode {
         sm.completed_removal_proposals
             .iter()
             .filter_map(|chain| {
-                let prefix = chain.first()?.prefix.clone();
+                let prefix = chain.first()?.prefix;
                 let votes: Vec<Vote> = sm
                     .votes
                     .values()
@@ -576,7 +589,7 @@ impl FederationNode {
     }
 
     /// Get the trusted member prefixes.
-    pub fn member_prefixes(&self) -> Vec<String> {
+    pub fn member_prefixes(&self) -> Vec<cesr::Digest> {
         self.config.member_prefixes()
     }
 
@@ -591,7 +604,7 @@ impl FederationNode {
     pub async fn status(&self) -> FederationStatus {
         FederationStatus {
             node_id: self.config.self_node_id().unwrap_or(0),
-            self_prefix: self.config.self_prefix.clone(),
+            self_prefix: self.config.self_prefix,
             is_leader: self.is_leader().await,
             leader_id: self.leader().await,
             leader_prefix: self.leader_prefix().await,
@@ -599,12 +612,7 @@ impl FederationNode {
             term: 0,           // TODO: Get from metrics when API is understood
             last_log_index: 0, // TODO: Get from metrics when API is understood
             last_applied: 0,   // TODO: Get from metrics when API is understood
-            members: self
-                .config
-                .members
-                .iter()
-                .map(|m| m.prefix.clone())
-                .collect(),
+            members: self.config.members.iter().map(|m| m.prefix).collect(),
         }
     }
 }

@@ -91,7 +91,7 @@ all_nodes_contested() {
         local events
         events=$(fetch_all_events "$url" "$prefix")
         local has_cnt
-        has_cnt=$(echo "$events" | jq '[.[].event.kind] | any(. == "kels/v1/cnt")')
+        has_cnt=$(echo "$events" | jq '[.[].event.kind] | any(. == "kels/events/v1/cnt")')
         if [ "$has_cnt" != "true" ]; then
             echo "Node $url missing cnt for $prefix"
             return 1

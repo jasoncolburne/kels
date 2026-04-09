@@ -230,7 +230,7 @@ run_test "Decommission propagated to node-b" wait_for_convergence "$PREFIX8" "$C
 
 # Verify the last event on node-b is a dec event
 LAST_KIND=$(fetch_all_events "$NODE_B_URL" "$PREFIX8" | jq -r '.[-1].event.kind')
-run_test "Node-b shows dec event" [ "$LAST_KIND" = "kels/v1/dec" ]
+run_test "Node-b shows dec event" [ "$LAST_KIND" = "kels/events/v1/dec" ]
 
 echo ""
 

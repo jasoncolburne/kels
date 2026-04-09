@@ -109,7 +109,7 @@ KELS's multi-party voting for peer lifecycle (minimum 3 votes, scaling to 1/3 of
 | Forward secrecy | Implementation-dependent | ML-KEM-768/1024 ephemeral key exchange provides per-session forward secrecy |
 | Key exchange | Implementation-dependent | ML-KEM-768/1024 (FIPS 203, post-quantum) |
 
-**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. KELS now uses ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all infrastructure identities (registries, gossip nodes), with ML-KEM-768 or ML-KEM-1024 (FIPS 203, auto-negotiated based on peer signing algorithms) for gossip transport key exchange. The core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs, supporting mobile clients during the transition period. The key provider supports mixed algorithms and algorithm upgrade via rotation, enabling gradual migration.
+**Analysis:** Both protocols benefit from pre-rotation's quantum resistance for commitment chains — even a quantum adversary cannot derive the next key from its hash. KELS now uses ML-DSA-65 or ML-DSA-87 (FIPS 204, 192/256-bit post-quantum security, configurable via `NEXT_SIGNING_ALGORITHM` / `NEXT_RECOVERY_ALGORITHM`) for all infrastructure identities (registries, gossip nodes), with ML-KEM-1024 (FIPS 203) for gossip transport key exchange. The core service accepts P-256, ML-DSA-65, and ML-DSA-87 KELs, supporting mobile clients during the transition period. The key provider supports mixed algorithms and algorithm upgrade via rotation, enabling gradual migration.
 
 KERI has broader cryptographic agility via CESR code tables that can accommodate new algorithms. KELS targets specific post-quantum algorithms (ML-DSA-65/87, ML-KEM-768/1024) chosen for hardware availability — Apple's Secure Enclave supports ML-DSA-65 and ML-DSA-87 but not ML-DSA-44, making ML-DSA-65 the practical floor for consumer device compatibility.
 
@@ -656,7 +656,7 @@ KELS uses standard software engineering naming conventions with full English wor
   "prefix": "E...",
   "previous": "E...",
   "serial": 3,
-  "kind": "kels/v1/rot",
+  "kind": "kels/events/v1/rot",
   "publicKey": "D...",
   "rotationHash": "E...",
   "recoveryKey": "D...",

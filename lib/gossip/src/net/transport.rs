@@ -18,8 +18,6 @@ use socket2::SockRef;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use tracing::{debug, warn};
 
-use crate::identity::NodePrefix;
-
 use super::{
     Error, PeerVerifier, Signer,
     crypto::{EncryptedStream, derive_session_keys},
@@ -28,7 +26,7 @@ use super::{
 /// An established, authenticated, encrypted connection to a peer.
 pub struct PeerConnection {
     /// The authenticated peer identity.
-    pub peer_prefix: NodePrefix,
+    pub peer_kel_prefix: cesr::Digest,
     /// The encrypted bidirectional stream.
     pub stream: EncryptedStream<Compat<TcpStream>>,
 }
@@ -86,12 +84,16 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
     debug!(peer = %their_id, "peer authenticated");
 
     // Step 5: Derive session keys from ML-KEM shared secret.
-    let (send_cipher, recv_cipher) =
-        derive_session_keys(&shared_secret, &our_id.0, &their_id.0, is_initiator)?;
+    let (send_cipher, recv_cipher) = derive_session_keys(
+        &shared_secret,
+        our_id.qb64b(),
+        their_id.qb64b(),
+        is_initiator,
+    )?;
     let encrypted = EncryptedStream::new(stream, send_cipher, recv_cipher);
 
     Ok(PeerConnection {
-        peer_prefix: their_id,
+        peer_kel_prefix: their_id,
         stream: encrypted,
     })
 }
@@ -99,22 +101,23 @@ pub async fn handshake<S: Signer, V: PeerVerifier>(
 /// Exchange 44-byte prefixes between peers.
 async fn exchange_prefixes<S: futures::AsyncRead + futures::AsyncWrite + Unpin>(
     stream: &mut S,
-    our_id: &NodePrefix,
+    our_id: &cesr::Digest,
     is_initiator: bool,
-) -> Result<NodePrefix, Error> {
+) -> Result<cesr::Digest, Error> {
     let mut their_bytes = [0u8; 44];
 
     if is_initiator {
-        stream.write_all(&our_id.0).await?;
+        stream.write_all(our_id.qb64b()).await?;
         stream.flush().await?;
         stream.read_exact(&mut their_bytes).await?;
     } else {
         stream.read_exact(&mut their_bytes).await?;
-        stream.write_all(&our_id.0).await?;
+        stream.write_all(our_id.qb64b()).await?;
         stream.flush().await?;
     }
 
-    Ok(NodePrefix(their_bytes))
+    cesr::Digest::from_qb64b(their_bytes)
+        .map_err(|e| Error::Handshake(format!("Invalid peer prefix: {}", e)))
 }
 
 /// Perform ML-KEM key exchange (ML-KEM-768 or ML-KEM-1024).
@@ -199,11 +202,11 @@ async fn exchange_signatures<S: futures::AsyncRead + futures::AsyncWrite + Unpin
 }
 
 /// Build the JSON handshake payload that each side signs.
-fn handshake_payload(our_ek: &str, their_ek: &str, their_prefix: &NodePrefix) -> String {
+fn handshake_payload(our_ek: &str, their_ek: &str, their_prefix: &cesr::Digest) -> String {
     serde_json::json!({
         "our_ek": our_ek,
         "their_ek": their_ek,
-        "their_prefix": hex::encode(their_prefix.0),
+        "their_prefix": hex::encode(their_prefix.qb64b()),
     })
     .to_string()
 }
@@ -262,7 +265,7 @@ pub async fn accept<S: Signer, V: PeerVerifier>(
     debug!(%peer_addr, "accepting connection");
     match handshake(tcp, signer, verifier, false).await {
         Ok(conn) => {
-            debug!(peer = %conn.peer_prefix, %peer_addr, "peer authenticated");
+            debug!(peer = %conn.peer_kel_prefix, %peer_addr, "peer authenticated");
             Ok(conn)
         }
         Err(e) => {

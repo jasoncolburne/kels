@@ -15,35 +15,35 @@ use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
-    #[serde(rename = "kels/v1/icp")]
+    #[serde(rename = "kels/events/v1/icp")]
     Icp, // Inception
-    #[serde(rename = "kels/v1/dip")]
+    #[serde(rename = "kels/events/v1/dip")]
     Dip, // Delegated inception
-    #[serde(rename = "kels/v1/rot")]
+    #[serde(rename = "kels/events/v1/rot")]
     Rot, // Rotation
-    #[serde(rename = "kels/v1/ixn")]
+    #[serde(rename = "kels/events/v1/ixn")]
     Ixn, // Interaction (anchor)
-    #[serde(rename = "kels/v1/rec")]
+    #[serde(rename = "kels/events/v1/rec")]
     Rec, // Recovery (dual-signed)
-    #[serde(rename = "kels/v1/ror")]
+    #[serde(rename = "kels/events/v1/ror")]
     Ror, // Recovery rotation (dual-signed)
-    #[serde(rename = "kels/v1/dec")]
+    #[serde(rename = "kels/events/v1/dec")]
     Dec, // Decommission (dual-signed)
-    #[serde(rename = "kels/v1/cnt")]
+    #[serde(rename = "kels/events/v1/cnt")]
     Cnt, // Contest (dual-signed, freezes KEL)
 }
 
 impl EventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Icp => "kels/v1/icp",
-            Self::Dip => "kels/v1/dip",
-            Self::Rot => "kels/v1/rot",
-            Self::Ixn => "kels/v1/ixn",
-            Self::Rec => "kels/v1/rec",
-            Self::Ror => "kels/v1/ror",
-            Self::Dec => "kels/v1/dec",
-            Self::Cnt => "kels/v1/cnt",
+            Self::Icp => "kels/events/v1/icp",
+            Self::Dip => "kels/events/v1/dip",
+            Self::Rot => "kels/events/v1/rot",
+            Self::Ixn => "kels/events/v1/ixn",
+            Self::Rec => "kels/events/v1/rec",
+            Self::Ror => "kels/events/v1/ror",
+            Self::Dec => "kels/events/v1/dec",
+            Self::Cnt => "kels/events/v1/cnt",
         }
     }
 
@@ -171,14 +171,14 @@ impl FromStr for EventKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "kels/v1/icp" => Ok(Self::Icp),
-            "kels/v1/dip" => Ok(Self::Dip),
-            "kels/v1/rot" => Ok(Self::Rot),
-            "kels/v1/ixn" => Ok(Self::Ixn),
-            "kels/v1/rec" => Ok(Self::Rec),
-            "kels/v1/ror" => Ok(Self::Ror),
-            "kels/v1/dec" => Ok(Self::Dec),
-            "kels/v1/cnt" => Ok(Self::Cnt),
+            "kels/events/v1/icp" => Ok(Self::Icp),
+            "kels/events/v1/dip" => Ok(Self::Dip),
+            "kels/events/v1/rot" => Ok(Self::Rot),
+            "kels/events/v1/ixn" => Ok(Self::Ixn),
+            "kels/events/v1/rec" => Ok(Self::Rec),
+            "kels/events/v1/ror" => Ok(Self::Ror),
+            "kels/events/v1/dec" => Ok(Self::Dec),
+            "kels/events/v1/cnt" => Ok(Self::Cnt),
             _ => Err(KelsError::InvalidKeyEvent(format!(
                 "Unknown event kind: {}",
                 s
@@ -202,38 +202,38 @@ pub enum KelMergeResult {
 #[serde(rename_all = "camelCase")]
 pub struct KeyEvent {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[prefix]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     #[previous]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    pub previous: Option<cesr::Digest>,
     #[version]
     pub serial: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub public_key: Option<String>,
+    pub public_key: Option<cesr::VerificationKey>,
     /// Digest of next signing key
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rotation_hash: Option<String>,
+    pub rotation_hash: Option<cesr::Digest>,
     /// Revealed only in rec/ror/dec/cnt events
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_key: Option<String>,
+    pub recovery_key: Option<cesr::VerificationKey>,
     /// Digest of next recovery key
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_hash: Option<String>,
+    pub recovery_hash: Option<cesr::Digest>,
     pub kind: EventKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<String>,
+    pub anchor: Option<cesr::Digest>,
     /// Only for dip events
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegating_prefix: Option<String>,
+    pub delegating_prefix: Option<cesr::Digest>,
 }
 
 impl KeyEvent {
     pub fn create_inception(
-        public_key: String,
-        rotation_hash: String,
-        recovery_hash: String,
+        public_key: cesr::VerificationKey,
+        rotation_hash: cesr::Digest,
+        recovery_hash: cesr::Digest,
     ) -> Result<Self, KelsError> {
         match Self::create(
             Some(public_key),
@@ -250,10 +250,10 @@ impl KeyEvent {
     }
 
     pub fn create_delegated_inception(
-        public_key: String,
-        rotation_hash: String,
-        recovery_hash: String,
-        delegating_prefix: String,
+        public_key: cesr::VerificationKey,
+        rotation_hash: cesr::Digest,
+        recovery_hash: cesr::Digest,
+        delegating_prefix: cesr::Digest,
     ) -> Result<Self, KelsError> {
         match Self::create(
             Some(public_key),
@@ -271,8 +271,8 @@ impl KeyEvent {
 
     pub fn create_rotation(
         previous_event: &Self,
-        public_key: String,
-        rotation_hash: Option<String>,
+        public_key: cesr::VerificationKey,
+        rotation_hash: Option<cesr::Digest>,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Rot;
@@ -286,7 +286,10 @@ impl KeyEvent {
         Ok(event)
     }
 
-    pub fn create_interaction(previous_event: &Self, anchor: String) -> Result<Self, KelsError> {
+    pub fn create_interaction(
+        previous_event: &Self,
+        anchor: cesr::Digest,
+    ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Ixn;
         event.public_key = None;
@@ -301,10 +304,10 @@ impl KeyEvent {
 
     pub fn create_recovery(
         previous_event: &Self,
-        public_key: String,
-        rotation_hash: String,
-        recovery_key: String,
-        recovery_hash: String,
+        public_key: cesr::VerificationKey,
+        rotation_hash: cesr::Digest,
+        recovery_key: cesr::VerificationKey,
+        recovery_hash: cesr::Digest,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Rec;
@@ -320,10 +323,10 @@ impl KeyEvent {
 
     pub fn create_recovery_rotation(
         previous_event: &Self,
-        public_key: String,
-        rotation_hash: String,
-        recovery_key: String,
-        recovery_hash: String,
+        public_key: cesr::VerificationKey,
+        rotation_hash: cesr::Digest,
+        recovery_key: cesr::VerificationKey,
+        recovery_hash: cesr::Digest,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Ror;
@@ -339,8 +342,8 @@ impl KeyEvent {
 
     pub fn create_decommission(
         previous_event: &Self,
-        public_key: String,
-        recovery_key: String,
+        public_key: cesr::VerificationKey,
+        recovery_key: cesr::VerificationKey,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Dec;
@@ -356,8 +359,8 @@ impl KeyEvent {
 
     pub fn create_contest(
         previous_event: &Self,
-        public_key: String,
-        recovery_key: String,
+        public_key: cesr::VerificationKey,
+        recovery_key: cesr::VerificationKey,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
         event.kind = EventKind::Cnt;
@@ -417,7 +420,7 @@ impl KeyEvent {
     /// Validates that the event has the correct fields for its kind.
     /// Returns Ok(()) if valid, Err with description if invalid.
     pub fn validate_structure(&self) -> Result<(), String> {
-        use cesr::{Digest, DigestCode, Matter, VerificationKey};
+        use cesr::DigestCode;
 
         // Helper to check field presence
         let require = |name: &str, present: bool| -> Result<(), String> {
@@ -434,51 +437,36 @@ impl KeyEvent {
                 Ok(())
             }
         };
-        let validate_blake3_said = |name: &str, value: &str| -> Result<(), String> {
-            let digest = Digest::from_qb64(value)
-                .map_err(|_| format!("{} is not a valid CESR digest", name))?;
+        let validate_blake3 = |name: &str, digest: &cesr::Digest| -> Result<(), String> {
             if digest.algorithm() != DigestCode::Blake3 {
                 return Err(format!("{} must be a Blake3-256 digest", name));
             }
             Ok(())
         };
-        let validate_public_key = |name: &str, value: &str| -> Result<(), String> {
-            VerificationKey::from_qb64(value)
-                .map_err(|_| format!("{} is not a valid CESR public key", name))?;
-            Ok(())
-        };
 
-        // Common: all events require said, prefix
-        require("said", !self.said.is_empty())?;
-        validate_blake3_said("said", &self.said)?;
-        require("prefix", !self.prefix.is_empty())?;
-        validate_blake3_said("prefix", &self.prefix)?;
+        // Common: all events require said, prefix (typed fields ensure valid CESR)
+        validate_blake3("said", &self.said)?;
+        validate_blake3("prefix", &self.prefix)?;
 
         // Validate optional SAID fields when present
         if let Some(ref prev) = self.previous {
-            validate_blake3_said("previous", prev)?;
+            validate_blake3("previous", prev)?;
         }
         forbid(
             "self-referencing previous",
             self.previous.as_ref() == Some(&self.said),
         )?;
         if let Some(ref hash) = self.rotation_hash {
-            validate_blake3_said("rotationHash", hash)?;
+            validate_blake3("rotationHash", hash)?;
         }
         if let Some(ref hash) = self.recovery_hash {
-            validate_blake3_said("recoveryHash", hash)?;
+            validate_blake3("recoveryHash", hash)?;
         }
         if let Some(ref anchor) = self.anchor {
-            validate_blake3_said("anchor", anchor)?;
+            validate_blake3("anchor", anchor)?;
         }
 
-        // Validate public key fields when present
-        if let Some(ref key) = self.public_key {
-            validate_public_key("publicKey", key)?;
-        }
-        if let Some(ref key) = self.recovery_key {
-            validate_public_key("recoveryKey", key)?;
-        }
+        // Public key fields are validated by typed deserialization
 
         match self.kind {
             EventKind::Icp => {
@@ -573,17 +561,17 @@ impl KeyEvent {
 #[serde(rename_all = "camelCase")]
 pub struct EventSignature {
     #[said]
-    pub said: String,
-    pub event_said: String,
+    pub said: cesr::Digest,
+    pub event_said: cesr::Digest,
     pub label: String,
-    pub signature: String, // qb64
+    pub signature: cesr::Signature,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEventSignature {
     pub label: String,
-    pub signature: String, // qb64
+    pub signature: cesr::Signature,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -623,11 +611,7 @@ impl PartialEq for SignedKeyEvent {
 impl Hash for SignedKeyEvent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.event.said.hash(state);
-        let mut sigs: Vec<&str> = self
-            .signatures
-            .iter()
-            .map(|s| s.signature.as_str())
-            .collect();
+        let mut sigs: Vec<_> = self.signatures.iter().map(|s| &s.signature).collect();
         sigs.sort_unstable();
         for sig in sigs {
             sig.hash(state);
@@ -636,7 +620,7 @@ impl Hash for SignedKeyEvent {
 }
 
 impl SignedKeyEvent {
-    pub fn new(event: KeyEvent, label: String, signature: String) -> Self {
+    pub fn new(event: KeyEvent, label: String, signature: cesr::Signature) -> Self {
         Self {
             event,
             signatures: vec![KeyEventSignature { label, signature }],
@@ -645,8 +629,8 @@ impl SignedKeyEvent {
 
     pub fn new_recovery(
         event: KeyEvent,
-        primary_signature: String,
-        recovery_signature: String,
+        primary_signature: cesr::Signature,
+        recovery_signature: cesr::Signature,
     ) -> Self {
         Self {
             event,
@@ -667,7 +651,7 @@ impl SignedKeyEvent {
         self.signatures.iter().find(|s| s.label == label)
     }
 
-    pub fn from_signatures(event: KeyEvent, sigs: Vec<(String, String)>) -> Self {
+    pub fn from_signatures(event: KeyEvent, sigs: Vec<(String, cesr::Signature)>) -> Self {
         Self {
             event,
             signatures: sigs
@@ -680,13 +664,7 @@ impl SignedKeyEvent {
     pub fn event_signatures(&self) -> Vec<EventSignature> {
         self.signatures
             .iter()
-            .map(|s| {
-                EventSignature::new(
-                    self.event.said.clone(),
-                    s.label.clone(),
-                    s.signature.clone(),
-                )
-            })
+            .map(|s| EventSignature::new(self.event.said, s.label.clone(), s.signature.clone()))
             .collect()
     }
 }
@@ -703,7 +681,7 @@ pub struct SubmitEventsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveSaidResponse {
-    pub said: String,
+    pub said: cesr::Digest,
     pub divergent: bool,
 }
 
@@ -723,6 +701,6 @@ pub struct SignedKeyEventPage {
 #[serde(rename_all = "camelCase")]
 pub struct CachedKel {
     #[cfg_attr(feature = "server-caching", cache_key(primary))]
-    pub prefix: String,
+    pub prefix: cesr::Digest,
     pub events: Vec<SignedKeyEvent>,
 }

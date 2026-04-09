@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use kels_core::PagedKelSource;
 use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
-use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use crate::{
     compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
@@ -18,9 +18,9 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialVerification {
-    pub credential: String,
-    pub policy: String,
-    pub subject: Option<String>,
+    pub credential: cesr::Digest,
+    pub policy: cesr::Digest,
+    pub subject: Option<cesr::Digest>,
     pub is_expired: bool,
     pub policy_verification: PolicyVerification,
     pub schema_validation: SchemaValidationReport,
@@ -175,9 +175,9 @@ fn verify_credential_bounded<'a, T: Claims>(
         };
 
         Ok(CredentialVerification {
-            credential: credential.said.clone(),
-            policy: policy.said.clone(),
-            subject: credential.subject.clone(),
+            credential: credential.said,
+            policy: policy.said,
+            subject: credential.subject,
             is_expired,
             policy_verification,
             schema_validation,
@@ -212,7 +212,8 @@ async fn verify_edges<T: Claims>(
         };
 
         // Look up the edge credential's schema
-        let edge_schema = edge_schemas.get(&edge.schema).ok_or_else(|| {
+        let schema_str: &str = edge.schema.as_ref();
+        let edge_schema = edge_schemas.get(schema_str).ok_or_else(|| {
             CredentialError::VerificationError(format!(
                 "edge '{label}': no schema provided for SAID {}",
                 edge.schema
@@ -220,18 +221,21 @@ async fn verify_edges<T: Claims>(
         })?;
 
         // Look up and expand the referenced credential from the SADStore
-        let root_chunk = sad_store.get_chunk(credential_said).await?.ok_or_else(|| {
-            CredentialError::VerificationError(format!(
-                "edge '{label}': referenced credential {credential_said} not found in store"
-            ))
-        })?;
+        let root_chunk = sad_store
+            .get_chunk(credential_said.as_ref())
+            .await?
+            .ok_or_else(|| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': referenced credential {credential_said} not found in store"
+                ))
+            })?;
 
         // Verify the edge credential references the expected schema before expanding
         let cred_schema_said = root_chunk
             .get("schema")
             .and_then(|s| s.as_str())
             .unwrap_or("");
-        if cred_schema_said != edge_schema.said {
+        if cred_schema_said != edge_schema.said.as_ref() {
             return Err(CredentialError::VerificationError(format!(
                 "edge '{label}': credential schema {cred_schema_said} does not match \
                  edge schema {}",
@@ -278,12 +282,15 @@ async fn verify_edges<T: Claims>(
         }
 
         // Resolve the edge credential's policy for verification
-        let edge_policy = &edge_credential.policy;
-        let edge_policy = resolver.resolve_policy(edge_policy).await.map_err(|e| {
-            CredentialError::VerificationError(format!(
-                "edge '{label}': failed to resolve policy {edge_policy}: {e}"
-            ))
-        })?;
+        let edge_policy_said = &edge_credential.policy;
+        let edge_policy = resolver
+            .resolve_policy(edge_policy_said)
+            .await
+            .map_err(|e| {
+                CredentialError::VerificationError(format!(
+                    "edge '{label}': failed to resolve policy {edge_policy_said}: {e}"
+                ))
+            })?;
 
         let verification = verify_credential_bounded(
             &edge_credential,

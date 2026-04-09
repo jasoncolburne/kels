@@ -50,7 +50,7 @@ Note: some older files may not follow this convention perfectly. When touching a
 - No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
 - This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
 - When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
-- Never hardcode event kind strings (`"icp"`, `"kels/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
+- Never hardcode event kind strings (`"icp"`, `"kels/events/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 
 ## Core Concepts
 
@@ -113,7 +113,7 @@ When events are submitted, the KEL merge produces one of:
 ### Libraries
 
 - **kels-core** (`lib/kels`) — Core library. Types, KEL logic, client, error types, cache.
-- **kels-gossip-core** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with auto-negotiated ML-KEM (ML-KEM-768 or ML-KEM-1024, derived from peer signing algorithms) + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
+- **kels-gossip-core** (`lib/gossip`) — Custom gossip protocol library (HyParView + PlumTree over TCP with ML-KEM-1024 + ML-DSA-65/ML-DSA-87 + AES-GCM-256).
 - **kels-derive** (`lib/derive`) — Derive macros (`SignedEvents`, etc.).
 - **kels-ffi** (`lib/ffi`) — C FFI bindings for cross-language use.
 - **kels-mock-hsm** (`lib/mock-hsm`) — Mock HSM PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204. Identity loads it directly via cryptoki. In production, swap the .so path for a real HSM's PKCS#11 library.

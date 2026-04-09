@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cesr::{Digest, Matter};
+use cesr::Digest;
 use kels_core::{KelVerifier, PagedKelSource, verify_key_events};
 
 use crate::{
@@ -13,10 +13,10 @@ use crate::{
 const MAX_POLICY_DEPTH: usize = 10;
 
 /// Compute the poison hash for a credential SAID.
-/// `poison_hash = Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()`
-pub fn poison_hash(credential_said: &str) -> String {
+/// `poison_hash = Blake3(b"kels/poison:" || credential_said.as_bytes())`
+pub fn poison_hash(credential_said: &str) -> Digest {
     let bytes = [b"kels/poison:" as &[u8], credential_said.as_bytes()].concat();
-    Digest::blake3_256(&bytes).qb64()
+    Digest::blake3_256(&bytes)
 }
 
 /// Evaluate a policy against KEL state for a given credential SAID.
@@ -25,7 +25,7 @@ pub fn poison_hash(credential_said: &str) -> String {
 /// Returns a `PolicyVerification` with the satisfaction result and per-endorser status.
 pub async fn evaluate_policy(
     policy: &Policy,
-    credential_said: &str,
+    credential_said: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     resolver: &dyn PolicyResolver,
 ) -> Result<PolicyVerification, PolicyError> {
@@ -43,10 +43,10 @@ pub async fn evaluate_policy(
 
 async fn evaluate_policy_inner(
     policy: &Policy,
-    credential_said: &str,
+    credential_said: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
     resolver: &dyn PolicyResolver,
-    visited: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<cesr::Digest>,
     remaining_depth: usize,
 ) -> Result<PolicyVerification, PolicyError> {
     let ast = policy.parse()?;
@@ -61,7 +61,7 @@ async fn evaluate_policy_inner(
     let effective_policy_for_main = if use_immune_for_main {
         // Create a temporary immune view for the main expression evaluation
         Policy {
-            said: policy.said.clone(),
+            said: policy.said,
             expression: policy.expression.clone(),
             poison: None,
             immune: Some(true),
@@ -87,7 +87,7 @@ async fn evaluate_policy_inner(
     let is_poisoned = if !policy.is_immune() {
         if let Some(poison_ast) = policy.parse_poison()? {
             // Evaluate the poison expression using the poison hash as the anchor
-            let p_hash = poison_hash(credential_said);
+            let p_hash = poison_hash(credential_said.as_ref());
             let mut poison_endorsements = BTreeMap::new();
             let mut poison_nested = BTreeMap::new();
             let mut poison_visited = BTreeSet::new();
@@ -95,7 +95,7 @@ async fn evaluate_policy_inner(
             // Create an immune policy for poison evaluation (we're checking for
             // poison hash anchoring, not recursively checking for poisoning)
             let poison_eval_policy = Policy {
-                said: String::new(),
+                said: cesr::Digest::default(),
                 expression: policy.poison.clone().unwrap_or_default(),
                 poison: None,
                 immune: Some(true),
@@ -118,7 +118,7 @@ async fn evaluate_policy_inner(
             if poison_satisfied {
                 for (prefix, status) in &poison_endorsements {
                     if matches!(status, EndorsementStatus::Endorsed) {
-                        endorsements.insert(prefix.clone(), EndorsementStatus::Poisoned);
+                        endorsements.insert(*prefix, EndorsementStatus::Poisoned);
                     }
                 }
             }
@@ -148,7 +148,7 @@ async fn evaluate_policy_inner(
     };
 
     Ok(PolicyVerification {
-        policy: policy.said.clone(),
+        policy: policy.said,
         is_satisfied: final_satisfied,
         endorsements,
         nested_verifications: nested,
@@ -158,13 +158,13 @@ async fn evaluate_policy_inner(
 #[allow(clippy::too_many_arguments)]
 fn evaluate_node<'a>(
     node: &'a PolicyNode,
-    credential_said: &'a str,
+    credential_said: &'a cesr::Digest,
     policy: &'a Policy,
     source: &'a (dyn PagedKelSource + Sync),
     resolver: &'a dyn PolicyResolver,
-    endorsements: &'a mut BTreeMap<String, EndorsementStatus>,
-    nested: &'a mut BTreeMap<String, PolicyVerification>,
-    visited: &'a mut BTreeSet<String>,
+    endorsements: &'a mut BTreeMap<cesr::Digest, EndorsementStatus>,
+    nested: &'a mut BTreeMap<cesr::Digest, PolicyVerification>,
+    visited: &'a mut BTreeSet<cesr::Digest>,
     remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, PolicyError>> + Send + 'a>> {
     Box::pin(async move {
@@ -187,7 +187,7 @@ fn evaluate_node<'a>(
                 let delegation_valid = verify_delegation(delegator, delegate, source).await?;
                 if !delegation_valid {
                     endorsements.insert(
-                        delegate.clone(),
+                        *delegate,
                         EndorsementStatus::KelError("delegation not verified".to_string()),
                     );
                     return Ok(false);
@@ -223,7 +223,7 @@ fn evaluate_node<'a>(
             }
 
             PolicyNode::Policy(said) => {
-                if !visited.insert(said.clone()) {
+                if !visited.insert(*said) {
                     return Err(PolicyError::EvaluationError(format!(
                         "circular policy reference detected: {said}"
                     )));
@@ -240,7 +240,7 @@ fn evaluate_node<'a>(
                 )
                 .await?;
                 let satisfied = verification.is_satisfied;
-                nested.insert(said.clone(), verification);
+                nested.insert(*said, verification);
 
                 visited.remove(said);
                 Ok(satisfied)
@@ -251,11 +251,11 @@ fn evaluate_node<'a>(
 
 /// Evaluate a single endorser's status. Caches results by prefix.
 async fn evaluate_endorser(
-    prefix: &str,
-    credential_said: &str,
+    prefix: &cesr::Digest,
+    credential_said: &cesr::Digest,
     policy: &Policy,
     source: &(dyn PagedKelSource + Sync),
-    endorsements: &mut BTreeMap<String, EndorsementStatus>,
+    endorsements: &mut BTreeMap<cesr::Digest, EndorsementStatus>,
 ) -> Result<EndorsementStatus, PolicyError> {
     // Return cached result if already evaluated
     if let Some(status) = endorsements.get(prefix) {
@@ -264,15 +264,15 @@ async fn evaluate_endorser(
 
     let check_poison = !policy.is_immune();
     let p_hash = if check_poison {
-        Some(poison_hash(credential_said))
+        Some(poison_hash(credential_said.as_ref()))
     } else {
         None
     };
 
     let mut verifier = KelVerifier::new(prefix);
-    let mut saids_to_check = vec![credential_said.to_string()];
+    let mut saids_to_check = vec![*credential_said];
     if let Some(ref ph) = p_hash {
-        saids_to_check.push(ph.clone());
+        saids_to_check.push(*ph);
     }
     verifier.check_anchors(saids_to_check);
 
@@ -298,7 +298,7 @@ async fn evaluate_endorser(
         Err(e) => EndorsementStatus::KelError(e.to_string()),
     };
 
-    endorsements.insert(prefix.to_string(), status.clone());
+    endorsements.insert(*prefix, status.clone());
     Ok(status)
 }
 
@@ -306,8 +306,8 @@ async fn evaluate_endorser(
 /// Checks: (1) delegate's KEL incepted via dip with delegator as delegating prefix,
 /// (2) delegator's KEL anchors delegate's prefix.
 async fn verify_delegation(
-    delegator: &str,
-    delegate: &str,
+    delegator: &cesr::Digest,
+    delegate: &cesr::Digest,
     source: &(dyn PagedKelSource + Sync),
 ) -> Result<bool, PolicyError> {
     // Verify the delegate's KEL to check delegating_prefix
@@ -332,7 +332,7 @@ async fn verify_delegation(
 
     // Verify the delegator's KEL anchors the delegate's prefix
     let mut delegator_verifier = KelVerifier::new(delegator);
-    delegator_verifier.check_anchors(vec![delegate.to_string()]);
+    delegator_verifier.check_anchors(vec![*delegate]);
 
     match verify_key_events(
         delegator,
@@ -352,6 +352,7 @@ async fn verify_delegation(
 mod tests {
     use std::sync::Arc;
 
+    use cesr::test_digest;
     use kels_core::{
         FileKelStore, KelStore, KeyEventBuilder, SoftwareKeyProvider, StoreKelSource,
         VerificationKeyCode, forward_key_events,
@@ -362,7 +363,7 @@ mod tests {
 
     async fn setup_kel() -> (
         KeyEventBuilder<SoftwareKeyProvider>,
-        String,
+        cesr::Digest,
         Arc<FileKelStore>,
         tempfile::TempDir,
     ) {
@@ -380,7 +381,7 @@ mod tests {
         .await
         .unwrap();
         let icp = builder.incept().await.unwrap();
-        let prefix = icp.event.prefix.clone();
+        let prefix = icp.event.prefix;
         (builder, prefix, kel_store, temp_dir)
     }
 
@@ -508,7 +509,7 @@ mod tests {
 
         // Anchor the credential SAID then poison it
         builder.interact(&credential_said).await.unwrap();
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder.interact(&ph).await.unwrap();
 
         let source = StoreKelSource::new(kel_store.as_ref());
@@ -531,7 +532,7 @@ mod tests {
         let credential_said = kels_core::generate_nonce();
 
         // Poison without ever endorsing
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder.interact(&ph).await.unwrap();
 
         let source = StoreKelSource::new(kel_store.as_ref());
@@ -555,7 +556,7 @@ mod tests {
 
         // Anchor then poison — immune policy should ignore the poison
         builder.interact(&credential_said).await.unwrap();
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder.interact(&ph).await.unwrap();
 
         let source = StoreKelSource::new(kel_store.as_ref());
@@ -588,7 +589,7 @@ mod tests {
 
         // A endorses, B poisons
         builder_a.interact(&credential_said).await.unwrap();
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder_b.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -632,10 +633,11 @@ mod tests {
         // We can't actually create a real cycle since SAIDs are content-addressed,
         // but we can test that the visited set catches it by using a resolver
         // that returns a policy referencing itself.
-        let self_ref_expr = "policy(KSELF_REF_SAID_FOR_CYCLE_TEST_00000000000)";
+        let fake_said = test_digest("cycle-test");
+        let self_ref_expr = format!("policy({})", fake_said);
         let policy = Policy {
-            said: "KSELF_REF_SAID_FOR_CYCLE_TEST_00000000000".to_string(),
-            expression: self_ref_expr.to_string(),
+            said: fake_said,
+            expression: self_ref_expr,
             poison: None,
             immune: None,
         };
@@ -644,13 +646,7 @@ mod tests {
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
 
-        let result = evaluate_policy(
-            &policy,
-            "KCred12345678901234567890123456789012abcdef",
-            &source,
-            &resolver,
-        )
-        .await;
+        let result = evaluate_policy(&policy, &test_digest("cycle-test"), &source, &resolver).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -700,7 +696,7 @@ mod tests {
         builder_a.interact(&credential_said).await.unwrap();
 
         // Admin poisons
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder_admin.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -742,7 +738,7 @@ mod tests {
         builder_a.interact(&credential_said).await.unwrap();
 
         // B tries to poison (not authorized — B is an endorser, not in poison_expression)
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder_b.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -781,7 +777,7 @@ mod tests {
         builder_a.interact(&credential_said).await.unwrap();
 
         // Only admin1 poisons (threshold not met — need both admins)
-        let ph = poison_hash(&credential_said);
+        let ph = poison_hash(credential_said.as_ref());
         builder_admin1.interact(&ph).await.unwrap();
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -805,7 +801,7 @@ mod tests {
     }
 
     /// Helper to copy KEL events from one FileKelStore to another.
-    async fn copy_kel_events(from: &FileKelStore, prefix: &str, to: &FileKelStore) {
+    async fn copy_kel_events(from: &FileKelStore, prefix: &cesr::Digest, to: &FileKelStore) {
         let source = StoreKelSource::new(from);
         let sink = kels_core::KelStoreSink(to);
         forward_key_events(

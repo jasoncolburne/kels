@@ -119,8 +119,8 @@ fn sign_pointer(
     sk: &SigningKey,
     establishment_serial: u64,
 ) -> SadPointerSignature {
-    let sig = sk.sign(pointer.said.as_bytes()).unwrap();
-    SadPointerSignature::create(pointer.said.clone(), sig.qb64(), establishment_serial).unwrap()
+    let sig = sk.sign(pointer.said.qb64().as_bytes()).unwrap();
+    SadPointerSignature::create(pointer.said, sig, establishment_serial).unwrap()
 }
 
 /// Build a chain of v0..v(count-1) with valid signatures.
@@ -131,11 +131,14 @@ fn build_chain(
     sk: &SigningKey,
 ) -> Vec<(SadPointer, SadPointerSignature)> {
     let mut pairs = Vec::with_capacity(count);
-    let mut pointer = SadPointer::create(kel_prefix.to_string(), kind.to_string(), None).unwrap();
+    let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
+    let mut pointer = SadPointer::create(kel_digest, kind.to_string(), None).unwrap();
     pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
 
     for i in 1..count {
-        pointer.content_said = Some(format!("Econtent_{}", i));
+        pointer.content_said = Some(cesr::Digest::blake3_256(
+            format!("content_{}", i).as_bytes(),
+        ));
         pointer.increment().unwrap();
         pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
     }
@@ -147,8 +150,8 @@ fn build_chain(
 /// `content_tag` differentiates replacement chains so they produce unique SAIDs.
 #[allow(clippy::too_many_arguments)]
 fn build_replacement(
-    previous_said: &str,
-    prefix: &str,
+    previous_said: &cesr::Digest,
+    prefix: &cesr::Digest,
     kel_prefix: &str,
     kind: &str,
     from_version: u64,
@@ -158,20 +161,25 @@ fn build_replacement(
 ) -> Vec<(SadPointer, SadPointerSignature)> {
     let mut pairs = Vec::with_capacity(count);
 
+    let kel_digest = cesr::Digest::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
-        said: String::new(),
-        prefix: prefix.to_string(),
-        previous: Some(previous_said.to_string()),
+        said: cesr::Digest::default(),
+        prefix: *prefix,
+        previous: Some(*previous_said),
         version: from_version,
-        kel_prefix: kel_prefix.to_string(),
+        kel_prefix: kel_digest,
         kind: kind.to_string(),
-        content_said: Some(format!("K{}_{}", content_tag, from_version)),
+        content_said: Some(cesr::Digest::blake3_256(
+            format!("K{}_{}", content_tag, from_version).as_bytes(),
+        )),
     };
     pointer.derive_said().unwrap();
     pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
 
     for i in 1..count {
-        pointer.content_said = Some(format!("K{}_{}", content_tag, from_version + i as u64));
+        pointer.content_said = Some(cesr::Digest::blake3_256(
+            format!("K{}_{}", content_tag, from_version + i as u64).as_bytes(),
+        ));
         pointer.increment().unwrap();
         pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
     }
@@ -190,7 +198,7 @@ async fn test_get_repairs_empty() {
 
     let (repairs, has_more) = repo
         .sad_records
-        .get_repairs("Enonexistent_prefix_____________________________", 10, 0)
+        .get_repairs("Knonexistent_prefix_________________________", 10, 0)
         .await
         .unwrap();
 
@@ -219,7 +227,7 @@ async fn test_save_batch_and_truncate_and_replace() {
         .unwrap();
     assert_eq!(count, 5);
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
@@ -262,7 +270,7 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
     let stored = repo
         .sad_records
-        .get_stored(&prefix, None, None)
+        .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 5);
@@ -273,7 +281,11 @@ async fn test_save_batch_and_truncate_and_replace() {
     assert_eq!(stored[4].pointer.said, replacement[1].0.said);
 
     // Verify repair audit record was created
-    let (repairs, has_more) = repo.sad_records.get_repairs(&prefix, 10, 0).await.unwrap();
+    let (repairs, has_more) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 10, 0)
+        .await
+        .unwrap();
     assert_eq!(repairs.len(), 1);
     assert!(!has_more);
     assert_eq!(repairs[0].pointer_prefix, prefix);
@@ -282,15 +294,15 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Verify archived records are accessible
     let (archived, has_more) = repo
         .sad_records
-        .get_repair_records(&repairs[0].said, 10, 0)
+        .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();
     assert_eq!(archived.len(), 2); // v3 and v4 were archived
     assert!(!has_more);
     // Archived records should be the original v3 and v4
-    let archived_saids: Vec<&str> = archived.iter().map(|r| r.pointer.said.as_str()).collect();
-    assert!(archived_saids.contains(&chain[3].0.said.as_str()));
-    assert!(archived_saids.contains(&chain[4].0.said.as_str()));
+    let archived_saids: Vec<&str> = archived.iter().map(|r| r.pointer.said.as_ref()).collect();
+    assert!(archived_saids.contains(&chain[3].0.said.as_ref()));
+    assert!(archived_saids.contains(&chain[4].0.said.as_ref()));
 }
 
 #[tokio::test]
@@ -328,7 +340,7 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Build replacement signed with the wrong key
     let replacement = build_replacement(
@@ -352,14 +364,18 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
     // Original chain should be intact (transaction rolled back)
     let stored = repo
         .sad_records
-        .get_stored(&prefix, None, None)
+        .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 3);
     assert_eq!(stored[2].pointer.said, chain[2].0.said);
 
     // No repair record should exist
-    let (repairs, _) = repo.sad_records.get_repairs(&prefix, 10, 0).await.unwrap();
+    let (repairs, _) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 10, 0)
+        .await
+        .unwrap();
     assert!(repairs.is_empty());
 }
 
@@ -382,7 +398,7 @@ async fn test_get_repairs_pagination() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // First repair: replace from v4
     let r1 = build_replacement(
@@ -417,11 +433,19 @@ async fn test_get_repairs_pagination() {
         .unwrap();
 
     // Paginate with limit=1
-    let (page1, has_more1) = repo.sad_records.get_repairs(&prefix, 1, 0).await.unwrap();
+    let (page1, has_more1) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 1, 0)
+        .await
+        .unwrap();
     assert_eq!(page1.len(), 1);
     assert!(has_more1);
 
-    let (page2, has_more2) = repo.sad_records.get_repairs(&prefix, 1, 1).await.unwrap();
+    let (page2, has_more2) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 1, 1)
+        .await
+        .unwrap();
     assert_eq!(page2.len(), 1);
     assert!(!has_more2);
 
@@ -448,7 +472,7 @@ async fn test_get_repair_records_pagination() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
     let replacement = build_replacement(
         &chain[0].0.said,
         &prefix,
@@ -464,14 +488,18 @@ async fn test_get_repair_records_pagination() {
         .await
         .unwrap();
 
-    let (repairs, _) = repo.sad_records.get_repairs(&prefix, 10, 0).await.unwrap();
+    let (repairs, _) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 10, 0)
+        .await
+        .unwrap();
     assert_eq!(repairs.len(), 1);
     let repair_said = &repairs[0].said;
 
     // Paginate archived records: 3 total, limit=2
     let (page1, has_more1) = repo
         .sad_records
-        .get_repair_records(repair_said, 2, 0)
+        .get_repair_records(repair_said.as_ref(), 2, 0)
         .await
         .unwrap();
     assert_eq!(page1.len(), 2);
@@ -479,7 +507,7 @@ async fn test_get_repair_records_pagination() {
 
     let (page2, has_more2) = repo
         .sad_records
-        .get_repair_records(repair_said, 2, 2)
+        .get_repair_records(repair_said.as_ref(), 2, 2)
         .await
         .unwrap();
     assert_eq!(page2.len(), 1);
@@ -495,7 +523,7 @@ async fn test_get_repair_records_nonexistent() {
 
     let (records, has_more) = repo
         .sad_records
-        .get_repair_records("Enonexistent_repair_said________________________", 10, 0)
+        .get_repair_records("Knonexistent_repair_said____________________", 10, 0)
         .await
         .unwrap();
     assert!(records.is_empty());
@@ -521,7 +549,7 @@ async fn test_truncate_and_replace_from_v0() {
         .await
         .unwrap();
 
-    let prefix = chain[0].0.prefix.clone();
+    let prefix = chain[0].0.prefix;
 
     // Replace the entire chain from v0
     // For v0 replacement, the record needs no previous and must re-derive the prefix
@@ -537,7 +565,7 @@ async fn test_truncate_and_replace_from_v0() {
     // Chain should now be 2 records
     let stored = repo
         .sad_records
-        .get_stored(&prefix, None, None)
+        .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
     assert_eq!(stored.len(), 2);
@@ -546,13 +574,17 @@ async fn test_truncate_and_replace_from_v0() {
 
     // Repair should show 1 archived record (v2) — v0 and v1 are identical
     // and deduped, so only the tail beyond the replacement chain gets archived.
-    let (repairs, _) = repo.sad_records.get_repairs(&prefix, 10, 0).await.unwrap();
+    let (repairs, _) = repo
+        .sad_records
+        .get_repairs(prefix.as_ref(), 10, 0)
+        .await
+        .unwrap();
     assert_eq!(repairs.len(), 1);
     assert_eq!(repairs[0].diverged_at_version, 2);
 
     let (archived, _) = repo
         .sad_records
-        .get_repair_records(&repairs[0].said, 10, 0)
+        .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();
     assert_eq!(archived.len(), 1);

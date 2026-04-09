@@ -82,6 +82,7 @@ js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 
 [dev-dependencies]
+cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 tokio-test = "0.4"
 tempfile = "3"
 wiremock = "0.6"

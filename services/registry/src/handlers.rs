@@ -215,7 +215,7 @@ pub struct FederationState {
 ///
 /// Best-effort: logs warnings on failure. AE loop handles any gaps.
 async fn push_own_kel_to_members(state: &FederationState) {
-    let self_prefix = state.node.config().self_prefix.clone();
+    let self_prefix = state.node.config().self_prefix;
 
     // Fetch own events from identity service (source of truth)
     let identity_source = match kels_core::HttpKelSource::new(
@@ -256,8 +256,7 @@ async fn push_own_kel_to_members(state: &FederationState) {
         .iter()
         .filter(|m| m.prefix != self_prefix)
         .map(|member| {
-            let self_prefix = self_prefix.clone();
-            let member_prefix = member.prefix.clone();
+            let member_prefix = member.prefix;
             let pool = state.member_kel_repo.pool.clone();
             let member_url = member.url.clone();
             async move {
@@ -309,8 +308,6 @@ pub async fn federation_rpc(
     State(state): State<Arc<FederationState>>,
     Json(signed_rpc): Json<SignedFederationRpc>,
 ) -> Result<Json<FederationRpcResponse>, ApiError> {
-    use cesr::{Matter, Signature, VerificationKey};
-
     // Verify sender is a federation member
     if !state.node.config().is_member(&signed_rpc.sender_prefix) {
         return Err(ApiError::forbidden(format!(
@@ -329,7 +326,7 @@ pub async fn federation_rpc(
         &signed_rpc.sender_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<String>(),
+        std::iter::empty::<cesr::Digest>(),
     )
     .await;
 
@@ -368,12 +365,9 @@ pub async fn federation_rpc(
     let current_key = kel_verification.current_public_key().ok_or_else(|| {
         ApiError::unauthorized("Failed to get public key from KEL: no establishment event")
     })?;
-    let public_key = VerificationKey::from_qb64(current_key)
-        .map_err(|e| ApiError::unauthorized(format!("Invalid public key: {}", e)))?;
-    let signature = Signature::from_qb64(&signed_rpc.signature)
-        .map_err(|e| ApiError::unauthorized(format!("Invalid signature format: {}", e)))?;
+    let public_key = current_key.clone();
     public_key
-        .verify(signed_rpc.payload.as_bytes(), &signature)
+        .verify(signed_rpc.payload.as_bytes(), &signed_rpc.signature)
         .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
 
     // Parse the verified payload
@@ -490,7 +484,7 @@ pub async fn list_completed_proposals(
 /// Request to add a peer.
 #[derive(Debug, Deserialize)]
 pub struct AddPeerRequest {
-    pub peer_prefix: String,
+    pub peer_kel_prefix: cesr::Digest,
     pub node_id: String,
     pub base_domain: String,
     pub gossip_addr: String,
@@ -499,24 +493,27 @@ pub struct AddPeerRequest {
 /// Get a specific proposal with votes.
 pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_id): Path<String>,
+    Path(proposal_prefix): Path<String>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
+
     if let Some(addition) = state
         .node
-        .get_addition_proposal_with_votes(&proposal_id)
+        .get_addition_proposal_with_votes(&proposal_digest)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Addition(addition)))
     } else if let Some(removal) = state
         .node
-        .get_removal_proposal_with_votes(&proposal_id)
+        .get_removal_proposal_with_votes(&proposal_digest)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Removal(removal)))
     } else {
         Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_id
+            proposal_prefix
         )))
     }
 }
@@ -570,7 +567,7 @@ pub async fn admin_submit_addition_proposal(
     };
 
     let history = AdditionHistory {
-        prefix: proposal.prefix.clone(),
+        prefix: proposal.prefix,
         records,
     };
 
@@ -605,29 +602,28 @@ pub async fn admin_submit_addition_proposal(
 
     match response {
         FederationResponse::ProposalCreated {
-            proposal_id,
+            proposal_prefix,
             votes_needed,
             current_votes,
         } => Ok(Json(ProposalResponse {
-            proposal_id,
+            proposal_prefix,
             status: "pending".to_string(),
             votes_needed,
             current_votes,
             message: format!("Proposal created. Need {} approvals.", votes_needed),
         })),
         FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "withdrawn".to_string(),
             votes_needed: 0,
             current_votes: 0,
             message: "Proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerAlreadyExists(peer_prefix) => Err(ApiError::bad_request(format!(
-            "Peer already exists: {}",
-            peer_prefix
-        ))),
-        FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
-            format!("Proposal already exists: {}", proposal_id),
+        FederationResponse::PeerAlreadyExists(peer_kel_prefix) => Err(ApiError::bad_request(
+            format!("Peer already exists: {}", peer_kel_prefix),
+        )),
+        FederationResponse::ProposalAlreadyExists(proposal_prefix) => Err(ApiError::bad_request(
+            format!("Proposal already exists: {}", proposal_prefix),
         )),
         FederationResponse::SaidMismatch(msg) => {
             Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
@@ -685,7 +681,7 @@ pub async fn admin_submit_removal_proposal(
     };
 
     let history = RemovalHistory {
-        prefix: proposal.prefix.clone(),
+        prefix: proposal.prefix,
         records,
     };
 
@@ -720,29 +716,29 @@ pub async fn admin_submit_removal_proposal(
 
     match response {
         FederationResponse::ProposalCreated {
-            proposal_id,
+            proposal_prefix,
             votes_needed,
             current_votes,
         } => Ok(Json(ProposalResponse {
-            proposal_id,
+            proposal_prefix,
             status: "pending".to_string(),
             votes_needed,
             current_votes,
             message: format!("Removal proposal created. Need {} approvals.", votes_needed),
         })),
         FederationResponse::ProposalWithdrawn(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "withdrawn".to_string(),
             votes_needed: 0,
             current_votes: 0,
             message: "Removal proposal withdrawn.".to_string(),
         })),
-        FederationResponse::PeerNotFound(peer_prefix) => Err(ApiError::not_found(format!(
+        FederationResponse::PeerNotFound(peer_kel_prefix) => Err(ApiError::not_found(format!(
             "Peer not found: {}",
-            peer_prefix
+            peer_kel_prefix
         ))),
-        FederationResponse::ProposalAlreadyExists(proposal_id) => Err(ApiError::bad_request(
-            format!("Removal proposal already exists: {}", proposal_id),
+        FederationResponse::ProposalAlreadyExists(proposal_prefix) => Err(ApiError::bad_request(
+            format!("Removal proposal already exists: {}", proposal_prefix),
         )),
         FederationResponse::SaidMismatch(msg) => {
             Err(ApiError::bad_request(format!("SAID mismatch: {}", msg)))
@@ -770,9 +766,12 @@ pub async fn admin_submit_removal_proposal(
 /// 5. Vote SAID is anchored in voter's KEL
 pub async fn admin_vote_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_id): Path<String>,
+    Path(proposal_prefix): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
+    let proposal_digest = cesr::Digest::from_qb64(&proposal_prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
+
     // 1. Verify vote SAID integrity
     vote.verify_said()
         .map_err(|e| ApiError::bad_request(format!("Vote verification failed: {}", e)))?;
@@ -786,18 +785,18 @@ pub async fn admin_vote_proposal(
     }
 
     // 3. Verify vote references this proposal
-    if vote.proposal != proposal_id {
+    if vote.proposal != proposal_digest {
         return Err(ApiError::bad_request(format!(
             "Vote is for proposal {} but submitted to {}",
-            vote.proposal, proposal_id
+            vote.proposal, proposal_prefix
         )));
     }
 
     // 4. Verify the proposal chain is valid and not withdrawn
     //    Check both addition and removal proposals
-    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await {
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_digest).await {
         let history = AdditionHistory {
-            prefix: addition.prefix.clone(),
+            prefix: addition.prefix,
             records: vec![addition],
         };
         history.verify().map_err(|e| {
@@ -806,12 +805,12 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Proposal {} has been withdrawn",
-                proposal_id
+                proposal_prefix
             )));
         }
-    } else if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await {
+    } else if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await {
         let history = RemovalHistory {
-            prefix: removal.prefix.clone(),
+            prefix: removal.prefix,
             records: vec![removal],
         };
         history.verify().map_err(|e| {
@@ -823,32 +822,32 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Removal proposal {} has been withdrawn",
-                proposal_id
+                proposal_prefix
             )));
         }
     } else {
         return Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_id
+            proposal_prefix
         )));
     }
 
     // 4b. Check proposal expiration (checked here, not in Raft state machine,
     //     to avoid non-determinism from wall clock skew between nodes)
-    if let Some(addition) = state.node.get_addition_proposal(&proposal_id).await
+    if let Some(addition) = state.node.get_addition_proposal(&proposal_digest).await
         && addition.is_expired()
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_id
+            proposal_prefix
         )));
     }
-    if let Some(removal) = state.node.get_removal_proposal(&proposal_id).await
+    if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await
         && removal.is_expired()
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_id
+            proposal_prefix
         )));
     }
 
@@ -861,7 +860,7 @@ pub async fn admin_vote_proposal(
 
     let response = state
         .node
-        .vote_peer(proposal_id.clone(), vote)
+        .vote_peer(proposal_digest, vote)
         .await
         .map_err(|e| match e {
             crate::federation::FederationError::NotLeader {
@@ -876,7 +875,7 @@ pub async fn admin_vote_proposal(
 
     match response {
         FederationResponse::VoteRecorded {
-            proposal_id,
+            proposal_prefix,
             current_votes,
             votes_needed,
             approved,
@@ -884,23 +883,25 @@ pub async fn admin_vote_proposal(
         } => {
             if approved {
                 if let Some(v0) = proposal {
-                    let self_prefix = state.node.config().self_prefix.clone();
+                    let self_prefix = state.node.config().self_prefix;
 
-                    // Idempotency: if peer already exists, skip create/anchor/submit
-                    let already_exists = state
+                    // Idempotency: if peer is already active, skip create/anchor/submit.
+                    // Note: get_peer() checks both active and inactive — we must only
+                    // skip for active peers, otherwise re-adding a removed peer is a no-op.
+                    let already_active = state
                         .node
                         .state_machine()
                         .inner()
                         .lock()
                         .await
-                        .get_peer(&v0.peer_prefix)
-                        .is_some();
+                        .active_peers_by_kel_prefix
+                        .contains_key(&v0.peer_kel_prefix);
 
-                    if !already_exists {
+                    if !already_active {
                         let peer = Peer::create(
-                            v0.peer_prefix.clone(),
+                            v0.peer_kel_prefix,
                             v0.node_id.clone(),
-                            self_prefix.clone(),
+                            self_prefix,
                             true,
                             v0.base_domain.clone(),
                             v0.gossip_addr.clone(),
@@ -935,11 +936,11 @@ pub async fn admin_vote_proposal(
                     }
 
                     return Ok(Json(ProposalResponse {
-                        proposal_id,
+                        proposal_prefix,
                         status: "approved".to_string(),
                         votes_needed,
                         current_votes,
-                        message: format!("Proposal approved! Peer {} added.", v0.peer_prefix),
+                        message: format!("Proposal approved! Peer {} added.", v0.peer_kel_prefix),
                     }));
                 }
 
@@ -949,7 +950,7 @@ pub async fn admin_vote_proposal(
             }
 
             Ok(Json(ProposalResponse {
-                proposal_id,
+                proposal_prefix,
                 status: "pending".to_string(),
                 votes_needed,
                 current_votes,
@@ -960,14 +961,14 @@ pub async fn admin_vote_proposal(
             }))
         }
         FederationResponse::RemovalApproved {
-            proposal_id,
-            peer_prefix,
+            proposal_prefix,
+            peer_kel_prefix,
             current_votes,
             votes_needed,
             proposal,
         } => {
             if let Some(_removal_proposal) = proposal {
-                let self_prefix = state.node.config().self_prefix.clone();
+                let self_prefix = state.node.config().self_prefix;
 
                 // Idempotency: if peer is already inactive, skip deactivate/anchor/submit
                 let current_peer = state
@@ -976,7 +977,7 @@ pub async fn admin_vote_proposal(
                     .inner()
                     .lock()
                     .await
-                    .get_peer(&peer_prefix)
+                    .get_peer(&peer_kel_prefix)
                     .cloned();
 
                 let already_inactive = current_peer.as_ref().is_some_and(|p| !p.active);
@@ -985,14 +986,14 @@ pub async fn admin_vote_proposal(
                     let active_peer = current_peer.ok_or_else(|| {
                         ApiError::internal_error(format!(
                             "Peer {} not found in Raft state for deactivation",
-                            peer_prefix
+                            peer_kel_prefix
                         ))
                     })?;
 
                     // Set authorizing_kel before deactivate() so the SAID
                     // is derived over the correct content
                     let mut to_deactivate = active_peer.clone();
-                    to_deactivate.authorizing_kel = self_prefix.clone();
+                    to_deactivate.authorizing_kel = self_prefix;
                     let deactivated = to_deactivate.deactivate().map_err(|e| {
                         ApiError::internal_error(format!("Failed to deactivate peer: {}", e))
                     })?;
@@ -1017,11 +1018,11 @@ pub async fn admin_vote_proposal(
                 }
 
                 return Ok(Json(ProposalResponse {
-                    proposal_id,
+                    proposal_prefix,
                     status: "removal_approved".to_string(),
                     votes_needed,
                     current_votes,
-                    message: format!("Removal approved! Peer {} deactivated.", peer_prefix),
+                    message: format!("Removal approved! Peer {} deactivated.", peer_kel_prefix),
                 }));
             }
 
@@ -1040,7 +1041,7 @@ pub async fn admin_vote_proposal(
             Err(ApiError::bad_request(format!("Proposal expired: {}", id)))
         }
         FederationResponse::ProposalRejected(id) => Ok(Json(ProposalResponse {
-            proposal_id: id,
+            proposal_prefix: id,
             status: "rejected".to_string(),
             votes_needed: 0,
             current_votes: 0,
@@ -1078,7 +1079,7 @@ pub async fn list_peers_federated(
         .into_iter()
         .filter(|p| query.all || p.active)
         .map(|peer| PeerHistory {
-            prefix: peer.prefix.clone(),
+            prefix: peer.prefix,
             records: vec![peer],
         })
         .collect();
@@ -1107,7 +1108,7 @@ pub async fn submit_member_key_events(
     }
 
     // Extract prefix from first event, validate all events share the same prefix
-    let prefix = events[0].event.prefix.clone();
+    let prefix = events[0].event.prefix;
     for event in &events {
         if event.event.prefix != prefix {
             return Err(ApiError::bad_request(
@@ -1130,7 +1131,7 @@ pub async fn submit_member_key_events(
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
         &state.member_kel_prefix_rate_limits,
-        &prefix,
+        prefix.as_ref(),
         events.len() as u32,
         max_member_events_per_prefix_per_day(),
     )?;
@@ -1140,10 +1141,7 @@ pub async fn submit_member_key_events(
         if signed_event.signatures.is_empty() {
             return Err(ApiError::bad_request("Event missing signature"));
         }
-        for sig in &signed_event.signatures {
-            cesr::Signature::from_qb64(&sig.signature)
-                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
-        }
+        // Signature CESR format is validated at deserialization (cesr::Signature).
         if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
             return Err(ApiError::bad_request(
                 "Dual signatures required for recovery event",
@@ -1170,7 +1168,7 @@ pub async fn submit_member_key_events(
     // Accrue only the actual new events (duplicates don't count)
     accrue_prefix_rate_limit(
         &state.member_kel_prefix_rate_limits,
-        &prefix,
+        prefix.as_ref(),
         outcome.new_event_count as u32,
     );
 
@@ -1186,7 +1184,7 @@ pub async fn submit_member_key_events(
     let config = state.node.config();
     let propagate = prefix == config.self_prefix;
     if propagate && applied {
-        let self_prefix = config.self_prefix.clone();
+        let self_prefix = config.self_prefix;
         let futures: Vec<_> = config
             .members
             .iter()
@@ -1194,7 +1192,7 @@ pub async fn submit_member_key_events(
             .map(|member| {
                 let events = events.clone();
                 let url = member.url.clone();
-                let member_prefix = member.prefix.clone();
+                let member_prefix = member.prefix;
                 async move {
                     let client = match kels_core::KelsClient::with_path_prefix(
                         &url,
@@ -1239,8 +1237,10 @@ pub async fn submit_member_key_events(
 /// A wrong value triggers an unnecessary sync, not a security hole.
 pub async fn get_member_effective_said(
     State(state): State<Arc<FederationState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     match state
         .member_kel_repo
         .compute_prefix_effective_said(&prefix)
@@ -1269,10 +1269,18 @@ pub async fn get_member_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
+    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
+    let since_digest = query
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         &state.member_kel_repo,
-        &prefix,
-        query.since.as_deref(),
+        &prefix_digest,
+        since_digest.as_ref(),
         limit,
     )
     .await

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
 /// Well-known SadPointer kind for ML-KEM encapsulation key publication.
-pub const ENCAP_KEY_KIND: &str = "kels/v1/mlkem-encap-key";
+pub const ENCAP_KEY_KIND: &str = "kels/exchange/v1/keys/mlkem";
 
 /// ML-KEM encapsulation key publication, stored as a SAD object in the SADStore.
 ///
@@ -16,11 +16,11 @@ pub const ENCAP_KEY_KIND: &str = "kels/v1/mlkem-encap-key";
 #[serde(rename_all = "camelCase")]
 pub struct EncapsulationKeyPublication {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     /// Algorithm identifier: `"ML-KEM-768"` or `"ML-KEM-1024"`.
     pub algorithm: String,
     /// CESR-encoded ML-KEM encapsulation key.
-    pub encapsulation_key: String,
+    pub encapsulation_key: cesr::EncapsulationKey,
 }
 
 /// Known ML-KEM algorithm identifiers.
@@ -36,37 +36,42 @@ mod tests {
 
     #[test]
     fn said_derivation_is_deterministic() {
+        let (ek, _dk) = cesr::generate_ml_kem_768().unwrap();
+
         let mut pub1 = EncapsulationKeyPublication {
-            said: String::new(),
+            said: cesr::Digest::default(),
             algorithm: ML_KEM_768.to_string(),
-            encapsulation_key: "test-key-data".to_string(),
+            encapsulation_key: ek.clone(),
         };
         pub1.derive_said().unwrap();
 
         let mut pub2 = EncapsulationKeyPublication {
-            said: String::new(),
+            said: cesr::Digest::default(),
             algorithm: ML_KEM_768.to_string(),
-            encapsulation_key: "test-key-data".to_string(),
+            encapsulation_key: ek,
         };
         pub2.derive_said().unwrap();
 
         assert_eq!(pub1.said, pub2.said);
-        assert!(!pub1.said.is_empty());
+        assert_ne!(pub1.said, cesr::Digest::default());
     }
 
     #[test]
     fn different_keys_produce_different_saids() {
+        let (ek_a, _dk_a) = cesr::generate_ml_kem_768().unwrap();
+        let (ek_b, _dk_b) = cesr::generate_ml_kem_768().unwrap();
+
         let mut pub1 = EncapsulationKeyPublication {
-            said: String::new(),
+            said: cesr::Digest::default(),
             algorithm: ML_KEM_768.to_string(),
-            encapsulation_key: "key-a".to_string(),
+            encapsulation_key: ek_a,
         };
         pub1.derive_said().unwrap();
 
         let mut pub2 = EncapsulationKeyPublication {
-            said: String::new(),
+            said: cesr::Digest::default(),
             algorithm: ML_KEM_768.to_string(),
-            encapsulation_key: "key-b".to_string(),
+            encapsulation_key: ek_b,
         };
         pub2.derive_said().unwrap();
 

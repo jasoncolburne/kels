@@ -10,7 +10,7 @@ use crate::error::CredentialError;
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     pub condition: String,
 }
 
@@ -18,7 +18,7 @@ pub struct Rule {
 #[serde(rename_all = "camelCase")]
 pub struct Rules {
     #[said]
-    pub said: String,
+    pub said: cesr::Digest,
     #[serde(flatten)]
     pub rules: BTreeMap<String, Rule>,
 }
@@ -26,7 +26,7 @@ pub struct Rules {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawRules {
-    said: String,
+    said: cesr::Digest,
     #[serde(flatten)]
     rules: BTreeMap<String, Rule>,
 }
@@ -73,7 +73,7 @@ impl Rules {
             rule.derive_said()?;
         }
         let mut instance = Self {
-            said: String::new(),
+            said: cesr::Digest::default(),
             rules,
         };
         instance.derive_said()?;
@@ -83,6 +83,8 @@ impl Rules {
 
 #[cfg(test)]
 mod tests {
+    use cesr::test_digest;
+
     use super::*;
 
     use verifiable_storage::SelfAddressed;
@@ -94,8 +96,8 @@ mod tests {
     #[test]
     fn test_rule_said_derivation() {
         let rule = test_rule();
-        assert!(!rule.said.is_empty());
-        assert_eq!(rule.said.len(), 44);
+        assert!(!rule.said.to_string().is_empty());
+        assert_eq!(rule.said.to_string().len(), 44);
     }
 
     #[test]
@@ -126,8 +128,8 @@ mod tests {
         rules_map.insert("terms".to_string(), test_rule());
 
         let rules = Rules::new_validated(rules_map).unwrap();
-        assert!(!rules.said.is_empty());
-        assert_eq!(rules.said.len(), 44);
+        assert!(!rules.said.to_string().is_empty());
+        assert_eq!(rules.said.to_string().len(), 44);
         assert!(rules.verify_said().is_ok());
     }
 
@@ -182,7 +184,7 @@ mod tests {
     #[test]
     fn test_rules_try_from_rejects_reserved_label() {
         let raw = super::RawRules {
-            said: "KAbc1234567890123456789012345678901234567890".to_string(),
+            said: test_digest("reserved-label-test"),
             rules: {
                 let mut m = BTreeMap::new();
                 m.insert("said".to_string(), test_rule());

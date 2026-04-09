@@ -9,6 +9,7 @@
 use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
+use cesr::{test_digest, test_signature};
 use ctor::dtor;
 use kels_core::{SadPointer, compute_sad_pointer_prefix};
 use reqwest::Client;
@@ -292,7 +293,7 @@ async fn test_post_sad_object_wrong_said_rejected() {
 
     // Object with a tampered SAID that won't verify
     let object = serde_json::json!({
-        "said": "Ewrong_said_that_does_not_match_content_",
+        "said": "Kwrong_said_that_does_not_match_content_data",
         "data": "wrong-said-test"
     });
 
@@ -315,7 +316,7 @@ async fn test_get_sad_object_not_found() {
 
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/Enonexistent_said_should_return_404_______"))
+        .get(harness.url(&format!("/api/v1/sad/{}", test_digest("nonexistent"))))
         .send()
         .await
         .unwrap();
@@ -343,16 +344,20 @@ async fn test_post_sad_object_invalid_json_rejected() {
 
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_deterministic() {
-    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
+    let p1 = compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
+        .unwrap();
+    let p2 = compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
+        .unwrap();
     assert_eq!(p1, p2);
 }
 
 #[tokio::test]
 async fn test_compute_sad_pointer_prefix_different_inputs() {
-    let p1 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/mlkem-pubkey").unwrap();
-    let p2 = compute_sad_pointer_prefix("Ekel_prefix_b", "kels/v1/mlkem-pubkey").unwrap();
-    let p3 = compute_sad_pointer_prefix("Ekel_prefix_a", "kels/v1/other-kind").unwrap();
+    let p1 = compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/exchange/v1/keys/mlkem")
+        .unwrap();
+    let p2 = compute_sad_pointer_prefix(test_digest("kel-prefix-b"), "kels/exchange/v1/keys/mlkem")
+        .unwrap();
+    let p3 = compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p1, p3);
 }
@@ -365,9 +370,10 @@ async fn test_chain_fetch_not_found() {
         return;
     };
 
+    let nonexistent = test_digest("nonexistent-chain-prefix");
     let resp = harness
         .client()
-        .get(harness.url("/api/v1/sad/pointers/Enonexistent_chain_prefix_________________"))
+        .get(harness.url(&format!("/api/v1/sad/pointers/{}", nonexistent)))
         .send()
         .await
         .unwrap();
@@ -380,15 +386,16 @@ async fn test_effective_said_not_found() {
         return;
     };
 
-    let resp =
-        harness
-            .client()
-            .get(harness.url(
-                "/api/v1/sad/pointers/Enonexistent_chain_prefix_________________/effective-said",
-            ))
-            .send()
-            .await
-            .unwrap();
+    let nonexistent = test_digest("nonexistent-chain-prefix");
+    let resp = harness
+        .client()
+        .get(harness.url(&format!(
+            "/api/v1/sad/pointers/{}/effective-said",
+            nonexistent
+        )))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -400,7 +407,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     // Create a record but tamper with the SAID
     let mut pointer = SadPointer::create(
-        "Ekel_test_prefix".to_string(),
+        test_digest("kel-test-prefix"),
         "kels/v1/test-kind".to_string(),
         None,
     )
@@ -409,7 +416,7 @@ async fn test_submit_record_invalid_said_rejected() {
 
     let records = vec![kels_core::SignedSadPointer {
         pointer,
-        signature: "fake_sig".to_string(),
+        signature: test_signature("fake-sig"),
         establishment_serial: 0,
     }];
 
@@ -434,12 +441,12 @@ async fn test_list_prefixes_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: None,
         },
-        prefix: "test".to_string(),
-        signature: "test".to_string(),
+        prefix: test_digest("test"),
+        signature: test_signature("test"),
     };
 
     let resp = harness
@@ -465,12 +472,12 @@ async fn test_list_objects_empty() {
     let body = kels_core::SignedRequest {
         payload: kels_core::PaginatedSelfAddressedRequest {
             timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
+            nonce: kels_core::generate_nonce().to_string(),
             cursor: None,
             limit: None,
         },
-        prefix: "test".to_string(),
-        signature: "test".to_string(),
+        prefix: test_digest("test"),
+        signature: test_signature("test"),
     };
 
     let resp = harness

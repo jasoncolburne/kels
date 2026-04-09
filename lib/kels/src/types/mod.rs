@@ -18,27 +18,34 @@ pub use sync::*;
 
 #[cfg(test)]
 mod tests {
+    use cesr::{test_digest, test_signature};
     use verifiable_storage::Chained;
 
     use super::*;
 
     #[test]
     fn test_event_kind_serialization() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/v1/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/v1/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/v1/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/v1/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/v1/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/v1/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/v1/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/v1/cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/events/v1/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/events/v1/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/events/v1/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/events/v1/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/events/v1/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/events/v1/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/events/v1/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/events/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_parsing() {
         use std::str::FromStr;
-        assert_eq!(EventKind::from_str("kels/v1/icp").unwrap(), EventKind::Icp);
-        assert_eq!(EventKind::from_str("kels/v1/cnt").unwrap(), EventKind::Cnt);
+        assert_eq!(
+            EventKind::from_str("kels/events/v1/icp").unwrap(),
+            EventKind::Icp
+        );
+        assert_eq!(
+            EventKind::from_str("kels/events/v1/cnt").unwrap(),
+            EventKind::Cnt
+        );
         // Rejects uppercase
         assert!(EventKind::from_str("KELS/V1/ICP").is_err());
         // Rejects short names
@@ -66,8 +73,8 @@ mod tests {
     #[test]
     fn test_event_kind_json() {
         let json = serde_json::to_string(&EventKind::Icp).unwrap();
-        assert_eq!(json, "\"kels/v1/icp\"");
-        let parsed: EventKind = serde_json::from_str("\"kels/v1/rec\"").unwrap();
+        assert_eq!(json, "\"kels/events/v1/icp\"");
+        let parsed: EventKind = serde_json::from_str("\"kels/events/v1/rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
         // Short form rejected
         assert!(serde_json::from_str::<EventKind>("\"icp\"").is_err());
@@ -76,9 +83,9 @@ mod tests {
     #[test]
     fn test_peer_creation() {
         let peer = Peer::create(
-            "12D3KooWExample".to_string(),
+            test_digest("12D3KooWExample"),
             "node-a".to_string(),
-            "KAuthorizingKel_____________________________".to_string(),
+            test_digest("KAuthorizingKel"),
             true,
             "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -88,9 +95,9 @@ mod tests {
         assert!(peer.active);
         assert_eq!(peer.version, 0);
         assert!(peer.previous.is_none());
-        assert!(!peer.said.is_empty());
+        assert_eq!(peer.said.to_string().len(), 44);
         // Prefix is derived from content hash, not manually set
-        assert!(!peer.prefix.is_empty());
+        assert_eq!(peer.prefix.to_string().len(), 44);
         assert_eq!(peer.base_domain, "node-a.kels");
         assert_eq!(peer.gossip_addr, "127.0.0.1:4001");
     }
@@ -98,9 +105,9 @@ mod tests {
     #[test]
     fn test_peer_deactivation() {
         let peer = Peer::create(
-            "12D3KooWExample".to_string(),
+            test_digest("12D3KooWExample"),
             "node-a".to_string(),
-            "KAuthorizingKel_____________________________".to_string(),
+            test_digest("KAuthorizingKel"),
             true,
             "node-a.kels".to_string(),
             "127.0.0.1:4001".to_string(),
@@ -111,19 +118,18 @@ mod tests {
 
         assert!(!deactivated.active);
         assert_eq!(deactivated.version, 1);
-        assert_eq!(deactivated.previous, Some(peer.said.clone()));
+        assert_eq!(deactivated.previous, Some(peer.said));
         assert_eq!(deactivated.prefix, peer.prefix);
     }
 
     // ==================== Test Helpers ====================
 
-    fn make_blake3_digest(data: &str) -> String {
-        use cesr::{Digest, Matter};
-        Digest::blake3_256(data.as_bytes()).qb64()
+    fn make_blake3_digest(data: &str) -> cesr::Digest {
+        cesr::Digest::blake3_256(data.as_bytes())
     }
 
-    fn make_secp256r1_key() -> String {
-        use cesr::{Matter, VerificationKey, VerificationKeyCode};
+    fn make_secp256r1_key() -> cesr::VerificationKey {
+        use cesr::VerificationKeyCode;
         // Valid compressed secp256r1 public key (33 bytes)
         let key_bytes = [
             0x02, // compressed prefix
@@ -131,9 +137,7 @@ mod tests {
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
         ];
-        VerificationKey::from_raw(VerificationKeyCode::Secp256r1, key_bytes.to_vec())
-            .unwrap()
-            .qb64()
+        cesr::VerificationKey::from_raw(VerificationKeyCode::Secp256r1, key_bytes.to_vec()).unwrap()
     }
 
     fn make_valid_icp() -> KeyEvent {
@@ -378,7 +382,7 @@ mod tests {
         let said = make_blake3_digest("said");
         let event = KeyEvent {
             kind: EventKind::Rot,
-            said: said.clone(),
+            said,
             prefix: make_blake3_digest("prefix"),
             previous: Some(said), // Same as said - circular!
             serial: 0,
@@ -393,21 +397,9 @@ mod tests {
         assert!(err.contains("self-referencing"));
     }
 
-    #[test]
-    fn test_validate_structure_invalid_said_format() {
-        let mut event = make_valid_icp();
-        event.said = "not_a_valid_cesr_digest".to_string();
-        let err = event.validate_structure().unwrap_err();
-        assert!(err.contains("not a valid CESR digest"));
-    }
-
-    #[test]
-    fn test_validate_structure_invalid_public_key_format() {
-        let mut event = make_valid_icp();
-        event.public_key = Some("not_a_valid_key".to_string());
-        let err = event.validate_structure().unwrap_err();
-        assert!(err.contains("not a valid CESR public key"));
-    }
+    // Note: invalid_said_format and invalid_public_key_format tests removed
+    // because these fields are now typed (cesr::Digest, cesr::VerificationKey)
+    // and invalid CESR is caught at deserialization time.
 
     // ==================== SignedKeyEvent tests ====================
 
@@ -416,11 +408,11 @@ mod tests {
         let event = make_valid_icp();
         let sig1 = KeyEventSignature {
             label: "key1".to_string(),
-            signature: "sig1".to_string(),
+            signature: test_signature("sig1"),
         };
         let sig2 = KeyEventSignature {
             label: "key2".to_string(),
-            signature: "sig2".to_string(),
+            signature: test_signature("sig2"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -444,7 +436,7 @@ mod tests {
 
         let sig = KeyEventSignature {
             label: "key".to_string(),
-            signature: "sig".to_string(),
+            signature: test_signature("sig"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -462,13 +454,15 @@ mod tests {
     #[test]
     fn test_signed_key_event_signature_lookup() {
         let event = make_valid_icp();
+        let test_sig1 = test_signature("sig1");
+        let test_sig2 = test_signature("sig2");
         let sig1 = KeyEventSignature {
             label: "key1".to_string(),
-            signature: "sig1".to_string(),
+            signature: test_sig1.clone(),
         };
         let sig2 = KeyEventSignature {
             label: "key2".to_string(),
-            signature: "sig2".to_string(),
+            signature: test_sig2.clone(),
         };
 
         let signed = SignedKeyEvent {
@@ -478,11 +472,11 @@ mod tests {
 
         assert_eq!(
             signed.signature("key1").map(|s| &s.signature),
-            Some(&"sig1".to_string())
+            Some(&test_sig1)
         );
         assert_eq!(
             signed.signature("key2").map(|s| &s.signature),
-            Some(&"sig2".to_string())
+            Some(&test_sig2)
         );
         assert!(signed.signature("key3").is_none());
     }
@@ -576,32 +570,56 @@ mod tests {
 
     #[test]
     fn test_event_kind_as_str() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/v1/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/v1/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/v1/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/v1/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/v1/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/v1/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/v1/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/v1/cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/events/v1/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/events/v1/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/events/v1/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/events/v1/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/events/v1/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/events/v1/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/events/v1/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/events/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_display() {
-        assert_eq!(format!("{}", EventKind::Icp), "kels/v1/icp");
-        assert_eq!(format!("{}", EventKind::Cnt), "kels/v1/cnt");
+        assert_eq!(format!("{}", EventKind::Icp), "kels/events/v1/icp");
+        assert_eq!(format!("{}", EventKind::Cnt), "kels/events/v1/cnt");
     }
 
     #[test]
     fn test_event_kind_from_str() {
-        assert_eq!("kels/v1/icp".parse::<EventKind>().unwrap(), EventKind::Icp);
-        assert_eq!("kels/v1/dip".parse::<EventKind>().unwrap(), EventKind::Dip);
-        assert_eq!("kels/v1/rot".parse::<EventKind>().unwrap(), EventKind::Rot);
-        assert_eq!("kels/v1/ixn".parse::<EventKind>().unwrap(), EventKind::Ixn);
-        assert_eq!("kels/v1/rec".parse::<EventKind>().unwrap(), EventKind::Rec);
-        assert_eq!("kels/v1/ror".parse::<EventKind>().unwrap(), EventKind::Ror);
-        assert_eq!("kels/v1/dec".parse::<EventKind>().unwrap(), EventKind::Dec);
-        assert_eq!("kels/v1/cnt".parse::<EventKind>().unwrap(), EventKind::Cnt);
+        assert_eq!(
+            "kels/events/v1/icp".parse::<EventKind>().unwrap(),
+            EventKind::Icp
+        );
+        assert_eq!(
+            "kels/events/v1/dip".parse::<EventKind>().unwrap(),
+            EventKind::Dip
+        );
+        assert_eq!(
+            "kels/events/v1/rot".parse::<EventKind>().unwrap(),
+            EventKind::Rot
+        );
+        assert_eq!(
+            "kels/events/v1/ixn".parse::<EventKind>().unwrap(),
+            EventKind::Ixn
+        );
+        assert_eq!(
+            "kels/events/v1/rec".parse::<EventKind>().unwrap(),
+            EventKind::Rec
+        );
+        assert_eq!(
+            "kels/events/v1/ror".parse::<EventKind>().unwrap(),
+            EventKind::Ror
+        );
+        assert_eq!(
+            "kels/events/v1/dec".parse::<EventKind>().unwrap(),
+            EventKind::Dec
+        );
+        assert_eq!(
+            "kels/events/v1/cnt".parse::<EventKind>().unwrap(),
+            EventKind::Cnt
+        );
     }
 
     #[test]
@@ -644,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_event_kind_from_short_name_rejects_versioned() {
-        assert!(EventKind::from_short_name("kels/v1/icp").is_err());
+        assert!(EventKind::from_short_name("kels/events/v1/icp").is_err());
     }
 
     #[test]
@@ -817,11 +835,12 @@ mod tests {
     #[test]
     fn test_signed_key_event_new() {
         let event = make_valid_icp();
-        let signed = SignedKeyEvent::new(event.clone(), "signing".to_string(), "sig".to_string());
+        let sig = test_signature("sig");
+        let signed = SignedKeyEvent::new(event.clone(), "signing".to_string(), sig.clone());
         assert_eq!(signed.event.said, event.said);
         assert_eq!(signed.signatures.len(), 1);
         assert_eq!(signed.signatures[0].label, "signing");
-        assert_eq!(signed.signatures[0].signature, "sig");
+        assert_eq!(signed.signatures[0].signature, sig);
     }
 
     #[test]
@@ -829,8 +848,8 @@ mod tests {
         let event = make_valid_icp();
         let signed = SignedKeyEvent::new_recovery(
             event.clone(),
-            "primary_sig".to_string(),
-            "recovery_sig".to_string(),
+            test_signature("primary_sig"),
+            test_signature("recovery_sig"),
         );
         assert_eq!(signed.signatures.len(), 2);
         assert_eq!(signed.signatures[0].label, "signing");
@@ -840,14 +859,15 @@ mod tests {
     #[test]
     fn test_signed_key_event_from_signatures() {
         let event = make_valid_icp();
+        let sig2 = test_signature("sig2");
         let sigs = vec![
-            ("key1".to_string(), "sig1".to_string()),
-            ("key2".to_string(), "sig2".to_string()),
+            ("key1".to_string(), test_signature("sig1")),
+            ("key2".to_string(), sig2.clone()),
         ];
         let signed = SignedKeyEvent::from_signatures(event, sigs);
         assert_eq!(signed.signatures.len(), 2);
         assert_eq!(signed.signatures[0].label, "key1");
-        assert_eq!(signed.signatures[1].signature, "sig2");
+        assert_eq!(signed.signatures[1].signature, sig2);
     }
 
     #[test]
@@ -856,7 +876,7 @@ mod tests {
         use std::hash::{Hash, Hasher};
 
         let event = make_valid_icp();
-        let signed = SignedKeyEvent::new(event, "key".to_string(), "sig".to_string());
+        let signed = SignedKeyEvent::new(event, "key".to_string(), test_signature("sig"));
 
         let mut hasher = DefaultHasher::new();
         signed.hash(&mut hasher);
@@ -876,7 +896,7 @@ mod tests {
         let event = make_valid_icp();
         let sig = KeyEventSignature {
             label: "key".to_string(),
-            signature: "sig".to_string(),
+            signature: test_signature("sig"),
         };
 
         let signed1 = SignedKeyEvent {
@@ -899,14 +919,14 @@ mod tests {
             event: event.clone(),
             signatures: vec![KeyEventSignature {
                 label: "key".to_string(),
-                signature: "sig1".to_string(),
+                signature: test_signature("sig1"),
             }],
         };
         let signed2 = SignedKeyEvent {
             event,
             signatures: vec![KeyEventSignature {
                 label: "key".to_string(),
-                signature: "sig2".to_string(),
+                signature: test_signature("sig2"),
             }],
         };
 
@@ -1015,8 +1035,8 @@ mod tests {
     #[test]
     fn test_raft_vote_create() {
         let vote = RaftVote::create(1, 5, Some(2), false).unwrap();
-        assert!(!vote.said.is_empty());
-        assert!(!vote.prefix.is_empty());
+        assert_eq!(vote.said.to_string().len(), 44);
+        assert_eq!(vote.prefix.to_string().len(), 44);
         assert!(vote.previous.is_none());
         assert_eq!(vote.version, 0);
         assert_eq!(vote.node_id, 1);
@@ -1035,8 +1055,8 @@ mod tests {
     #[test]
     fn test_raft_vote_increment() {
         let mut vote = RaftVote::create(1, 5, Some(2), false).unwrap();
-        let original_said = vote.said.clone();
-        let original_prefix = vote.prefix.clone();
+        let original_said = vote.said;
+        let original_prefix = vote.prefix;
         let original_version = vote.version;
 
         vote.term = 6;
@@ -1075,8 +1095,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!entry.said.is_empty());
-        assert!(!entry.prefix.is_empty());
+        assert_eq!(entry.said.to_string().len(), 44);
+        assert_eq!(entry.prefix.to_string().len(), 44);
         assert!(entry.previous.is_none());
         assert_eq!(entry.version, 0);
         assert_eq!(entry.node_id, 1);
@@ -1100,7 +1120,7 @@ mod tests {
         let mut entry =
             RaftLogEntry::create(1, 10, 5, 2, "normal".to_string(), Some("data".to_string()))
                 .unwrap();
-        let original_said = entry.said.clone();
+        let original_said = entry.said;
 
         entry.log_index = 11;
         entry.term = 6;
@@ -1133,8 +1153,8 @@ mod tests {
         let state =
             RaftState::create(1, Some(5), Some(3), Some(2), Some(10), Some(4), Some(1)).unwrap();
 
-        assert!(!state.said.is_empty());
-        assert!(!state.prefix.is_empty());
+        assert_eq!(state.said.to_string().len(), 44);
+        assert_eq!(state.prefix.to_string().len(), 44);
         assert_eq!(state.node_id, 1);
         assert_eq!(state.last_purged_index, Some(5));
         assert_eq!(state.last_purged_term, Some(3));
@@ -1159,7 +1179,7 @@ mod tests {
     #[test]
     fn test_raft_state_increment() {
         let mut state = RaftState::create(1, None, None, None, None, None, None).unwrap();
-        let original_said = state.said.clone();
+        let original_said = state.said;
 
         state.last_purged_index = Some(3);
         state.last_purged_term = Some(2);
@@ -1205,7 +1225,7 @@ mod tests {
 
         let audit = RaftLogAuditRecord::for_truncate(1, &entries).unwrap();
 
-        assert!(!audit.said.is_empty());
+        assert_eq!(audit.said.to_string().len(), 44);
         assert_eq!(audit.node_id, 1);
         assert_eq!(audit.operation, "truncate");
 

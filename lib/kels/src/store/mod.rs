@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::{error::KelsError, types::SignedKeyEvent};
 
 #[cfg(test)]
-pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
+pub(crate) async fn create_test_events() -> (cesr::Digest, Vec<SignedKeyEvent>) {
     use cesr::VerificationKeyCode;
 
     use crate::{builder::KeyEventBuilder, crypto::SoftwareKeyProvider};
@@ -22,7 +22,7 @@ pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
         None,
     );
     let icp = builder.incept().await.unwrap();
-    let prefix = icp.event.prefix.clone();
+    let prefix = icp.event.prefix;
     (prefix, vec![icp])
 }
 
@@ -31,40 +31,53 @@ pub(crate) async fn create_test_events() -> (String, Vec<SignedKeyEvent>) {
 #[async_trait]
 pub trait KelStore: Send + Sync {
     /// Owner's prefix. When set, `cache()` skips saving KELs with this prefix.
-    fn owner_prefix(&self) -> Option<String> {
+    fn owner_prefix(&self) -> Option<cesr::Digest> {
         None
     }
 
     /// Set/clear owner prefix after enrollment.
-    fn set_owner_prefix(&self, _prefix: Option<&str>) {}
+    fn set_owner_prefix(&self, _prefix: Option<&cesr::Digest>) {}
 
     /// Load a page of events by prefix. Returns `(events, has_more)`.
     /// Callers iterate explicitly via paginated reads.
     async fn load(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         limit: u64,
         offset: u64,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError>;
 
     /// Load the last `limit` events for a prefix, returned in serial-ascending order.
     /// Used for bounded tail access without loading the entire KEL.
-    async fn load_tail(&self, prefix: &str, limit: u64) -> Result<Vec<SignedKeyEvent>, KelsError>;
+    async fn load_tail(
+        &self,
+        prefix: &cesr::Digest,
+        limit: u64,
+    ) -> Result<Vec<SignedKeyEvent>, KelsError>;
 
     /// Append events for a prefix (merges with any existing events).
-    async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
+    async fn append(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError>;
 
     /// Overwrite all events for a prefix (truncate + write).
     /// Only intended for dev-tools use cases (e.g., truncation).
-    async fn overwrite(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError>;
-
-    /// Delete a KEL by prefix. No-op if not found.
-    async fn delete(&self, prefix: &str) -> Result<(), KelsError>;
+    async fn overwrite(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError>;
 
     /// Cache server-fetched events. Skips owner prefix to protect authoritative local state.
-    async fn cache(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+    async fn cache(
+        &self,
+        prefix: &cesr::Digest,
+        events: &[SignedKeyEvent],
+    ) -> Result<(), KelsError> {
         if let Some(owner) = self.owner_prefix()
-            && prefix == owner
+            && *prefix == owner
         {
             return Ok(());
         }
@@ -83,8 +96,7 @@ impl crate::types::PagedKelSink for KelStoreSink<'_> {
         if events.is_empty() {
             return Ok(());
         }
-        let prefix = &events[0].event.prefix;
-        self.0.append(prefix, events).await
+        self.0.append(&events[0].event.prefix, events).await
     }
 }
 
@@ -97,7 +109,7 @@ mod tests {
     /// In-memory store for testing
     struct MemoryStore {
         kels: RwLock<HashMap<String, Vec<SignedKeyEvent>>>,
-        owner: RwLock<Option<String>>,
+        owner: RwLock<Option<cesr::Digest>>,
     }
 
     impl MemoryStore {
@@ -111,19 +123,19 @@ mod tests {
 
     #[async_trait]
     impl KelStore for MemoryStore {
-        fn owner_prefix(&self) -> Option<String> {
-            self.owner.read().ok().and_then(|g| g.clone())
+        fn owner_prefix(&self) -> Option<cesr::Digest> {
+            self.owner.read().ok().and_then(|g| *g)
         }
 
-        fn set_owner_prefix(&self, prefix: Option<&str>) {
+        fn set_owner_prefix(&self, prefix: Option<&cesr::Digest>) {
             if let Ok(mut guard) = self.owner.write() {
-                *guard = prefix.map(|s| s.to_string());
+                *guard = prefix.cloned();
             }
         }
 
         async fn load(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             limit: u64,
             offset: u64,
         ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
@@ -131,7 +143,7 @@ mod tests {
                 Ok(g) => g,
                 Err(_) => return Ok((vec![], false)),
             };
-            match guard.get(prefix) {
+            match guard.get(prefix.as_ref()) {
                 Some(events) => {
                     let start = offset as usize;
                     if start >= events.len() {
@@ -148,14 +160,14 @@ mod tests {
 
         async fn load_tail(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             limit: u64,
         ) -> Result<Vec<SignedKeyEvent>, KelsError> {
             let guard = match self.kels.read() {
                 Ok(g) => g,
                 Err(_) => return Ok(vec![]),
             };
-            match guard.get(prefix) {
+            match guard.get(prefix.as_ref()) {
                 Some(events) => {
                     let start = events.len().saturating_sub(limit as usize);
                     Ok(events[start..].to_vec())
@@ -164,7 +176,11 @@ mod tests {
             }
         }
 
-        async fn append(&self, prefix: &str, events: &[SignedKeyEvent]) -> Result<(), KelsError> {
+        async fn append(
+            &self,
+            prefix: &cesr::Digest,
+            events: &[SignedKeyEvent],
+        ) -> Result<(), KelsError> {
             if let Ok(mut guard) = self.kels.write() {
                 guard
                     .entry(prefix.to_string())
@@ -176,18 +192,11 @@ mod tests {
 
         async fn overwrite(
             &self,
-            prefix: &str,
+            prefix: &cesr::Digest,
             events: &[SignedKeyEvent],
         ) -> Result<(), KelsError> {
             if let Ok(mut guard) = self.kels.write() {
                 guard.insert(prefix.to_string(), events.to_vec());
-            }
-            Ok(())
-        }
-
-        async fn delete(&self, prefix: &str) -> Result<(), KelsError> {
-            if let Ok(mut guard) = self.kels.write() {
-                guard.remove(prefix);
             }
             Ok(())
         }

@@ -9,7 +9,7 @@ pub fn build(
     immune: bool,
 ) -> Result<(String, String), PolicyError> {
     let policy = Policy::build(expression, poison, immune)?;
-    let said = policy.said.clone();
+    let said = policy.said.to_string();
     let json = serde_json::to_string(&policy)?;
     Ok((json, said))
 }
@@ -20,14 +20,14 @@ pub fn build(
 pub fn compact(json_policy: &str) -> Result<(String, String), PolicyError> {
     let policy: Policy = serde_json::from_str(json_policy)?;
     let compacted = policy.compact()?;
-    let said = compacted.said.clone();
+    let said = compacted.said.to_string();
     let json = serde_json::to_string(&compacted)?;
     Ok((json, said))
 }
 
 /// Compute the poison hash for a credential SAID.
 pub fn poison_hash(credential_said: &str) -> String {
-    crate::evaluator::poison_hash(credential_said)
+    crate::evaluator::poison_hash(credential_said).to_string()
 }
 
 #[cfg(test)]

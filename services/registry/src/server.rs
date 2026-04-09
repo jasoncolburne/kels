@@ -51,7 +51,7 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 get(handlers::list_completed_proposals),
             )
             .route(
-                "/api/v1/federation/proposals/:proposal_id",
+                "/api/v1/federation/proposals/:proposal_prefix",
                 get(handlers::get_proposal),
             );
 
@@ -66,7 +66,7 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 post(handlers::admin_submit_removal_proposal),
             )
             .route(
-                "/api/v1/admin/proposals/:proposal_id/vote",
+                "/api/v1/admin/proposals/:proposal_prefix/vote",
                 post(handlers::admin_vote_proposal),
             );
 

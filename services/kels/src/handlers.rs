@@ -11,7 +11,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::{Matter, Signature};
+use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
@@ -84,13 +84,13 @@ pub(crate) fn spawn_rate_limit_reaper(state: Arc<AppState>) {
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn check_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     event_count: u32,
     max_events: u32,
 ) -> Result<(), ApiError> {
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
@@ -108,15 +108,15 @@ fn check_prefix_rate_limit(
 ///
 /// Duplicated in `registry/src/handlers.rs`. Keep in sync.
 fn accrue_prefix_rate_limit(
-    limits: &DashMap<String, (u32, Instant)>,
-    prefix: &str,
+    limits: &DashMap<cesr::Digest, (u32, Instant)>,
+    prefix: &cesr::Digest,
     new_event_count: u32,
 ) {
     if new_event_count == 0 {
         return;
     }
     let now = Instant::now();
-    let mut entry = limits.entry(prefix.to_string()).or_insert((0, now));
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
         entry.0 = 0;
         entry.1 = now;
@@ -131,7 +131,7 @@ pub(crate) struct AppState {
     pub(crate) redis_conn: Option<redis::aio::ConnectionManager>,
     pub(crate) registry_urls: Vec<String>,
     /// Per-prefix daily rate limiting: counts events (not submissions).
-    pub(crate) prefix_rate_limits: DashMap<String, (u32, Instant)>,
+    pub(crate) prefix_rate_limits: DashMap<cesr::Digest, (u32, Instant)>,
     /// Per-IP write rate limiting: maps IP -> (tokens_remaining, last_refill)
     pub(crate) ip_rate_limits: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// Nonce deduplication: maps nonce -> first_seen. Entries older than nonce_window_secs() are evicted.
@@ -386,7 +386,7 @@ pub(crate) async fn submit_events(
     }
 
     // Get prefix from first event
-    let prefix = events[0].event.prefix.clone();
+    let prefix = events[0].event.prefix;
 
     // Per-prefix daily rate limiting (counts events, not submissions)
     check_prefix_rate_limit(
@@ -401,10 +401,7 @@ pub(crate) async fn submit_events(
         if signed_event.signatures.is_empty() {
             return Err(ApiError::bad_request("Event missing signature"));
         }
-        for sig in &signed_event.signatures {
-            Signature::from_qb64(&sig.signature)
-                .map_err(|e| ApiError::bad_request(format!("Invalid signature format: {}", e)))?;
-        }
+        // Signatures are already typed — no qb64 parsing needed
         if signed_event.event.requires_dual_signature() && signed_event.signatures.len() < 2 {
             return Err(ApiError::bad_request(
                 "Dual signatures required for recovery event",
@@ -514,23 +511,12 @@ pub(crate) async fn get_kel(
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
 
-    // Delta fetch path — canonical since-resolution
-    if params.since.is_some() {
-        let page = kels_core::serve_kel_page(
-            &state.repo.key_events,
-            &prefix,
-            params.since.as_deref(),
-            limit,
-        )
-        .await?;
-        return Ok(Json(page).into_response());
-    }
-
-    // Full fetch path — try cache for default limit
-    if limit as usize == kels_core::page_size()
+    // Full fetch path — try cache first using raw string key (no CESR parsing)
+    if params.since.is_none()
+        && limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
-        match kel_cache.get_full_serialized(&prefix).await {
+        match kel_cache.get_full_serialized_str(&prefix).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -547,13 +533,29 @@ pub(crate) async fn get_kel(
         }
     }
 
-    // Cache miss or non-default limit — canonical full fetch
-    let page = kels_core::serve_kel_page(&state.repo.key_events, &prefix, None, limit).await?;
+    // Cache miss — parse prefix and since to typed CESR
+    let prefix_digest = cesr::Digest::from_qb64(&prefix)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
+    let since_digest = params
+        .since
+        .as_deref()
+        .map(cesr::Digest::from_qb64)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
+
+    let page = kels_core::serve_kel_page(
+        &state.repo.key_events,
+        &prefix_digest,
+        since_digest.as_ref(),
+        limit,
+    )
+    .await?;
 
     // Store in cache (skips if too large per cache logic)
-    if !page.has_more
+    if since_digest.is_none()
+        && !page.has_more
         && let Some(ref kel_cache) = state.kel_cache
-        && let Err(e) = kel_cache.store(&prefix, &page.events).await
+        && let Err(e) = kel_cache.store(&prefix_digest, &page.events).await
     {
         warn!("Failed to cache KEL: {}", e);
     }
@@ -621,7 +623,7 @@ pub(crate) struct ArchivedEventsQuery {
 /// `?offset=N` skips the first N events.
 pub(crate) async fn get_kel_archived(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
     Query(params): Query<ArchivedEventsQuery>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let limit = params
@@ -630,6 +632,8 @@ pub(crate) async fn get_kel_archived(
         .clamp(1, kels_core::page_size()) as u64;
     let offset = params.offset.unwrap_or(0);
 
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let (events, has_more) = state
         .repo
         .key_events
@@ -663,8 +667,10 @@ pub(crate) async fn event_exists(
 /// not a security hole.
 pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
+    Path(prefix_string): Path<String>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
+    let prefix = cesr::Digest::from_qb64(&prefix_string)
+        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let effective = state
         .repo
         .key_events
@@ -682,7 +688,7 @@ pub(crate) async fn get_effective_said(
 /// Shared query logic for listing prefixes.
 async fn query_prefixes(
     state: &AppState,
-    since: Option<&str>,
+    since: Option<&cesr::Digest>,
     limit: Option<usize>,
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     let limit = limit.unwrap_or(100).clamp(1, 1000);
@@ -745,7 +751,7 @@ pub(crate) async fn list_prefixes(
         &signed_request.prefix,
         kels_core::page_size(),
         kels_core::max_pages(),
-        std::iter::empty::<String>(),
+        std::iter::empty::<cesr::Digest>(),
     )
     .await
     .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
@@ -756,7 +762,7 @@ pub(crate) async fn list_prefixes(
 
     query_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -772,7 +778,7 @@ pub(crate) async fn test_list_prefixes(
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
     query_prefixes(
         &state,
-        signed_request.payload.cursor.as_deref(),
+        signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
     )
     .await
@@ -781,11 +787,11 @@ pub(crate) async fn test_list_prefixes(
 /// Look up a verified peer from Redis cache, returning the full Peer data.
 async fn get_verified_peer(
     redis_conn: &redis::aio::ConnectionManager,
-    peer_prefix: &str,
+    peer_kel_prefix: &cesr::Digest,
 ) -> Result<Option<kels_core::Peer>, ApiError> {
     let mut conn = redis_conn.clone();
     let json: Option<String> = conn
-        .get(format!("kels:verified-peer:{}", peer_prefix))
+        .get(format!("kels:verified-peer:{}", peer_kel_prefix))
         .await
         .map_err(|e| ApiError::internal_error(format!("Redis error: {}", e)))?;
     match json {
@@ -824,7 +830,7 @@ async fn refresh_verified_peers(
             let peer_json = serde_json::to_string(peer)
                 .map_err(|e| ApiError::internal_error(format!("Serialization failed: {}", e)))?;
             conn.set_ex::<_, _, ()>(
-                format!("kels:verified-peer:{}", peer.peer_prefix),
+                format!("kels:verified-peer:{}", peer.kel_prefix),
                 peer_json,
                 3600,
             )

@@ -21,6 +21,10 @@ CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
+# Dummy CESR values for test endpoints that skip auth but still deserialize
+DUMMY_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+DUMMY_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 NODE_A_SAD_URL="http://${NODE_A_SADSTORE_HOST}"
 NODE_B_SAD_URL="http://${NODE_B_SADSTORE_HOST}"
 NODE_A_KELS_URL="http://${NODE_A_KELS_HOST}"
@@ -170,11 +174,11 @@ run_test "POST invalid JSON rejected" \
 
 # POST with mismatched SAID
 run_test "POST mismatched SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad' -H 'Content-Type: application/json' -d '{\"said\":\"Ewrong\",\"data\":\"test\"}') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad' -H 'Content-Type: application/json' -d '{\"said\":\"Kwrong_said_that_does_not_match_data________\",\"data\":\"test\"}') = '400' ]"
 
 # GET non-existent object
 run_test "GET non-existent object returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/Enonexistent____________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/Knonexistent________________________________') = '404' ]"
 
 echo ""
 
@@ -186,15 +190,15 @@ echo ""
 
 # GET non-existent chain
 run_test "GET non-existent chain returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Knonexistent________________________________') = '404' ]"
 
 # Effective SAID non-existent
 run_test "Effective SAID non-existent returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Enonexistent____________________________________/effective-said') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Knonexistent________________________________/effective-said') = '404' ]"
 
 # Submit pointer with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"Etampered\",\"prefix\":\"Etest\",\"version\":0,\"kelPrefix\":\"Ekel\",\"kind\":\"test\"},\"signature\":\"fake\",\"establishmentSerial\":0}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"kelPrefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\",\"kind\":\"test\"},\"signature\":\"${DUMMY_SIGNATURE}\",\"establishmentSerial\":0}]') = '400' ]"
 
 echo ""
 
@@ -204,14 +208,14 @@ echo ""
 echo -e "${CYAN}=== Scenario 3: Prefix Computation ===${NC}"
 echo ""
 
-PREFIX_A=$(kels-cli sad prefix "Ekel_a__________________________________________" "kels/v1/mlkem" 2>/dev/null)
-PREFIX_B=$(kels-cli sad prefix "Ekel_a__________________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_A=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_B=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
 run_test "Prefix is deterministic" [ "$PREFIX_A" = "$PREFIX_B" ]
 
-PREFIX_C=$(kels-cli sad prefix "Ekel_b__________________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_C=$(kels-cli sad prefix "Kkel_b______________________________________" "kels/v1/mlkem" 2>/dev/null)
 run_test "Different KEL prefix -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_C" ]
 
-PREFIX_D=$(kels-cli sad prefix "Ekel_a__________________________________________" "kels/v1/other" 2>/dev/null)
+PREFIX_D=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/other" 2>/dev/null)
 run_test "Different kind -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
 
 echo ""
@@ -222,9 +226,9 @@ echo ""
 echo -e "${CYAN}=== Scenario 4: Listing Endpoints ===${NC}"
 echo ""
 
-PREFIX_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test","cursor":null,"limit":null},"prefix":"test","signature":"test"}'
-PREFIX_LISTING_BODY_LIMIT='{"payload":{"timestamp":0,"nonce":"test2","cursor":null,"limit":5},"prefix":"test","signature":"test"}'
-OBJECT_LISTING_BODY='{"payload":{"timestamp":0,"nonce":"test3","cursor":null,"limit":null},"prefix":"test","signature":"test"}'
+PREFIX_LISTING_BODY="{\"payload\":{\"timestamp\":0,\"nonce\":\"test\",\"cursor\":null,\"limit\":null},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
+PREFIX_LISTING_BODY_LIMIT="{\"payload\":{\"timestamp\":0,\"nonce\":\"test2\",\"cursor\":null,\"limit\":5},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
+OBJECT_LISTING_BODY="{\"payload\":{\"timestamp\":0,\"nonce\":\"test3\",\"cursor\":null,\"limit\":null},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
 
 run_test "List chain prefixes" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
@@ -405,7 +409,7 @@ else
     # v1-a: submitted to node-a
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_a"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_a__________________________________"}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
@@ -416,7 +420,7 @@ else
     # v1-b: submitted to node-b (different content_said → different SAID)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_b"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_b__________________________________"}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 
@@ -447,7 +451,7 @@ else
     # --- Repair: submit replacement v1 with --repair ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Econtent_repaired"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_repaired___________________________"}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
 

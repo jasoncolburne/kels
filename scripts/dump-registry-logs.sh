@@ -7,7 +7,7 @@ LOGS_DIR="$(cd "$(dirname "$0")/.." && pwd)/logs"
 mkdir -p "$LOGS_DIR"
 
 for registry in "${REGISTRIES[@]}"; do
-  echo "Dumping gossip logs for registry-$registry..."
+  echo "Dumping registry logs for registry-$registry..."
   kubectl logs -l app=registry --tail 10000 -n "kels-registry-$registry" > "$LOGS_DIR/registry-$registry.log" 2>&1 &
 done
 

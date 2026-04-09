@@ -40,6 +40,10 @@ declare -a NODE_URLS=(
     "http://${NODE_F_KELS_HOST}"
 )
 
+# Dummy CESR values for test endpoints that skip auth but still deserialize
+DUMMY_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+DUMMY_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 # Nodes with KELS_TEST_ENDPOINTS enabled (unauthenticated test prefixes endpoint)
 declare -a PREFIX_NODE_NAMES=(a b d)
 declare -a PREFIX_NODE_URLS=(
@@ -77,9 +81,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     while true; do
         # Build JSON body for signed prefixes request
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"test",publicKey:"test",signature:"test"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         else
-            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"test",publicKey:"test",signature:"test"}')
+            body=$(jq -n --arg nonce "$(openssl rand -hex 32)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/prefixes" 2>/dev/null)
@@ -206,9 +210,9 @@ while IFS= read -r prefix; do
         # Determine behavioral state from event kinds and structure
         state=$(echo "$all_events" | jq -r '
             [.[].event.kind] as $kinds |
-            if ($kinds | any(. == "kels/v1/cnt")) then "contested"
-            elif ($kinds | any(. == "kels/v1/dec")) then "decommissioned"
-            elif ($kinds | any(. == "kels/v1/rec" or . == "kels/v1/ror")) then "recovered"
+            if ($kinds | any(. == "kels/events/v1/cnt")) then "contested"
+            elif ($kinds | any(. == "kels/events/v1/dec")) then "decommissioned"
+            elif ($kinds | any(. == "kels/events/v1/rec" or . == "kels/events/v1/ror")) then "recovered"
             elif ([.[].event.previous | select(. != null)] | group_by(.) | any(length > 1)) then "frozen"
             else "normal"
             end

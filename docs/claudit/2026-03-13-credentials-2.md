@@ -26,7 +26,7 @@ Second-pass audit of `credentials` branch changes vs `main`. Scope: full `git di
 
 **File:** `lib/kels-creds/src/credential.rs:95`
 
-`Credential::create` set `credential.said = compacted.said.clone()` — putting the compacted form's SAID on the expanded credential. This violates the self-addressing invariant: every form's `said` must match a SAID derived over that form's own content. The expanded and compacted forms have different content and therefore different SAIDs.
+`Credential::create` set `credential.said = compacted.said` — putting the compacted form's SAID on the expanded credential. This violates the self-addressing invariant: every form's `said` must match a SAID derived over that form's own content. The expanded and compacted forms have different content and therefore different SAIDs.
 
 **Resolution:** `compact()` now returns `(expanded_said, compacted_said, chunks)`. The expanded credential gets the SAID derived over the expanded content. The compacted SAID is returned separately for KEL anchoring. Tests updated to verify the two SAIDs differ.
 

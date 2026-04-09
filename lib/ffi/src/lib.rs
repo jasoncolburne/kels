@@ -13,6 +13,8 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+use cesr::Matter;
+
 #[cfg(all(
     any(target_os = "macos", target_os = "ios"),
     feature = "secure-enclave"
@@ -321,7 +323,7 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
 pub(crate) async fn save_key_state<K: KeyProvider + Clone>(
     builder: &KeyEventBuilder<K>,
     key_state_store: &FileKeyStateStore,
-    prefix: &str,
+    prefix: &cesr::Digest,
 ) -> Result<(), KelsError> {
     builder
         .key_provider()
@@ -422,8 +424,10 @@ pub extern "C" fn kels_init(
         };
 
         // Restore persisted state if a prefix exists
-        if let Some(ref pfx) = prefix_opt {
-            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+        if let Some(ref pfx) = prefix_opt
+            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+        {
+            match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
                 Ok(false) => {} // No saved state, fresh provider
                 Err(e) => {
@@ -444,8 +448,10 @@ pub extern "C" fn kels_init(
         let mut provider = SoftwareKeyProvider::new(signing_algo, recovery_algo);
 
         // Restore persisted state if a prefix exists
-        if let Some(ref pfx) = prefix_opt {
-            match runtime.block_on(provider.restore_state(&key_state_store, pfx)) {
+        if let Some(ref pfx) = prefix_opt
+            && let Ok(pfx_digest) = cesr::Digest::from_qb64(pfx)
+        {
+            match runtime.block_on(provider.restore_state(&key_state_store, &pfx_digest)) {
                 Ok(true) => {}  // State restored
                 Ok(false) => {} // No saved state, fresh provider
                 Err(e) => {
@@ -468,12 +474,21 @@ pub extern "C" fn kels_init(
     };
 
     // Create builder
+    let prefix_digest = prefix_opt.as_deref().map(cesr::Digest::from_qb64);
+    let prefix_digest = match prefix_digest {
+        Some(Ok(d)) => Some(d),
+        Some(Err(e)) => {
+            set_last_error(&format!("Invalid prefix CESR: {}", e));
+            return std::ptr::null_mut();
+        }
+        None => None,
+    };
     let builder = runtime.block_on(async {
         KeyEventBuilder::with_dependencies(
             key_provider,
             Some(client),
             Some(store.clone()),
-            prefix_opt.as_deref(),
+            prefix_digest.as_ref(),
         )
         .await
     });
@@ -558,7 +573,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
     };
 
     // Get current state from builder
-    let prefix = builder_guard.prefix().map(|s| s.to_string());
+    let prefix = builder_guard.prefix().cloned();
 
     // Clone the key provider
     #[cfg(all(
@@ -581,7 +596,7 @@ pub unsafe extern "C" fn kels_set_url(ctx: *mut KelsContext, kels_url: *const c_
             key_provider,
             Some(client),
             Some(ctx.store.clone()),
-            prefix.as_deref(),
+            prefix.as_ref(),
         )
         .await
     });

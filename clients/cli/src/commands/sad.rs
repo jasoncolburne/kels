@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cesr::Matter;
 use colored::Colorize;
 use verifiable_storage::SelfAddressed;
 
@@ -14,12 +15,26 @@ pub(crate) async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
     let mut value: serde_json::Value =
         serde_json::from_str(&data).context("Failed to parse JSON file")?;
 
-    // Compute the SAID if missing or placeholder
-    let current_said = value.get_said();
-    if current_said.is_empty() || current_said.chars().all(|c| c == '#') {
-        value
-            .derive_said()
-            .context("Failed to compute SAID for object")?;
+    // Extract current said, compute the correct one, and validate
+    let current_said = value
+        .get("said")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    value
+        .derive_said()
+        .context("Failed to compute SAID for object")?;
+
+    if !current_said.is_empty()
+        && !current_said.chars().all(|c| c == '#')
+        && current_said != value.get_said().to_string()
+    {
+        anyhow::bail!(
+            "SAID mismatch: provided {} but computed {}",
+            current_said,
+            value.get_said()
+        );
     }
 
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
@@ -33,9 +48,10 @@ pub(crate) async fn cmd_sad_put(cli: &Cli, file: &PathBuf) -> Result<()> {
 }
 
 pub(crate) async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
+    let said = cesr::Digest::from_qb64(said).context("Invalid SAID")?;
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let value = client
-        .get_sad_object(said)
+        .get_sad_object(&said)
         .await
         .context("Failed to retrieve SAD object")?;
 
@@ -82,7 +98,8 @@ pub(crate) async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 pub(crate) fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
-    let prefix = kels_core::compute_sad_pointer_prefix(kel_prefix, kind)
+    let kel_digest = cesr::Digest::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
+    let prefix = kels_core::compute_sad_pointer_prefix(kel_digest, kind)
         .context("Failed to compute SAD prefix")?;
     println!("{}", prefix);
     Ok(())

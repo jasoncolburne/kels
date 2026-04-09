@@ -3,6 +3,7 @@
 use std::iter;
 
 use anyhow::{Context, Result, anyhow};
+use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
     FileKelStore, HttpKelSource, KelVerification, KelVerifier, KeyEventBuilder, KeyProvider,
@@ -11,6 +12,10 @@ use kels_core::{
 
 use crate::Cli;
 use crate::helpers::*;
+
+fn parse_prefix(prefix: &str) -> Result<cesr::Digest> {
+    cesr::Digest::from_qb64(prefix).context("Invalid prefix CESR")
+}
 
 pub(crate) async fn cmd_list_nodes(cli: &Cli) -> Result<()> {
     let registry_urls = parse_registry_urls(&cli.registry);
@@ -89,11 +94,11 @@ pub(crate) async fn cmd_incept(
     let icp = builder.incept().await.context("Inception failed")?;
 
     // Save keys to the correct prefix directory
-    let config = provider_config(cli, &icp.event.prefix)?;
+    let config = provider_config(cli, icp.event.prefix.as_ref())?;
     config.save_provider(builder.key_provider()).await?;
 
     println!("{}", "KEL created successfully!".green().bold());
-    println!("  Prefix: {}", icp.event.prefix.cyan());
+    println!("  Prefix: {}", icp.event.prefix.to_string().cyan());
     println!("  SAID:   {}", icp.event.said);
 
     Ok(())
@@ -109,6 +114,7 @@ pub(crate) async fn cmd_rotate(
         format!("Rotating signing key for {}...", prefix).green()
     );
 
+    let prefix_digest = parse_prefix(prefix)?;
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
@@ -118,7 +124,7 @@ pub(crate) async fn cmd_rotate(
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
@@ -162,6 +168,7 @@ pub(crate) async fn cmd_rotate_recovery(
         format!("Rotating signing and recovery keys for {}...", prefix).green()
     );
 
+    let prefix_digest = parse_prefix(prefix)?;
     let config = provider_config(cli, prefix)?;
     let client = create_client(cli).await?;
     let key_provider = config.load_provider().await?;
@@ -171,7 +178,7 @@ pub(crate) async fn cmd_rotate_recovery(
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
@@ -201,8 +208,6 @@ pub(crate) async fn cmd_rotate_recovery(
 }
 
 pub(crate) async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> {
-    use cesr::Matter;
-
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let sig = key_provider
         .sign(data.as_bytes())
@@ -215,6 +220,7 @@ pub(crate) async fn cmd_sign(cli: &Cli, prefix: &str, data: &str) -> Result<()> 
 pub(crate) async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()> {
     println!("{}", format!("Anchoring SAID in {}...", prefix).green());
 
+    let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -223,11 +229,15 @@ pub(crate) async fn cmd_anchor(cli: &Cli, prefix: &str, said: &str) -> Result<()
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
-    let ixn = builder.interact(said).await.context("Interaction failed")?;
+    let said_digest = cesr::Digest::from_qb64(said).context("Invalid SAID CESR")?;
+    let ixn = builder
+        .interact(&said_digest)
+        .await
+        .context("Interaction failed")?;
 
     println!("{}", "Anchor successful!".green().bold());
     println!("  Event SAID: {}", ixn.event.said);
@@ -257,22 +267,23 @@ pub(crate) async fn cmd_recover(
         key_provider.set_recovery_algorithm(algo).await?;
     }
 
+    let prefix_digest = parse_prefix(prefix)?;
     let kel_store = create_kel_store(cli, prefix)?;
 
     let mut builder = KeyEventBuilder::with_dependencies(
         key_provider,
         Some(client.clone()),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
     let source = kels_core::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
     let server_verification = kels_core::verify_key_events(
-        prefix,
+        &prefix_digest,
         &source,
-        KelVerifier::new(prefix),
+        KelVerifier::new(&prefix_digest),
         kels_core::page_size(),
         kels_core::max_pages(),
     )
@@ -303,6 +314,7 @@ pub(crate) async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
         "WARNING: This will permanently freeze the KEL.".yellow()
     );
 
+    let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -311,7 +323,7 @@ pub(crate) async fn cmd_contest(cli: &Cli, prefix: &str) -> Result<()> {
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
@@ -333,6 +345,7 @@ pub(crate) async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
         "WARNING: This is permanent. No further events can be added.".red()
     );
 
+    let prefix_digest = parse_prefix(prefix)?;
     let client = create_client(cli).await?;
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
     let kel_store = create_kel_store(cli, prefix)?;
@@ -341,7 +354,7 @@ pub(crate) async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
         key_provider,
         Some(client),
         Some(std::sync::Arc::new(kel_store)),
-        Some(prefix),
+        Some(&prefix_digest),
     )
     .await?;
 
@@ -394,20 +407,22 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
     println!("{}", msg.green());
 
     // Verify and print events in a single pass
+    let prefix_digest = parse_prefix(prefix)?;
     let kel_verification = kels_core::verify_key_events_with(
-        prefix,
+        &prefix_digest,
         &source,
-        KelVerifier::new(prefix),
+        KelVerifier::new(&prefix_digest),
         kels_core::page_size(),
         kels_core::max_pages(),
         |events| {
             for signed_event in events {
                 let event = &signed_event.event;
+                let said_str: &str = event.said.as_ref();
                 println!(
                     "  [{}] {} - {}",
                     event.serial,
                     event.kind.as_str().to_uppercase(),
-                    &event.said[..16]
+                    &said_str[..16]
                 );
             }
         },
@@ -435,7 +450,12 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
             println!();
             println!("{}", "Recovery History:".yellow().bold());
             for (i, record) in all_records.iter().enumerate() {
-                println!("  [{}] {} ({})", i, &record.said[..16], record.created_at);
+                println!(
+                    "  [{}] {} ({})",
+                    i,
+                    &record.said.as_ref()[..16],
+                    record.created_at
+                );
                 println!(
                     "      diverged_at={} recovery_serial={}",
                     record.diverged_at, record.recovery_serial
@@ -484,11 +504,12 @@ pub(crate) async fn cmd_list(cli: &Cli) -> Result<()> {
 }
 
 pub(crate) async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
+    let prefix_digest = parse_prefix(prefix)?;
     let kel_store = create_kel_store(cli, prefix)?;
 
     let kel_verification = kels_core::completed_verification(
         &mut kels_core::StorePageLoader::new(&kel_store),
-        prefix,
+        &prefix_digest,
         kels_core::page_size(),
         kels_core::max_pages(),
         iter::empty(),

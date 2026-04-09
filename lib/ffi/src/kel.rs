@@ -2,6 +2,7 @@
 
 use std::os::raw::c_char;
 
+use cesr::Matter;
 use kels_core::{KelStore, KeyProvider};
 
 use crate::{
@@ -86,8 +87,8 @@ pub unsafe extern "C" fn kels_incept(
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&icp.event.prefix);
-            result.said = to_c_string(&icp.event.said);
+            result.prefix = to_c_string(icp.event.prefix.as_ref());
+            result.said = to_c_string(icp.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -158,8 +159,8 @@ pub unsafe extern "C" fn kels_rotate(
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&rot.event.prefix);
-            result.said = to_c_string(&rot.event.said);
+            result.prefix = to_c_string(rot.event.prefix.as_ref());
+            result.said = to_c_string(rot.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -239,8 +240,8 @@ pub unsafe extern "C" fn kels_rotate_recovery(
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&ror.event.prefix);
-            result.said = to_c_string(&ror.event.said);
+            result.prefix = to_c_string(ror.event.prefix.as_ref());
+            result.said = to_c_string(ror.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -293,15 +294,24 @@ pub unsafe extern "C" fn kels_interact(
         return;
     };
 
+    let anchor_digest = match cesr::Digest::from_qb64(&anchor_str) {
+        Ok(d) => d,
+        Err(e) => {
+            result.status = KelsStatus::Error;
+            result.error = to_c_string(&format!("Invalid anchor CESR: {}", e));
+            return;
+        }
+    };
+
     let interact_result = ctx
         .runtime
-        .block_on(async { builder_guard.interact(&anchor_str).await });
+        .block_on(async { builder_guard.interact(&anchor_digest).await });
 
     match interact_result {
         Ok(ixn) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&ixn.event.prefix);
-            result.said = to_c_string(&ixn.event.said);
+            result.prefix = to_c_string(ixn.event.prefix.as_ref());
+            result.said = to_c_string(ixn.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -421,8 +431,8 @@ pub unsafe extern "C" fn kels_recover(
 
             result.status = KelsStatus::Ok;
             result.outcome = KelsRecoveryOutcome::Recovered;
-            result.prefix = to_c_string(&rec.event.prefix);
-            result.said = to_c_string(&rec.event.said);
+            result.prefix = to_c_string(rec.event.prefix.as_ref());
+            result.said = to_c_string(rec.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -506,8 +516,8 @@ pub unsafe extern "C" fn kels_contest(
             }
 
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&cnt.event.prefix);
-            result.said = to_c_string(&cnt.event.said);
+            result.prefix = to_c_string(cnt.event.prefix.as_ref());
+            result.said = to_c_string(cnt.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -577,8 +587,8 @@ pub unsafe extern "C" fn kels_decommission(
     match decommission_result {
         Ok(dec) => {
             result.status = KelsStatus::Ok;
-            result.prefix = to_c_string(&dec.event.prefix);
-            result.said = to_c_string(&dec.event.said);
+            result.prefix = to_c_string(dec.event.prefix.as_ref());
+            result.said = to_c_string(dec.event.said.as_ref());
         }
         Err(e) => {
             result.status = map_error_to_status(&e);
@@ -629,13 +639,13 @@ pub unsafe extern "C" fn kels_status(
     result.status = KelsStatus::Ok;
 
     if let Some(prefix) = builder_guard.prefix() {
-        result.prefix = to_c_string(prefix);
+        result.prefix = to_c_string(prefix.as_ref());
     }
 
     result.event_count = builder_guard.confirmed_count() as u32;
 
     if let Some(said) = builder_guard.last_said() {
-        result.latest_said = to_c_string(said);
+        result.latest_said = to_c_string(said.as_ref());
     }
 
     if let Some(v) = builder_guard.kel_verification() {
@@ -697,9 +707,11 @@ pub unsafe extern "C" fn kels_get_kel(
     };
 
     // If no prefix specified, use the current KEL
-    let target_prefix = if prefix_str.is_none() || prefix_str.as_deref() == builder_guard.prefix() {
+    let target_prefix = if prefix_str.is_none()
+        || prefix_str.as_deref() == builder_guard.prefix().map(|p| p.as_ref())
+    {
         match builder_guard.prefix() {
-            Some(p) => p.to_string(),
+            Some(p) => *p,
             None => {
                 crate::set_last_error("No KEL prefix available");
                 return std::ptr::null_mut();

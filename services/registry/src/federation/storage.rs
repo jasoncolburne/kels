@@ -483,7 +483,7 @@ impl LogStore {
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         // Delete entries
-        let saids: Vec<String> = entries.iter().map(|e| e.said.clone()).collect();
+        let saids: Vec<String> = entries.iter().map(|e| e.said.to_string()).collect();
         let delete = Delete::<RaftLogEntry>::new().r#in("said", saids);
         tx.delete(delete)
             .await
@@ -531,7 +531,7 @@ impl LogStore {
                 .map_err(|e| io::Error::other(e.to_string()))?;
 
             // Delete entries
-            let saids: Vec<String> = entries.iter().map(|e| e.said.clone()).collect();
+            let saids: Vec<String> = entries.iter().map(|e| e.said.to_string()).collect();
             let delete = Delete::<RaftLogEntry>::new().r#in("said", saids);
             tx.delete(delete)
                 .await
@@ -769,6 +769,7 @@ mod impl_log_store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cesr::test_digest;
     use kels_core::{Peer, RaftLogEntry};
     use openraft::EntryPayload;
 
@@ -831,9 +832,9 @@ mod tests {
     #[test]
     fn test_raft_entry_to_log_entry_normal() {
         let peer = Peer::create(
-            "12D3KooWTest".to_string(),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -869,9 +870,9 @@ mod tests {
     #[test]
     fn test_log_entry_to_raft_entry_normal() {
         let peer = Peer::create(
-            "12D3KooWTest".to_string(),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -891,7 +892,7 @@ mod tests {
         assert!(
             matches!(
                 raft_entry.payload,
-                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.peer_prefix == "12D3KooWTest"
+                EntryPayload::Normal(FederationRequest::AddPeer(ref p)) if p.kel_prefix == test_digest("12D3KooWTest")
             ),
             "Expected Normal payload with AddPeer and matching peer_prefix"
         );
@@ -918,9 +919,9 @@ mod tests {
         let mut log_entry = RaftLogEntry::create(1, 0, 0, 0, "blank".to_string(), None).unwrap();
 
         let peer = Peer::create(
-            "12D3KooWTest".to_string(),
+            test_digest("12D3KooWTest"),
             "node-test".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-test:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -972,9 +973,9 @@ mod tests {
     #[test]
     fn test_roundtrip_normal_entry() {
         let peer = Peer::create(
-            "12D3KooWRoundtrip".to_string(),
+            test_digest("12D3KooWRoundtrip"),
             "node-roundtrip".to_string(),
-            "EAuthorizingKel_____________________________".to_string(),
+            test_digest("EAuthorizingKel"),
             true,
             "http://node-roundtrip:8080".to_string(),
             "/ip4/127.0.0.1/tcp/4001".to_string(),
@@ -1005,7 +1006,7 @@ mod tests {
         assert!(
             matches!(
                 recovered.payload,
-                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.peer_prefix == "12D3KooWRoundtrip"
+                EntryPayload::Normal(FederationRequest::RemovePeer(ref peer)) if peer.kel_prefix == test_digest("12D3KooWRoundtrip")
             ),
             "Expected Normal payload with RemovePeer and matching peer_prefix"
         );

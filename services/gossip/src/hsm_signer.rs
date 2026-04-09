@@ -12,10 +12,7 @@ use cesr::{Matter, Signature as CesrSignature, VerificationKey};
 use thiserror::Error;
 use tracing::warn;
 
-use kels_gossip_core::{
-    identity::NodePrefix,
-    net::{Error as GossipError, PeerVerifier, Signer},
-};
+use kels_gossip_core::net::{Error as GossipError, PeerVerifier, Signer};
 
 use crate::allowlist::SharedAllowlist;
 
@@ -40,47 +37,27 @@ pub enum SignerError {
 /// matches the KEL public key that peers verify against.
 pub struct IdentityGossipSigner {
     identity_client: kels_core::IdentityClient,
-    node_prefix: NodePrefix,
-    requires_kem_1024: crate::allowlist::RequiresKem1024,
+    node_prefix: cesr::Digest,
 }
 
 impl IdentityGossipSigner {
-    pub fn new(
-        identity_url: &str,
-        peer_prefix: &str,
-        requires_kem_1024: crate::allowlist::RequiresKem1024,
-    ) -> Result<Self, SignerError> {
-        let node_prefix = NodePrefix::option_from_str(peer_prefix).ok_or_else(|| {
-            SignerError::Key(format!(
-                "Invalid peer prefix (expected 44 chars): {}",
-                peer_prefix
-            ))
-        })?;
-
+    pub fn new(identity_url: &str, node_prefix: cesr::Digest) -> Result<Self, SignerError> {
         Ok(Self {
             identity_client: kels_core::IdentityClient::new(identity_url).map_err(|e| {
                 SignerError::Identity(format!("Failed to build identity client: {}", e))
             })?,
             node_prefix,
-            requires_kem_1024,
         })
     }
 }
 
 impl Signer for IdentityGossipSigner {
-    fn node_prefix(&self) -> NodePrefix {
+    fn node_prefix(&self) -> cesr::Digest {
         self.node_prefix
     }
 
     fn kem_algorithm(&self) -> cesr::EncapsulationKeyCode {
-        if self
-            .requires_kem_1024
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            cesr::EncapsulationKeyCode::MlKem1024
-        } else {
-            cesr::EncapsulationKeyCode::MlKem768
-        }
+        cesr::EncapsulationKeyCode::MlKem1024
     }
 
     async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, GossipError> {
@@ -95,7 +72,7 @@ impl Signer for IdentityGossipSigner {
             .map_err(|e| GossipError::Handshake(format!("Identity sign failed: {}", e)))?;
 
         // Return CESR-encoded signature (qb64 bytes) — type is embedded in the encoding
-        Ok(result.signature.into_bytes())
+        Ok(result.signature.qb64().into_bytes())
     }
 }
 
@@ -116,7 +93,6 @@ pub struct KelsPeerVerifier {
     federation_registry_urls: Vec<String>,
     node_id: String,
     registry_kel_store: std::sync::Arc<dyn kels_core::KelStore>,
-    requires_kem_1024: crate::allowlist::RequiresKem1024,
 }
 
 impl KelsPeerVerifier {
@@ -126,7 +102,6 @@ impl KelsPeerVerifier {
         federation_registry_urls: Vec<String>,
         node_id: String,
         registry_kel_store: std::sync::Arc<dyn kels_core::KelStore>,
-        requires_kem_1024: crate::allowlist::RequiresKem1024,
     ) -> Self {
         Self {
             allowlist,
@@ -134,25 +109,22 @@ impl KelsPeerVerifier {
             federation_registry_urls,
             node_id,
             registry_kel_store,
-            requires_kem_1024,
         }
     }
 
     /// Check if a peer is in the allowlist (without refreshing).
-    async fn is_in_allowlist(&self, prefix: &str) -> Result<bool, GossipError> {
+    async fn is_in_allowlist(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
         let guard = self.allowlist.read().await;
         Ok(guard.contains_key(prefix))
     }
 
     /// Refresh the allowlist from the registry, then check again.
-    async fn is_in_allowlist_refreshed(&self, prefix: &str) -> Result<bool, GossipError> {
+    async fn is_in_allowlist_refreshed(&self, prefix: &cesr::Digest) -> Result<bool, GossipError> {
         if let Err(e) = crate::allowlist::refresh_allowlist(
             &self.federation_registry_urls,
             self.registry_kel_store.as_ref(),
             &self.allowlist,
             Some(&self.node_id),
-            &self.requires_kem_1024,
-            &self.kels_url,
         )
         .await
         {
@@ -165,7 +137,7 @@ impl KelsPeerVerifier {
     /// Get the current public key from a peer's verified KEL.
     async fn public_key_from_key_events(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
         let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
@@ -191,13 +163,11 @@ impl KelsPeerVerifier {
             )));
         }
 
-        let qb64_key = kel_verification.current_public_key().ok_or_else(|| {
+        let vk = kel_verification.current_public_key().ok_or_else(|| {
             GossipError::VerificationFailed(format!("No public key in KEL for {}", prefix))
         })?;
 
-        VerificationKey::from_qb64(qb64_key).map_err(|e| {
-            GossipError::VerificationFailed(format!("CESR pubkey decode for {}: {}", prefix, e))
-        })
+        Ok(vk.clone())
     }
 
     /// Verify a CESR-encoded signature against a public key from the KEL.
@@ -223,7 +193,7 @@ impl KelsPeerVerifier {
     /// will trigger the refresh path).
     async fn try_verify(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -238,7 +208,7 @@ impl KelsPeerVerifier {
     /// Re-fetch the peer's KEL from their KELS instance, submit it locally, then verify.
     async fn try_verify_refreshed(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, GossipError> {
@@ -272,7 +242,7 @@ impl KelsPeerVerifier {
         )
         .await
         {
-            warn!(prefix, error = %e, "failed to refresh peer KEL, retrying verification with cached state");
+            warn!(%prefix, error = %e, "failed to refresh peer KEL, retrying verification with cached state");
         }
 
         // Retry verification with the now-updated local KEL
@@ -283,46 +253,42 @@ impl KelsPeerVerifier {
 impl PeerVerifier for KelsPeerVerifier {
     async fn verify_peer(
         &self,
-        peer: &NodePrefix,
+        peer: &cesr::Digest,
         data: &[u8],
         signature: &[u8],
     ) -> Result<(), GossipError> {
-        let prefix_str = peer.to_option_string().ok_or_else(|| {
-            GossipError::VerificationFailed("Invalid peer prefix encoding".to_string())
-        })?;
-
         // Authorization: check peer is in allowlist, refresh once if not found
         let authorized = kels_core::retry_once!(
-            self.is_in_allowlist(&prefix_str),
+            self.is_in_allowlist(peer),
             |ok: &bool| *ok,
-            self.is_in_allowlist_refreshed(&prefix_str),
+            self.is_in_allowlist_refreshed(peer),
         )
         .map_err(|e| {
-            GossipError::VerificationFailed(format!("Allowlist check for {}: {}", prefix_str, e))
+            GossipError::VerificationFailed(format!("Allowlist check for {}: {}", peer, e))
         })?;
 
         if authorized != Some(true) {
             return Err(GossipError::VerificationFailed(format!(
                 "Peer {} not in allowlist",
-                prefix_str
+                peer
             )));
         }
 
         // Authentication: verify against local KEL, refresh from peer on mismatch
         let verified = kels_core::retry_once!(
-            self.try_verify(&prefix_str, data, signature),
+            self.try_verify(peer, data, signature),
             |ok: &bool| *ok,
-            self.try_verify_refreshed(&prefix_str, data, signature),
+            self.try_verify_refreshed(peer, data, signature),
         )
         .map_err(|e| {
-            GossipError::VerificationFailed(format!("KEL verification for {}: {}", prefix_str, e))
+            GossipError::VerificationFailed(format!("KEL verification for {}: {}", peer, e))
         })?;
 
         match verified {
             Some(true) => Ok(()),
             _ => Err(GossipError::VerificationFailed(format!(
                 "Peer {} handshake key does not match KEL",
-                prefix_str
+                peer
             ))),
         }
     }
@@ -338,14 +304,17 @@ impl PeerVerifier for KelsPeerVerifier {
 /// key is used for all signing operations (gossip handshakes, registry requests).
 pub struct IdentitySigner {
     identity_client: kels_core::IdentityClient,
-    peer_prefix: String,
+    peer_kel_prefix: cesr::Digest,
 }
 
 impl IdentitySigner {
-    pub fn new(identity_url: &str, peer_prefix: String) -> Result<Self, kels_core::KelsError> {
+    pub fn new(
+        identity_url: &str,
+        peer_kel_prefix: cesr::Digest,
+    ) -> Result<Self, kels_core::KelsError> {
         Ok(Self {
             identity_client: kels_core::IdentityClient::new(identity_url)?,
-            peer_prefix,
+            peer_kel_prefix,
         })
     }
 }
@@ -365,7 +334,7 @@ impl kels_core::PeerSigner for IdentitySigner {
 
         Ok(kels_core::SignResult {
             signature: result.signature,
-            peer_prefix: self.peer_prefix.clone(),
+            peer_kel_prefix: self.peer_kel_prefix,
         })
     }
 }
@@ -374,6 +343,7 @@ impl kels_core::PeerSigner for IdentitySigner {
 mod tests {
     use std::sync::Arc;
 
+    use cesr::test_digest;
     use tokio::sync::RwLock;
 
     use super::*;
@@ -399,15 +369,9 @@ mod tests {
 
     #[test]
     fn test_identity_registry_signer_new() {
-        let signer = IdentitySigner::new(
-            "http://identity:80",
-            "ETestPeerPrefix_____________________________".to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            signer.peer_prefix,
-            "ETestPeerPrefix_____________________________"
-        );
+        let peer_kel_prefix = test_digest("test-peer-prefix");
+        let signer = IdentitySigner::new("http://identity:80", peer_kel_prefix).unwrap();
+        assert_eq!(signer.peer_kel_prefix, peer_kel_prefix);
     }
 
     // ==================== KelsPeerVerifier Tests ====================
@@ -423,14 +387,12 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels_core::KelStore> =
             Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
-        let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",
             vec![],
             String::new(),
             store,
-            requires_kem_1024,
         );
 
         let result = verifier.verify_signature(data, &sig_qb64, &cesr_pubkey);
@@ -446,14 +408,12 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let store: Arc<dyn kels_core::KelStore> =
             Arc::new(kels_core::FileKelStore::new(tempfile::tempdir().unwrap().path()).unwrap());
-        let requires_kem_1024 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verifier = KelsPeerVerifier::new(
             allowlist,
             "http://localhost:8080",
             vec![],
             String::new(),
             store,
-            requires_kem_1024,
         );
 
         let result = verifier.verify_signature(b"test data", bad_sig, &cesr_pubkey);

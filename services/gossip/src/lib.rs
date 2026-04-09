@@ -46,6 +46,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
+use cesr::Matter;
 use redis::AsyncCommands;
 use thiserror::Error;
 
@@ -271,11 +272,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Fetching identity prefix...");
     let identity_client = kels_core::IdentityClient::new(&config.identity_url)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
-    let peer_prefix_str = identity_client
+    let local_kel_prefix = identity_client
         .get_prefix()
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity prefix: {}", e)))?;
-    info!("Local PeerPrefix: {}", peer_prefix_str);
+    info!("Local PeerPrefix: {}", local_kel_prefix);
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
@@ -300,7 +301,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Create registry signer for authenticated requests (signs via identity service)
     info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, peer_prefix_str.clone())
+    let registry_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
     let registry_signer: Arc<dyn kels_core::PeerSigner> = Arc::new(registry_signer);
     info!("Registry signer ready");
@@ -364,9 +365,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     {
         let registry_kel_store =
             kels_core::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
-        for prefix in &registry_prefixes {
-            kels_core::sync_member_kel(prefix, &federation_registry_urls, &registry_kel_store)
+        for prefix_str in &registry_prefixes {
+            if let Ok(prefix_digest) = cesr::Digest::from_qb64(prefix_str) {
+                kels_core::sync_member_kel(
+                    &prefix_digest,
+                    &federation_registry_urls,
+                    &registry_kel_store,
+                )
                 .await;
+            }
         }
     }
     info!("Registry KELs persisted to local store");
@@ -391,9 +398,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     // Step 2-3: Check allowlist and wait if not authorized
     loop {
-        match bootstrap.is_peer_authorized(&peer_prefix_str).await {
+        match bootstrap
+            .is_peer_authorized(local_kel_prefix.as_ref())
+            .await
+        {
             Ok(true) => {
-                info!("Peer {} is authorized in allowlist", peer_prefix_str);
+                info!("Peer {} is authorized in allowlist", local_kel_prefix);
                 break;
             }
             Ok(false) => {
@@ -401,10 +411,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     "=======================================================================\n\
                      AUTHORIZATION REQUIRED: This node is not in the allowlist.\n\
                      Peer prefix: {}\n\
-                     Add this peer via: registry-admin peer add --peer-prefix {} --node-id {}\n\
+                     Add this peer via: registry-admin peer add --peer-kel-prefix {} --node-id {}\n\
                      Preloading KELs while waiting...\n\
                      =======================================================================",
-                    peer_prefix_str, peer_prefix_str, config.node_id
+                    local_kel_prefix, local_kel_prefix, config.node_id
                 );
 
                 // Preload KELs, SAD objects, and SAD records from Ready peers
@@ -420,14 +430,26 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
                 // Wait 5 minutes before checking again
                 info!("Sleeping 5 minutes before rechecking allowlist...");
-                tokio::time::sleep(Duration::from_secs(300)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+                    _ = kels_core::shutdown_signal() => {
+                        info!("Shutdown signal received during allowlist wait");
+                        std::process::exit(0);
+                    }
+                }
             }
             Err(e) => {
                 warn!(
                     "Failed to check allowlist: {}. Retrying in 30 seconds...",
                     e
                 );
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                    _ = kels_core::shutdown_signal() => {
+                        info!("Shutdown signal received during allowlist wait");
+                        std::process::exit(0);
+                    }
+                }
             }
         }
     }
@@ -446,11 +468,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
-    // Create shared flag for KEM algorithm auto-negotiation.
-    // Initialized to `true` (fail secure — use ML-KEM-1024 until federation algorithms are known).
-    let requires_kem_1024: allowlist::RequiresKem1024 =
-        Arc::new(std::sync::atomic::AtomicBool::new(true));
-
     // Initial allowlist refresh — fetch all peers from all registries, exclude self
     let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
     match allowlist::refresh_allowlist(
@@ -458,8 +475,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         &allowlist_store,
         &allowlist,
         Some(&config.node_id),
-        &requires_kem_1024,
-        &config.kels_url(),
     )
     .await
     {
@@ -494,7 +509,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let mut peer_addrs: Vec<kels_gossip_core::addr::PeerAddr> = Vec::new();
     for peer in &discovery.peers {
-        let peer_uri = format!("kels://{}@{}", peer.peer_prefix, peer.gossip_addr);
+        let peer_uri = format!("kels://{}@{}", peer.kel_prefix, peer.gossip_addr);
         match kels_gossip_core::addr::PeerAddr::parse(&peer_uri) {
             Ok(addr) => {
                 info!("Will connect to peer {} at {}", peer.node_id, addr);
@@ -534,12 +549,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
-    let redis_peer_prefix = peer_prefix_str.clone();
+    let redis_local_kel_prefix = local_kel_prefix;
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
                 &redis_url,
-                redis_peer_prefix.clone(),
+                redis_local_kel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
             )
@@ -557,12 +572,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
-    let sad_redis_peer_prefix = peer_prefix_str.clone();
+    let sad_redis_local_kel_prefix = local_kel_prefix;
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
                 &sad_redis_url,
-                sad_redis_peer_prefix.clone(),
+                sad_redis_local_kel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
             )
@@ -598,11 +613,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     });
 
     // Create gossip signer and verifier (signer uses identity service)
-    let signer = IdentityGossipSigner::new(
-        &config.identity_url,
-        &peer_prefix_str,
-        requires_kem_1024.clone(),
-    )?;
+    let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
     let verifier_store: std::sync::Arc<dyn kels_core::KelStore> =
         std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
@@ -611,7 +622,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         federation_registry_urls.clone(),
         config.node_id.clone(),
         verifier_store,
-        requires_kem_1024.clone(),
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -643,11 +653,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
-    // Get local NodePrefix for the gossip event loop
-    let local_node_prefix = kels_gossip_core::identity::NodePrefix::option_from_str(
-        &peer_prefix_str,
-    )
-    .ok_or_else(|| ServiceError::Config(format!("Invalid peer prefix: {}", peer_prefix_str)))?;
+    let local_node_prefix = local_kel_prefix;
 
     // Start gossip event loop in background
     let gossip_instance_clone = gossip_instance.clone();
@@ -784,8 +790,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let refresh_urls = federation_registry_urls.clone();
     let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
     let refresh_node_id = config.node_id.clone();
-    let refresh_kem_flag = requires_kem_1024.clone();
-    let refresh_kels_url = config.kels_url().clone();
     tokio::spawn(async move {
         allowlist::run_allowlist_refresh_loop(
             &refresh_urls,
@@ -793,8 +797,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             allowlist,
             refresh_interval,
             &refresh_node_id,
-            refresh_kem_flag,
-            &refresh_kels_url,
         )
         .await;
     });
