@@ -31,8 +31,7 @@ use std::sync::Mutex;
 
 use fips204::traits::{KeyGen, SerDes, Signer};
 use fips204::{ml_dsa_65, ml_dsa_87};
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 // ==================== PKCS#11 Type Definitions ====================

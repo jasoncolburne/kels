@@ -11,6 +11,8 @@ feature-depth = 1
 [advisories]
 ignore = [
     { id = "RUSTSEC-2026-0002", reason = "lru unsoundness - transitive dependency via aws-sdk-s3, pinned at 0.12.x by upstream" },
+    # rand 0.8 unsoundness in ThreadRng — transitive dep via sqlx-postgres; we don't use ThreadRng
+    "RUSTSEC-2026-0097",
 ]
 
 [licenses]

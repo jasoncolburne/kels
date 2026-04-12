@@ -2,8 +2,7 @@ kind: Build
 name: mail
 type: container
 
-# Mail service requires federation (gossip for announcements, identity for node prefix)
-disabled: ${var.envType == "registry" || var.envType == "standalone"}
+disabled: ${var.envType == "registry"}
 
 source:
   path: ../..  # Set build context to repository root
@@ -24,8 +23,7 @@ kind: Deploy
 name: mail
 type: kubernetes
 
-# Mail service requires federation (gossip for announcements, identity for node prefix)
-disabled: ${var.envType == "registry" || var.envType == "standalone"}
+disabled: ${var.envType == "registry"}
 
 dependencies:
   - build.mail
@@ -33,11 +31,13 @@ dependencies:
   - deploy.minio
   - deploy.kels
   - deploy.identity
-  - deploy.redis
+  # Note: deploy.redis is intentionally not listed as a dependency. Redis is
+  # optional — the mail service runs without it in standalone mode. In federated
+  # deployments, the wait-for-redis initContainer handles startup ordering.
 
 variables:
   mailDatabaseUrl: ${var.postgres.url}/mail
 
 spec:
   manifestTemplates:
-    - manifests.yml.tpl
+    - "${var.envType == 'standalone' ? 'manifests-standalone.yml.tpl' : 'manifests-node.yml.tpl'}"

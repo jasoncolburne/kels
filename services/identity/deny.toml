@@ -9,7 +9,11 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = []
+ignore = [
+    # rand 0.8 pulled in transitively by sqlx-postgres; we don't use ThreadRng.
+    # Remove when sqlx upgrades past rand 0.8.
+    "RUSTSEC-2026-0097",
+]
 
 [licenses]
 allow = [

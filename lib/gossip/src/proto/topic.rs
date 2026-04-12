@@ -10,7 +10,7 @@ use std::{
 
 use bytes::Bytes;
 use derive_more::From;
-use rand::{Rng, rngs::ThreadRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -219,14 +219,14 @@ pub struct State<PI, R> {
     stats: Stats,
 }
 
-impl<PI: PeerPrefixEntity> State<PI, ThreadRng> {
+impl<PI: PeerPrefixEntity> State<PI, StdRng> {
     /// Initialize the local state with the default random number generator.
     ///
     /// ## Panics
     ///
     /// Panics if [`Config::max_message_size`] is below [`MIN_MAX_MESSAGE_SIZE`].
     pub fn new(me: PI, me_data: Option<PeerData>, config: Config) -> Self {
-        Self::with_rng(me, me_data, config, rand::rng())
+        Self::with_rng(me, me_data, config, StdRng::from_os_rng())
     }
 }
 

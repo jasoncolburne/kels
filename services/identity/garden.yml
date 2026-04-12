@@ -2,7 +2,7 @@ kind: Build
 name: identity
 type: container
 
-disabled: ${var.envType == "standalone"}
+# Identity is needed in all non-registry environments (standalone for mail, nodes for gossip)
 
 source:
   path: ../..  # Set build context to repository root
@@ -23,7 +23,7 @@ kind: Deploy
 name: identity
 type: kubernetes
 
-disabled: ${var.envType == "standalone"}
+# Identity is needed in all non-registry environments (standalone for mail, nodes for gossip)
 
 dependencies:
   - build.identity

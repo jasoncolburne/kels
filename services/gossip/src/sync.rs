@@ -1374,7 +1374,7 @@ pub async fn run_anti_entropy_loop(
 
         // Phase 2: Random sampling
         let (peer_kel_prefix, peer_kels_url) = {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rngs::OsRng;
             match peers.choose(&mut rng) {
                 Some((pp, url)) => (*pp, url.clone()),
                 None => continue,
@@ -1736,7 +1736,7 @@ pub async fn run_sad_anti_entropy_loop(
 
         // Phase 2: Random sampling — compare chain effective SAIDs with a random peer
         let (peer_kel_prefix, peer_sadstore_url) = {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rngs::OsRng;
             match peers.choose(&mut rng) {
                 Some(p) => p.clone(),
                 None => continue,

@@ -13,6 +13,7 @@
 #   NODE_B_MAIL_HOST     - node-b Mail hostname (default: mail.node-b.kels)
 #   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
 #   CONVERGENCE_TIMEOUT  - Timeout for gossip propagation polling (default: 30s)
+#   FEDERATED            - Set to "false" for single-node mode (skips cross-node tests)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
@@ -22,9 +23,14 @@ NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_A_MAIL_HOST="${NODE_A_MAIL_HOST:-mail}"
 NODE_B_MAIL_HOST="${NODE_B_MAIL_HOST:-mail.node-b.kels}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
+FEDERATED="${FEDERATED:-true}"
 
-CLI="kels-cli -d node-a.kels"
-CLI_B="kels-cli -d node-b.kels"
+if [ "$FEDERATED" = "false" ]; then
+    CLI="kels-cli --kels-url http://${NODE_A_KELS_HOST} --sadstore-url http://${NODE_A_SADSTORE_HOST} --mail-url http://${NODE_A_MAIL_HOST}"
+else
+    CLI="kels-cli -d node-a.kels"
+    CLI_B="kels-cli -d node-b.kels"
+fi
 
 init_temp_dir
 
@@ -34,8 +40,11 @@ echo "========================================="
 echo "Node-A KELS:     http://${NODE_A_KELS_HOST}"
 echo "Node-A SADStore: http://${NODE_A_SADSTORE_HOST}"
 echo "Node-A Mail:     http://${NODE_A_MAIL_HOST}"
+if [ "$FEDERATED" = "true" ]; then
 echo "Node-B Mail:     http://${NODE_B_MAIL_HOST}"
 echo "Node-B SADStore: http://${NODE_B_SADSTORE_HOST}"
+fi
+echo "Federated:       ${FEDERATED}"
 echo "Convergence:     ${CONVERGENCE_TIMEOUT}s"
 echo "========================================="
 echo ""
@@ -45,7 +54,9 @@ echo "Waiting for services..."
 wait_for_health "http://${NODE_A_KELS_HOST}" "Node-A KELS" || exit 1
 wait_for_health "http://${NODE_A_SADSTORE_HOST}" "Node-A SADStore" || exit 1
 wait_for_health "http://${NODE_A_MAIL_HOST}" "Node-A Mail" || exit 1
-wait_for_health "http://${NODE_B_MAIL_HOST}" "Node-B Mail" || exit 1
+if [ "$FEDERATED" = "true" ]; then
+    wait_for_health "http://${NODE_B_MAIL_HOST}" "Node-B Mail" || exit 1
+fi
 echo ""
 
 # ================================================================
@@ -164,7 +175,9 @@ test_lookup_alice_key_from_node_b() {
     return 1
 }
 
-run_test "Look up Alice's key from node-b (gossip replication)" test_lookup_alice_key_from_node_b
+if [ "$FEDERATED" = "true" ]; then
+    run_test "Look up Alice's key from node-b (gossip replication)" test_lookup_alice_key_from_node_b
+fi
 
 echo ""
 
@@ -306,6 +319,8 @@ run_test "Alice's inbox is empty" test_alice_inbox_empty
 
 echo ""
 
+if [ "$FEDERATED" = "true" ]; then
+
 # ================================================================
 # Phase 7: Cross-Node Mail Gossip — Send on node-a, receive on node-b
 # ================================================================
@@ -343,6 +358,8 @@ run_test "Alice sends cross-node message to Bob" test_alice_send_cross_node
 run_test "Bob sees message on node-b (gossip replication)" test_bob_inbox_on_node_b
 
 echo ""
+
+fi
 
 # ================================================================
 # Phase 8: Fetch & Decrypt — Verify payload roundtrip
