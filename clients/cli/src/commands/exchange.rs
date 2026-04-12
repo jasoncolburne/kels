@@ -451,6 +451,7 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
     // Resolve source node's mail URL — use explicit mail URL if provided,
     // otherwise look up source node via registry
     let source_mail_url = if let Some(ref mail_url) = cli.mail_url {
+        println!("  Using configured mail URL (skipping registry lookup)");
         mail_url.clone()
     } else {
         let registry_urls = parse_registry_urls(&cli.registry);

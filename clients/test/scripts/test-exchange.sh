@@ -41,8 +41,8 @@ echo "Node-A KELS:     http://${NODE_A_KELS_HOST}"
 echo "Node-A SADStore: http://${NODE_A_SADSTORE_HOST}"
 echo "Node-A Mail:     http://${NODE_A_MAIL_HOST}"
 if [ "$FEDERATED" = "true" ]; then
-echo "Node-B Mail:     http://${NODE_B_MAIL_HOST}"
-echo "Node-B SADStore: http://${NODE_B_SADSTORE_HOST}"
+    echo "Node-B Mail:     http://${NODE_B_MAIL_HOST}"
+    echo "Node-B SADStore: http://${NODE_B_SADSTORE_HOST}"
 fi
 echo "Federated:       ${FEDERATED}"
 echo "Convergence:     ${CONVERGENCE_TIMEOUT}s"
