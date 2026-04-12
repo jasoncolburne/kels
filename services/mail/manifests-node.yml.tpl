@@ -48,6 +48,17 @@ spec:
                 sleep 2;
               done;
               echo "Identity is ready!";
+        - name: wait-for-redis
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z redis 6379; do
+                echo "Waiting for redis...";
+                sleep 2;
+              done;
+              echo "Redis is ready!";
       containers:
         - name: mail
           image: ${actions.build.mail.outputs.deployment-image-id}
