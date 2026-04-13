@@ -39,9 +39,9 @@ ALL_EVENTS="[]"
 SINCE=""
 while true; do
     if [ -z "$SINCE" ]; then
-        PAGE=$(curl -s -f -X POST -H 'Content-Type: application/json' -d '{"prefix":""}' "$IDENTITY_URL/api/v1/identity/kel")
+        PAGE=$(curl -s -f -X POST -H 'Content-Type: application/json' -d '{}' "$IDENTITY_URL/api/v1/identity/kel")
     else
-        PAGE=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"\",\"since\":\"$SINCE\"}" "$IDENTITY_URL/api/v1/identity/kel")
+        PAGE=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "{\"since\":\"$SINCE\"}" "$IDENTITY_URL/api/v1/identity/kel")
     fi
 
     if [ $? -ne 0 ]; then

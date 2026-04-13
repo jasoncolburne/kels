@@ -230,14 +230,14 @@ impl KelsRegistryClient {
     /// Fetch a specific federation member's KEL by prefix with optional pagination.
     pub async fn fetch_member_key_events(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<crate::SignedKeyEventPage, KelsError> {
         let url = format!("{}/api/v1/member-kels/kel/fetch", self.base_url);
         let body = crate::KelPageRequest {
-            prefix: prefix.to_string(),
-            since: since.map(|s| s.to_string()),
+            prefix: *prefix,
+            since: since.copied(),
             limit: Some(limit),
         };
         let response = self.client.post(&url).json(&body).send().await?;
@@ -382,11 +382,11 @@ impl KelsRegistryClient {
     /// Fetch a specific proposal by ID.
     pub async fn fetch_proposal(
         &self,
-        proposal_prefix: &str,
+        proposal_prefix: &cesr::Digest256,
     ) -> Result<crate::ProposalWithVotes, KelsError> {
         let url = format!("{}/api/v1/federation/proposals/fetch", self.base_url);
         let body = crate::ProposalRequest {
-            prefix: proposal_prefix.to_string(),
+            prefix: *proposal_prefix,
         };
         let response = self.client.post(&url).json(&body).send().await?;
 

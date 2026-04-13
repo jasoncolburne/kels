@@ -86,8 +86,8 @@ impl PagedSadSource for HttpSadSource {
     ) -> Result<(Vec<SignedSadPointer>, bool), KelsError> {
         let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
         let body = crate::SadPointerPageRequest {
-            prefix: prefix.to_string(),
-            since: since.map(|s| s.to_string()),
+            prefix: *prefix,
+            since: since.copied(),
             limit: Some(limit),
         };
         let resp = self.client.post(&url).json(&body).send().await?;

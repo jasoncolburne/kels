@@ -147,13 +147,12 @@ impl IdentityClient {
 
     pub async fn get_key_events(
         &self,
-        since: Option<&str>,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
         let url = format!("{}/api/v1/identity/kel", self.base_url);
-        let body = crate::KelPageRequest {
-            prefix: String::new(),
-            since: since.map(|s| s.to_string()),
+        let body = crate::IdentityKelPageRequest {
+            since: since.copied(),
             limit: Some(limit),
         };
         let response = self.client.post(&url).json(&body).send().await?;

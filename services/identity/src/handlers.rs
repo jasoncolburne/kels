@@ -9,7 +9,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use kels_core::{
     IdentityInfo, KelsClient, KelsError, KeyEventBuilder, ManageKelRequest, ManageKelResponse,
     RepositoryKelStore, SignResponse, SignedKeyEventPage,
@@ -147,7 +146,7 @@ pub async fn get_status(
 /// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
 pub async fn get_key_events(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::KelPageRequest>,
+    Json(request): Json<kels_core::IdentityKelPageRequest>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = builder
@@ -159,16 +158,10 @@ pub async fn get_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let since_digest = request
-        .since
-        .as_deref()
-        .map(cesr::Digest256::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
         prefix,
-        since_digest.as_ref(),
+        request.since.as_ref(),
         limit,
     )
     .await?;

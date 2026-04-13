@@ -185,14 +185,14 @@ impl KelsClient {
     /// Returns `SignedKeyEventPage` with `events` and `has_more`.
     pub async fn fetch_key_events(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
         let url = format!("{}{}/kel/fetch", self.base_url, self.path_prefix);
         let body = crate::KelPageRequest {
-            prefix: prefix.to_string(),
-            since: since.map(|s| s.to_string()),
+            prefix: *prefix,
+            since: since.copied(),
             limit: Some(limit),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
@@ -217,18 +217,18 @@ impl KelsClient {
     /// - `max_pages`: Maximum number of pages to fetch before failing.
     pub async fn fetch_all_key_events(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
         max_pages: usize,
     ) -> Result<Vec<SignedKeyEvent>, KelsError> {
         let mut all_events = Vec::new();
-        let mut current_since = since.map(String::from);
+        let mut current_since: Option<cesr::Digest256> = since.copied();
         let mut exhausted = false;
 
         for _ in 0..max_pages {
             let page = self
-                .fetch_key_events(prefix, current_since.as_deref(), limit)
+                .fetch_key_events(prefix, current_since.as_ref(), limit)
                 .await?;
 
             if page.events.is_empty() {
@@ -244,7 +244,7 @@ impl KelsClient {
                 break;
             }
 
-            current_since = last_said.map(|d| d.qb64());
+            current_since = last_said;
         }
 
         if !exhausted {
@@ -267,9 +267,7 @@ impl KelsClient {
         prefix: &cesr::Digest256,
     ) -> Result<Option<(cesr::Digest256, bool)>, KelsError> {
         let url = format!("{}{}/kel/effective-said", self.base_url, self.path_prefix);
-        let body = crate::KelEffectiveSaidRequest {
-            prefix: prefix.to_string(),
-        };
+        let body = crate::KelEffectiveSaidRequest { prefix: *prefix };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
@@ -301,13 +299,13 @@ impl KelsClient {
     /// Fetch paginated recovery records for a prefix (recovery history and audit trail).
     pub async fn fetch_kel_audit(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest256,
         limit: usize,
         offset: u64,
     ) -> Result<RecoveryRecordPage, KelsError> {
         let url = format!("{}{}/kel/recoveries", self.base_url, self.path_prefix);
         let body = crate::KelRecoveriesRequest {
-            prefix: prefix.to_string(),
+            prefix: *prefix,
             limit: Some(limit),
             offset: Some(offset),
         };
@@ -326,8 +324,8 @@ impl KelsClient {
     /// Fetch paginated archived events for a specific recovery.
     pub async fn fetch_recovery_events(
         &self,
-        prefix: &str,
-        recovery_said: &str,
+        prefix: &cesr::Digest256,
+        recovery_said: &cesr::Digest256,
         limit: usize,
         offset: u64,
     ) -> Result<SignedKeyEventPage, KelsError> {
@@ -336,8 +334,8 @@ impl KelsClient {
             self.base_url, self.path_prefix
         );
         let body = crate::KelRecoveryEventsRequest {
-            prefix: prefix.to_string(),
-            said: recovery_said.to_string(),
+            prefix: *prefix,
+            said: *recovery_said,
             limit: Some(limit),
             offset: Some(offset),
         };
@@ -385,9 +383,7 @@ impl KelsClient {
     /// Check if an event SAID exists on the server.
     pub async fn event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}{}/events/exists", self.base_url, self.path_prefix);
-        let body = crate::KelEventExistsRequest {
-            said: said.to_string(),
-        };
+        let body = crate::KelEventExistsRequest { said: *said };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         Ok(resp.status().is_success())
@@ -683,7 +679,7 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
-            let result = client.fetch_key_events(prefix.as_ref(), None, 32).await;
+            let result = client.fetch_key_events(&prefix, None, 32).await;
 
             assert!(result.is_ok());
             let page = result.unwrap();
@@ -702,7 +698,9 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
-            let result = client.fetch_key_events("nonexistent", None, 32).await;
+            let result = client
+                .fetch_key_events(&test_digest("nonexistent"), None, 32)
+                .await;
 
             assert!(matches!(result, Err(KelsError::NotFound(_))));
         }
@@ -723,7 +721,9 @@ mod tests {
                 .await;
 
             let client = KelsClient::new(&mock_server.uri()).unwrap();
-            let result = client.fetch_key_events("prefix", None, 32).await;
+            let result = client
+                .fetch_key_events(&test_digest("prefix"), None, 32)
+                .await;
 
             assert!(matches!(result, Err(KelsError::ServerError(..))));
         }

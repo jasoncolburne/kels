@@ -417,7 +417,7 @@ async fn list_proposals(ctx: &AdminContext) -> anyhow::Result<()> {
 async fn get_proposal_status(ctx: &AdminContext, proposal_prefix: &str) -> anyhow::Result<()> {
     let proposal = ctx
         .registry_client
-        .fetch_proposal(proposal_prefix)
+        .fetch_proposal(&cesr::Digest256::from_qb64(proposal_prefix)?)
         .await
         .map_err(|e| anyhow!("Failed to get proposal: {}", e))?;
 
@@ -470,7 +470,7 @@ async fn withdraw_proposal(ctx: &AdminContext, proposal_prefix: &str) -> anyhow:
     // Fetch the current proposal from the registry
     let proposal = ctx
         .registry_client
-        .fetch_proposal(proposal_prefix)
+        .fetch_proposal(&cesr::Digest256::from_qb64(proposal_prefix)?)
         .await
         .map_err(|e| anyhow!("Failed to fetch proposal: {}", e))?;
 
@@ -720,17 +720,17 @@ async fn show_identity_status(
         .await
         .context("Failed to get identity prefix")?;
     let mut all_events = Vec::new();
-    let mut since: Option<String> = None;
+    let mut since: Option<cesr::Digest256> = None;
     for _ in 0..max_pages {
         let page = ctx
             .identity_client
-            .get_key_events(since.as_deref(), kels_core::page_size())
+            .get_key_events(since.as_ref(), kels_core::page_size())
             .await
             .context("Failed to get identity KEL")?;
         if page.events.is_empty() {
             break;
         }
-        since = page.events.last().map(|e| e.event.said.to_string());
+        since = page.events.last().map(|e| e.event.said);
         all_events.extend(page.events);
         if !page.has_more {
             break;

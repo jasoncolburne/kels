@@ -106,9 +106,7 @@ impl SadStoreClient {
     /// Check if a self-addressed object exists by SAID.
     pub async fn sad_object_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/exists", self.base_url);
-        let body = crate::SadRequest {
-            said: said.to_string(),
-        };
+        let body = crate::SadRequest { said: *said };
         let resp = self.client.post(&url).json(&body).send().await?;
         Ok(resp.status().is_success())
     }
@@ -122,9 +120,7 @@ impl SadStoreClient {
         said: &cesr::Digest256,
     ) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/fetch", self.base_url);
-        let body = crate::SadRequest {
-            said: said.to_string(),
-        };
+        let body = crate::SadRequest { said: *said };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
@@ -210,13 +206,13 @@ impl SadStoreClient {
     /// server returns the full chain.
     pub async fn fetch_sad_pointer(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
     ) -> Result<SadPointerPage, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
         let body = crate::SadPointerPageRequest {
-            prefix: prefix.to_string(),
-            since: since.map(|s| s.to_string()),
+            prefix: *prefix,
+            since: since.copied(),
             limit: None,
         };
         let resp = self.client.post(&url).json(&body).send().await?;
@@ -238,9 +234,7 @@ impl SadStoreClient {
         prefix: &cesr::Digest256,
     ) -> Result<Option<(String, bool)>, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/effective-said", self.base_url);
-        let body = crate::SadPointerEffectiveSaidRequest {
-            prefix: prefix.to_string(),
-        };
+        let body = crate::SadPointerEffectiveSaidRequest { prefix: *prefix };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
@@ -257,9 +251,7 @@ impl SadStoreClient {
     /// Check if a pointer with the given SAID exists on this SADStore.
     pub async fn sad_pointer_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/exists", self.base_url);
-        let body = crate::SadRequest {
-            said: said.to_string(),
-        };
+        let body = crate::SadRequest { said: *said };
         let resp = self.client.post(&url).json(&body).send().await?;
         Ok(resp.status().is_success())
     }
@@ -296,13 +288,13 @@ impl SadStoreClient {
     /// Fetch repairs for a chain prefix, paginated.
     pub async fn fetch_sad_pointer_repairs(
         &self,
-        prefix: &str,
+        prefix: &cesr::Digest256,
         limit: usize,
         offset: u64,
     ) -> Result<SadPointerRepairPage, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/repairs", self.base_url);
         let body = crate::SadRepairsRequest {
-            prefix: prefix.to_string(),
+            prefix: *prefix,
             limit: Some(limit),
             offset: Some(offset),
         };
@@ -321,15 +313,15 @@ impl SadStoreClient {
     /// Fetch archived records for a specific repair, paginated.
     pub async fn fetch_sad_pointer_repair_records(
         &self,
-        prefix: &str,
-        repair_said: &str,
+        prefix: &cesr::Digest256,
+        repair_said: &cesr::Digest256,
         limit: usize,
         offset: u64,
     ) -> Result<SadPointerPage, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/repairs/records", self.base_url);
         let body = crate::SadRepairPageRequest {
-            prefix: prefix.to_string(),
-            said: repair_said.to_string(),
+            prefix: *prefix,
+            said: *repair_said,
             limit: Some(limit),
             offset: Some(offset),
         };

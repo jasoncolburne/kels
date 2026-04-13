@@ -212,7 +212,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         kels_core::compute_sad_pointer_prefix(prefix_digest, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
     let page = sad_client
-        .fetch_sad_pointer(chain_prefix.as_ref(), None)
+        .fetch_sad_pointer(&chain_prefix, None)
         .await
         .context("Failed to fetch current chain")?;
 
@@ -249,7 +249,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
-        .fetch_sad_pointer(chain_prefix.as_ref(), None)
+        .fetch_sad_pointer(&chain_prefix, None)
         .await
         .context("Failed to fetch key chain")?;
 
@@ -309,9 +309,7 @@ pub(crate) async fn cmd_exchange_send(
     let chain_prefix =
         kels_core::compute_sad_pointer_prefix(recipient_digest, kels_exchange::ENCAP_KEY_KIND)?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let page = sad_client
-        .fetch_sad_pointer(chain_prefix.as_ref(), None)
-        .await?;
+    let page = sad_client.fetch_sad_pointer(&chain_prefix, None).await?;
     let tip = page
         .pointers
         .last()

@@ -128,6 +128,8 @@ async fn sync_own_kel(
         .ok()
         .flatten();
 
+    // HttpKelSource sends KelPageRequest (with prefix), but the identity endpoint
+    // accepts IdentityKelPageRequest (no prefix) — serde ignores the extra field.
     let source = kels_core::HttpKelSource::new(identity_client.base_url(), "/api/v1/identity/kel")?;
     let sink = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),

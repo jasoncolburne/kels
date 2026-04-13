@@ -381,11 +381,7 @@ pub async fn fetch_sad_object(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&request.said) {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
-    };
-    match state.object_store.get(&said).await {
+    match state.object_store.get(&request.said).await {
         Ok(data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -406,11 +402,7 @@ pub async fn sad_object_exists(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&request.said) {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
-    };
-    match state.object_store.exists(&said).await {
+    match state.object_store.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -424,11 +416,7 @@ pub async fn sad_pointer_exists(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&request.said) {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
-    };
-    match state.repo.sad_pointers.exists(&said).await {
+    match state.repo.sad_pointers.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -738,11 +726,12 @@ pub async fn get_sad_pointer(
 ) -> impl IntoResponse {
     let prefix = request.prefix;
     let limit = request.limit.unwrap_or(kels_core::page_size()) as u64;
+    let since_str = request.since.as_ref().map(|s| s.as_ref());
 
     match state
         .repo
         .sad_pointers
-        .get_stored(&prefix, request.since.as_deref(), Some(limit + 1))
+        .get_stored(prefix.as_ref(), since_str, Some(limit + 1))
         .await
     {
         Ok(records) if records.is_empty() => {
@@ -768,11 +757,12 @@ pub async fn get_sad_pointer_effective_said(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadPointerEffectiveSaidRequest>,
 ) -> impl IntoResponse {
-    let prefix = match cesr::Digest256::from_qb64(&request.prefix) {
-        Ok(p) => p,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid prefix").into_response(),
-    };
-    match state.repo.sad_pointers.effective_said(&prefix).await {
+    match state
+        .repo
+        .sad_pointers
+        .effective_said(&request.prefix)
+        .await
+    {
         Ok(Some((said, divergent))) => (
             StatusCode::OK,
             Json(kels_core::EffectiveSaidResponse { said, divergent }),
@@ -901,7 +891,7 @@ pub(crate) async fn get_sad_pointer_repairs(
     match state
         .repo
         .sad_pointers
-        .get_repairs(&request.prefix, limit, offset)
+        .get_repairs(request.prefix.as_ref(), limit, offset)
         .await
     {
         Ok((repairs, has_more)) => (
@@ -927,7 +917,7 @@ pub(crate) async fn get_sad_pointer_repair_records(
     match state
         .repo
         .sad_pointers
-        .get_repair_records(&request.said, limit, offset)
+        .get_repair_records(request.said.as_ref(), limit, offset)
         .await
     {
         Ok((records, has_more)) => (

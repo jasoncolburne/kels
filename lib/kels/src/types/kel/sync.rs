@@ -217,8 +217,8 @@ impl PagedKelSource for HttpKelSource {
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
         let url = format!("{}{}", self.base_url, self.path);
         let body = crate::KelPageRequest {
-            prefix: prefix.to_string(),
-            since: since.map(|s| s.to_string()),
+            prefix: *prefix,
+            since: since.copied(),
             limit: Some(limit),
         };
 

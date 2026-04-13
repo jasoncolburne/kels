@@ -10,7 +10,7 @@ PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check probe |
 | GET | `/api/v1/identity` | None | Get registry prefix |
-| POST | `/api/v1/identity/kel` | None | Get registry KEL (paginated; `KelPageRequest` body); returns `SignedKeyEventPage {events, hasMore}` |
+| POST | `/api/v1/identity/kel` | None | Get registry KEL (paginated; `IdentityKelPageRequest` body — no prefix, identity serves one KEL); returns `SignedKeyEventPage {events, hasMore}` |
 | POST | `/api/v1/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/v1/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | GET | `/api/v1/identity/status` | None | Get identity status (initialized, prefix, last SAID, current key handle) |

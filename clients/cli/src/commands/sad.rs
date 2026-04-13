@@ -87,9 +87,10 @@ pub(crate) async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> R
 }
 
 pub(crate) async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
+    let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = client
-        .fetch_sad_pointer(prefix, None)
+        .fetch_sad_pointer(&prefix_digest, None)
         .await
         .context("Failed to fetch SAD chain")?;
 

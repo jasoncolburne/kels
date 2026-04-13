@@ -11,7 +11,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
@@ -510,12 +509,12 @@ pub(crate) async fn get_kel(
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
 
-    // Full fetch path — try cache first using raw string key (no CESR parsing)
+    // Full fetch path — try cache first
     if request.since.is_none()
         && limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
-        match kel_cache.get_full_serialized_str(&prefix).await {
+        match kel_cache.get_full_serialized_str(prefix.as_ref()).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -532,29 +531,19 @@ pub(crate) async fn get_kel(
         }
     }
 
-    // Cache miss — parse prefix and since to typed CESR
-    let prefix_digest = cesr::Digest256::from_qb64(&prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let since_digest = request
-        .since
-        .as_deref()
-        .map(cesr::Digest256::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
-
     let page = kels_core::serve_kel_page(
         &state.repo.key_events,
-        &prefix_digest,
-        since_digest.as_ref(),
+        &prefix,
+        request.since.as_ref(),
         limit,
     )
     .await?;
 
     // Store in cache (skips if too large per cache logic)
-    if since_digest.is_none()
+    if request.since.is_none()
         && !page.has_more
         && let Some(ref kel_cache) = state.kel_cache
-        && let Err(e) = kel_cache.store(&prefix_digest, &page.events).await
+        && let Err(e) = kel_cache.store(&prefix, &page.events).await
     {
         warn!("Failed to cache KEL: {}", e);
     }
@@ -579,7 +568,7 @@ pub(crate) async fn get_kel_audit(
     let (records, has_more) = state
         .repo
         .recovery_records
-        .get_by_kel_prefix(&request.prefix, limit, offset)
+        .get_by_kel_prefix(request.prefix.as_ref(), limit, offset)
         .await?;
     Ok(Json(RecoveryRecordPage { records, has_more }))
 }
@@ -601,7 +590,7 @@ pub(crate) async fn get_recovery_events(
     let (events, has_more) = state
         .repo
         .key_events
-        .get_recovery_archived_events(&request.said, limit, offset)
+        .get_recovery_archived_events(request.said.as_ref(), limit, offset)
         .await?;
 
     Ok(Json(SignedKeyEventPage { events, has_more }))
@@ -616,7 +605,7 @@ pub(crate) async fn event_exists(
     if state
         .repo
         .key_events
-        .event_exists_by_said(&request.said)
+        .event_exists_by_said(request.said.as_ref())
         .await?
     {
         Ok(StatusCode::OK)
@@ -638,17 +627,18 @@ pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::KelEffectiveSaidRequest>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest256::from_qb64(&request.prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let effective = state
         .repo
         .key_events
-        .compute_prefix_effective_said(&prefix)
+        .compute_prefix_effective_said(&request.prefix)
         .await?;
 
     match effective {
         Some((said, divergent)) => Ok(Json(EffectiveSaidResponse { said, divergent })),
-        None => Err(ApiError::not_found(format!("Prefix {} not found", prefix))),
+        None => Err(ApiError::not_found(format!(
+            "Prefix {} not found",
+            request.prefix
+        ))),
     }
 }
 

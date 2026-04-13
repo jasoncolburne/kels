@@ -12,7 +12,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use dashmap::DashMap;
 use kels_core::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
@@ -217,7 +216,9 @@ pub struct FederationState {
 async fn push_own_kel_to_members(state: &FederationState) {
     let self_prefix = state.node.config().self_prefix;
 
-    // Fetch own events from identity service (source of truth)
+    // Fetch own events from identity service (source of truth).
+    // HttpKelSource sends KelPageRequest (with prefix), but the identity endpoint
+    // accepts IdentityKelPageRequest (no prefix) — serde ignores the extra field.
     let identity_source = match kels_core::HttpKelSource::new(
         state.identity_client.base_url(),
         "/api/v1/identity/kel",
@@ -495,25 +496,22 @@ pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
     Json(request): Json<kels_core::ProposalRequest>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
-    let proposal_digest = cesr::Digest256::from_qb64(&request.prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
-
     if let Some(addition) = state
         .node
-        .get_addition_proposal_with_votes(&proposal_digest)
+        .get_addition_proposal_with_votes(&request.prefix)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Addition(addition)))
     } else if let Some(removal) = state
         .node
-        .get_removal_proposal_with_votes(&proposal_digest)
+        .get_removal_proposal_with_votes(&request.prefix)
         .await
     {
         Ok(Json(kels_core::ProposalWithVotes::Removal(removal)))
     } else {
         Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_digest
+            request.prefix
         )))
     }
 }
@@ -1229,17 +1227,15 @@ pub async fn get_member_effective_said(
     State(state): State<Arc<FederationState>>,
     Json(request): Json<kels_core::KelEffectiveSaidRequest>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest256::from_qb64(&request.prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     match state
         .member_kel_repo
-        .compute_prefix_effective_said(&prefix)
+        .compute_prefix_effective_said(&request.prefix)
         .await
     {
         Ok(Some((said, divergent))) => Ok(Json(EffectiveSaidResponse { said, divergent })),
         Ok(None) => Err(ApiError::not_found(format!(
             "No KEL found for prefix: {}",
-            prefix
+            request.prefix
         ))),
         Err(e) => Err(ApiError::internal_error(format!(
             "Failed to compute effective SAID: {}",
@@ -1258,18 +1254,10 @@ pub async fn get_member_key_events(
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let prefix_digest = cesr::Digest256::from_qb64(&request.prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let since_digest = request
-        .since
-        .as_deref()
-        .map(cesr::Digest256::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         &state.member_kel_repo,
-        &prefix_digest,
-        since_digest.as_ref(),
+        &request.prefix,
+        request.since.as_ref(),
         limit,
     )
     .await

@@ -440,7 +440,7 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
         let mut offset = 0u64;
         loop {
             let page = client
-                .fetch_kel_audit(prefix, kels_core::page_size(), offset)
+                .fetch_kel_audit(&prefix_digest, kels_core::page_size(), offset)
                 .await?;
             all_records.extend(page.records);
             if !page.has_more {
