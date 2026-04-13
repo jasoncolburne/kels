@@ -6,9 +6,9 @@ Typed CESR fields in request structs + new `IdentityKelPageRequest`. 53 files ch
 
 | Priority | Open | Resolved |
 |----------|------|----------|
-| High     | 1    | 0        |
-| Medium   | 1    | 1        |
-| Low      | 1    | 0        |
+| High     | 0    | 1        |
+| Medium   | 0    | 2        |
+| Low      | 0    | 1        |
 
 All 6 findings from Round 1 are resolved. All 3 findings from Round 2 are resolved (1 medium, 2 low).
 
@@ -16,19 +16,13 @@ All 6 findings from Round 1 are resolved. All 3 findings from Round 2 are resolv
 
 ## High Priority
 
-### 1. FFI `kels_sad_fetch_pointer` silently swallows invalid `since` CESR
+### ~~1. FFI `kels_sad_fetch_pointer` silently swallows invalid `since` CESR~~ — RESOLVED
 
 **File:** `lib/ffi/src/sad.rs:283`
 
-The `since` parameter parsing changed from passing the raw string through to the server (which would reject it) to parsing it locally with `.ok()`:
+~~The `since` parameter parsing changed from passing the raw string through to the server (which would reject it) to parsing it locally with `.ok()`. If a caller passes a non-empty but invalid CESR string for `since`, the error is silently swallowed — `since_digest` becomes `None`, and the query fetches the entire chain from the beginning instead of returning an error.~~
 
-```rust
-let since_digest = from_c_string(since).and_then(|s| cesr::Digest256::from_qb64(&s).ok());
-```
-
-If a caller passes a non-empty but invalid CESR string for `since`, the error is silently swallowed — `since_digest` becomes `None`, and the query fetches the entire chain from the beginning instead of returning an error. A C caller cannot distinguish "fetch from beginning" from "your since parameter was garbage." This is a fail-open behavior: the caller believes they're doing a delta fetch but actually gets a full fetch, which could mask bugs or cause unexpected data volumes.
-
-**Suggested fix:** Match on the `from_qb64` result explicitly. If `since` is non-null and non-empty but fails CESR parsing, call `set_last_error` and return null, matching the pattern used for the `prefix` parameter 8 lines above.
+**Resolution:** Added explicit match on `from_qb64` result. Non-empty invalid `since` strings now call `set_last_error` and return null, matching the `prefix` parameter's error handling pattern.
 
 ---
 
@@ -42,27 +36,25 @@ If a caller passes a non-empty but invalid CESR string for `since`, the error is
 
 **Resolution:** All request struct fields are now `cesr::Digest256`, so serde rejects invalid CESR at deserialization time (HTTP 422). Validation is now enforced uniformly at the wire boundary.
 
-### 3. `docs/endpoints.md` gossip peer-to-peer table still shows `GET /api/v1/kels/kel/:prefix`
+### ~~3. `docs/endpoints.md` gossip peer-to-peer table still shows `GET /api/v1/kels/kel/:prefix`~~ — RESOLVED
 
 **File:** `docs/endpoints.md:127`
 
-The gossip peer-to-peer HTTP table still lists `GET /api/v1/kels/kel/:prefix` for fetching individual KELs from peers. In the actual code, gossip uses `HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/fetch")` (POST with `KelPageRequest` body) — the old GET path no longer exists. This means the documentation doesn't match the running code, which could mislead someone debugging gossip sync issues.
+~~The gossip peer-to-peer HTTP table still lists `GET /api/v1/kels/kel/:prefix` for fetching individual KELs from peers. In the actual code, gossip uses `HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/fetch")` (POST with `KelPageRequest` body) — the old GET path no longer exists.~~
 
-Additionally, `docs/registry.md:121-122` still shows `GET /api/v1/member-kels/kel/:prefix` and `GET /api/v1/member-kels/kel/:prefix/effective-said`, and several design docs (`docs/gossip.md:183`, `docs/design/divergence-detection.md:273-293`, `docs/design/security-invariant.md:11`) reference the old GET paths. These were stale before this branch, but since `docs/endpoints.md` was already updated for the other services, completing it here would prevent confusion.
-
-**Suggested fix:** Update the gossip peer-to-peer table in `docs/endpoints.md` to show `POST /api/v1/kels/kel/fetch` with `KelPageRequest` body. Consider a follow-up pass on `docs/registry.md` and the design docs.
+**Resolution:** Updated gossip P2P table to show `POST /api/v1/kels/kel/fetch` with `KelPageRequest` body. Stale references in `docs/registry.md` and design docs are pre-existing and can be addressed separately.
 
 ---
 
 ## Low Priority
 
-### 4. `docs/endpoints.md` KEL endpoint notes reference `?since=SAID` and `?limit=N` query parameter syntax
+### ~~4. `docs/endpoints.md` KEL endpoint notes reference `?since=SAID` and `?limit=N` query parameter syntax~~ — RESOLVED
 
 **File:** `docs/endpoints.md:21,45-46`
 
-The notes section for the KELS service (line 45) says `The ?since=SAID parameter returns events after the given SAID. The ?limit=N parameter controls page size...` and the identity section (line 21) says `?limit=N (default 32) and ?since=SAID for delta fetch`. These describe query parameters, but all endpoints now use POST with JSON bodies. The table entries themselves are correct (they reference `KelPageRequest` body), but the notes still describe the old query parameter interface.
+~~The notes section for the KELS service and identity section described query parameters (`?since=SAID`, `?limit=N`) but all endpoints now use POST with JSON bodies.~~
 
-**Suggested fix:** Update the notes to reference JSON body fields instead of query parameters.
+**Resolution:** Updated notes to reference JSON body fields (`since`, `limit`) instead of query parameter syntax.
 
 ---
 
