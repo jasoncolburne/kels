@@ -7,7 +7,7 @@ Move SAIDs/prefixes from URL path params to POST request bodies across all servi
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High     | 0    | 0        |
-| Medium   | 1    | 0        |
+| Medium   | 0    | 1        |
 | Low      | 0    | 2        |
 
 All 6 findings from Round 1 are resolved.
@@ -22,13 +22,13 @@ No high-priority findings.
 
 ## Medium Priority
 
-### 1. `get_kel_audit` and `get_recovery_events` accept unvalidated prefix/said strings
+### ~~1. `get_kel_audit` and `get_recovery_events` accept unvalidated prefix/said strings~~ — RESOLVED
 
 **File:** `services/kels/src/handlers.rs:569-608`
 
-The `get_kel_audit` handler passes `&request.prefix` (a `String` from the JSON body) directly to the repository `get_by_kel_prefix(&str)` without first validating it as a CESR digest. Similarly, `get_recovery_events` passes `&request.said` directly to `get_recovery_archived_events`. Contrast this with `get_effective_said` (line 641) and `get_kel` (line 536), which both parse to `cesr::Digest256` before proceeding. The repository methods use these as SQL `WHERE` clause values so there's no injection risk, but an attacker can query with arbitrary strings (not just valid CESR digests) and get empty results rather than a 400 Bad Request. This is an inconsistency rather than a vulnerability — the DB returns empty for invalid prefixes, so the fail mode is correct (empty response, not leak or crash). The same pattern exists in the SAD handlers (`get_sad_pointer` at line 735, `get_sad_pointer_repairs` at line 893, `get_sad_pointer_repair_records` at line 919).
+~~The `get_kel_audit` handler passes `&request.prefix` (a `String` from the JSON body) directly to the repository `get_by_kel_prefix(&str)` without first validating it as a CESR digest. Similarly, `get_recovery_events` passes `&request.said` directly to `get_recovery_archived_events`. Contrast this with `get_effective_said` (line 641) and `get_kel` (line 536), which both parse to `cesr::Digest256` before proceeding.~~
 
-**Suggested fix:** Add `cesr::Digest256::from_qb64()` validation at handler entry for these endpoints, matching the pattern in `get_effective_said`.
+**Resolution:** All request struct fields are now `cesr::Digest256`, so serde rejects invalid CESR at deserialization time (HTTP 422). Validation is enforced uniformly at the wire boundary.
 
 ---
 
