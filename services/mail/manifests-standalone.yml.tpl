@@ -61,8 +61,6 @@ spec:
               value: "80"
             - name: DATABASE_URL
               value: "${var.mailDatabaseUrl}"
-            - name: REDIS_URL
-              value: "${var.redis.mailUrl}"
             - name: KELS_URL
               value: "${var.kels.url}"
             - name: IDENTITY_URL

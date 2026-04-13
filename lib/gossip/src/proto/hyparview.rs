@@ -13,7 +13,7 @@ use std::{
 };
 
 use derive_more::{From, Sub};
-use rand::{Rng, rngs::ThreadRng};
+use rand::{Rng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -219,7 +219,7 @@ pub struct Stats {
 
 /// The state of the HyParView protocol
 #[derive(Debug)]
-pub struct State<PI, RG = ThreadRng> {
+pub struct State<PI, RG = StdRng> {
     /// Our peer identity
     me: PI,
     /// Our opaque user data to transmit to peers on join messages

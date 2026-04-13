@@ -95,7 +95,7 @@ A background reaper runs every 5 minutes to:
 
 ## Configuration
 
-The mail service fetches its node prefix from the co-located identity service at startup. Environment variables:
+Environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -109,6 +109,21 @@ The mail service fetches its node prefix from the co-located identity service at
 | `MINIO_ACCESS_KEY` | (required) | MinIO credentials |
 | `MINIO_SECRET_KEY` | (required) | MinIO credentials |
 | `KELS_MAIL_BUCKET` | `kels-mail` | MinIO bucket name |
+
+## Deployment Modes
+
+### Federated (node)
+
+The default mode. Requires all dependencies: PostgreSQL, MinIO, KELS, identity service, and Redis. The identity service provides the node prefix (used to tag which node stores each blob). Redis distributes gossip announcements (`MailAnnouncement::Message` and `MailAnnouncement::Removal`) to peers via the `mail_updates` channel.
+
+### Standalone (single-node)
+
+For single-node deployments with no peers. Omit `REDIS_URL`:
+
+- **No Redis**: All gossip publish calls are guarded by `if let Some(ref redis)` and become no-ops. No subscription loops exist (the mail service only publishes, never subscribes).
+- **Health**: Returns 200 unconditionally, no Redis check.
+
+Required dependencies in standalone: PostgreSQL, MinIO, KELS (for KEL verification of signed requests), identity (for node prefix).
 
 ## Future: Access Control
 

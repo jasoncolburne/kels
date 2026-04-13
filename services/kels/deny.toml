@@ -9,7 +9,10 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = []
+ignore = [
+    # rand 0.8 unsoundness in ThreadRng — transitive dep via sqlx-postgres; we don't use ThreadRng
+    "RUSTSEC-2026-0097",
+]
 
 [licenses]
 allow = [

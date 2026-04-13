@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 fips204 = { version = "0.4", default-features = false, features = ["default"] }
-rand = { version = "0.8", features = ["std_rng", "getrandom"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

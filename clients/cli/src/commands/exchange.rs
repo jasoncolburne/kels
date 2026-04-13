@@ -448,31 +448,36 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
         .find(|m| m.said.as_ref() == mail_said)
         .ok_or_else(|| anyhow!("Message {} not found in inbox", mail_said))?;
 
-    // Resolve source node's base domain via registry
-    let registry_urls = parse_registry_urls(&cli.registry);
-    let kel_store = create_kel_store(cli, "registry-discovery").await?;
-    let peers = kels_core::peers_sorted_by_latency(
-        &registry_urls,
-        std::time::Duration::from_secs(2),
-        &kel_store,
-    )
-    .await
-    .context("Failed to query registry peers")?;
+    // Resolve source node's mail URL — use explicit mail URL if provided,
+    // otherwise look up source node via registry
+    let source_mail_url = if let Some(ref mail_url) = cli.mail_url {
+        println!("  Using configured mail URL (skipping registry lookup)");
+        mail_url.clone()
+    } else {
+        let registry_urls = parse_registry_urls(&cli.registry);
+        let kel_store = create_kel_store(cli, "registry-discovery").await?;
+        let peers = kels_core::peers_sorted_by_latency(
+            &registry_urls,
+            std::time::Duration::from_secs(2),
+            &kel_store,
+        )
+        .await
+        .context("Failed to query registry peers")?;
 
-    let source_peer = peers
-        .iter()
-        .find(|p| p.kel_prefix == message.source_node_prefix)
-        .ok_or_else(|| {
-            anyhow!(
-                "Source node {} not found in registry",
-                message.source_node_prefix
-            )
-        })?;
+        let source_peer = peers
+            .iter()
+            .find(|p| p.kel_prefix == message.source_node_prefix)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Source node {} not found in registry",
+                    message.source_node_prefix
+                )
+            })?;
 
-    println!("  Source node:  {}", source_peer.base_domain);
+        println!("  Source node:  {}", source_peer.base_domain);
+        format!("http://mail.{}", source_peer.base_domain)
+    };
 
-    // Fetch the blob from the source node's mail service
-    let source_mail_url = format!("http://mail.{}", source_peer.base_domain);
     let source_mail = kels_exchange::MailClient::new(&source_mail_url)
         .context("Failed to create source mail client")?;
     let blob = source_mail

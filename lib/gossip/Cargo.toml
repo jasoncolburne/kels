@@ -21,7 +21,7 @@ hex = "0.4"
 indexmap = "2"
 pin-project-lite = "0.2"
 postcard = { version = "1", default-features = false, features = ["alloc", "use-std", "experimental-derive"] }
-rand = { version = "0.9", features = ["std_rng"] }
+rand = { version = "0.9.3", features = ["std_rng"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 socket2 = "0.5"

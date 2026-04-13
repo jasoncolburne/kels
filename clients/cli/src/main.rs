@@ -37,6 +37,10 @@ struct Cli {
     #[arg(long, env = "SADSTORE_URL")]
     sadstore_url: Option<String>,
 
+    /// Override Mail URL (takes precedence over base_domain)
+    #[arg(long, env = "MAIL_URL")]
+    mail_url: Option<String>,
+
     /// Config directory (default: ~/.kels-cli)
     #[arg(long, env = "KELS_CLI_HOME")]
     config_dir: Option<PathBuf>,
@@ -424,7 +428,9 @@ impl Cli {
     }
 
     fn mail_url(&self) -> String {
-        format!("http://mail.{}", self.base_domain)
+        self.mail_url
+            .clone()
+            .unwrap_or_else(|| format!("http://mail.{}", self.base_domain))
     }
 }
 
