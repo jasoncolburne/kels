@@ -16,19 +16,19 @@ echo
 # Deploy test node
 garden deploy --env=node-a
 
+# Wait for Raft leader election
+wait_for_leader 60 registry-a registry-b registry-c
+
 # --- Test 1: Propose, then verify API access ---
 echo "--- Test 1: Propose + API access ---"
 PROPOSAL=$(propose_add node-a)
 echo "Proposal: $PROPOSAL"
 
-# 1a: unauthenticated GET to proposals endpoint should succeed
+# 1a: POST fetch to proposals endpoint should succeed
 kubectl exec -n kels-node-a test-client -- \
-    curl -sf "http://registry.registry-a.kels/api/v1/federation/proposals/$PROPOSAL"
-
-# 1b: POST should fail
-! kubectl exec -n kels-node-a test-client -- \
-    curl -sf -X POST -H 'Content-Type: application/json' -d '{}' \
-    "http://registry.registry-a.kels/api/v1/federation/proposals/$PROPOSAL"
+    curl -sf -X POST -H 'Content-Type: application/json' \
+    -d "{\"prefix\":\"$PROPOSAL\"}" \
+    "http://registry.registry-a.kels/api/v1/federation/proposals/fetch"
 
 # 1c: proposal-status via admin CLI
 "$SCRIPTS_DIR/proposal-status.sh" "$PROPOSAL" registry-a

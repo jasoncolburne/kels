@@ -7,19 +7,17 @@ use std::{
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::warn;
 
 use kels_core::{
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, KeyEventsQuery,
-    PrefixListResponse, RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
-    SubmitEventsResponse,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, PrefixListResponse,
+    RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage, SubmitEventsResponse,
 };
 
 use crate::repository::KelsRepository;
@@ -503,20 +501,20 @@ pub(crate) async fn submit_events(
 
 pub(crate) async fn get_kel(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
-    Query(params): Query<KeyEventsQuery>,
+    Json(request): Json<kels_core::KelPageRequest>,
 ) -> Result<Response, ApiError> {
-    let limit = params
+    let prefix = request.prefix;
+    let limit = request
         .limit
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
 
-    // Full fetch path — try cache first using raw string key (no CESR parsing)
-    if params.since.is_none()
+    // Full fetch path — try cache first
+    if request.since.is_none()
         && limit as usize == kels_core::page_size()
         && let Some(ref kel_cache) = state.kel_cache
     {
-        match kel_cache.get_full_serialized_str(&prefix).await {
+        match kel_cache.get_full_serialized_str(prefix.as_ref()).await {
             Ok(Some(bytes)) => {
                 // Zero-copy: wrap cached event array bytes into page JSON directly
                 let page_bytes = build_page_bytes(&bytes);
@@ -533,29 +531,19 @@ pub(crate) async fn get_kel(
         }
     }
 
-    // Cache miss — parse prefix and since to typed CESR
-    let prefix_digest = cesr::Digest256::from_qb64(&prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let since_digest = params
-        .since
-        .as_deref()
-        .map(cesr::Digest256::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
-
     let page = kels_core::serve_kel_page(
         &state.repo.key_events,
-        &prefix_digest,
-        since_digest.as_ref(),
+        &prefix,
+        request.since.as_ref(),
         limit,
     )
     .await?;
 
     // Store in cache (skips if too large per cache logic)
-    if since_digest.is_none()
+    if request.since.is_none()
         && !page.has_more
         && let Some(ref kel_cache) = state.kel_cache
-        && let Err(e) = kel_cache.store(&prefix_digest, &page.events).await
+        && let Err(e) = kel_cache.store(&prefix, &page.events).await
     {
         warn!("Failed to cache KEL: {}", e);
     }
@@ -569,19 +557,18 @@ pub(crate) async fn get_kel(
 /// `?offset=N` skips the first N records.
 pub(crate) async fn get_kel_audit(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
-    Query(params): Query<ArchivedEventsQuery>,
+    Json(request): Json<kels_core::KelRecoveriesRequest>,
 ) -> Result<Json<RecoveryRecordPage>, ApiError> {
-    let limit = params
+    let limit = request
         .limit
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
-    let offset = params.offset.unwrap_or(0);
+    let offset = request.offset.unwrap_or(0);
 
     let (records, has_more) = state
         .repo
         .recovery_records
-        .get_by_kel_prefix(&prefix, limit, offset)
+        .get_by_kel_prefix(request.prefix.as_ref(), limit, offset)
         .await?;
     Ok(Json(RecoveryRecordPage { records, has_more }))
 }
@@ -592,52 +579,18 @@ pub(crate) async fn get_kel_audit(
 /// `?offset=N` skips the first N events.
 pub(crate) async fn get_recovery_events(
     State(state): State<Arc<AppState>>,
-    Path((_prefix, recovery_said)): Path<(String, String)>,
-    Query(params): Query<ArchivedEventsQuery>,
+    Json(request): Json<kels_core::KelRecoveryEventsRequest>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
-    let limit = params
+    let limit = request
         .limit
         .unwrap_or(kels_core::page_size())
         .clamp(1, kels_core::page_size()) as u64;
-    let offset = params.offset.unwrap_or(0);
+    let offset = request.offset.unwrap_or(0);
 
     let (events, has_more) = state
         .repo
         .key_events
-        .get_recovery_archived_events(&recovery_said, limit, offset)
-        .await?;
-
-    Ok(Json(SignedKeyEventPage { events, has_more }))
-}
-
-/// Query parameters for the archived events endpoint.
-#[derive(Debug, serde::Deserialize)]
-pub(crate) struct ArchivedEventsQuery {
-    pub limit: Option<usize>,
-    pub offset: Option<u64>,
-}
-
-/// Archived adversary events for a prefix — paginated.
-///
-/// `?limit=N` controls page size (1-32, default 32).
-/// `?offset=N` skips the first N events.
-pub(crate) async fn get_kel_archived(
-    State(state): State<Arc<AppState>>,
-    Path(prefix_string): Path<String>,
-    Query(params): Query<ArchivedEventsQuery>,
-) -> Result<Json<SignedKeyEventPage>, ApiError> {
-    let limit = params
-        .limit
-        .unwrap_or(kels_core::page_size())
-        .clamp(1, kels_core::page_size()) as u64;
-    let offset = params.offset.unwrap_or(0);
-
-    let prefix = cesr::Digest256::from_qb64(&prefix_string)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let (events, has_more) = state
-        .repo
-        .key_events
-        .get_archived_events(&prefix, limit, offset)
+        .get_recovery_archived_events(request.said.as_ref(), limit, offset)
         .await?;
 
     Ok(Json(SignedKeyEventPage { events, has_more }))
@@ -647,9 +600,14 @@ pub(crate) async fn get_kel_archived(
 
 pub(crate) async fn event_exists(
     State(state): State<Arc<AppState>>,
-    Path(said): Path<String>,
+    Json(request): Json<kels_core::KelEventExistsRequest>,
 ) -> Result<StatusCode, ApiError> {
-    if state.repo.key_events.event_exists_by_said(&said).await? {
+    if state
+        .repo
+        .key_events
+        .event_exists_by_said(request.said.as_ref())
+        .await?
+    {
         Ok(StatusCode::OK)
     } else {
         Ok(StatusCode::NOT_FOUND)
@@ -667,19 +625,20 @@ pub(crate) async fn event_exists(
 /// not a security hole.
 pub(crate) async fn get_effective_said(
     State(state): State<Arc<AppState>>,
-    Path(prefix_string): Path<String>,
+    Json(request): Json<kels_core::KelEffectiveSaidRequest>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest256::from_qb64(&prefix_string)
-        .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     let effective = state
         .repo
         .key_events
-        .compute_prefix_effective_said(&prefix)
+        .compute_prefix_effective_said(&request.prefix)
         .await?;
 
     match effective {
         Some((said, divergent)) => Ok(Json(EffectiveSaidResponse { said, divergent })),
-        None => Err(ApiError::not_found(format!("Prefix {} not found", prefix))),
+        None => Err(ApiError::not_found(format!(
+            "Prefix {} not found",
+            request.prefix
+        ))),
     }
 }
 
@@ -853,24 +812,6 @@ fn build_page_bytes(event_array_bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== KeyEventsQuery Tests ====================
-
-    #[test]
-    fn test_key_events_query_defaults() {
-        let json = "{}";
-        let params: KeyEventsQuery = serde_json::from_str(json).unwrap();
-        assert!(params.since.is_none());
-        assert!(params.limit.is_none());
-    }
-
-    #[test]
-    fn test_key_events_query_with_values() {
-        let json = r#"{"since": "someSAID", "limit": 100}"#;
-        let params: KeyEventsQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(params.since.as_deref(), Some("someSAID"));
-        assert_eq!(params.limit, Some(100));
-    }
 
     // ==================== ApiError Tests ====================
 

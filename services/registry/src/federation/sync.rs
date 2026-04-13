@@ -30,10 +30,7 @@ pub async fn sync_all_member_kels(
 
     for prefix in &config.trusted_prefixes {
         for url in &urls {
-            let source = match kels_core::HttpKelSource::new(
-                url,
-                "/api/v1/member-kels/kel/{prefix}",
-            ) {
+            let source = match kels_core::HttpKelSource::new(url, "/api/v1/member-kels/kel/fetch") {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(url = %url, error = %e, "Failed to build HTTP source for member KEL sync");
@@ -131,6 +128,8 @@ async fn sync_own_kel(
         .ok()
         .flatten();
 
+    // HttpKelSource sends KelPageRequest (with prefix), but the identity endpoint
+    // accepts IdentityKelPageRequest (no prefix) — serde ignores the extra field.
     let source = kels_core::HttpKelSource::new(identity_client.base_url(), "/api/v1/identity/kel")?;
     let sink = kels_core::RepositoryKelStore::new(Arc::new(MemberKelRepository::new(
         member_kel_repo.pool.clone(),

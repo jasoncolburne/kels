@@ -197,7 +197,7 @@ async fn test_get_repairs_empty() {
     };
 
     let (repairs, has_more) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs("Knonexistent_prefix_________________________", 10, 0)
         .await
         .unwrap();
@@ -221,7 +221,7 @@ async fn test_save_batch_and_truncate_and_replace() {
     // Save a 5-record chain: v0..v4
     let chain = build_chain(kel_prefix, kind, 5, &sk);
     let count = repo
-        .sad_records
+        .sad_pointers
         .save_batch_with_verified_signatures(&chain, &keys)
         .await
         .unwrap();
@@ -231,7 +231,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
-        .sad_records
+        .sad_pointers
         .effective_said(&prefix)
         .await
         .unwrap()
@@ -252,14 +252,14 @@ async fn test_save_batch_and_truncate_and_replace() {
         &sk,
     );
 
-    repo.sad_records
+    repo.sad_pointers
         .truncate_and_replace(&replacement, &keys)
         .await
         .unwrap();
 
     // Verify effective SAID is now the new v4's SAID
     let (effective, divergent) = repo
-        .sad_records
+        .sad_pointers
         .effective_said(&prefix)
         .await
         .unwrap()
@@ -269,7 +269,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
     let stored = repo
-        .sad_records
+        .sad_pointers
         .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
@@ -282,7 +282,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify repair audit record was created
     let (repairs, has_more) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -293,7 +293,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify archived records are accessible
     let (archived, has_more) = repo
-        .sad_records
+        .sad_pointers
         .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -316,7 +316,7 @@ async fn test_truncate_and_replace_empty_batch_fails() {
     let keys = keys_map(&vk);
     let empty: Vec<(SadPointer, SadPointerSignature)> = Vec::new();
 
-    let result = repo.sad_records.truncate_and_replace(&empty, &keys).await;
+    let result = repo.sad_pointers.truncate_and_replace(&empty, &keys).await;
     assert!(result.is_err());
 }
 
@@ -335,7 +335,7 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
 
     // Save a 3-record chain
     let chain = build_chain(kel_prefix, kind, 3, &sk);
-    repo.sad_records
+    repo.sad_pointers
         .save_batch_with_verified_signatures(&chain, &keys)
         .await
         .unwrap();
@@ -356,14 +356,14 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
 
     // Should fail — signature won't verify
     let result = repo
-        .sad_records
+        .sad_pointers
         .truncate_and_replace(&replacement, &keys)
         .await;
     assert!(result.is_err());
 
     // Original chain should be intact (transaction rolled back)
     let stored = repo
-        .sad_records
+        .sad_pointers
         .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
@@ -372,7 +372,7 @@ async fn test_truncate_and_replace_bad_signature_rolls_back() {
 
     // No repair record should exist
     let (repairs, _) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -393,7 +393,7 @@ async fn test_get_repairs_pagination() {
 
     // Save a 5-record chain
     let chain = build_chain(kel_prefix, kind, 5, &sk);
-    repo.sad_records
+    repo.sad_pointers
         .save_batch_with_verified_signatures(&chain, &keys)
         .await
         .unwrap();
@@ -411,7 +411,7 @@ async fn test_get_repairs_pagination() {
         "repair_a",
         &sk,
     );
-    repo.sad_records
+    repo.sad_pointers
         .truncate_and_replace(&r1, &keys)
         .await
         .unwrap();
@@ -427,14 +427,14 @@ async fn test_get_repairs_pagination() {
         "repair_b",
         &sk,
     );
-    repo.sad_records
+    repo.sad_pointers
         .truncate_and_replace(&r2, &keys)
         .await
         .unwrap();
 
     // Paginate with limit=1
     let (page1, has_more1) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 1, 0)
         .await
         .unwrap();
@@ -442,7 +442,7 @@ async fn test_get_repairs_pagination() {
     assert!(has_more1);
 
     let (page2, has_more2) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 1, 1)
         .await
         .unwrap();
@@ -467,7 +467,7 @@ async fn test_get_repair_records_pagination() {
 
     // Save a 4-record chain, replace from v1 (archiving v1, v2, v3 = 3 records)
     let chain = build_chain(kel_prefix, kind, 4, &sk);
-    repo.sad_records
+    repo.sad_pointers
         .save_batch_with_verified_signatures(&chain, &keys)
         .await
         .unwrap();
@@ -483,13 +483,13 @@ async fn test_get_repair_records_pagination() {
         "replacement",
         &sk,
     );
-    repo.sad_records
+    repo.sad_pointers
         .truncate_and_replace(&replacement, &keys)
         .await
         .unwrap();
 
     let (repairs, _) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -498,7 +498,7 @@ async fn test_get_repair_records_pagination() {
 
     // Paginate archived records: 3 total, limit=2
     let (page1, has_more1) = repo
-        .sad_records
+        .sad_pointers
         .get_repair_records(repair_said.as_ref(), 2, 0)
         .await
         .unwrap();
@@ -506,7 +506,7 @@ async fn test_get_repair_records_pagination() {
     assert!(has_more1);
 
     let (page2, has_more2) = repo
-        .sad_records
+        .sad_pointers
         .get_repair_records(repair_said.as_ref(), 2, 2)
         .await
         .unwrap();
@@ -522,7 +522,7 @@ async fn test_get_repair_records_nonexistent() {
     };
 
     let (records, has_more) = repo
-        .sad_records
+        .sad_pointers
         .get_repair_records("Knonexistent_repair_said____________________", 10, 0)
         .await
         .unwrap();
@@ -544,7 +544,7 @@ async fn test_truncate_and_replace_from_v0() {
 
     // Save a 3-record chain
     let chain = build_chain(kel_prefix, kind, 3, &sk);
-    repo.sad_records
+    repo.sad_pointers
         .save_batch_with_verified_signatures(&chain, &keys)
         .await
         .unwrap();
@@ -557,14 +557,14 @@ async fn test_truncate_and_replace_from_v0() {
     // The new chain has the same prefix (deterministic from kel_prefix + kind)
     assert_eq!(new_chain[0].0.prefix, prefix);
 
-    repo.sad_records
+    repo.sad_pointers
         .truncate_and_replace(&new_chain, &keys)
         .await
         .unwrap();
 
     // Chain should now be 2 records
     let stored = repo
-        .sad_records
+        .sad_pointers
         .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
@@ -575,7 +575,7 @@ async fn test_truncate_and_replace_from_v0() {
     // Repair should show 1 archived record (v2) — v0 and v1 are identical
     // and deduped, so only the tail beyond the replacement chain gets archived.
     let (repairs, _) = repo
-        .sad_records
+        .sad_pointers
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -583,7 +583,7 @@ async fn test_truncate_and_replace_from_v0() {
     assert_eq!(repairs[0].diverged_at_version, 2);
 
     let (archived, _) = repo
-        .sad_records
+        .sad_pointers
         .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();

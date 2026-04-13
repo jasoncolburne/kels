@@ -29,28 +29,18 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/kels/prefixes", post(handlers::list_prefixes))
         // events
         .route("/api/v1/kels/events", post(handlers::submit_events))
-        .route(
-            "/api/v1/kels/events/:said/exists",
-            get(handlers::event_exists),
-        )
+        .route("/api/v1/kels/events/exists", post(handlers::event_exists))
         // kels
-        .route("/api/v1/kels/kel/:prefix", get(handlers::get_kel))
+        .route("/api/v1/kels/kel/fetch", post(handlers::get_kel))
+        .route("/api/v1/kels/kel/recoveries", post(handlers::get_kel_audit))
         .route(
-            "/api/v1/kels/kel/:prefix/audit",
-            get(handlers::get_kel_audit),
-        )
-        .route(
-            "/api/v1/kels/kel/:prefix/audit/:said/events",
-            get(handlers::get_recovery_events),
-        )
-        .route(
-            "/api/v1/kels/kel/:prefix/archived",
-            get(handlers::get_kel_archived),
+            "/api/v1/kels/kel/recoveries/events",
+            post(handlers::get_recovery_events),
         )
         // RESOLVING ONLY — unverified, for sync comparison. See handler doc.
         .route(
-            "/api/v1/kels/kel/:prefix/effective-said",
-            get(handlers::get_effective_said),
+            "/api/v1/kels/kel/effective-said",
+            post(handlers::get_effective_said),
         );
 
     if handlers::test_endpoints_enabled() {

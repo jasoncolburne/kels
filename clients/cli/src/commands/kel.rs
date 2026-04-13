@@ -281,7 +281,7 @@ pub(crate) async fn cmd_recover(
     .await?;
 
     // Verify server KEL to detect if adversary revealed the rotation key
-    let source = kels_core::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
+    let source = kels_core::HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/fetch")?;
     let server_verification = kels_core::verify_key_events(
         &prefix_digest,
         &source,
@@ -399,7 +399,7 @@ pub(crate) fn print_kel_summary(prefix: &str, kel_verification: &KelVerification
 
 pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> {
     let client = create_client(cli).await?;
-    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/{prefix}")?;
+    let source = HttpKelSource::new(client.base_url(), "/api/v1/kels/kel/fetch")?;
 
     let msg = if audit {
         format!("Fetching KEL {} with audit records...", prefix)
@@ -440,7 +440,7 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
         let mut offset = 0u64;
         loop {
             let page = client
-                .fetch_kel_audit(prefix, kels_core::page_size(), offset)
+                .fetch_kel_audit(&prefix_digest, kels_core::page_size(), offset)
                 .await?;
             all_records.extend(page.records);
             if !page.has_more {

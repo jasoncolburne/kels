@@ -236,10 +236,12 @@ async fn test_put_and_get_sad_object() {
         .unwrap();
     assert_eq!(resp.status(), 201);
 
-    // GET the object back
+    // Fetch the object back (SAID in body, not URL)
     let resp = harness
         .client()
-        .get(harness.url(&format!("/api/v1/sad/{}", said)))
+        .post(harness.url("/api/v1/sad/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "said": said.to_string() }))
         .send()
         .await
         .unwrap();
@@ -309,14 +311,16 @@ async fn test_post_sad_object_wrong_said_rejected() {
 }
 
 #[tokio::test]
-async fn test_get_sad_object_not_found() {
+async fn test_fetch_sad_object_not_found() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
     let resp = harness
         .client()
-        .get(harness.url(&format!("/api/v1/sad/{}", test_digest("nonexistent"))))
+        .post(harness.url("/api/v1/sad/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "said": test_digest("nonexistent").to_string() }))
         .send()
         .await
         .unwrap();

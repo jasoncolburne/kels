@@ -189,7 +189,7 @@ pub trait PagedKelSink: Send + Sync {
 /// `resolve_key_events` to abstract over different service endpoints.
 pub struct HttpKelSource {
     base_url: String,
-    /// Path template, e.g. "/api/v1/kels/kel/{prefix}" or "/api/v1/identity/kel"
+    /// Fixed path for the fetch endpoint, e.g. "/api/v1/kels/kel/fetch"
     path: String,
     client: reqwest::Client,
 }
@@ -215,15 +215,22 @@ impl PagedKelSource for HttpKelSource {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedKeyEvent>, bool), KelsError> {
-        let path = self.path.replace("{prefix}", prefix.as_ref());
-        let mut url = format!("{}{}?limit={}", self.base_url, path, limit);
-        if let Some(since_said) = since {
-            url.push_str(&format!("&since={}", since_said));
-        }
+        let url = format!("{}{}", self.base_url, self.path);
+        let body = crate::KelPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: Some(limit),
+        };
 
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            KelsError::ServerError(e.to_string(), crate::types::ErrorCode::InternalError)
-        })?;
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                KelsError::ServerError(e.to_string(), crate::types::ErrorCode::InternalError)
+            })?;
 
         if resp.status().is_success() {
             let page: super::event::SignedKeyEventPage = resp.json().await.map_err(|e| {

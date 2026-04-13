@@ -230,18 +230,17 @@ impl KelsRegistryClient {
     /// Fetch a specific federation member's KEL by prefix with optional pagination.
     pub async fn fetch_member_key_events(
         &self,
-        prefix: &str,
-        since: Option<&str>,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<crate::SignedKeyEventPage, KelsError> {
-        let mut url = format!(
-            "{}/api/v1/member-kels/kel/{}?limit={}",
-            self.base_url, prefix, limit
-        );
-        if let Some(since) = since {
-            url.push_str(&format!("&since={}", since));
-        }
-        let response = self.client.get(&url).send().await?;
+        let url = format!("{}/api/v1/member-kels/kel/fetch", self.base_url);
+        let body = crate::KelPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
 
         if response.status().is_success() {
             Ok(response.json().await?)
@@ -363,15 +362,11 @@ impl KelsRegistryClient {
     /// Submit a vote on a proposal.
     pub async fn submit_vote(
         &self,
-        proposal_prefix: &str,
         vote: &crate::Vote,
     ) -> Result<crate::ProposalResponse, KelsError> {
         let response = self
             .client
-            .post(format!(
-                "{}/api/v1/admin/proposals/{}/vote",
-                self.base_url, proposal_prefix
-            ))
+            .post(format!("{}/api/v1/admin/proposals/vote", self.base_url))
             .json(vote)
             .send()
             .await?;
@@ -387,16 +382,13 @@ impl KelsRegistryClient {
     /// Fetch a specific proposal by ID.
     pub async fn fetch_proposal(
         &self,
-        proposal_prefix: &str,
+        proposal_prefix: &cesr::Digest256,
     ) -> Result<crate::ProposalWithVotes, KelsError> {
-        let response = self
-            .client
-            .get(format!(
-                "{}/api/v1/federation/proposals/{}",
-                self.base_url, proposal_prefix
-            ))
-            .send()
-            .await?;
+        let url = format!("{}/api/v1/federation/proposals/fetch", self.base_url);
+        let body = crate::ProposalRequest {
+            prefix: *proposal_prefix,
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
 
         if response.status().is_success() {
             Ok(response.json().await?)
@@ -445,7 +437,7 @@ pub async fn sync_member_kel(
     sink: &(dyn crate::PagedKelSink + Sync),
 ) {
     for url in registry_urls {
-        let source = match crate::HttpKelSource::new(url, "/api/v1/member-kels/kel/{prefix}") {
+        let source = match crate::HttpKelSource::new(url, "/api/v1/member-kels/kel/fetch") {
             Ok(s) => s,
             Err(e) => {
                 warn!(url = %url, error = %e, "Failed to build HTTP client for member KEL sync");

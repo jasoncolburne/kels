@@ -84,15 +84,13 @@ impl PagedSadSource for HttpSadSource {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SignedSadPointer>, bool), KelsError> {
-        let mut url = format!(
-            "{}/api/v1/sad/pointers/{}?limit={}",
-            self.base_url, prefix, limit
-        );
-        if let Some(since_said) = since {
-            url.push_str(&format!("&since={}", since_said));
-        }
-
-        let resp = self.client.get(&url).send().await?;
+        let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
+        let body = crate::SadPointerPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             let page: SadPointerPage = resp.json().await?;

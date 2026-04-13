@@ -4,19 +4,11 @@
 //! uses the same since-resolution and pagination code via `serve_kel_page`.
 
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use crate::{
     error::KelsError,
     types::{SignedKeyEvent, SignedKeyEventPage},
 };
-
-/// Common query parameters for paginated KEL serving endpoints.
-#[derive(Debug, Deserialize)]
-pub struct KeyEventsQuery {
-    pub since: Option<String>,
-    pub limit: Option<usize>,
-}
 
 /// Storage backend for serving paginated KEL pages.
 #[async_trait]

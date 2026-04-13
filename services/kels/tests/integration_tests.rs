@@ -299,7 +299,9 @@ async fn test_submit_and_get_kel() {
     // Retrieve the KEL
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -340,7 +342,9 @@ async fn test_submit_multiple_events() {
     // Retrieve and verify
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -357,10 +361,9 @@ async fn test_get_nonexistent_kel() {
 
     let response = harness
         .client()
-        .get(harness.url(&format!(
-            "/api/v1/kels/kel/{}",
-            test_digest("nonexistent-prefix")
-        )))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": test_digest("nonexistent-prefix").to_string()}))
         .send()
         .await
         .expect("Failed to send request");
@@ -437,7 +440,9 @@ async fn test_idempotent_submit() {
     // Should still only have one event
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -486,7 +491,9 @@ async fn test_get_kel_with_audit() {
     // Get KEL
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .expect("Failed to get KEL");
@@ -498,7 +505,9 @@ async fn test_get_kel_with_audit() {
     // Get audit records from separate endpoint
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}/audit", prefix)))
+        .post(harness.url("/api/v1/kels/kel/recoveries"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .expect("Failed to get audit records");
@@ -636,7 +645,9 @@ async fn test_submit_rotation_event() {
     // Verify KEL now has 2 events
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -761,7 +772,9 @@ async fn test_submit_decommission_event() {
     // Verify KEL now has 2 events (icp + dec)
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -771,22 +784,25 @@ async fn test_submit_decommission_event() {
 }
 
 #[tokio::test]
-async fn test_get_kel_not_found_with_audit() {
+async fn test_recoveries_empty_for_nonexistent_prefix() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
     let response = harness
         .client()
-        .get(harness.url(&format!(
-            "/api/v1/kels/kel/{}?audit=true",
-            test_digest("nonexistent-prefix-for-audit")
-        )))
+        .post(harness.url("/api/v1/kels/kel/recoveries"))
+        .header("content-type", "application/json")
+        .json(
+            &serde_json::json!({"prefix": test_digest("nonexistent-prefix-for-audit").to_string()}),
+        )
         .send()
         .await
         .expect("Failed to send request");
 
-    assert_eq!(response.status(), 404);
+    assert_eq!(response.status(), 200);
+    let page: kels_core::RecoveryRecordPage = response.json().await.unwrap();
+    assert!(page.records.is_empty());
 }
 
 #[tokio::test]
@@ -898,7 +914,9 @@ async fn test_divergence_creation() {
     // GET the KEL and verify divergence: two events at serial 3
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -981,7 +999,9 @@ async fn test_recovery_from_divergence() {
     // GET KEL — should show the recovered chain
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -1007,7 +1027,9 @@ async fn test_recovery_from_divergence() {
     // Audit endpoint should return the recovery record with correct fields
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}/audit", prefix)))
+        .post(harness.url("/api/v1/kels/kel/recoveries"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -1021,17 +1043,6 @@ async fn test_recovery_from_divergence() {
     assert_eq!(record.kel_prefix, prefix);
     assert!(!record.said.to_string().is_empty());
     assert!(!record.rec_previous.to_string().is_empty());
-
-    // Archived events endpoint should have adversary events (archived synchronously)
-    let response = harness
-        .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}/archived", prefix)))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let archived: kels_core::SignedKeyEventPage = response.json().await.unwrap();
-    assert!(!archived.events.is_empty());
 }
 
 /// Contest freezes a KEL after recovery key is revealed.
@@ -1092,7 +1103,9 @@ async fn test_contest_freezes_kel() {
     // GET KEL — should contain contest event
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -1215,7 +1228,9 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
     // Verify the KEL contains the contest event
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -1303,7 +1318,9 @@ async fn test_contest_creates_divergence_on_linear_kel() {
     // Verify the KEL is contested
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();
@@ -1374,7 +1391,9 @@ async fn test_overlap_submission_creates_divergence() {
     // Verify the KEL has divergent events
     let response = harness
         .client()
-        .get(harness.url(&format!("/api/v1/kels/kel/{}", prefix)))
+        .post(harness.url("/api/v1/kels/kel/fetch"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({"prefix": prefix.to_string()}))
         .send()
         .await
         .unwrap();

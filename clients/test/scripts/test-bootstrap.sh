@@ -106,7 +106,7 @@ wait_for_kel_on_node() {
     local prefix="$2"
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        if curl -s -w "\n%{http_code}" "$url/api/v1/kels/kel/$prefix" | tail -n1 | grep -q "200"; then
+        if curl -s -w "\n%{http_code}" -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$prefix\"}" "$url/api/v1/kels/kel/fetch" | tail -n1 | grep -q "200"; then
             return 0
         fi
         sleep 1

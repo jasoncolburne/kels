@@ -387,7 +387,7 @@ pub unsafe extern "C" fn kels_recover(
                     ));
                 }
             };
-            let source = kels_core::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/{prefix}")?;
+            let source = kels_core::HttpKelSource::new(&kels_url, "/api/v1/kels/kel/fetch")?;
             match kels_core::verify_key_events(
                 prefix,
                 &source,

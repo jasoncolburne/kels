@@ -26,7 +26,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health))
         .route("/api/v1/identity", get(handlers::get_identity))
         .route("/api/v1/identity/status", get(handlers::get_status))
-        .route("/api/v1/identity/kel", get(handlers::get_key_events))
+        .route("/api/v1/identity/kel", post(handlers::get_key_events))
         .route("/api/v1/identity/kel/manage", post(handlers::manage_kel))
         .route("/api/v1/identity/anchor", post(handlers::anchor))
         .route("/api/v1/identity/sign", post(handlers::sign))
@@ -418,7 +418,7 @@ pub(crate) async fn perform_kel_operation(
             {
                 let source = kels_core::HttpKelSource::new(
                     forward_url,
-                    &format!("{}/kel/{{prefix}}", state.forward_path_prefix),
+                    &format!("{}/kel/fetch", state.forward_path_prefix),
                 )?;
                 match kels_core::verify_key_events(
                     prefix_digest,

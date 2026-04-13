@@ -81,31 +81,31 @@ compute_prefix() {
 sad_object_exists() {
     local url="$1"
     local said="$2"
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/${said}")" = "200" ]
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"said\":\"${said}\"}" "${url}/api/v1/sad/fetch")" = "200" ]
 }
 
 sad_chain_exists() {
     local url="$1"
     local prefix="$2"
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/pointers/${prefix}")" = "200" ]
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch")" = "200" ]
 }
 
 get_chain_tip_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq -r '.pointers[-1].pointer.said // empty'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq -r '.pointers[-1].pointer.said // empty'
 }
 
 get_effective_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.said // empty'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/effective-said" | jq -r '.said // empty'
 }
 
 get_chain_length() {
     local url="$1"
     local prefix="$2"
-    curl -sf "${url}/api/v1/sad/pointers/${prefix}" | jq '.pointers | length'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq '.pointers | length'
 }
 
 wait_for_sad_object_propagation() {
@@ -149,8 +149,8 @@ wait_for_divergence_convergence() {
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local a_div b_div a_eff b_eff
-        a_div=$(curl -sf "${url_a}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.divergent // false')
-        b_div=$(curl -sf "${url_b}/api/v1/sad/pointers/${prefix}/effective-said" | jq -r '.divergent // false')
+        a_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_a}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
+        b_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_b}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
         a_eff=$(get_effective_said "$url_a" "$prefix")
         b_eff=$(get_effective_said "$url_b" "$prefix")
         if [ "$a_div" = "true" ] && [ "$b_div" = "true" ] && [ "$a_eff" = "$b_eff" ]; then
@@ -176,9 +176,9 @@ run_test "POST invalid JSON rejected" \
 run_test "POST mismatched SAID rejected" \
     bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad' -H 'Content-Type: application/json' -d '{\"said\":\"Kwrong_said_that_does_not_match_data________\",\"data\":\"test\"}') = '400' ]"
 
-# GET non-existent object
-run_test "GET non-existent object returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/Knonexistent________________________________') = '404' ]"
+# POST fetch non-existent object
+run_test "POST fetch non-existent object returns 404" \
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"said\":\"Knonexistent________________________________\"}' '${NODE_A_SAD_URL}/api/v1/sad/fetch') = '404' ]"
 
 echo ""
 
@@ -264,7 +264,7 @@ else
     run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
 
     run_test "Chain does not exist yet" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/${CHAIN_PREFIX}') = '404' ]"
+        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/fetch') = '404' ]"
 
     # --- Build v0 inception pointer ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
@@ -443,8 +443,8 @@ else
 
     A_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     B_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
-    A_DIVERGENT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
-    B_DIVERGENT=$(curl -sf "${NODE_B_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
+    A_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
+    B_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_B_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
     echo "Node-a effective: $A_EFFECTIVE (divergent: $A_DIVERGENT)"
     echo "Node-b effective: $B_EFFECTIVE (divergent: $B_DIVERGENT)"
 
@@ -463,13 +463,13 @@ else
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit --repair "$TEMP_DIR/div-repair.json"
 
     # Verify node-a is no longer divergent
-    A_POST_DIVERGENT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/effective-said" | jq -r '.divergent // false')
+    A_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
     A_POST_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     run_test "Repair: node-a no longer divergent" [ "$A_POST_DIVERGENT" = "false" ]
     run_test "Repair: node-a tip is repair record" [ "$A_POST_EFFECTIVE" = "$D_REPAIR_SAID" ]
 
     # Verify repair audit record exists
-    REPAIR_COUNT=$(curl -sf "${NODE_A_SAD_URL}/api/v1/sad/pointers/${DIV_PREFIX}/repairs" | jq '.repairs | length')
+    REPAIR_COUNT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/repairs" | jq '.repairs | length')
     run_test "Repair: audit record created" [ "$REPAIR_COUNT" -ge 1 ]
 
     # Wait for repair to propagate to node-b via gossip

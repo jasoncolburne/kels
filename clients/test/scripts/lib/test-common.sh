@@ -102,7 +102,7 @@ kel_exists_on_node() {
     local url="$1"
     local prefix="$2"
     local response
-    response=$(curl -s -w "\n%{http_code}" "$url/api/v1/kels/kel/$prefix")
+    response=$(curl -s -w "\n%{http_code}" -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$prefix\"}" "$url/api/v1/kels/kel/fetch")
     local http_code
     http_code=$(echo "$response" | tail -n1)
     [ "$http_code" = "200" ]
@@ -118,13 +118,13 @@ fetch_all_events() {
     local since=""
 
     while true; do
-        local query_url="$url/api/v1/kels/kel/$prefix"
+        local body="{\"prefix\":\"$prefix\"}"
         if [ -n "$since" ]; then
-            query_url="${query_url}?since=${since}"
+            body="{\"prefix\":\"$prefix\",\"since\":\"$since\"}"
         fi
 
         local resp
-        resp=$(curl -s -f "$query_url" 2>/dev/null) || break
+        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "$url/api/v1/kels/kel/fetch" 2>/dev/null) || break
 
         local events has_more
         events=$(echo "$resp" | jq '.events')

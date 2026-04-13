@@ -53,6 +53,7 @@ Note: some older files may not follow this convention perfectly. When touching a
 - Never hardcode event kind strings (`"icp"`, `"kels/events/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
 - Never use `.unwrap()`. If a failure is truly impossible, use `.expect("reason")` with `#[allow(clippy::expect_used)]` on the enclosing scope.
 - Use `cesr` types (`cesr::Digest256`, `cesr::Signature`, `cesr::VerificationKey`, `cesr::SigningKey`, etc.) wherever possible instead of raw `String` or `&str` for cryptographic material. Parse into cesr types at system boundaries and pass typed values throughout.
+- All HTTP endpoints use POST with JSON request bodies — never encode identifiers (SAIDs, prefixes, etc.) in URL paths or query parameters. URL paths and query strings are logged by proxies, CDNs, and access logs, enabling correlation of which identifiers a client queries. POST bodies are not logged by default, reducing this attack surface.
 
 ## Core Concepts
 
@@ -144,7 +145,6 @@ All multi-page event transfers use the `transfer_key_events` infrastructure in `
 - **`forward_key_events`** — Forward without verification. Use for serving/forwarding between services. Supports `since` for delta fetch.
 - **`verify_key_events`** — Verify only (discards events). Returns `Verification` token. Use for consuming (security decisions) when you don't need the events.
 - **`completed_verification`** — Verify only (offset-based `PageLoader`). Returns `Verification` token. Alternative to `verify_key_events` for DB-backed sources.
-- **`benchmark_key_events`** — Pages through source, discards events. For performance testing. Supports `since`.
 
 **Collecting functions** (accumulate into memory — only use in true clients like CLI, never in services):
 - **`collect_key_events`** — Verify + collect. Returns `(Verification, Vec<SignedKeyEvent>)`.

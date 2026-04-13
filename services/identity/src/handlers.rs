@@ -5,14 +5,13 @@ use tokio::sync::RwLock;
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cesr::Matter;
 use kels_core::{
-    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, KeyEventsQuery, ManageKelRequest,
-    ManageKelResponse, RepositoryKelStore, SignResponse, SignedKeyEventPage,
+    IdentityInfo, KelsClient, KelsError, KeyEventBuilder, ManageKelRequest, ManageKelResponse,
+    RepositoryKelStore, SignResponse, SignedKeyEventPage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -147,28 +146,22 @@ pub async fn get_status(
 /// Serving endpoint — returns paginated key events. No verification needed; the receiver verifies.
 pub async fn get_key_events(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<KeyEventsQuery>,
+    Json(request): Json<kels_core::IdentityKelPageRequest>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
     let builder = state.builder.read().await;
     let prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    let limit = query
+    let limit = request
         .limit
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let since_digest = query
-        .since
-        .as_deref()
-        .map(cesr::Digest256::from_qb64)
-        .transpose()
-        .map_err(|e| ApiError::bad_request(format!("Invalid since SAID: {}", e)))?;
     let page = kels_core::serve_kel_page(
         state.kel_repo.as_ref(),
         prefix,
-        since_digest.as_ref(),
+        request.since.as_ref(),
         limit,
     )
     .await?;

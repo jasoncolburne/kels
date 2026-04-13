@@ -811,6 +811,6 @@ impl SadObjectIndex {
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
-    pub sad_records: SadPointerRepository,
+    pub sad_pointers: SadPointerRepository,
     pub sad_objects: SadObjectIndex,
 }

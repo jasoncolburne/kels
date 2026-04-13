@@ -267,12 +267,29 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
         return std::ptr::null_mut();
     };
 
-    let Some(prefix) = from_c_string(pointer_prefix) else {
+    let Some(prefix_str) = from_c_string(pointer_prefix) else {
         set_last_error("Invalid pointer prefix");
         return std::ptr::null_mut();
     };
 
-    let since_opt = from_c_string(since);
+    let prefix = match cesr::Digest256::from_qb64(&prefix_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("Invalid prefix CESR: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let since_digest = match from_c_string(since) {
+        Some(s) if !s.is_empty() => match cesr::Digest256::from_qb64(&s) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                set_last_error(&format!("Invalid since CESR: {e}"));
+                return std::ptr::null_mut();
+            }
+        },
+        _ => None,
+    };
 
     let Ok(runtime) = Runtime::new() else {
         set_last_error("Failed to create async runtime");
@@ -287,7 +304,7 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
         }
     };
 
-    match runtime.block_on(client.fetch_sad_pointer(&prefix, since_opt.as_deref())) {
+    match runtime.block_on(client.fetch_sad_pointer(&prefix, since_digest.as_ref())) {
         Ok(page) => match serde_json::to_string(&page) {
             Ok(json) => to_c_string(&json),
             Err(e) => {

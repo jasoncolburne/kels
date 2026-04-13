@@ -32,31 +32,31 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/ready", get(handlers::ready))
         // SAD object store (Layer 1 — MinIO)
         .route("/api/v1/sad", post(handlers::post_sad_object))
-        .route("/api/v1/sad/:said", get(handlers::get_sad_object))
-        .route("/api/v1/sad/:said/exists", get(handlers::sad_object_exists))
+        .route("/api/v1/sad/fetch", post(handlers::fetch_sad_object))
+        .route("/api/v1/sad/exists", post(handlers::sad_object_exists))
         .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
         // Chain records (Layer 2 — Postgres)
         .route(
-            "/api/v1/sad/pointers/exists/:said",
-            get(handlers::sad_pointer_exists),
+            "/api/v1/sad/pointers/exists",
+            post(handlers::sad_pointer_exists),
         )
         .route("/api/v1/sad/pointers", post(handlers::submit_sad_pointer))
         .route(
-            "/api/v1/sad/pointers/:prefix",
-            get(handlers::get_sad_pointer),
+            "/api/v1/sad/pointers/fetch",
+            post(handlers::get_sad_pointer),
         )
         .route(
-            "/api/v1/sad/pointers/:prefix/effective-said",
-            get(handlers::get_sad_pointer_effective_said),
+            "/api/v1/sad/pointers/effective-said",
+            post(handlers::get_sad_pointer_effective_said),
         )
         // Chain repair history
         .route(
-            "/api/v1/sad/pointers/:prefix/repairs",
-            get(handlers::get_sad_pointer_repairs),
+            "/api/v1/sad/pointers/repairs",
+            post(handlers::get_sad_pointer_repairs),
         )
         .route(
-            "/api/v1/sad/pointers/:prefix/repairs/:said/records",
-            get(handlers::get_sad_pointer_repair_records),
+            "/api/v1/sad/pointers/repairs/records",
+            post(handlers::get_sad_pointer_repair_records),
         )
         // Listing (authenticated — federation peers only)
         .route(

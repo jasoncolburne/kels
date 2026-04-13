@@ -1178,20 +1178,16 @@ run_test "Second recovery succeeds" kels-cli --kels-url "$KELS_URL" recover --pr
 run_test "KEL status is OK after second recovery" check_kel_status "$PREFIX23" "OK"
 
 # Verify audit endpoint has exactly 2 recovery records (proactive doesn't create one)
-audit_count=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq '.records | length')
+audit_count=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX23\"}" "$KELS_URL/api/v1/kels/kel/recoveries" | jq '.records | length')
 run_test "Audit has 2 recovery records" [ "$audit_count" -eq 2 ]
 
 # Verify both records reference the correct prefix
-audit_prefixes=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq -r '.records[].kelPrefix' | sort -u)
+audit_prefixes=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX23\"}" "$KELS_URL/api/v1/kels/kel/recoveries" | jq -r '.records[].kelPrefix' | sort -u)
 run_test "Both audit records reference correct prefix" [ "$audit_prefixes" = "$PREFIX23" ]
 
 # Verify records have distinct SAIDs
-audit_saids=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/audit" | jq -r '.records[].said' | sort -u | wc -l | tr -d ' ')
+audit_saids=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX23\"}" "$KELS_URL/api/v1/kels/kel/recoveries" | jq -r '.records[].said' | sort -u | wc -l | tr -d ' ')
 run_test "Audit records have distinct SAIDs" [ "$audit_saids" -eq 2 ]
-
-# Verify archived events exist from both recoveries
-archived_count=$(curl -s "$KELS_URL/api/v1/kels/kel/$PREFIX23/archived" | jq '.events | length')
-run_test "Archived adversary events exist" [ "$archived_count" -gt 0 ]
 
 cleanup_adversary_backup
 

@@ -14,6 +14,8 @@ No arguments required. The branch name and counter are determined automatically.
 
 ## Procedure
 
+0. **Branch check** — Get the current branch name from `git branch --show-current`. If the branch is `main`, **stop immediately** and tell the user: "Claudit audits compare against main — running on main itself would produce an empty diff. Please switch to a feature branch first." Do not proceed.
+
 1. **Preparation** — Read CLAUDE.md for project context. Read existing files in `docs/claudit/` to understand prior audit history and resolved findings for this branch.
 
 2. **Gather the diff** — Run `git diff main` and `git diff main --stat`. Note the approximate line count and files changed.

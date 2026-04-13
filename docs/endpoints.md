@@ -10,7 +10,7 @@ PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check probe |
 | GET | `/api/v1/identity` | None | Get registry prefix |
-| GET | `/api/v1/identity/kel` | None | Get registry KEL (paginated; `?limit=N&since=SAID`); returns `SignedKeyEventPage {events, hasMore}` |
+| POST | `/api/v1/identity/kel` | None | Get registry KEL (paginated; `IdentityKelPageRequest` body — no prefix, identity serves one KEL); returns `SignedKeyEventPage {events, hasMore}` |
 | POST | `/api/v1/identity/anchor` | None | Anchor a SAID in registry's KEL (creates ixn event) |
 | POST | `/api/v1/identity/sign` | None | Sign arbitrary JSON data with current signing key |
 | GET | `/api/v1/identity/status` | None | Get identity status (initialized, prefix, last SAID, current key handle) |
@@ -18,7 +18,7 @@ PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 32) and `?since=SAID` for delta fetch
+- KEL endpoint returns paginated `SignedKeyEventPage` — `IdentityKelPageRequest` body with optional `since` (SAID) and `limit` (default page_size) fields for delta fetch
 - Sign returns qb64-encoded signature + public key
 - Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
@@ -32,24 +32,23 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check (checks `kels:gossip:ready` in Redis) |
 | POST | `/api/v1/kels/events` | None | Submit signed key events (validates signatures, merges KEL); max 500 events per request |
-| GET | `/api/v1/kels/kel/:prefix` | None | Get paginated KEL; `?since=SAID` for delta, `?limit=N` (1-32, default 32); returns `SignedKeyEventPage {events, hasMore}` |
-| GET | `/api/v1/kels/kel/:prefix/audit` | None | Get paginated audit records for prefix (recovery/contest archives); `?limit=N&offset=N`; returns `RecoveryRecordPage {records, hasMore}` |
-| GET | `/api/v1/kels/kel/:prefix/audit/:said/events` | None | Get paginated archived events for a specific recovery; `?limit=N&offset=N`; returns `SignedKeyEventPage {events, hasMore}` |
-| GET | `/api/v1/kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
-| GET | `/api/v1/kels/events/:said/exists` | None | Check if event exists by SAID (200 or 404) |
+| POST | `/api/v1/kels/kel/fetch` | None | Get paginated KEL; `KelPageRequest` body (`prefix`, `since`, `limit`); returns `SignedKeyEventPage {events, hasMore}` |
+| POST | `/api/v1/kels/kel/recoveries` | None | Get paginated recovery records for prefix; `KelRecoveriesRequest` body (`prefix`, `limit`, `offset`); returns `RecoveryRecordPage {records, hasMore}` |
+| POST | `/api/v1/kels/kel/recoveries/events` | None | Get paginated archived events for a specific recovery; `KelRecoveryEventsRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SignedKeyEventPage {events, hasMore}` |
+| POST | `/api/v1/kels/kel/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified); `KelEffectiveSaidRequest` body (`prefix`) |
+| POST | `/api/v1/kels/events/exists` | None | Check if event exists by SAID; `KelEventExistsRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/kels/prefixes` | **Signed request** | List prefix states (paginated) for P2P sync |
 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Optionally uses Redis cache for KELs ≤ `page_size()` events (one page; larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. If the effective SAID matches, both sides have the same state and an empty response is returned.
-- `get_kel_audit` returns paginated `RecoveryRecordPage {records, hasMore}` — the recovery audit trail for a prefix. Use `?limit=N&offset=N` for pagination. Each record documents a recovery event (when it happened, what serial divergence was at, what was archived). Archived adversary events are in the `kels_archived_events` table.
-- `get_kel_audit_events` returns paginated `SignedKeyEventPage {events, hasMore}` of archived adversary events linked to a specific recovery record (identified by its SAID). Use `?limit=N&offset=N` for pagination.
+- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Optionally uses Redis cache for KELs ≤ `page_size()` events (one page; larger KELs are not cached). The `since` field (SAID) returns events after the given SAID. The `limit` field controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. If the effective SAID matches, both sides have the same state and an empty response is returned.
+- `get_kel_audit` returns paginated `RecoveryRecordPage {records, hasMore}` — the recovery audit trail for a prefix. Use `limit` and `offset` body fields for pagination. Each record documents a recovery event (when it happened, what serial divergence was at, what was archived). Archived adversary events are in the `kels_archived_events` table.
+- `get_kel_audit_events` returns paginated `SignedKeyEventPage {events, hasMore}` of archived adversary events linked to a specific recovery record (identified by its SAID). Use `limit` and `offset` body fields for pagination.
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
 - KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
 - `KELS_MAX_VERIFICATION_PAGES` environment variable (default 64) controls maximum pagination loops for callers fetching large KELs.
-- `get_kel_archived` returns paginated `SignedKeyEventPage` of archived adversary events for a prefix. Use `?limit=N&offset=N` for pagination.
 - Error codes: `BadRequest`, `NotFound`, `Conflict`, `Contested`, `Frozen`, `Unauthorized`, `Gone`, `ContestRequired`, `RateLimited`, `InternalError`
 - When a KEL is divergent (awaiting recovery), non-recovery submissions return `RecoverRequired` (the divergent KEL is frozen). Consumers see the full KEL including divergent events and verify independently — anchors beyond the divergence serial are not honoured by the verifier. Recovery archival is synchronous: once `rec` is accepted, adversary events are archived atomically in the merge transaction.
 
@@ -73,8 +72,8 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | GET | `/api/v1/peers` | None | List peers (from Raft state machine) |
 | POST | `/api/v1/member-kels/events` | **Trusted prefix** | Submit member key events (push model); fans out to other members only when prefix matches the receiving node's own prefix; rate-limited per prefix and IP |
-| GET | `/api/v1/member-kels/kel/:prefix` | None | Get a specific member's KEL; `?limit=N&since=SAID` |
-| GET | `/api/v1/member-kels/kel/:prefix/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified) |
+| POST | `/api/v1/member-kels/kel/fetch` | None | Get a specific member's KEL; `KelPageRequest` body (`prefix`, `since`, `limit`) |
+| POST | `/api/v1/member-kels/kel/effective-said` | None | Get effective SAID for sync comparison (resolving only — not verified); `KelEffectiveSaidRequest` body (`prefix`) |
 
 #### Federation Protocol
 
@@ -83,7 +82,7 @@ All standalone endpoints plus:
 | POST | `/api/v1/federation/rpc` | **Federation member + KEL signature** | Raft RPC endpoint (AppendEntries, Vote, Snapshot) |
 | GET | `/api/v1/federation/status` | None | Federation status (leader, term, members) |
 | GET | `/api/v1/federation/proposals` | None | Completed proposals with votes (for independent verification) |
-| GET | `/api/v1/federation/proposals/:id` | None | Get specific proposal (returns `ProposalWithVotes` — addition or removal, searches pending + completed) |
+| POST | `/api/v1/federation/proposals/fetch` | None | Get specific proposal; `ProposalRequest` body (`prefix`); returns `ProposalWithVotes` (addition or removal, searches pending + completed) |
 
 #### Admin API
 
@@ -91,7 +90,7 @@ All standalone endpoints plus:
 |--------|------|------|-------------|
 | POST | `/api/v1/admin/addition-proposals` | **Federation member + KEL anchoring** | Submit an addition proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
 | POST | `/api/v1/admin/removal-proposals` | **Federation member + KEL anchoring** | Submit a removal proposal (create v0 or withdraw v1); verifies SAID, chain, and KEL anchoring |
-| POST | `/api/v1/admin/proposals/:id/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); verifies vote SAID and KEL anchoring |
+| POST | `/api/v1/admin/proposals/vote` | **Federation member + KEL anchoring** | Vote on a proposal (addition or removal); proposal identified by `vote.proposal`; verifies vote SAID and KEL anchoring |
 
 **Notes:**
 - Federation RPC: verifies sender_prefix is federation member, then validates signature against sender's KEL (current public key from last establishment event). Refreshes KEL on first failure.
@@ -125,7 +124,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/kels/prefixes` | **Signed request** | Fetch paginated prefix list for bootstrap (calls peer's KELS service) |
-| GET | `/api/v1/kels/kel/:prefix` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); paginated via `forward_key_events` |
+| POST | `/api/v1/kels/kel/fetch` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); `KelPageRequest` body; paginated via `forward_key_events` |
 
 **Notes:**
 - Transport: ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers; P-256 peers rejected
@@ -141,22 +140,23 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check |
 | POST | `/api/v1/sad` | None | Store a self-addressed JSON object (idempotent, SAID verified from body) |
-| GET | `/api/v1/sad/:said` | None | Retrieve a self-addressed object by SAID |
+| POST | `/api/v1/sad/fetch` | None | Retrieve a self-addressed object; `SadRequest` body (`said`) |
+| POST | `/api/v1/sad/exists` | None | Check if a SAD object exists; `SadRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/pointers` | **KEL signature** | Submit signed chain pointer(s) (`Vec<SignedSadPointer>`) |
-| GET | `/api/v1/sad/pointers/:prefix` | None | Fetch chain (returns `SignedSadPointer`s with signatures) |
-| GET | `/api/v1/sad/pointers/:prefix/effective-said` | None | Tip SAID for sync comparison |
-| GET | `/api/v1/sad/pointers/:prefix/repairs` | None | Get paginated repair records for a chain; `?limit=N&offset=N`; returns `SadChainRepairPage {repairs, hasMore}` |
-| GET | `/api/v1/sad/pointers/:prefix/repairs/:said/records` | None | Get paginated archived records for a specific repair; `?limit=N&offset=N`; returns `SadPointerPage` |
-| GET | `/api/v1/sad/saids` | Peer | List SAD object SAIDs (paginated: `?cursor=&limit=`, max 100) |
-| GET | `/api/v1/sad/pointers/prefixes` | Peer | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`, max 100) |
+| POST | `/api/v1/sad/pointers/fetch` | None | Fetch chain; `SadPointerPageRequest` body (`prefix`, `since`, `limit`); returns `SadPointerPage` |
+| POST | `/api/v1/sad/pointers/exists` | None | Check if a pointer exists; `SadRequest` body (`said`); returns 200 or 404 |
+| POST | `/api/v1/sad/pointers/effective-said` | None | Tip SAID for sync comparison; `SadPointerEffectiveSaidRequest` body (`prefix`) |
+| POST | `/api/v1/sad/pointers/repairs` | None | Get paginated repair records; `SadRepairsRequest` body (`prefix`, `limit`, `offset`); returns `SadPointerRepairPage` |
+| POST | `/api/v1/sad/pointers/repairs/records` | None | Get archived records for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadPointerPage` |
+| POST | `/api/v1/sad/saids` | Peer | List SAD object SAIDs (paginated, authenticated) |
+| POST | `/api/v1/sad/pointers/prefixes` | Peer | List chain prefixes with tip SAIDs (paginated, authenticated) |
 
 **Notes:**
 - `POST sad`: SAID derived from body. HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Object size limited (default 1 MiB via `SADSTORE_MAX_OBJECT_SIZE`). Publishes to Redis `sad_updates` for gossip. Per-IP rate limited.
+- `POST sad/fetch`: Returns the SAD object bytes. Keeps the SAID out of URL path to prevent leakage via access logs, proxies, and intermediaries.
 - `POST sad/pointers`: Verifies pointer SAID, verifies signature against owner's KEL, stores pointer + signature atomically with advisory lock and full chain verification. Supports `?repair=true` for repairing divergent chains. Per-chain-prefix daily rate limited (default 16/day). Per-IP rate limited.
-- `GET sad/pointers/:prefix`: Returns `SadPointerPage { records: Vec<SignedSadPointer>, hasMore }` — records include signatures and establishment serials. Supports `?since=N` for delta fetch (records with version >= N).
-- `GET sad/saids`, `GET sad/pointers/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
-- `GET sad/pointers/:prefix/repairs`: Returns paginated `SadChainRepairPage {repairs, hasMore}` — the repair audit trail for a chain. Use `?limit=N&offset=N` for pagination.
-- `GET sad/pointers/:prefix/repairs/:said/records`: Returns paginated `SadPointerPage` of archived records for a specific repair. Use `?limit=N&offset=N` for pagination.
+- `POST sad/pointers/fetch`: Returns `SadPointerPage { records: Vec<SignedSadPointer>, hasMore }` — records include signatures and establishment serials.
+- `POST sad/saids`, `POST sad/pointers/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
 - Chain pointers reference content in MinIO via `content_said`. Client workflow: POST content first, then POST chain pointer.
 - Bucket auto-created on startup if it doesn't exist.
 
