@@ -8,7 +8,7 @@ use std::{
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -16,9 +16,9 @@ use cesr::Matter;
 use dashmap::DashMap;
 use kels_core::{
     AdditionHistory, CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse,
-    IdentityClient, KeyEventsQuery, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, Proposal, ProposalHistory, ProposalResponse, ProposalStatus,
-    ProposalWithVotesMethods, RemovalHistory, SignedKeyEvent, SignedKeyEventPage, Vote,
+    IdentityClient, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse,
+    Proposal, ProposalHistory, ProposalResponse, ProposalStatus, ProposalWithVotesMethods,
+    RemovalHistory, SignedKeyEvent, SignedKeyEventPage, Vote,
 };
 use serde::Deserialize;
 use tracing::warn;
@@ -341,11 +341,11 @@ pub async fn federation_rpc(
                 .ok_or_else(|| {
                     ApiError::unauthorized(format!("Unknown member: {}", signed_rpc.sender_prefix))
                 })?;
-            let source = kels_core::HttpKelSource::new(
-                &member.url,
-                &format!("/api/v1/member-kels/kel/{}", signed_rpc.sender_prefix),
-            )
-            .map_err(|e| ApiError::internal_error(format!("Failed to build HTTP client: {}", e)))?;
+            let source =
+                kels_core::HttpKelSource::new(&member.url, "/api/v1/member-kels/kel/fetch")
+                    .map_err(|e| {
+                        ApiError::internal_error(format!("Failed to build HTTP client: {}", e))
+                    })?;
             kels_core::verify_key_events(
                 &signed_rpc.sender_prefix,
                 &source,
@@ -493,9 +493,9 @@ pub struct AddPeerRequest {
 /// Get a specific proposal with votes.
 pub async fn get_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_prefix): Path<String>,
+    Json(request): Json<kels_core::ProposalRequest>,
 ) -> Result<Json<kels_core::ProposalWithVotes>, ApiError> {
-    let proposal_digest = cesr::Digest256::from_qb64(&proposal_prefix)
+    let proposal_digest = cesr::Digest256::from_qb64(&request.prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
 
     if let Some(addition) = state
@@ -513,7 +513,7 @@ pub async fn get_proposal(
     } else {
         Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_prefix
+            proposal_digest
         )))
     }
 }
@@ -766,11 +766,9 @@ pub async fn admin_submit_removal_proposal(
 /// 5. Vote SAID is anchored in voter's KEL
 pub async fn admin_vote_proposal(
     State(state): State<Arc<FederationState>>,
-    Path(proposal_prefix): Path<String>,
     Json(vote): Json<Vote>,
 ) -> Result<Json<ProposalResponse>, ApiError> {
-    let proposal_digest = cesr::Digest256::from_qb64(&proposal_prefix)
-        .map_err(|e| ApiError::bad_request(format!("Invalid proposal prefix: {}", e)))?;
+    let proposal_digest = vote.proposal;
 
     // 1. Verify vote SAID integrity
     vote.verify_said()
@@ -781,14 +779,6 @@ pub async fn admin_vote_proposal(
         return Err(ApiError::forbidden(format!(
             "Voter {} is not a federation member",
             vote.voter
-        )));
-    }
-
-    // 3. Verify vote references this proposal
-    if vote.proposal != proposal_digest {
-        return Err(ApiError::bad_request(format!(
-            "Vote is for proposal {} but submitted to {}",
-            vote.proposal, proposal_prefix
         )));
     }
 
@@ -805,7 +795,7 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Proposal {} has been withdrawn",
-                proposal_prefix
+                proposal_digest
             )));
         }
     } else if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await {
@@ -822,13 +812,13 @@ pub async fn admin_vote_proposal(
         if history.is_withdrawn() {
             return Err(ApiError::bad_request(format!(
                 "Removal proposal {} has been withdrawn",
-                proposal_prefix
+                proposal_digest
             )));
         }
     } else {
         return Err(ApiError::not_found(format!(
             "Proposal not found: {}",
-            proposal_prefix
+            proposal_digest
         )));
     }
 
@@ -839,7 +829,7 @@ pub async fn admin_vote_proposal(
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_prefix
+            proposal_digest
         )));
     }
     if let Some(removal) = state.node.get_removal_proposal(&proposal_digest).await
@@ -847,7 +837,7 @@ pub async fn admin_vote_proposal(
     {
         return Err(ApiError::bad_request(format!(
             "Proposal {} has expired",
-            proposal_prefix
+            proposal_digest
         )));
     }
 
@@ -1237,9 +1227,9 @@ pub async fn submit_member_key_events(
 /// A wrong value triggers an unnecessary sync, not a security hole.
 pub async fn get_member_effective_said(
     State(state): State<Arc<FederationState>>,
-    Path(prefix_string): Path<String>,
+    Json(request): Json<kels_core::KelEffectiveSaidRequest>,
 ) -> Result<Json<EffectiveSaidResponse>, ApiError> {
-    let prefix = cesr::Digest256::from_qb64(&prefix_string)
+    let prefix = cesr::Digest256::from_qb64(&request.prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
     match state
         .member_kel_repo
@@ -1261,17 +1251,16 @@ pub async fn get_member_effective_said(
 /// Public endpoint to get a specific federation member's KEL with pagination.
 pub async fn get_member_key_events(
     State(state): State<Arc<FederationState>>,
-    Path(prefix): Path<String>,
-    Query(query): Query<KeyEventsQuery>,
+    Json(request): Json<kels_core::KelPageRequest>,
 ) -> Result<Json<SignedKeyEventPage>, ApiError> {
-    let limit = query
+    let limit = request
         .limit
         .unwrap_or(kels_core::page_size())
         .min(kels_core::page_size()) as u64;
 
-    let prefix_digest = cesr::Digest256::from_qb64(&prefix)
+    let prefix_digest = cesr::Digest256::from_qb64(&request.prefix)
         .map_err(|e| ApiError::bad_request(format!("Invalid prefix: {}", e)))?;
-    let since_digest = query
+    let since_digest = request
         .since
         .as_deref()
         .map(cesr::Digest256::from_qb64)

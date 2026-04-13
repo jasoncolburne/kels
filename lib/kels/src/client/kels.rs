@@ -71,10 +71,7 @@ impl KelsClient {
 
     /// Create an `HttpKelSource` for this client's KEL endpoint.
     pub fn as_kel_source(&self) -> Result<crate::HttpKelSource, KelsError> {
-        crate::HttpKelSource::new(
-            &self.base_url,
-            &format!("{}/kel/{{prefix}}", self.path_prefix),
-        )
+        crate::HttpKelSource::new(&self.base_url, &format!("{}/kel/fetch", self.path_prefix))
     }
 
     /// Create an `HttpKelSink` for this client's events endpoint.
@@ -192,15 +189,13 @@ impl KelsClient {
         since: Option<&str>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
-        let mut url = format!(
-            "{}{}/kel/{}?limit={}",
-            self.base_url, self.path_prefix, prefix, limit
-        );
-        if let Some(since_said) = since {
-            url.push_str(&format!("&since={}", since_said));
-        }
-
-        let resp = self.client.get(&url).send().await?;
+        let url = format!("{}{}/kel/fetch", self.base_url, self.path_prefix);
+        let body = crate::KelPageRequest {
+            prefix: prefix.to_string(),
+            since: since.map(|s| s.to_string()),
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
@@ -271,14 +266,11 @@ impl KelsClient {
         &self,
         prefix: &cesr::Digest256,
     ) -> Result<Option<(cesr::Digest256, bool)>, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}{}/kel/{}/effective-said",
-                self.base_url, self.path_prefix, prefix
-            ))
-            .send()
-            .await?;
+        let url = format!("{}{}/kel/effective-said", self.base_url, self.path_prefix);
+        let body = crate::KelEffectiveSaidRequest {
+            prefix: prefix.to_string(),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             let body: serde_json::Value = resp.json().await?;
@@ -313,14 +305,13 @@ impl KelsClient {
         limit: usize,
         offset: u64,
     ) -> Result<RecoveryRecordPage, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}{}/kel/{}/audit?limit={}&offset={}",
-                self.base_url, self.path_prefix, prefix, limit, offset
-            ))
-            .send()
-            .await?;
+        let url = format!("{}{}/kel/recoveries", self.base_url, self.path_prefix);
+        let body = crate::KelRecoveriesRequest {
+            prefix: prefix.to_string(),
+            limit: Some(limit),
+            offset: Some(offset),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
@@ -340,14 +331,17 @@ impl KelsClient {
         limit: usize,
         offset: u64,
     ) -> Result<SignedKeyEventPage, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}{}/kel/{}/audit/{}/events?limit={}&offset={}",
-                self.base_url, self.path_prefix, prefix, recovery_said, limit, offset
-            ))
-            .send()
-            .await?;
+        let url = format!(
+            "{}{}/kel/recoveries/events",
+            self.base_url, self.path_prefix
+        );
+        let body = crate::KelRecoveryEventsRequest {
+            prefix: prefix.to_string(),
+            said: recovery_said.to_string(),
+            limit: Some(limit),
+            offset: Some(offset),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
@@ -390,14 +384,11 @@ impl KelsClient {
 
     /// Check if an event SAID exists on the server.
     pub async fn event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
-        let resp = self
-            .client
-            .get(format!(
-                "{}{}/events/{}/exists",
-                self.base_url, self.path_prefix, said
-            ))
-            .send()
-            .await?;
+        let url = format!("{}{}/events/exists", self.base_url, self.path_prefix);
+        let body = crate::KelEventExistsRequest {
+            said: said.to_string(),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
 
         Ok(resp.status().is_success())
     }
@@ -451,7 +442,7 @@ mod tests {
 
         use super::*;
         use crate::types::{ErrorCode, ErrorResponse, SubmitEventsResponse};
-        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         #[tokio::test]
@@ -685,8 +676,8 @@ mod tests {
                 has_more: false,
             };
 
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/v1/kels/kel/.*"))
+            Mock::given(method("POST"))
+                .and(path("/api/v1/kels/kel/fetch"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&response))
                 .mount(&mock_server)
                 .await;
@@ -704,8 +695,8 @@ mod tests {
         async fn test_fetch_key_events_not_found() {
             let mock_server = MockServer::start().await;
 
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/v1/kels/kel/.*"))
+            Mock::given(method("POST"))
+                .and(path("/api/v1/kels/kel/fetch"))
                 .respond_with(ResponseTemplate::new(404))
                 .mount(&mock_server)
                 .await;
@@ -725,8 +716,8 @@ mod tests {
                 code: ErrorCode::InternalError,
             };
 
-            Mock::given(method("GET"))
-                .and(path_regex(r"/api/v1/kels/kel/.*"))
+            Mock::given(method("POST"))
+                .and(path("/api/v1/kels/kel/fetch"))
                 .respond_with(ResponseTemplate::new(500).set_body_json(&error))
                 .mount(&mock_server)
                 .await;

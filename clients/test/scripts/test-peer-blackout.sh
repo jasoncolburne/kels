@@ -45,7 +45,7 @@ done
 # Create a KEL on node-a
 PREFIX=$(kels-cli --kels-url "$NODE_A_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-a: $PREFIX"
-run_test "KEL exists on node-a" curl -sf "$NODE_A_URL/api/v1/kels/kel/$PREFIX"
+run_test "KEL exists on node-a" curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX\"}" "$NODE_A_URL/api/v1/kels/kel/fetch"
 
 # Wait for propagation to active nodes
 run_test "KEL propagated to active nodes" \
@@ -54,7 +54,7 @@ run_test "KEL propagated to active nodes" \
 # Verify the blacklisted node does NOT have the KEL
 # Give it a few seconds in case there's any residual connectivity
 sleep 5
-if curl -sf "$BLACKLISTED_URL/api/v1/kels/kel/$PREFIX" > /dev/null 2>&1; then
+if curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX\"}" "$BLACKLISTED_URL/api/v1/kels/kel/fetch" > /dev/null 2>&1; then
     run_test "${BLACKLISTED_NODE} excluded from gossip" false
 else
     run_test "${BLACKLISTED_NODE} excluded from gossip" true

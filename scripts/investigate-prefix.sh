@@ -14,7 +14,7 @@ mkdir -p "$LOGS_DIR/$PREFIX"
 
 for node in "${NODES[@]}"; do
   echo "Fetching node-$node..."
-  curl -s "http://kels.node-$node.kels/api/v1/kels/kel/$PREFIX" | jq . > "$LOGS_DIR/$PREFIX/node-$node.kel" &
+  curl -s -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"$PREFIX\"}" "http://kels.node-$node.kels/api/v1/kels/kel/fetch" | jq . > "$LOGS_DIR/$PREFIX/node-$node.kel" &
 done
 
 wait

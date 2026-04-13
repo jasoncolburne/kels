@@ -192,7 +192,7 @@ impl Stats {
 /// Resolve a KEL once to measure event count and serialized byte size.
 async fn measure_kel(url: &str, prefix: &str) -> Result<TestKelConfig> {
     let prefix_digest = cesr::Digest256::from_qb64(prefix)?;
-    let source = HttpKelSource::new(url, "/api/v1/kels/kel/{prefix}")?;
+    let source = HttpKelSource::new(url, "/api/v1/kels/kel/fetch")?;
     let events = kels_core::resolve_key_events(
         &prefix_digest,
         &source,
@@ -269,18 +269,35 @@ async fn setup_existing_kels(url: &str, prefix: &str) -> Result<Vec<TestKelConfi
 
 type BenchClient = hyper_util::client::legacy::Client<
     hyper_util::client::legacy::connect::HttpConnector,
-    http_body_util::Empty<hyper::body::Bytes>,
+    http_body_util::Full<hyper::body::Bytes>,
 >;
+
+/// A benchmark request: either GET (health) or POST with a JSON body.
+#[derive(Clone)]
+enum BenchRequest {
+    Get(hyper::Uri),
+    Post(hyper::Uri, hyper::body::Bytes),
+}
 
 async fn run_worker(
     client: BenchClient,
-    uri: hyper::Uri,
+    request: BenchRequest,
     stats: Arc<Stats>,
     running: Arc<AtomicBool>,
 ) {
     while running.load(Ordering::Relaxed) {
         let start = Instant::now();
-        let ok = match client.get(uri.clone()).await {
+        #[allow(clippy::expect_used)]
+        let req = match &request {
+            BenchRequest::Get(uri) => hyper::Request::get(uri.clone())
+                .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+                .expect("failed to build GET request"),
+            BenchRequest::Post(uri, body) => hyper::Request::post(uri.clone())
+                .header("content-type", "application/json")
+                .body(http_body_util::Full::new(body.clone()))
+                .expect("failed to build POST request"),
+        };
+        let ok = match client.request(req).await {
             Ok(resp) => {
                 // Drain body frame-by-frame without large allocations
                 let mut body = resp.into_body();
@@ -310,7 +327,7 @@ async fn run_benchmark(
     args: &Args,
     hyper_client: &BenchClient,
     stats: Arc<Stats>,
-    uri: hyper::Uri,
+    request: BenchRequest,
     test_name: &str,
     bytes_per_request: u64,
 ) -> Result<()> {
@@ -331,12 +348,12 @@ async fn run_benchmark(
     let mut tasks = JoinSet::new();
     for _ in 0..args.concurrency {
         let client = hyper_client.clone();
-        let uri = uri.clone();
+        let request = request.clone();
         let stats = stats.clone();
         let running = running.clone();
 
         tasks.spawn(async move {
-            run_worker(client, uri, stats, running).await;
+            run_worker(client, request, stats, running).await;
         });
     }
 
@@ -368,7 +385,7 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
     let stats = Arc::new(Stats::new(args.throughput_only));
     let hyper_client =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
+            .build_http::<http_body_util::Full<hyper::body::Bytes>>();
 
     #[allow(clippy::expect_used)]
     let health_uri: hyper::Uri = format!("{}/api/v1/health", args.url)
@@ -378,7 +395,7 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
         args,
         &hyper_client,
         stats.clone(),
-        health_uri,
+        BenchRequest::Get(health_uri),
         "health (baseline)",
         0,
     )
@@ -387,19 +404,20 @@ async fn run_benchmarks(args: &Args, singular_kels: &[TestKelConfig]) -> Result<
 
     #[allow(clippy::expect_used)]
     for config in singular_kels {
-        let kel_uri: hyper::Uri = format!(
-            "{}/api/v1/kels/kel/{}?limit={}",
-            args.url,
-            config.prefix,
-            kels_core::page_size()
-        )
-        .parse()
-        .expect("Invalid KEL URL");
+        let kel_uri: hyper::Uri = format!("{}/api/v1/kels/kel/fetch", args.url)
+            .parse()
+            .expect("Invalid KEL URL");
+        let body = serde_json::json!({
+            "prefix": config.prefix,
+            "limit": kels_core::page_size(),
+        });
+        let body_bytes =
+            hyper::body::Bytes::from(serde_json::to_vec(&body).expect("JSON serialize"));
         run_benchmark(
             args,
             &hyper_client,
             stats.clone(),
-            kel_uri,
+            BenchRequest::Post(kel_uri, body_bytes),
             &format!("get_kel ({} events)", config.event_count),
             config.kel_bytes,
         )

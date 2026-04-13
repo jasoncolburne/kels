@@ -9,7 +9,7 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -377,11 +377,11 @@ pub async fn post_sad_object(
     (StatusCode::CREATED, "stored").into_response()
 }
 
-pub async fn get_sad_object(
-    Path(said_string): Path<String>,
+pub async fn fetch_sad_object(
     State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&request.said) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
@@ -403,10 +403,10 @@ pub async fn get_sad_object(
 }
 
 pub async fn sad_object_exists(
-    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&request.said) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
@@ -421,14 +421,14 @@ pub async fn sad_object_exists(
 }
 
 pub async fn sad_pointer_exists(
-    Path(said_string): Path<String>,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadRequest>,
 ) -> impl IntoResponse {
-    let said = match cesr::Digest256::from_qb64(&said_string) {
+    let said = match cesr::Digest256::from_qb64(&request.said) {
         Ok(s) => s,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid SAID").into_response(),
     };
-    match state.repo.sad_records.exists(&said).await {
+    match state.repo.sad_pointers.exists(&said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -521,7 +521,7 @@ pub async fn submit_sad_pointer(
 
     match state
         .repo
-        .sad_records
+        .sad_pointers
         .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
         .await
     {
@@ -643,7 +643,7 @@ pub async fn submit_sad_pointer(
         // Repair mode: truncate from the first record's version and replace
         if let Err(e) = state
             .repo
-            .sad_records
+            .sad_pointers
             .truncate_and_replace(&pairs, &establishment_keys)
             .await
         {
@@ -656,7 +656,7 @@ pub async fn submit_sad_pointer(
         // Normal mode: store batch with full chain verification and advisory lock
         match state
             .repo
-            .sad_records
+            .sad_pointers
             .save_batch_with_verified_signatures(&pairs, &establishment_keys)
             .await
         {
@@ -680,7 +680,7 @@ pub async fn submit_sad_pointer(
     // Repair updates include a ":repair" suffix so the gossip subscriber
     // can propagate the repair flag to other nodes.
     let effective_said = if should_publish {
-        match state.repo.sad_records.effective_said(chain_prefix).await {
+        match state.repo.sad_pointers.effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
@@ -732,25 +732,17 @@ pub async fn submit_sad_pointer(
     (StatusCode::CREATED, "stored").into_response()
 }
 
-#[derive(Deserialize)]
-pub struct ChainQuery {
-    /// Effective SAID cursor — return records after this SAID's position.
-    /// If the SAID is not found (e.g. synthetic divergent SAID), returns the full chain.
-    pub since: Option<String>,
-    pub limit: Option<u64>,
-}
-
 pub async fn get_sad_pointer(
-    Path(prefix): Path<String>,
-    Query(query): Query<ChainQuery>,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadPointerPageRequest>,
 ) -> impl IntoResponse {
-    let limit = query.limit.unwrap_or(kels_core::page_size() as u64);
+    let prefix = request.prefix;
+    let limit = request.limit.unwrap_or(kels_core::page_size()) as u64;
 
     match state
         .repo
-        .sad_records
-        .get_stored(&prefix, query.since.as_deref(), Some(limit + 1))
+        .sad_pointers
+        .get_stored(&prefix, request.since.as_deref(), Some(limit + 1))
         .await
     {
         Ok(records) if records.is_empty() => {
@@ -773,14 +765,14 @@ pub async fn get_sad_pointer(
 }
 
 pub async fn get_sad_pointer_effective_said(
-    Path(prefix_string): Path<String>,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadPointerEffectiveSaidRequest>,
 ) -> impl IntoResponse {
-    let prefix = match cesr::Digest256::from_qb64(&prefix_string) {
+    let prefix = match cesr::Digest256::from_qb64(&request.prefix) {
         Ok(p) => p,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid prefix").into_response(),
     };
-    match state.repo.sad_records.effective_said(&prefix).await {
+    match state.repo.sad_pointers.effective_said(&prefix).await {
         Ok(Some((said, divergent))) => (
             StatusCode::OK,
             Json(kels_core::EffectiveSaidResponse { said, divergent }),
@@ -827,7 +819,7 @@ async fn query_sad_prefixes(
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
         .min(MAX_PREFIX_PAGE_SIZE);
 
-    match state.repo.sad_records.list_prefixes(cursor, limit).await {
+    match state.repo.sad_pointers.list_prefixes(cursor, limit).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Failed to list prefixes: {}", e);
@@ -898,25 +890,18 @@ pub async fn list_sad_pointer_prefixes(
 
 // === Layer 2: Chain Repair History ===
 
-#[derive(Deserialize)]
-pub struct PaginationQuery {
-    pub limit: Option<u64>,
-    pub offset: Option<u64>,
-}
-
 pub(crate) async fn get_sad_pointer_repairs(
     State(state): State<Arc<AppState>>,
-    Path(prefix): Path<String>,
-    Query(params): Query<PaginationQuery>,
+    Json(request): Json<kels_core::SadRepairsRequest>,
 ) -> impl IntoResponse {
-    let page_size = kels_core::page_size() as u64;
-    let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
-    let offset = params.offset.unwrap_or(0);
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
+    let offset = request.offset.unwrap_or(0);
 
     match state
         .repo
-        .sad_records
-        .get_repairs(&prefix, limit, offset)
+        .sad_pointers
+        .get_repairs(&request.prefix, limit, offset)
         .await
     {
         Ok((repairs, has_more)) => (
@@ -925,7 +910,7 @@ pub(crate) async fn get_sad_pointer_repairs(
         )
             .into_response(),
         Err(e) => {
-            warn!("Failed to get repairs for {}: {}", prefix, e);
+            warn!("Failed to get repairs for {}: {}", request.prefix, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }
@@ -933,18 +918,16 @@ pub(crate) async fn get_sad_pointer_repairs(
 
 pub(crate) async fn get_sad_pointer_repair_records(
     State(state): State<Arc<AppState>>,
-    Path((prefix, repair_said)): Path<(String, String)>,
-    Query(params): Query<PaginationQuery>,
+    Json(request): Json<kels_core::SadRepairPageRequest>,
 ) -> impl IntoResponse {
-    let _ = prefix; // prefix is in the URL for routing clarity but not needed for the query
-    let page_size = kels_core::page_size() as u64;
-    let limit = params.limit.unwrap_or(page_size).clamp(1, page_size);
-    let offset = params.offset.unwrap_or(0);
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
+    let offset = request.offset.unwrap_or(0);
 
     match state
         .repo
-        .sad_records
-        .get_repair_records(&repair_said, limit, offset)
+        .sad_pointers
+        .get_repair_records(&request.said, limit, offset)
         .await
     {
         Ok((records, has_more)) => (
@@ -956,7 +939,7 @@ pub(crate) async fn get_sad_pointer_repair_records(
         )
             .into_response(),
         Err(e) => {
-            warn!("Failed to get repair records for {}: {}", repair_said, e);
+            warn!("Failed to get repair records for {}: {}", request.said, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }

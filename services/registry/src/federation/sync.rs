@@ -30,10 +30,7 @@ pub async fn sync_all_member_kels(
 
     for prefix in &config.trusted_prefixes {
         for url in &urls {
-            let source = match kels_core::HttpKelSource::new(
-                url,
-                "/api/v1/member-kels/kel/{prefix}",
-            ) {
+            let source = match kels_core::HttpKelSource::new(url, "/api/v1/member-kels/kel/fetch") {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(url = %url, error = %e, "Failed to build HTTP source for member KEL sync");

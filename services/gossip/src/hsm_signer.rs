@@ -143,7 +143,7 @@ impl KelsPeerVerifier {
         prefix: &cesr::Digest256,
     ) -> Result<VerificationKey, GossipError> {
         // Consuming: verify KEL (paginated) to extract trusted public key
-        let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/{prefix}")
+        let source = kels_core::HttpKelSource::new(&self.kels_url, "/api/v1/kels/kel/fetch")
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP client: {}", e))
             })?;
@@ -227,7 +227,7 @@ impl KelsPeerVerifier {
         };
 
         // Forward KEL from peer's KELS to our local KELS (paginated)
-        let source = kels_core::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/{prefix}")
+        let source = kels_core::HttpKelSource::new(&peer_kels_url, "/api/v1/kels/kel/fetch")
             .map_err(|e| {
                 GossipError::VerificationFailed(format!("Failed to build HTTP source: {}", e))
             })?;

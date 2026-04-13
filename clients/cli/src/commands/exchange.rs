@@ -501,8 +501,7 @@ pub(crate) async fn cmd_exchange_fetch(cli: &Cli, prefix: &str, mail_said: &str)
 
     // Verify sender's KEL and collect the verification key at sender_serial
     let kels_client = create_client(cli).await?;
-    let source =
-        kels_core::HttpKelSource::new(kels_client.base_url(), "/api/v1/kels/kel/{prefix}")?;
+    let source = kels_core::HttpKelSource::new(kels_client.base_url(), "/api/v1/kels/kel/fetch")?;
     let verifier = KelVerifier::new(sender_prefix).with_establishment_key_collection(
         BTreeSet::from([sender_serial]),
         kels_core::max_collected_keys(),

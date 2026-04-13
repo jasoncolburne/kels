@@ -31,12 +31,12 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 post(handlers::submit_member_key_events),
             )
             .route(
-                "/api/v1/member-kels/kel/:prefix",
-                get(handlers::get_member_key_events),
+                "/api/v1/member-kels/kel/fetch",
+                post(handlers::get_member_key_events),
             )
             .route(
-                "/api/v1/member-kels/kel/:prefix/effective-said",
-                get(handlers::get_member_effective_said),
+                "/api/v1/member-kels/kel/effective-said",
+                post(handlers::get_member_effective_said),
             );
 
         // Federation protocol
@@ -51,8 +51,8 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 get(handlers::list_completed_proposals),
             )
             .route(
-                "/api/v1/federation/proposals/:proposal_prefix",
-                get(handlers::get_proposal),
+                "/api/v1/federation/proposals/fetch",
+                post(handlers::get_proposal),
             );
 
         // Admin API for proposal and peer management (requests must be anchored to be valid)
@@ -66,7 +66,7 @@ pub fn create_router(federation_state: Option<Arc<FederationState>>) -> Router {
                 post(handlers::admin_submit_removal_proposal),
             )
             .route(
-                "/api/v1/admin/proposals/:proposal_prefix/vote",
+                "/api/v1/admin/proposals/vote",
                 post(handlers::admin_vote_proposal),
             );
 

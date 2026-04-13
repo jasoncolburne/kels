@@ -76,7 +76,7 @@ pub use crypto::{
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
-pub use serving::{KelServer, KeyEventsQuery, serve_kel_page};
+pub use serving::{KelServer, serve_kel_page};
 pub use store::{
     FileKelStore, FileSadStore, InMemorySadStore, KelStore, KelStoreSink, RepositoryKelStore,
     SadStore,
@@ -85,19 +85,22 @@ pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind,
     EventSignature, FederationStatus, HttpKelSink, HttpKelSource, HttpSadSink, HttpSadSource,
-    KelMergeResult, KelRecoveryEvent, KelVerification, KelVerifier, KeyEvent, KeyEventSignature,
-    PageLoader, PagedKelSink, PagedKelSource, PagedSadSink, PagedSadSource,
-    PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, PrefixListResponse, PrefixState, Proposal, ProposalHistory, ProposalResponse,
-    ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD,
-    RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord, RecoveryRecordPage,
-    RemovalHistory, RemovalWithVotes, SadChainVerifier, SadObjectEntry, SadObjectListResponse,
-    SadPointer, SadPointerPage, SadPointerRepair, SadPointerRepairPage, SadPointerRepairRecord,
-    SadPointerSignature, SadPointerVerification, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
-    SignedSadPointer, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
-    collect_establishment_serials, completed_verification, compute_approval_threshold,
-    compute_rotation_hash, compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer,
-    hash_effective_said, truncate_incomplete_generation, validate_timestamp, verify_key_events,
+    KelEffectiveSaidRequest, KelEventExistsRequest, KelMergeResult, KelPageRequest,
+    KelRecoveriesRequest, KelRecoveryEvent, KelRecoveryEventsRequest, KelVerification, KelVerifier,
+    KeyEvent, KeyEventSignature, PageLoader, PagedKelSink, PagedKelSource, PagedSadSink,
+    PagedSadSource, PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, PrefixListResponse, PrefixState, Proposal, ProposalHistory,
+    ProposalRequest, ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
+    RecoveryRecordPage, RemovalHistory, RemovalWithVotes, SadChainVerifier, SadObjectEntry,
+    SadObjectListResponse, SadPointer, SadPointerEffectiveSaidRequest, SadPointerPage,
+    SadPointerPageRequest, SadPointerRepair, SadPointerRepairPage, SadPointerRepairRecord,
+    SadPointerSignature, SadPointerVerification, SadRepairPageRequest, SadRepairsRequest,
+    SadRequest, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadPointer,
+    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, collect_establishment_serials,
+    completed_verification, compute_approval_threshold, compute_rotation_hash,
+    compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer, hash_effective_said,
+    truncate_incomplete_generation, validate_timestamp, verify_key_events,
     verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
 };
 

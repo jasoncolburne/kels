@@ -342,11 +342,9 @@ async fn vote_proposal(
         .await
         .context("Failed to anchor vote in KEL")?;
 
-    let pid = proposal_prefix.to_string();
     let result = with_leader_retry(ctx, |client| {
         let v = vote.clone();
-        let id = pid.clone();
-        async move { client.submit_vote(&id, &v).await }
+        async move { client.submit_vote(&v).await }
     })
     .await?;
 

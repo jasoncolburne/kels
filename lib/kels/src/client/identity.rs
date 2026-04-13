@@ -150,11 +150,13 @@ impl IdentityClient {
         since: Option<&str>,
         limit: usize,
     ) -> Result<SignedKeyEventPage, KelsError> {
-        let mut url = format!("{}/api/v1/identity/kel?limit={}", self.base_url, limit);
-        if let Some(since) = since {
-            url.push_str(&format!("&since={}", since));
-        }
-        let response = self.client.get(&url).send().await?;
+        let url = format!("{}/api/v1/identity/kel", self.base_url);
+        let body = crate::KelPageRequest {
+            prefix: String::new(),
+            since: since.map(|s| s.to_string()),
+            limit: Some(limit),
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
         self.parse_response(response).await
     }
 

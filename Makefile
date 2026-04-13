@@ -101,6 +101,9 @@ install-deny:
 test:
 	cargo test --workspace --all-features
 
+test-verbose:
+	cargo test --workspace --all-features -- --nocapture
+
 # Files excluded from coverage (can't be meaningfully unit tested):
 # - Binary mains (main.rs, admin.rs) - entry points only
 # - FFI code (kels-ffi) - C bindings

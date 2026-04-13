@@ -246,13 +246,13 @@ fetch_all_sad_pointers() {
     local since=""
 
     while true; do
-        local query_url="${url}/api/v1/sad/pointers/${prefix}"
+        local body="{\"prefix\":\"${prefix}\"}"
         if [ -n "$since" ]; then
-            query_url="${query_url}?since=${since}"
+            body="{\"prefix\":\"${prefix}\",\"since\":\"${since}\"}"
         fi
 
         local resp
-        resp=$(curl -s -f "$query_url" 2>/dev/null) || break
+        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/v1/sad/pointers/fetch" 2>/dev/null) || break
 
         local pointers has_more
         pointers=$(echo "$resp" | jq '.pointers')
@@ -397,7 +397,7 @@ while IFS= read -r said; do
         name="${ALL_REACHABLE_NAMES[$i]}"
         url="${ALL_REACHABLE_URLS[$i]}"
 
-        http_code=$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/v1/sad/${said}/exists")
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"said\":\"${said}\"}" "${url}/api/v1/sad/exists")
         if [ "$http_code" != "200" ]; then
             echo
             echo -e "  ${RED}MISSING object ${said} on node-${name} (HTTP ${http_code})${NC}"

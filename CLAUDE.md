@@ -144,7 +144,6 @@ All multi-page event transfers use the `transfer_key_events` infrastructure in `
 - **`forward_key_events`** — Forward without verification. Use for serving/forwarding between services. Supports `since` for delta fetch.
 - **`verify_key_events`** — Verify only (discards events). Returns `Verification` token. Use for consuming (security decisions) when you don't need the events.
 - **`completed_verification`** — Verify only (offset-based `PageLoader`). Returns `Verification` token. Alternative to `verify_key_events` for DB-backed sources.
-- **`benchmark_key_events`** — Pages through source, discards events. For performance testing. Supports `since`.
 
 **Collecting functions** (accumulate into memory — only use in true clients like CLI, never in services):
 - **`collect_key_events`** — Verify + collect. Returns `(Verification, Vec<SignedKeyEvent>)`.
