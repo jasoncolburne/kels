@@ -280,7 +280,16 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
         }
     };
 
-    let since_digest = from_c_string(since).and_then(|s| cesr::Digest256::from_qb64(&s).ok());
+    let since_digest = match from_c_string(since) {
+        Some(s) if !s.is_empty() => match cesr::Digest256::from_qb64(&s) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                set_last_error(&format!("Invalid since CESR: {e}"));
+                return std::ptr::null_mut();
+            }
+        },
+        _ => None,
+    };
 
     let Ok(runtime) = Runtime::new() else {
         set_last_error("Failed to create async runtime");

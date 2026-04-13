@@ -18,7 +18,7 @@ PKCS#11 HSM-backed key management for cryptographic identity (KEL). Used by both
 
 **Notes:**
 - Anchor serializes via RwLock — concurrent anchoring is safe but sequential
-- KEL endpoint returns paginated `SignedKeyEventPage` — `?limit=N` (default 32) and `?since=SAID` for delta fetch
+- KEL endpoint returns paginated `SignedKeyEventPage` — `IdentityKelPageRequest` body with optional `since` (SAID) and `limit` (default page_size) fields for delta fetch
 - Sign returns qb64-encoded signature + public key
 - Manage accepts `SignedRequest<ManageKelRequest>` — signature verified against own KEL. Operations: `Rotate` (with mode `standard`, `recovery`, or `scheduled`), `Recover`, `Contest`, `Decommission`. All operations go through `perform_kel_operation()` which updates the builder's key provider in-place, keeping the server in sync. Auto-rotation loop (every 30 days) also uses this path.
 - No external network exposure expected
@@ -42,9 +42,9 @@ Key Event Log storage and retrieval. The primary data-plane service that gossip 
 **Notes:**
 - `submit_events`: validates all signatures upfront; enforces dual-signature for recovery events; advisory DB lock per prefix for serialization; returns `{divergedAt, applied}`
 - `list_prefixes` requires signature verification + peer authorization check against peer allowlist (cached in Redis, refreshed from registry). Timestamp window: 60 seconds.
-- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Optionally uses Redis cache for KELs ≤ `page_size()` events (one page; larger KELs are not cached). The `?since=SAID` parameter returns events after the given SAID. The `?limit=N` parameter controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. If the effective SAID matches, both sides have the same state and an empty response is returned.
-- `get_kel_audit` returns paginated `RecoveryRecordPage {records, hasMore}` — the recovery audit trail for a prefix. Use `?limit=N&offset=N` for pagination. Each record documents a recovery event (when it happened, what serial divergence was at, what was archived). Archived adversary events are in the `kels_archived_events` table.
-- `get_kel_audit_events` returns paginated `SignedKeyEventPage {events, hasMore}` of archived adversary events linked to a specific recovery record (identified by its SAID). Use `?limit=N&offset=N` for pagination.
+- `get_kel` returns `SignedKeyEventPage {events, hasMore}`. Optionally uses Redis cache for KELs ≤ `page_size()` events (one page; larger KELs are not cached). The `since` field (SAID) returns events after the given SAID. The `limit` field controls page size (clamped to 1-64, default 64). If the since SAID doesn't match a real event, the server computes the effective SAID for the prefix — for non-divergent KELs this is the tip SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. If the effective SAID matches, both sides have the same state and an empty response is returned.
+- `get_kel_audit` returns paginated `RecoveryRecordPage {records, hasMore}` — the recovery audit trail for a prefix. Use `limit` and `offset` body fields for pagination. Each record documents a recovery event (when it happened, what serial divergence was at, what was archived). Archived adversary events are in the `kels_archived_events` table.
+- `get_kel_audit_events` returns paginated `SignedKeyEventPage {events, hasMore}` of archived adversary events linked to a specific recovery record (identified by its SAID). Use `limit` and `offset` body fields for pagination.
 - `get_effective_said` returns the effective SAID for a prefix — for non-divergent KELs this is the tip event's SAID, for divergent KELs it's `hash("divergent:{prefix}")`, for contested KELs it's `hash("contested:{prefix}")`. This is a **resolving** endpoint (unverified, for sync comparison). Used by gossip anti-entropy.
 - KELs are fetched individually per prefix using paginated `forward_key_events` / `verify_key_events` via the `PagedKelSource` / `PagedKelSink` traits. Each call pages through a single prefix's KEL with bounded memory.
 - `submit_events` uses a fast path for normal appends (~99% of traffic): bounded metadata query + incremental verification via `KelVerifier`, no full KEL load. Divergence/recovery/overlap paths fall back to paginated full KEL loading.
@@ -124,7 +124,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/kels/prefixes` | **Signed request** | Fetch paginated prefix list for bootstrap (calls peer's KELS service) |
-| GET | `/api/v1/kels/kel/:prefix` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); paginated via `forward_key_events` |
+| POST | `/api/v1/kels/kel/fetch` | None | Fetch individual KEL from peer for bootstrap (calls peer's KELS service); `KelPageRequest` body; paginated via `forward_key_events` |
 
 **Notes:**
 - Transport: ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 session encryption over TCP; NodePrefix (44-char CESR) identifies peers; P-256 peers rejected
