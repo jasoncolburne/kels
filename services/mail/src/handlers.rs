@@ -20,7 +20,7 @@ use verifiable_storage::SelfAddressed;
 
 use kels_exchange::{
     AckRequest, FetchRequest, InboxRequest, InboxResponse, MailAnnouncement, MailMessage,
-    SendRequest, compute_blob_digest,
+    RemoveRequest, ReplicateRequest, SendRequest, compute_blob_digest,
 };
 
 use crate::{blob_store::BlobStore, repository::MailRepository};
@@ -159,20 +159,17 @@ fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> 
 
 // ==================== KEL Authentication ====================
 
-/// Result of successful authentication, carrying verified KEL state.
-struct AuthResult {
-    /// Serial of the sender's latest establishment event.
-    establishment_serial: u64,
-}
-
-/// Authenticate a signed request by verifying the signer's KEL and signature.
-async fn authenticate_request<T: serde::Serialize>(
+/// Authenticate a signed request by verifying each signer's KEL and signature.
+///
+/// Returns the set of verified signer prefixes. Callers decide what to do with the set
+/// (e.g., check against a single expected sender or a policy threshold).
+async fn authenticate_request<T: SelfAddressed + serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
-    timestamp: i64,
+    created_at: &verifiable_storage::StorageDatetime,
     nonce: &cesr::Nonce256,
-) -> Result<AuthResult, (StatusCode, String)> {
-    if !kels_core::validate_timestamp(timestamp, 60) {
+) -> Result<std::collections::HashSet<cesr::Digest256>, (StatusCode, String)> {
+    if !kels_core::validate_timestamp(created_at.inner().timestamp(), 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
     }
 
@@ -181,39 +178,35 @@ async fn authenticate_request<T: serde::Serialize>(
         return Err((StatusCode::FORBIDDEN, "Duplicate nonce".into()));
     }
 
-    let verifier = kels_core::KelVerifier::new(&signed_request.prefix);
-    let kel_verification = kels_core::verify_key_events(
-        &signed_request.prefix,
-        &state.kels_client.as_kel_source().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to build HTTP client: {}", e),
-            )
-        })?,
-        verifier,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-    )
-    .await
-    .map_err(|_| (StatusCode::FORBIDDEN, "KEL verification failed".into()))?;
+    let kel_source = state.kels_client.as_kel_source().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to build HTTP client: {}", e),
+        )
+    })?;
 
-    let establishment_serial = kel_verification
-        .last_establishment_event()
-        .map(|e| e.event.serial)
-        .ok_or_else(|| (StatusCode::FORBIDDEN, "No establishment event found".into()))?;
+    let mut verifications = std::collections::HashMap::new();
+    for prefix in signed_request.signatures.keys() {
+        let verifier = kels_core::KelVerifier::new(prefix);
+        let kel_verification = kels_core::verify_key_events(
+            prefix,
+            &kel_source,
+            verifier,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+        )
+        .await
+        .map_err(|_| (StatusCode::FORBIDDEN, "KEL verification failed".into()))?;
+        verifications.insert(*prefix, kel_verification);
+    }
 
-    signed_request
-        .verify_signature(&kel_verification)
-        .map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Signature verification failed".into(),
-            )
-        })?;
+    let verified = signed_request.verify_signatures(&verifications);
 
-    Ok(AuthResult {
-        establishment_serial,
-    })
+    if verified.is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "No valid signatures".into()));
+    }
+
+    Ok(verified)
 }
 
 // ==================== Health ====================
@@ -234,14 +227,17 @@ pub async fn send_mail(
     }
 
     let payload = &signed.payload;
-    let auth = match authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await
-    {
-        Ok(auth) => auth,
-        Err(e) => return e.into_response(),
-    };
+    let verified =
+        match authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
 
-    let sender = &signed.prefix;
-    if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, sender) {
+    let sender = match kels_core::single_signer(&verified) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Expected single signer").into_response(),
+    };
+    if let Err(msg) = check_sender_rate_limit(&state.sender_rate_limits, &sender) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
@@ -316,17 +312,10 @@ pub async fn send_mail(
                 .into_response();
         }
     };
-    if signed_envelope.envelope.sender != *sender {
+    if signed_envelope.envelope.sender != sender {
         return (
             StatusCode::BAD_REQUEST,
             "ESSR envelope sender does not match authenticated sender",
-        )
-            .into_response();
-    }
-    if signed_envelope.envelope.sender_serial != auth.establishment_serial {
-        return (
-            StatusCode::BAD_REQUEST,
-            "ESSR envelope sender_serial does not match current establishment event",
         )
             .into_response();
     }
@@ -341,7 +330,7 @@ pub async fn send_mail(
 
     let mut mail_message = MailMessage {
         said: cesr::Digest256::default(),
-        sender_kel_prefix: *sender,
+        sender_kel_prefix: sender,
         source_node_prefix: state.node_prefix,
         recipient_kel_prefix: payload.recipient_kel_prefix,
         blob_digest,
@@ -396,19 +385,21 @@ pub async fn inbox(
     Json(signed): Json<kels_core::SignedRequest<InboxRequest>>,
 ) -> impl IntoResponse {
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
-        return e.into_response();
-    }
+    let verified =
+        match authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
+
+    let sender = match kels_core::single_signer(&verified) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Expected single signer").into_response(),
+    };
 
     let limit = payload.limit.unwrap_or(100).min(1000);
     let offset = payload.offset.unwrap_or(0);
 
-    match state
-        .repo
-        .messages
-        .inbox(&signed.prefix, limit, offset)
-        .await
-    {
+    match state.repo.messages.inbox(&sender, limit, offset).await {
         Ok(messages) => (StatusCode::OK, Json(InboxResponse { messages })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -425,9 +416,16 @@ pub async fn fetch(
     Json(signed): Json<kels_core::SignedRequest<FetchRequest>>,
 ) -> impl IntoResponse {
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
-        return e.into_response();
-    }
+    let verified =
+        match authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
+
+    let sender = match kels_core::single_signer(&verified) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Expected single signer").into_response(),
+    };
 
     // Look up message metadata
     let message = match state.repo.messages.get_by_said(&payload.mail_said).await {
@@ -443,7 +441,7 @@ pub async fn fetch(
     };
 
     // Verify the requester is the recipient
-    if message.recipient_kel_prefix != signed.prefix {
+    if message.recipient_kel_prefix != sender {
         return (StatusCode::FORBIDDEN, "Not the recipient").into_response();
     }
 
@@ -480,9 +478,16 @@ pub async fn ack(
     Json(signed): Json<kels_core::SignedRequest<AckRequest>>,
 ) -> impl IntoResponse {
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
-        return e.into_response();
-    }
+    let verified =
+        match authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await {
+            Ok(v) => v,
+            Err(e) => return e.into_response(),
+        };
+
+    let sender = match kels_core::single_signer(&verified) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Expected single signer").into_response(),
+    };
 
     if payload.saids.len() > 128 {
         return (StatusCode::BAD_REQUEST, "Too many SAIDs (max 128)").into_response();
@@ -492,7 +497,7 @@ pub async fn ack(
     for said in &payload.saids {
         // Verify recipient
         let message = match state.repo.messages.get_by_said(said).await {
-            Ok(Some(m)) if m.recipient_kel_prefix == signed.prefix => m,
+            Ok(Some(m)) if m.recipient_kel_prefix == sender => m,
             _ => continue,
         };
 
@@ -529,21 +534,13 @@ pub async fn ack(
 
 // ==================== Replicate (gossip) ====================
 
-/// Replicate request — gossip-authenticated, stores mail metadata only.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplicateRequest {
-    pub timestamp: i64,
-    pub nonce: cesr::Nonce256,
-    pub message: kels_exchange::MailMessage,
-}
-
 pub async fn replicate(
     State(state): State<Arc<AppState>>,
     Json(signed): Json<kels_core::SignedRequest<ReplicateRequest>>,
 ) -> impl IntoResponse {
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
+    if let Err(e) = authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await
+    {
         return e.into_response();
     }
 
@@ -565,31 +562,24 @@ pub async fn replicate(
 
 // ==================== Remove (gossip) ====================
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoveRequest {
-    pub timestamp: i64,
-    pub nonce: cesr::Nonce256,
-    pub said: cesr::Digest256,
-}
-
 pub async fn remove(
     State(state): State<Arc<AppState>>,
     Json(signed): Json<kels_core::SignedRequest<RemoveRequest>>,
 ) -> impl IntoResponse {
     let payload = &signed.payload;
-    if let Err(e) = authenticate_request(&state, &signed, payload.timestamp, &payload.nonce).await {
+    if let Err(e) = authenticate_request(&state, &signed, &payload.created_at, &payload.nonce).await
+    {
         return e.into_response();
     }
 
     // Delete blob if local
-    if let Ok(Some(message)) = state.repo.messages.get_by_said(&payload.said).await
+    if let Ok(Some(message)) = state.repo.messages.get_by_said(&payload.target_said).await
         && message.source_node_prefix == state.node_prefix
     {
         let _ = state.blob_store.delete(&message.blob_digest).await;
     }
 
-    match state.repo.messages.delete(&payload.said).await {
+    match state.repo.messages.delete(&payload.target_said).await {
         Ok(_) => (StatusCode::OK, "ok").into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

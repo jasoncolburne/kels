@@ -3,7 +3,13 @@
 //! Shared client used by gossip nodes, CLI, and other clients to interact
 //! with the registry service.
 
-use std::{cmp::Ordering, collections::HashSet, future::Future, iter, time::Duration};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    future::Future,
+    iter,
+    time::Duration,
+};
 use tracing::{debug, info, warn};
 
 use cesr::Matter;
@@ -67,23 +73,24 @@ pub trait PeerSigner: Send + Sync {
 }
 
 /// Create a signed request wrapper for the given payload using the provided signer.
+///
+/// The payload must already have its SAID derived (via `derive_said()`).
+/// Signs the SAID's QB64 bytes.
 pub async fn sign_request<T>(
     signer: &dyn PeerSigner,
     payload: &T,
 ) -> Result<SignedRequest<T>, KelsError>
 where
-    T: serde::Serialize + Clone,
+    T: verifiable_storage::SelfAddressed + serde::Serialize + Clone,
 {
-    // Serialize payload to JSON for signing
-    let payload_json = serde_json::to_vec(payload)?;
+    let sign_result = signer.sign(payload.get_said().qb64b()).await?;
 
-    // Sign the payload (returns signature and peer prefix)
-    let sign_result = signer.sign(&payload_json).await?;
+    let mut signatures = HashMap::new();
+    signatures.insert(sign_result.peer_kel_prefix, sign_result.signature);
 
     Ok(SignedRequest {
         payload: payload.clone(),
-        prefix: sign_result.peer_kel_prefix,
-        signature: sign_result.signature,
+        signatures,
     })
 }
 

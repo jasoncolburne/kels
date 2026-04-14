@@ -51,10 +51,13 @@ pub fn compute_blob_digest(blob: &[u8]) -> cesr::Digest256 {
 // ==================== Mail API Request/Response Types ====================
 
 /// Request payload for sending mail.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct SendRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub recipient_kel_prefix: cesr::Digest256,
     /// Base64-encoded ESSR envelope blob.
@@ -62,10 +65,13 @@ pub struct SendRequest {
 }
 
 /// Request payload for checking inbox.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
@@ -79,21 +85,51 @@ pub struct InboxResponse {
 }
 
 /// Request payload for fetching a mail blob.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct FetchRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub mail_said: cesr::Digest256,
 }
 
 /// Request payload for acknowledging (deleting) messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct AckRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub saids: Vec<cesr::Digest256>,
+}
+
+/// Replicate request — gossip-authenticated, stores mail metadata only.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicateRequest {
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    pub nonce: cesr::Nonce256,
+    pub message: MailMessage,
+}
+
+/// Remove request — gossip-authenticated, removes mail metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveRequest {
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: StorageDatetime,
+    pub nonce: cesr::Nonce256,
+    pub target_said: cesr::Digest256,
 }
 
 #[cfg(test)]

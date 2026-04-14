@@ -22,8 +22,10 @@ NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
 # Dummy CESR values for test endpoints that skip auth but still deserialize
-DUMMY_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-DUMMY_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_SAID="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_CREATED_AT="2026-01-01T00:00:00.000000Z"
 
 NODE_A_SAD_URL="http://${NODE_A_SADSTORE_HOST}"
 NODE_B_SAD_URL="http://${NODE_B_SADSTORE_HOST}"
@@ -198,7 +200,7 @@ run_test "Effective SAID non-existent returns 404" \
 
 # Submit pointer with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"kelPrefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\",\"kind\":\"test\"},\"signature\":\"${DUMMY_SIGNATURE}\",\"establishmentSerial\":0}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"kelPrefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\",\"kind\":\"test\"},\"signature\":\"${MOCK_SIGNATURE}\",\"establishmentSerial\":0}]') = '400' ]"
 
 echo ""
 
@@ -226,9 +228,9 @@ echo ""
 echo -e "${CYAN}=== Scenario 4: Listing Endpoints ===${NC}"
 echo ""
 
-PREFIX_LISTING_BODY="{\"payload\":{\"timestamp\":0,\"nonce\":\"test\",\"cursor\":null,\"limit\":null},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
-PREFIX_LISTING_BODY_LIMIT="{\"payload\":{\"timestamp\":0,\"nonce\":\"test2\",\"cursor\":null,\"limit\":5},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
-OBJECT_LISTING_BODY="{\"payload\":{\"timestamp\":0,\"nonce\":\"test3\",\"cursor\":null,\"limit\":null},\"prefix\":\"${DUMMY_PREFIX}\",\"signature\":\"${DUMMY_SIGNATURE}\"}"
+PREFIX_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"test\",\"cursor\":null,\"limit\":null},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
+PREFIX_LISTING_BODY_LIMIT="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"test2\",\"cursor\":null,\"limit\":5},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
+OBJECT_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"test3\",\"cursor\":null,\"limit\":null},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
 
 run_test "List chain prefixes" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"

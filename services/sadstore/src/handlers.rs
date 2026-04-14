@@ -224,13 +224,13 @@ async fn refresh_verified_peers(
 /// Validates timestamp, deduplicates nonce, verifies peer is in the federation
 /// allowlist (via Redis cache), verifies peer's KEL via the KELS service,
 /// and verifies the request signature against the peer's current verification key.
-async fn authenticate_peer_request<T: serde::Serialize>(
+async fn authenticate_peer_request<T: verifiable_storage::SelfAddressed + serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
-    timestamp: i64,
+    created_at: &verifiable_storage::StorageDatetime,
     nonce: &cesr::Nonce256,
-) -> Result<(), (StatusCode, String)> {
-    if !kels_core::validate_timestamp(timestamp, 60) {
+) -> Result<std::collections::HashSet<cesr::Digest256>, (StatusCode, String)> {
+    if !kels_core::validate_timestamp(created_at.inner().timestamp(), 60) {
         return Err((StatusCode::FORBIDDEN, "Request timestamp expired".into()));
     }
 
@@ -251,45 +251,48 @@ async fn authenticate_peer_request<T: serde::Serialize>(
         )
     })?;
 
-    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
-    if peer.is_none() {
-        refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-        if get_verified_peer(redis_conn, &signed_request.prefix)
-            .await?
-            .is_none()
-        {
-            return Err((StatusCode::FORBIDDEN, "Peer not authorized".into()));
+    let kel_source = state.kels_client.as_kel_source().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to build HTTP client: {}", e),
+        )
+    })?;
+
+    let mut verifications = std::collections::HashMap::new();
+    for prefix in signed_request.signatures.keys() {
+        // Check peer allowlist
+        let peer = get_verified_peer(redis_conn, prefix).await?;
+        if peer.is_none() {
+            refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+            if get_verified_peer(redis_conn, prefix).await?.is_none() {
+                continue; // Skip unauthorized peer
+            }
         }
+
+        // Verify peer's KEL via KELS service
+        let verifier = kels_core::KelVerifier::new(prefix);
+        let kel_verification = kels_core::verify_key_events(
+            prefix,
+            &kel_source,
+            verifier,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+        )
+        .await
+        .map_err(|_| (StatusCode::FORBIDDEN, "Peer KEL verification failed".into()))?;
+        verifications.insert(*prefix, kel_verification);
     }
 
-    // Verify peer's KEL via KELS service to extract trusted public key
-    let verifier = kels_core::KelVerifier::new(&signed_request.prefix);
-    let kel_verification = kels_core::verify_key_events(
-        &signed_request.prefix,
-        &state.kels_client.as_kel_source().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to build HTTP client: {}", e),
-            )
-        })?,
-        verifier,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-    )
-    .await
-    .map_err(|_| (StatusCode::FORBIDDEN, "Peer KEL verification failed".into()))?;
+    let verified = signed_request.verify_signatures(&verifications);
 
-    // Verify request signature
-    signed_request
-        .verify_signature(&kel_verification)
-        .map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Signature verification failed".into(),
-            )
-        })?;
+    if verified.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "No valid signatures from authorized peers".into(),
+        ));
+    }
 
-    Ok(())
+    Ok(verified)
 }
 
 // === Health ===
@@ -831,7 +834,7 @@ pub async fn list_sad_objects(
     if let Err((status, msg)) = authenticate_peer_request(
         &state,
         &signed_request,
-        signed_request.payload.timestamp,
+        &signed_request.payload.created_at,
         &signed_request.payload.nonce,
     )
     .await
@@ -861,7 +864,7 @@ pub async fn list_sad_pointer_prefixes(
     if let Err((status, msg)) = authenticate_peer_request(
         &state,
         &signed_request,
-        signed_request.payload.timestamp,
+        &signed_request.payload.created_at,
         &signed_request.payload.nonce,
     )
     .await

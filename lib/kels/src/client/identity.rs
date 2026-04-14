@@ -2,6 +2,7 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use verifiable_storage::SelfAddressed;
 
 use crate::{KelsError, SignedKeyEventPage};
 
@@ -44,9 +45,13 @@ pub enum ManageKelOperation {
     Decommission,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct ManageKelRequest {
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: verifiable_storage::StorageDatetime,
     pub prefix: cesr::Digest256,
     pub operation: ManageKelOperation,
 }
@@ -192,21 +197,20 @@ impl IdentityClient {
     }
 
     /// Manage the identity KEL (rotate, recover, contest, decommission).
-    /// Signs the request internally.
+    /// Signs the request internally. The request must be created via `create()`.
     pub async fn manage_kel(
         &self,
         request: &ManageKelRequest,
     ) -> Result<ManageKelResponse, KelsError> {
         let prefix = self.get_prefix().await?;
 
-        let payload_json = serde_json::to_string(request)
-            .map_err(|e| KelsError::SigningFailed(format!("Failed to serialize request: {}", e)))?;
-        let sign_result = self.sign(&payload_json).await?;
+        // as_ref() returns the QB64 &str — same bytes as qb64b() but the identity
+        // sign endpoint takes &str, not &[u8].
+        let sign_result = self.sign(request.get_said().as_ref()).await?;
 
         let signed = crate::SignedRequest {
             payload: request.clone(),
-            prefix,
-            signature: sign_result.signature,
+            signatures: std::collections::HashMap::from([(prefix, sign_result.signature)]),
         };
 
         let url = format!("{}/api/v1/identity/kel/manage", self.base_url);

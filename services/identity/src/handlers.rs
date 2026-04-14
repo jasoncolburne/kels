@@ -303,8 +303,10 @@ pub async fn manage_kel(
     .await
     .map_err(|e| ApiError::internal(format!("KEL verification failed: {}", e)))?;
 
-    signed
-        .verify_signature(&kel_verification)
+    // Verify signatures and extract single signer
+    let verifications = std::collections::HashMap::from([(prefix, kel_verification)]);
+    let verified = signed.verify_signatures(&verifications);
+    kels_core::single_signer(&verified)
         .map_err(|e| ApiError::bad_request(format!("Signature verification failed: {}", e)))?;
 
     // Release advisory lock. This creates a brief window where the lock is not held,

@@ -1,35 +1,18 @@
 //! Mail service HTTP client.
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use base64::Engine;
 use kels_core::{KeyProvider, PeerSigner, SignedRequest, sign_request};
+use verifiable_storage::SelfAddressed;
 
-use crate::{MailAnnouncement, MailMessage};
+use crate::{MailAnnouncement, MailMessage, RemoveRequest, ReplicateRequest};
 
 /// Mail service API client.
 #[derive(Clone)]
 pub struct MailClient {
     base_url: String,
     client: reqwest::Client,
-}
-
-/// Replicate request payload.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplicateRequest {
-    pub timestamp: i64,
-    pub nonce: cesr::Nonce256,
-    pub message: MailMessage,
-}
-
-/// Remove request payload.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoveRequest {
-    pub timestamp: i64,
-    pub nonce: cesr::Nonce256,
-    pub said: cesr::Digest256,
 }
 
 impl MailClient {
@@ -50,11 +33,10 @@ impl MailClient {
         message: &MailMessage,
         signer: &dyn PeerSigner,
     ) -> Result<(), MailClientError> {
-        let payload = ReplicateRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            message: message.clone(),
-        };
+        let payload =
+            ReplicateRequest::create(kels_core::crypto::generate_nonce(), message.clone())
+                .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
         let signed = sign_request(signer, &payload)
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
@@ -80,11 +62,9 @@ impl MailClient {
         said: &cesr::Digest256,
         signer: &dyn PeerSigner,
     ) -> Result<(), MailClientError> {
-        let payload = RemoveRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            said: *said,
-        };
+        let payload = RemoveRequest::create(kels_core::crypto::generate_nonce(), *said)
+            .map_err(|e| MailClientError::Signing(e.to_string()))?;
+
         let signed = sign_request(signer, &payload)
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
@@ -124,24 +104,21 @@ impl MailClient {
         envelope_bytes: &[u8],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
-        let send_request = crate::SendRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            recipient_kel_prefix: *recipient,
-            blob: base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
-        };
+        let send_request = crate::SendRequest::create(
+            kels_core::crypto::generate_nonce(),
+            *recipient,
+            base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
+        )
+        .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
-        let request_json = serde_json::to_vec(&send_request)
-            .map_err(|e| MailClientError::Signing(e.to_string()))?;
         let signature = provider
-            .sign(&request_json)
+            .sign(send_request.get_said().qb64b())
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
         let signed_request = SignedRequest {
             payload: send_request,
-            prefix: *prefix,
-            signature,
+            signatures: HashMap::from([(*prefix, signature)]),
         };
 
         let resp = self
@@ -165,24 +142,18 @@ impl MailClient {
         prefix: &cesr::Digest256,
         provider: &dyn KeyProvider,
     ) -> Result<crate::InboxResponse, MailClientError> {
-        let inbox_request = crate::InboxRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            limit: None,
-            offset: None,
-        };
+        let inbox_request =
+            crate::InboxRequest::create(kels_core::crypto::generate_nonce(), None, None)
+                .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
-        let request_json = serde_json::to_vec(&inbox_request)
-            .map_err(|e| MailClientError::Signing(e.to_string()))?;
         let signature = provider
-            .sign(&request_json)
+            .sign(inbox_request.get_said().qb64b())
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
         let signed_request = SignedRequest {
             payload: inbox_request,
-            prefix: *prefix,
-            signature,
+            signatures: HashMap::from([(*prefix, signature)]),
         };
 
         let resp = self
@@ -207,23 +178,18 @@ impl MailClient {
         mail_said: &cesr::Digest256,
         provider: &dyn KeyProvider,
     ) -> Result<Vec<u8>, MailClientError> {
-        let fetch_request = crate::FetchRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            mail_said: *mail_said,
-        };
+        let fetch_request =
+            crate::FetchRequest::create(kels_core::crypto::generate_nonce(), *mail_said)
+                .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
-        let request_json = serde_json::to_vec(&fetch_request)
-            .map_err(|e| MailClientError::Signing(e.to_string()))?;
         let signature = provider
-            .sign(&request_json)
+            .sign(fetch_request.get_said().qb64b())
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
         let signed_request = SignedRequest {
             payload: fetch_request,
-            prefix: *prefix,
-            signature,
+            signatures: HashMap::from([(*prefix, signature)]),
         };
 
         let resp = self
@@ -248,23 +214,18 @@ impl MailClient {
         saids: &[cesr::Digest256],
         provider: &dyn KeyProvider,
     ) -> Result<(), MailClientError> {
-        let ack_request = crate::AckRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::crypto::generate_nonce(),
-            saids: saids.to_vec(),
-        };
+        let ack_request =
+            crate::AckRequest::create(kels_core::crypto::generate_nonce(), saids.to_vec())
+                .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
-        let request_json = serde_json::to_vec(&ack_request)
-            .map_err(|e| MailClientError::Signing(e.to_string()))?;
         let signature = provider
-            .sign(&request_json)
+            .sign(ack_request.get_said().qb64b())
             .await
             .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
         let signed_request = SignedRequest {
             payload: ack_request,
-            prefix: *prefix,
-            signature,
+            signatures: HashMap::from([(*prefix, signature)]),
         };
 
         let resp = self
