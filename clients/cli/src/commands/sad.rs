@@ -62,8 +62,8 @@ pub(crate) async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
 pub(crate) async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
-    let records: Vec<kels_core::SignedSadPointer> =
-        serde_json::from_str(&data).context("Failed to parse SignedSadPointer JSON")?;
+    let records: Vec<kels_core::SadPointer> =
+        serde_json::from_str(&data).context("Failed to parse SadPointer JSON")?;
 
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     if repair {
@@ -98,9 +98,10 @@ pub(crate) async fn cmd_sad_chain(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_sad_prefix(kel_prefix: &str, kind: &str) -> Result<()> {
-    let kel_digest = cesr::Digest256::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
-    let prefix = kels_core::compute_sad_pointer_prefix(kel_digest, kind)
+pub(crate) fn cmd_sad_prefix(write_policy: &str, topic: &str) -> Result<()> {
+    let write_policy_digest =
+        cesr::Digest256::from_qb64(write_policy).context("Invalid write policy CESR")?;
+    let prefix = kels_core::compute_sad_pointer_prefix(write_policy_digest, topic)
         .context("Failed to compute SAD prefix")?;
     println!("{}", prefix);
     Ok(())

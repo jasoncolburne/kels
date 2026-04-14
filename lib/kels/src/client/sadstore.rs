@@ -164,10 +164,7 @@ impl SadStoreClient {
     // === Layer 2: Chain Records ===
 
     /// Submit signed SAD records.
-    pub async fn submit_sad_pointer(
-        &self,
-        records: &[crate::SignedSadPointer],
-    ) -> Result<(), KelsError> {
+    pub async fn submit_sad_pointer(&self, records: &[crate::SadPointer]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/pointers", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
@@ -183,10 +180,7 @@ impl SadStoreClient {
     ///
     /// Truncates all records at version >= the first record's version, then inserts
     /// the batch. Used to resolve divergent chains.
-    pub async fn repair_sad_pointer(
-        &self,
-        records: &[crate::SignedSadPointer],
-    ) -> Result<(), KelsError> {
+    pub async fn repair_sad_pointer(&self, records: &[crate::SadPointer]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/pointers?repair=true", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
@@ -335,23 +329,18 @@ impl SadStoreClient {
         }
     }
 
-    /// Verify a SAD record chain and return a verification token.
+    /// Verify a SAD pointer chain and return a verification token.
     ///
-    /// Pages through the full chain, verifies structural integrity (SAID, chain linkage,
-    /// version monotonicity, consistent kel_prefix/kind), then verifies every
-    /// record's signature against the owner's KEL at each record's establishment serial.
-    ///
-    /// The `kels_client` is used to fetch and verify the owner's KEL for
-    /// signature verification.
+    /// Single-pass structural verification: SAID, chain linkage, version
+    /// monotonicity, consistent write_policy/topic. No signature verification —
+    /// authorization is via the anchoring model (consumer-side).
     pub async fn verify_sad_pointer(
         &self,
         prefix: &cesr::Digest256,
-        kels_client: &crate::KelsClient,
     ) -> Result<SadPointerVerification, KelsError> {
         crate::verify_sad_pointer(
             prefix,
             &self.as_sad_source()?,
-            &kels_client.as_kel_source()?,
             crate::page_size(),
             crate::max_pages(),
         )

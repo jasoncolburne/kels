@@ -264,13 +264,13 @@ enum SadCommands {
         prefix: String,
     },
 
-    /// Compute a SAD pointer prefix from a KEL prefix and kind
+    /// Compute a SAD pointer prefix from a write policy SAID and topic
     Prefix {
-        /// The KEL prefix
-        kel_prefix: String,
+        /// The write policy SAID
+        write_policy: String,
 
-        /// The record kind (e.g., "kels/exchange/v1/keys/mlkem")
-        kind: String,
+        /// The topic (e.g., "kels/exchange/v1/keys/mlkem")
+        topic: String,
     },
 }
 
@@ -505,9 +505,10 @@ async fn main() -> Result<()> {
                 commands::sad::cmd_sad_submit(&cli, file, *repair).await
             }
             SadCommands::Pointer { prefix } => commands::sad::cmd_sad_chain(&cli, prefix).await,
-            SadCommands::Prefix { kel_prefix, kind } => {
-                commands::sad::cmd_sad_prefix(kel_prefix, kind)
-            }
+            SadCommands::Prefix {
+                write_policy,
+                topic,
+            } => commands::sad::cmd_sad_prefix(write_policy, topic),
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {

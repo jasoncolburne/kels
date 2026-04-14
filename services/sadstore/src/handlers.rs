@@ -859,11 +859,11 @@ pub struct RecordSubmitQuery {
     pub repair: Option<bool>,
 }
 
-/// Submit signed SAD records — unified endpoint for clients, gossip sync, and repair.
+/// Submit SAD pointer records — unified endpoint for clients, gossip sync, and repair.
 ///
-/// Accepts `Vec<SignedSadPointer>` (with establishment serials from the source node).
-/// Verifies the KEL once, collecting establishment keys for all referenced serials,
-/// then verifies each record's signature and stores all records.
+/// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency,
+/// write_policy required). No signature verification — authorization is via
+/// the anchoring model (consumer-side).
 ///
 /// With `?repair=true`, truncates all records at version >= the first record's version
 /// before inserting. This is the repair mechanism for divergent chains.
@@ -871,7 +871,7 @@ pub async fn submit_sad_pointer(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels_core::SignedSadPointer>>,
+    Json(records): Json<Vec<kels_core::SadPointer>>,
 ) -> impl IntoResponse {
     if records.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
@@ -883,8 +883,8 @@ pub async fn submit_sad_pointer(
     }
 
     // All records must be for the same chain prefix
-    let chain_prefix = &records[0].pointer.prefix;
-    if records.iter().any(|r| r.pointer.prefix != *chain_prefix) {
+    let chain_prefix = &records[0].prefix;
+    if records.iter().any(|r| r.prefix != *chain_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -901,125 +901,30 @@ pub async fn submit_sad_pointer(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // All records must be for the same KEL prefix
-    let kel_prefix_digest = &records[0].pointer.kel_prefix;
-    let kel_prefix = kel_prefix_digest.to_string();
-    if records
-        .iter()
-        .any(|r| r.pointer.kel_prefix != *kel_prefix_digest)
-    {
+    // All records must have the same write_policy
+    let write_policy = &records[0].write_policy;
+    if records.iter().any(|r| r.write_policy != *write_policy) {
         return (
             StatusCode::BAD_REQUEST,
-            "All records must have the same kel_prefix",
+            "All records must have the same write_policy",
         )
             .into_response();
     }
 
     // Verify SAID integrity for all records
     for r in &records {
-        if r.pointer.verify_said().is_err() {
+        if r.verify_said().is_err() {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Record SAID verification failed: {}", r.pointer.said),
-            )
-                .into_response();
-        }
-    }
-
-    // Collect unique establishment serials from both existing chain and incoming batch
-    let mut establishment_serials: std::collections::BTreeSet<u64> =
-        records.iter().map(|r| r.establishment_serial).collect();
-
-    match state
-        .repo
-        .sad_pointers
-        .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
-        .await
-    {
-        Ok(existing) => establishment_serials.extend(existing),
-        Err(e) => {
-            warn!("Failed to fetch existing establishment serials: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    }
-
-    // Verify KEL once, collecting establishment keys for all serials
-    let verifier = match kels_core::KelVerifier::new(kel_prefix_digest)
-        .with_establishment_key_collection(establishment_serials, kels_core::max_collected_keys())
-    {
-        Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("{}", e)).into_response();
-        }
-    };
-
-    let kel_source = match state.kels_client.as_kel_source() {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to build HTTP client: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    let (verification, establishment_keys) =
-        match kels_core::verify_key_events_collecting_establishment_keys(
-            kel_prefix_digest,
-            &kel_source,
-            verifier,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("KEL verification failed: {}", e),
-                )
-                    .into_response();
-            }
-        };
-
-    if verification.is_divergent() {
-        return (StatusCode::CONFLICT, "KEL is divergent").into_response();
-    }
-
-    // Verify each incoming record's signature against its establishment key
-    for r in &records {
-        let Some(verification_key) = establishment_keys.get(&r.establishment_serial) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "No establishment key found for serial {} (record {})",
-                    r.establishment_serial, r.pointer.said
-                ),
-            )
-                .into_response();
-        };
-
-        if verification_key
-            .verify(r.pointer.said.qb64().as_bytes(), &r.signature)
-            .is_err()
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "Signature verification failed for record {} at serial {}",
-                    r.pointer.said, r.establishment_serial
-                ),
+                format!("Record SAID verification failed: {}", r.said),
             )
                 .into_response();
         }
     }
 
     // Verify prefix derivation for v0 if present
-    if let Some(v0) = records.iter().find(|r| r.pointer.version == 0)
-        && v0.pointer.verify_prefix().is_err()
+    if let Some(v0) = records.iter().find(|r| r.version == 0)
+        && v0.verify_prefix().is_err()
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -1028,49 +933,20 @@ pub async fn submit_sad_pointer(
             .into_response();
     }
 
-    // Build (record, signature) pairs for storage
-    let mut pairs = Vec::with_capacity(records.len());
-    for r in &records {
-        let sig_record = match kels_core::SadPointerSignature::create(
-            r.pointer.said,
-            r.signature.clone(),
-            r.establishment_serial,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to create signature record: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
-        };
-        pairs.push((r.pointer.clone(), sig_record));
-    }
-
     let is_repair = query.repair.unwrap_or(false);
 
     let new_record_count;
     let should_publish;
 
     if is_repair {
-        // Repair mode: truncate from the first record's version and replace
-        if let Err(e) = state
-            .repo
-            .sad_pointers
-            .truncate_and_replace(&pairs, &establishment_keys)
-            .await
-        {
+        if let Err(e) = state.repo.sad_pointers.truncate_and_replace(&records).await {
             warn!("Failed to repair chain: {}", e);
             return (StatusCode::CONFLICT, format!("{}", e)).into_response();
         }
-        new_record_count = pairs.len() as u32;
-        should_publish = true; // repairs always store (records validated non-empty above)
+        new_record_count = records.len() as u32;
+        should_publish = true;
     } else {
-        // Normal mode: store batch with full chain verification and advisory lock
-        match state
-            .repo
-            .sad_pointers
-            .save_batch_with_verified_signatures(&pairs, &establishment_keys)
-            .await
-        {
+        match state.repo.sad_pointers.save_batch(&records).await {
             Ok(count) => {
                 new_record_count = count;
                 should_publish = count > 0;

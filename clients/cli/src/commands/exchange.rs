@@ -11,6 +11,12 @@ use verifiable_storage::{Chained, SelfAddressed};
 use crate::Cli;
 use crate::helpers::*;
 
+/// The write_policy for exchange key publication is the KEL prefix itself.
+/// This means only the identity owner can author the pointer chain.
+fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> cesr::Digest256 {
+    *kel_prefix
+}
+
 pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("keys").join(prefix).join("kem.key"))
 }
@@ -49,23 +55,6 @@ pub(crate) fn parse_kem_algorithm(
             _ => Ok(kels_exchange::ML_KEM_768),
         },
     }
-}
-
-async fn current_establishment_serial(cli: &Cli, prefix: &str) -> Result<u64> {
-    let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
-    let kel_store = create_kel_store(cli, prefix).await?;
-    let verification = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&kel_store),
-        &prefix_digest,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        std::iter::empty(),
-    )
-    .await?;
-    verification
-        .last_establishment_event()
-        .map(|e| e.event.serial)
-        .ok_or_else(|| anyhow!("No local KEL found — incept first"))
 }
 
 pub(crate) async fn cmd_exchange_publish_key(
@@ -119,49 +108,31 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     // Create SadPointer chain (v0 inception + v1 with content)
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let write_policy = exchange_write_policy(&prefix_digest);
     let v0 = kels_core::SadPointer::create(
-        prefix_digest,
         kels_exchange::ENCAP_KEY_KIND.to_string(),
         None,
+        None,
+        write_policy,
     )
     .context("Failed to create inception pointer")?;
 
     let mut v1 = v0.clone();
-    v1.content_said = Some(publication.said);
+    v1.content = Some(publication.said);
     v1.increment().context("Failed to increment pointer")?;
 
-    // Sign both records (signature is over the SAID qb64 bytes)
-    let v0_sig = provider.sign(v0.said.qb64().as_bytes()).await?;
-    let v1_sig = provider.sign(v1.said.qb64().as_bytes()).await?;
-
-    let establishment_serial = current_establishment_serial(cli, prefix).await?;
-
-    let signed_records = vec![
-        kels_core::SignedSadPointer {
-            pointer: v0,
-            signature: v0_sig,
-            establishment_serial,
-        },
-        kels_core::SignedSadPointer {
-            pointer: v1,
-            signature: v1_sig,
-            establishment_serial,
-        },
-    ];
+    let records = vec![v0.clone(), v1];
 
     sad_client
-        .submit_sad_pointer(&signed_records)
+        .submit_sad_pointer(&records)
         .await
         .context("Failed to submit pointer chain")?;
 
     println!(
         "{}",
-        format!(
-            "Key published! Chain prefix: {}",
-            signed_records[0].pointer.prefix
-        )
-        .green()
-        .bold()
+        format!("Key published! Chain prefix: {}", records[0].prefix)
+            .green()
+            .bold()
     );
 
     Ok(())
@@ -208,8 +179,9 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     // Fetch current chain to get tip for increment
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
+    let write_policy = exchange_write_policy(&prefix_digest);
     let chain_prefix =
-        kels_core::compute_sad_pointer_prefix(prefix_digest, kels_exchange::ENCAP_KEY_KIND)
+        kels_core::compute_sad_pointer_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
     let page = sad_client
         .fetch_sad_pointer(&chain_prefix, None)
@@ -221,21 +193,11 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .last()
         .ok_or_else(|| anyhow!("No existing key chain found — use publish-key first"))?;
 
-    let mut next = tip.pointer.clone();
-    next.content_said = Some(publication.said);
+    let mut next = tip.clone();
+    next.content = Some(publication.said);
     next.increment().context("Failed to increment pointer")?;
 
-    let sig = provider.sign(next.said.qb64().as_bytes()).await?;
-
-    let establishment_serial = current_establishment_serial(cli, prefix).await?;
-
-    let signed = vec![kels_core::SignedSadPointer {
-        pointer: next,
-        signature: sig,
-        establishment_serial,
-    }];
-
-    sad_client.submit_sad_pointer(&signed).await?;
+    sad_client.submit_sad_pointer(&[next]).await?;
 
     println!("{}", "Key rotated!".green().bold());
     Ok(())
@@ -243,8 +205,9 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
 pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Result<()> {
     let kel_digest = cesr::Digest256::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
+    let write_policy = exchange_write_policy(&kel_digest);
     let chain_prefix =
-        kels_core::compute_sad_pointer_prefix(kel_digest, kels_exchange::ENCAP_KEY_KIND)
+        kels_core::compute_sad_pointer_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
@@ -259,8 +222,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
         .ok_or_else(|| anyhow!("No encapsulation key found for {}", kel_prefix))?;
 
     let content_said = tip
-        .pointer
-        .content_said
+        .content
         .as_ref()
         .ok_or_else(|| anyhow!("Tip record has no content"))?;
 
@@ -306,8 +268,11 @@ pub(crate) async fn cmd_exchange_send(
     // Look up recipient's encapsulation key
     let recipient_digest =
         cesr::Digest256::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
-    let chain_prefix =
-        kels_core::compute_sad_pointer_prefix(recipient_digest, kels_exchange::ENCAP_KEY_KIND)?;
+    let recipient_write_policy = exchange_write_policy(&recipient_digest);
+    let chain_prefix = kels_core::compute_sad_pointer_prefix(
+        recipient_write_policy,
+        kels_exchange::ENCAP_KEY_KIND,
+    )?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client.fetch_sad_pointer(&chain_prefix, None).await?;
     let tip = page
@@ -315,8 +280,7 @@ pub(crate) async fn cmd_exchange_send(
         .last()
         .ok_or_else(|| anyhow!("No encapsulation key for recipient {}", recipient))?;
     let content_said = tip
-        .pointer
-        .content_said
+        .content
         .as_ref()
         .ok_or_else(|| anyhow!("Recipient key chain has no content"))?;
     let value = sad_client.get_sad_object(content_said).await?;

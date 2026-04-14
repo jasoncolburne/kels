@@ -1,4 +1,4 @@
-//! Paginated transfer infrastructure for SAD record chains
+//! Paginated transfer infrastructure for SAD pointer chains
 //!
 //! Mirrors the KEL `transfer_key_events` pattern: `PagedSadSource` / `PagedSadSink`
 //! traits abstract data movement, and `transfer_sad_pointer` is the core private
@@ -6,27 +6,21 @@
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_pointer` — two-pass verify, returns `SadPointerVerification`
+//! - `verify_sad_pointer` — structural verify (no signatures with anchoring model)
 //! - `forward_sad_pointer` — forward without verification, supports delta via `since`
-//!
-//! Verification uses a two-pass approach to stay O(page_size) in memory:
-//! - Pass 1: `transfer_sad_pointer` with structural verifier + NoOp sink (collects serials)
-//! - Between: verify KEL, collect establishment keys for those serials
-//! - Pass 2: `transfer_sad_pointer` without verifier + NoOp sink (signature checks)
 
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
-use super::pointer::{SadPointerPage, SignedSadPointer};
-use super::verification::{SadChainVerifier, collect_establishment_serials};
-use crate::{KelVerifier, KelsError, SadPointerVerification, error::read_error_body};
+use super::pointer::{SadPointer, SadPointerPage, SadPointerVerification};
+use super::verification::SadChainVerifier;
+use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
 
-/// Source of paginated signed SAD pointers (e.g., HTTP client).
+/// Source of paginated SAD pointers (e.g., HTTP client).
 ///
 /// Implementations must return pointers in `version ASC, said ASC` order.
-/// The `bool` return value indicates whether more pages are available (`has_more`).
 #[async_trait]
 pub trait PagedSadSource: Send + Sync {
     async fn fetch_page(
@@ -34,13 +28,13 @@ pub trait PagedSadSource: Send + Sync {
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
         limit: usize,
-    ) -> Result<(Vec<SignedSadPointer>, bool), KelsError>;
+    ) -> Result<(Vec<SadPointer>, bool), KelsError>;
 }
 
-/// Destination for signed SAD pointers (e.g., local SADStore).
+/// Destination for SAD pointers (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
-    async fn store_page(&self, pointers: &[SignedSadPointer]) -> Result<(), KelsError>;
+    async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError>;
 }
 
 // ==================== Sink Implementations ====================
@@ -50,14 +44,14 @@ struct NoOpSadSink;
 
 #[async_trait]
 impl PagedSadSink for NoOpSadSink {
-    async fn store_page(&self, _pointers: &[SignedSadPointer]) -> Result<(), KelsError> {
+    async fn store_page(&self, _pointers: &[SadPointer]) -> Result<(), KelsError> {
         Ok(())
     }
 }
 
 // ==================== HTTP Source / Sink ====================
 
-/// HTTP-based source of paginated signed SAD pointers.
+/// HTTP-based source of paginated SAD pointers.
 pub struct HttpSadSource {
     base_url: String,
     client: reqwest::Client,
@@ -83,7 +77,7 @@ impl PagedSadSource for HttpSadSource {
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
         limit: usize,
-    ) -> Result<(Vec<SignedSadPointer>, bool), KelsError> {
+    ) -> Result<(Vec<SadPointer>, bool), KelsError> {
         let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
         let body = crate::SadPointerPageRequest {
             prefix: *prefix,
@@ -136,7 +130,7 @@ impl HttpSadSink {
 
 #[async_trait]
 impl PagedSadSink for HttpSadSink {
-    async fn store_page(&self, pointers: &[SignedSadPointer]) -> Result<(), KelsError> {
+    async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError> {
         if pointers.is_empty() {
             return Ok(());
         }
@@ -160,9 +154,6 @@ impl PagedSadSink for HttpSadSink {
 // ==================== Core Transfer Function ====================
 
 /// Page through a SAD chain from source to sink, optionally verifying.
-///
-/// When `verifier` is provided, full structural + signature checks run inline
-/// per page. The verifier must see the full chain (no `since` with verification).
 async fn transfer_sad_pointer(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
@@ -187,7 +178,7 @@ async fn transfer_sad_pointer(
             return Ok(());
         }
 
-        since = pointers.last().map(|r| r.pointer.said);
+        since = pointers.last().map(|r| r.said);
 
         if let Some(ref mut v) = verifier {
             v.verify_page(&pointers)?;
@@ -208,45 +199,17 @@ async fn transfer_sad_pointer(
 
 // ==================== Public API ====================
 
-/// Verify a SAD record chain by paging through a source. Returns a verification token.
+/// Verify a SAD pointer chain by paging through a source. Returns a verification token.
 ///
-/// Two-pass verification with O(page_size) memory:
-/// 1. Collect establishment serials by paging through the chain.
-/// 2. Verify KEL with collected serials to obtain establishment keys.
-/// 3. Full verification: page through again with `SadChainVerifier` (structure + signatures).
+/// Single-pass structural verification (no signatures with anchoring model).
+/// Verifies SAID, prefix, topic, write_policy, and chain linkage.
 pub async fn verify_sad_pointer(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
-    kels_source: &(dyn crate::PagedKelSource + Sync),
     page_size: usize,
     max_pages: usize,
 ) -> Result<SadPointerVerification, KelsError> {
-    // Pass 1: collect establishment serials
-    let (establishment_serials, kel_prefix) =
-        collect_establishment_serials(prefix, source, page_size, max_pages).await?;
-
-    // Between: verify KEL and collect establishment keys
-    let kel_verifier = KelVerifier::new(&kel_prefix)
-        .with_establishment_key_collection(establishment_serials, crate::max_collected_keys())?;
-
-    let (kel_verification, establishment_keys): (
-        crate::KelVerification,
-        std::collections::HashMap<u64, cesr::VerificationKey>,
-    ) = crate::verify_key_events_collecting_establishment_keys(
-        &kel_prefix,
-        kels_source,
-        kel_verifier,
-        crate::page_size(),
-        crate::max_pages(),
-    )
-    .await?;
-
-    if kel_verification.is_divergent() {
-        return Err(KelsError::Divergent);
-    }
-
-    // Pass 2: full verification (structure + signatures) with keys
-    let mut verifier = SadChainVerifier::new(prefix, establishment_keys);
+    let mut verifier = SadChainVerifier::new(prefix);
     transfer_sad_pointer(
         prefix,
         source,
@@ -258,17 +221,11 @@ pub async fn verify_sad_pointer(
     )
     .await?;
 
-    let (tip, _kel_prefix) = verifier.finish()?;
-
-    Ok(SadPointerVerification::new(
-        tip.pointer,
-        tip.establishment_serial,
-    ))
+    let tip = verifier.finish()?;
+    Ok(SadPointerVerification::new(tip))
 }
 
 /// Forward SAD pointers from source to sink without verification. Supports delta via `since`.
-///
-/// Used by gossip sync to replicate chains between nodes.
 pub async fn forward_sad_pointer(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),

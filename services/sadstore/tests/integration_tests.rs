@@ -411,18 +411,15 @@ async fn test_submit_record_invalid_said_rejected() {
 
     // Create a record but tamper with the SAID
     let mut pointer = SadPointer::create(
-        test_digest("kel-test-prefix"),
         "kels/v1/test-kind".to_string(),
         None,
+        None,
+        test_digest("kel-test-prefix"),
     )
     .unwrap();
-    pointer.kind = "tampered".to_string(); // Tamper after SAID computation
+    pointer.topic = "tampered".to_string(); // Tamper after SAID computation
 
-    let records = vec![kels_core::SignedSadPointer {
-        pointer,
-        signature: test_signature("fake-sig"),
-        establishment_serial: 0,
-    }];
+    let records = vec![pointer];
 
     let resp = harness
         .client()

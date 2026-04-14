@@ -1,29 +1,21 @@
 -- KELS SADStore initial schema for PostgreSQL
 BEGIN;
 
--- SAD chain pointers table (restructured in a later commit for custody/pointer re-keying)
+-- SAD chain pointers table
 CREATE TABLE IF NOT EXISTS sad_pointers (
     said TEXT PRIMARY KEY,
     prefix TEXT NOT NULL,
     previous TEXT,
     version BIGINT NOT NULL,
-    kel_prefix TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    content_said TEXT
+    topic TEXT NOT NULL,
+    content TEXT,
+    custody TEXT,                    -- SAID of custody SAD
+    write_policy TEXT NOT NULL       -- denormalized from custody for chain keying
 );
 
 CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);
-CREATE INDEX IF NOT EXISTS sad_pointers_prefix_version_idx ON sad_pointers(prefix, version);
-
--- SAD pointer signatures (1:1 with sad_pointers, separate to keep SAID table clean)
-CREATE TABLE IF NOT EXISTS sad_pointer_signatures (
-    said TEXT PRIMARY KEY,
-    pointer_said TEXT NOT NULL REFERENCES sad_pointers(said) ON DELETE CASCADE,
-    signature TEXT NOT NULL,
-    establishment_serial BIGINT NOT NULL
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS sad_pointer_signatures_pointer_said_idx ON sad_pointer_signatures(pointer_said);
+CREATE INDEX IF NOT EXISTS sad_pointers_write_policy_topic_version_idx
+    ON sad_pointers(write_policy, topic, version DESC);
 
 -- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (
@@ -53,12 +45,8 @@ CREATE TABLE IF NOT EXISTS policies (
     immune BOOLEAN
 );
 
--- Archive tables: pure copies of pointers/signatures for repaired chains
+-- Archive tables: copies of pointers for repaired chains
 CREATE TABLE IF NOT EXISTS sad_pointer_archives (LIKE sad_pointers INCLUDING ALL);
-CREATE TABLE IF NOT EXISTS sad_pointer_archive_signatures (LIKE sad_pointer_signatures INCLUDING ALL);
-ALTER TABLE sad_pointer_archive_signatures
-    ADD CONSTRAINT fk_archived_sigs_pointer FOREIGN KEY (pointer_said)
-    REFERENCES sad_pointer_archives(said) ON DELETE CASCADE;
 
 -- Chain repair tracking: each repair is a first-class entity
 CREATE TABLE IF NOT EXISTS sad_pointer_repairs (

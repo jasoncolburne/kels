@@ -6,12 +6,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{collections::HashMap, sync::OnceLock, time::Duration};
+use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
-use cesr::{Matter, SigningKey, VerificationKey, generate_secp256r1};
+use cesr::{SigningKey, VerificationKey, generate_secp256r1};
 use ctor::dtor;
-use kels_core::{SadPointer, SadPointerSignature};
+use kels_core::SadPointer;
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -110,40 +110,22 @@ fn test_keys() -> (VerificationKey, SigningKey) {
     generate_secp256r1().unwrap()
 }
 
-fn keys_map(vk: &VerificationKey) -> HashMap<u64, VerificationKey> {
-    HashMap::from([(0, vk.clone())])
-}
-
-fn sign_pointer(
-    pointer: &SadPointer,
-    sk: &SigningKey,
-    establishment_serial: u64,
-) -> SadPointerSignature {
-    let sig = sk.sign(pointer.said.qb64().as_bytes()).unwrap();
-    SadPointerSignature::create(pointer.said, sig, establishment_serial).unwrap()
-}
-
-/// Build a chain of v0..v(count-1) with valid signatures.
-fn build_chain(
-    kel_prefix: &str,
-    kind: &str,
-    count: usize,
-    sk: &SigningKey,
-) -> Vec<(SadPointer, SadPointerSignature)> {
-    let mut pairs = Vec::with_capacity(count);
+/// Build a chain of v0..v(count-1).
+fn build_chain(kel_prefix: &str, kind: &str, count: usize, _sk: &SigningKey) -> Vec<SadPointer> {
+    let mut pointers = Vec::with_capacity(count);
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut pointer = SadPointer::create(kel_digest, kind.to_string(), None).unwrap();
-    pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
+    let mut pointer = SadPointer::create(kind.to_string(), None, None, kel_digest).unwrap();
+    pointers.push(pointer.clone());
 
     for i in 1..count {
-        pointer.content_said = Some(cesr::Digest256::blake3_256(
+        pointer.content = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),
         ));
         pointer.increment().unwrap();
-        pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
+        pointers.push(pointer.clone());
     }
 
-    pairs
+    pointers
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
@@ -157,9 +139,9 @@ fn build_replacement(
     from_version: u64,
     count: usize,
     content_tag: &str,
-    sk: &SigningKey,
-) -> Vec<(SadPointer, SadPointerSignature)> {
-    let mut pairs = Vec::with_capacity(count);
+    _sk: &SigningKey,
+) -> Vec<SadPointer> {
+    let mut pointers = Vec::with_capacity(count);
 
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
@@ -167,24 +149,25 @@ fn build_replacement(
         prefix: *prefix,
         previous: Some(*previous_said),
         version: from_version,
-        kel_prefix: kel_digest,
-        kind: kind.to_string(),
-        content_said: Some(cesr::Digest256::blake3_256(
+        topic: kind.to_string(),
+        content: Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
+        custody: None,
+        write_policy: kel_digest,
     };
     pointer.derive_said().unwrap();
-    pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
+    pointers.push(pointer.clone());
 
     for i in 1..count {
-        pointer.content_said = Some(cesr::Digest256::blake3_256(
+        pointer.content = Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version + i as u64).as_bytes(),
         ));
         pointer.increment().unwrap();
-        pairs.push((pointer.clone(), sign_pointer(&pointer, sk, 0)));
+        pointers.push(pointer.clone());
     }
 
-    pairs
+    pointers
 }
 
 // ==================== Tests ====================
@@ -213,21 +196,16 @@ async fn test_save_batch_and_truncate_and_replace() {
         return;
     };
 
-    let (vk, sk) = test_keys();
-    let keys = keys_map(&vk);
+    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_test_kel_1______________________________";
     let kind = "kels/v1/test-repair";
 
     // Save a 5-record chain: v0..v4
     let chain = build_chain(kel_prefix, kind, 5, &sk);
-    let count = repo
-        .sad_pointers
-        .save_batch_with_verified_signatures(&chain, &keys)
-        .await
-        .unwrap();
+    let count = repo.sad_pointers.save_batch(&chain).await.unwrap();
     assert_eq!(count, 5);
 
-    let prefix = chain[0].0.prefix;
+    let prefix = chain[0].prefix;
 
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
@@ -236,11 +214,11 @@ async fn test_save_batch_and_truncate_and_replace() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(effective, chain[4].0.said);
+    assert_eq!(effective, chain[4].said);
     assert!(!divergent);
 
     // Build replacement from v3 (replacing v3 and v4 with 2 new records)
-    let previous_said = &chain[2].0.said; // v2 is the last kept record
+    let previous_said = &chain[2].said; // v2 is the last kept record
     let replacement = build_replacement(
         previous_said,
         &prefix,
@@ -253,7 +231,7 @@ async fn test_save_batch_and_truncate_and_replace() {
     );
 
     repo.sad_pointers
-        .truncate_and_replace(&replacement, &keys)
+        .truncate_and_replace(&replacement)
         .await
         .unwrap();
 
@@ -264,7 +242,7 @@ async fn test_save_batch_and_truncate_and_replace() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(effective, replacement[1].0.said);
+    assert_eq!(effective, replacement[1].said);
     assert!(!divergent);
 
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
@@ -275,10 +253,10 @@ async fn test_save_batch_and_truncate_and_replace() {
         .unwrap();
     assert_eq!(stored.len(), 5);
     // First 3 unchanged, last 2 are replacements
-    assert_eq!(stored[0].pointer.said, chain[0].0.said);
-    assert_eq!(stored[2].pointer.said, chain[2].0.said);
-    assert_eq!(stored[3].pointer.said, replacement[0].0.said);
-    assert_eq!(stored[4].pointer.said, replacement[1].0.said);
+    assert_eq!(stored[0].said, chain[0].said);
+    assert_eq!(stored[2].said, chain[2].said);
+    assert_eq!(stored[3].said, replacement[0].said);
+    assert_eq!(stored[4].said, replacement[1].said);
 
     // Verify repair audit record was created
     let (repairs, has_more) = repo
@@ -300,9 +278,9 @@ async fn test_save_batch_and_truncate_and_replace() {
     assert_eq!(archived.len(), 2); // v3 and v4 were archived
     assert!(!has_more);
     // Archived records should be the original v3 and v4
-    let archived_saids: Vec<&str> = archived.iter().map(|r| r.pointer.said.as_ref()).collect();
-    assert!(archived_saids.contains(&chain[3].0.said.as_ref()));
-    assert!(archived_saids.contains(&chain[4].0.said.as_ref()));
+    let archived_saids: Vec<&str> = archived.iter().map(|r| r.said.as_ref()).collect();
+    assert!(archived_saids.contains(&chain[3].said.as_ref()));
+    assert!(archived_saids.contains(&chain[4].said.as_ref()));
 }
 
 #[tokio::test]
@@ -312,72 +290,15 @@ async fn test_truncate_and_replace_empty_batch_fails() {
         return;
     };
 
-    let (vk, _) = test_keys();
-    let keys = keys_map(&vk);
-    let empty: Vec<(SadPointer, SadPointerSignature)> = Vec::new();
+    let empty: Vec<SadPointer> = Vec::new();
 
-    let result = repo.sad_pointers.truncate_and_replace(&empty, &keys).await;
+    let result = repo.sad_pointers.truncate_and_replace(&empty).await;
     assert!(result.is_err());
 }
 
-#[tokio::test]
-#[serial]
-async fn test_truncate_and_replace_bad_signature_rolls_back() {
-    let Some(repo) = connect_repo().await else {
-        return;
-    };
-
-    let (vk, sk) = test_keys();
-    let (_, wrong_sk) = test_keys(); // different key for bad signature
-    let keys = keys_map(&vk);
-    let kel_prefix = "Erepair_bad_sig_kel_____________________________";
-    let kind = "kels/v1/test-badsig";
-
-    // Save a 3-record chain
-    let chain = build_chain(kel_prefix, kind, 3, &sk);
-    repo.sad_pointers
-        .save_batch_with_verified_signatures(&chain, &keys)
-        .await
-        .unwrap();
-
-    let prefix = chain[0].0.prefix;
-
-    // Build replacement signed with the wrong key
-    let replacement = build_replacement(
-        &chain[1].0.said,
-        &prefix,
-        kel_prefix,
-        kind,
-        2,
-        1,
-        "bad_sig",
-        &wrong_sk,
-    );
-
-    // Should fail — signature won't verify
-    let result = repo
-        .sad_pointers
-        .truncate_and_replace(&replacement, &keys)
-        .await;
-    assert!(result.is_err());
-
-    // Original chain should be intact (transaction rolled back)
-    let stored = repo
-        .sad_pointers
-        .get_stored(prefix.as_ref(), None, None)
-        .await
-        .unwrap();
-    assert_eq!(stored.len(), 3);
-    assert_eq!(stored[2].pointer.said, chain[2].0.said);
-
-    // No repair record should exist
-    let (repairs, _) = repo
-        .sad_pointers
-        .get_repairs(prefix.as_ref(), 10, 0)
-        .await
-        .unwrap();
-    assert!(repairs.is_empty());
-}
+// Note: the previous test_truncate_and_replace_bad_signature_rolls_back test
+// was removed because signatures are no longer part of the SadPointer model.
+// Authorization is now via the anchoring model (consumer-side).
 
 #[tokio::test]
 #[serial]
@@ -386,23 +307,19 @@ async fn test_get_repairs_pagination() {
         return;
     };
 
-    let (vk, sk) = test_keys();
-    let keys = keys_map(&vk);
+    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_pagination_kel__________________________";
     let kind = "kels/v1/test-paginate";
 
     // Save a 5-record chain
     let chain = build_chain(kel_prefix, kind, 5, &sk);
-    repo.sad_pointers
-        .save_batch_with_verified_signatures(&chain, &keys)
-        .await
-        .unwrap();
+    repo.sad_pointers.save_batch(&chain).await.unwrap();
 
-    let prefix = chain[0].0.prefix;
+    let prefix = chain[0].prefix;
 
     // First repair: replace from v4
     let r1 = build_replacement(
-        &chain[3].0.said,
+        &chain[3].said,
         &prefix,
         kel_prefix,
         kind,
@@ -411,14 +328,11 @@ async fn test_get_repairs_pagination() {
         "repair_a",
         &sk,
     );
-    repo.sad_pointers
-        .truncate_and_replace(&r1, &keys)
-        .await
-        .unwrap();
+    repo.sad_pointers.truncate_and_replace(&r1).await.unwrap();
 
     // Second repair: replace from v4 again (replacing the first replacement)
     let r2 = build_replacement(
-        &chain[3].0.said,
+        &chain[3].said,
         &prefix,
         kel_prefix,
         kind,
@@ -427,10 +341,7 @@ async fn test_get_repairs_pagination() {
         "repair_b",
         &sk,
     );
-    repo.sad_pointers
-        .truncate_and_replace(&r2, &keys)
-        .await
-        .unwrap();
+    repo.sad_pointers.truncate_and_replace(&r2).await.unwrap();
 
     // Paginate with limit=1
     let (page1, has_more1) = repo
@@ -460,21 +371,17 @@ async fn test_get_repair_records_pagination() {
         return;
     };
 
-    let (vk, sk) = test_keys();
-    let keys = keys_map(&vk);
+    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_rec_paginate_kel________________________";
     let kind = "kels/v1/test-recpage";
 
     // Save a 4-record chain, replace from v1 (archiving v1, v2, v3 = 3 records)
     let chain = build_chain(kel_prefix, kind, 4, &sk);
-    repo.sad_pointers
-        .save_batch_with_verified_signatures(&chain, &keys)
-        .await
-        .unwrap();
+    repo.sad_pointers.save_batch(&chain).await.unwrap();
 
-    let prefix = chain[0].0.prefix;
+    let prefix = chain[0].prefix;
     let replacement = build_replacement(
-        &chain[0].0.said,
+        &chain[0].said,
         &prefix,
         kel_prefix,
         kind,
@@ -484,7 +391,7 @@ async fn test_get_repair_records_pagination() {
         &sk,
     );
     repo.sad_pointers
-        .truncate_and_replace(&replacement, &keys)
+        .truncate_and_replace(&replacement)
         .await
         .unwrap();
 
@@ -537,28 +444,24 @@ async fn test_truncate_and_replace_from_v0() {
         return;
     };
 
-    let (vk, sk) = test_keys();
-    let keys = keys_map(&vk);
+    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_full_replace_kel________________________";
     let kind = "kels/v1/test-fullrepl";
 
     // Save a 3-record chain
     let chain = build_chain(kel_prefix, kind, 3, &sk);
-    repo.sad_pointers
-        .save_batch_with_verified_signatures(&chain, &keys)
-        .await
-        .unwrap();
+    repo.sad_pointers.save_batch(&chain).await.unwrap();
 
-    let prefix = chain[0].0.prefix;
+    let prefix = chain[0].prefix;
 
     // Replace the entire chain from v0
     // For v0 replacement, the record needs no previous and must re-derive the prefix
     let new_chain = build_chain(kel_prefix, kind, 2, &sk);
     // The new chain has the same prefix (deterministic from kel_prefix + kind)
-    assert_eq!(new_chain[0].0.prefix, prefix);
+    assert_eq!(new_chain[0].prefix, prefix);
 
     repo.sad_pointers
-        .truncate_and_replace(&new_chain, &keys)
+        .truncate_and_replace(&new_chain)
         .await
         .unwrap();
 
@@ -569,8 +472,8 @@ async fn test_truncate_and_replace_from_v0() {
         .await
         .unwrap();
     assert_eq!(stored.len(), 2);
-    assert_eq!(stored[0].pointer.said, new_chain[0].0.said);
-    assert_eq!(stored[1].pointer.said, new_chain[1].0.said);
+    assert_eq!(stored[0].said, new_chain[0].said);
+    assert_eq!(stored[1].said, new_chain[1].said);
 
     // Repair should show 1 archived record (v2) — v0 and v1 are identical
     // and deduped, so only the tail beyond the replacement chain gets archived.
