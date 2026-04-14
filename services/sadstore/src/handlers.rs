@@ -51,6 +51,85 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
     });
 }
 
+/// Default TTL reaper interval in seconds. Override with `SADSTORE_TTL_REAPER_INTERVAL`.
+fn ttl_reaper_interval_secs() -> u64 {
+    kels_core::env_usize("SADSTORE_TTL_REAPER_INTERVAL", 60) as u64
+}
+
+/// Max expired records to reap per cycle.
+const TTL_REAPER_BATCH_SIZE: usize = 100;
+
+/// Spawn a background task that periodically deletes TTL-expired records.
+/// Queries custodies with TTL, then finds expired sad_objects for each,
+/// deletes from DB and MinIO.
+pub fn spawn_ttl_reaper(state: Arc<AppState>) {
+    let interval = Duration::from_secs(ttl_reaper_interval_secs());
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(e) = reap_expired_records(&state).await {
+                warn!("TTL reaper error: {}", e);
+            }
+        }
+    });
+}
+
+async fn reap_expired_records(
+    state: &AppState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use verifiable_storage_postgres::QueryExecutor;
+
+    // Fetch all custodies with TTL set
+    let query = verifiable_storage_postgres::Query::<kels_core::Custody>::for_table("custodies")
+        .filter(verifiable_storage_postgres::Filter::IsNotNull(
+            "ttl".to_string(),
+        ))
+        .limit(TTL_REAPER_BATCH_SIZE as u64);
+    let custodies: Vec<kels_core::Custody> = state.repo.custodies.pool.fetch(query).await?;
+
+    let now = verifiable_storage::StorageDatetime::now();
+
+    for custody in &custodies {
+        let Some(ttl) = custody.ttl else { continue };
+
+        // Compute the expiry threshold: records created before this time are expired
+        let threshold: verifiable_storage::StorageDatetime =
+            (*now.inner() - chrono::Duration::seconds(ttl as i64)).into();
+
+        // Find expired records for this custody
+        let expired_query =
+            verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
+                "sad_objects",
+            )
+            .eq("custody", custody.said.as_ref())
+            .lt("created_at", threshold)
+            .limit(TTL_REAPER_BATCH_SIZE as u64);
+        let expired: Vec<kels_core::SadObjectEntry> =
+            state.repo.sad_objects.pool.fetch(expired_query).await?;
+
+        for entry in &expired {
+            // Delete from DB
+            let delete =
+                verifiable_storage::Delete::<kels_core::SadObjectEntry>::for_table("sad_objects")
+                    .eq("sad_said", entry.sad_said.as_ref());
+            state.repo.sad_objects.pool.delete(delete).await?;
+
+            // Delete from MinIO (best-effort — if this fails, orphaned object
+            // is harmless and will be cleaned up on next cycle or manually)
+            if let Err(e) = state.object_store.delete(&entry.sad_said).await {
+                warn!(
+                    "Failed to delete expired object {} from MinIO: {}",
+                    entry.sad_said, e
+                );
+            } else {
+                debug!("Reaped expired SAD object: {}", entry.sad_said);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
     kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY", 8) as u32
