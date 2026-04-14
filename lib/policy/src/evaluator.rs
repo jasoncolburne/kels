@@ -441,19 +441,16 @@ fn evaluate_signed_node<'a>(
                 Ok(endorsed)
             }
 
-            PolicyNode::Delegate(delegator, _delegate) => {
-                // For signed policy evaluation, delegation is not checked —
-                // only the delegator's prefix membership matters.
-                let endorsed = verified_prefixes.contains(delegator);
-                endorsements.insert(
-                    *delegator,
-                    if endorsed {
-                        EndorsementStatus::Endorsed
-                    } else {
-                        EndorsementStatus::NotEndorsed
-                    },
-                );
-                Ok(endorsed)
+            PolicyNode::Delegate(_, _) => {
+                // Delegate nodes are an issuance-side concern for scaling credential
+                // issuance via delegation chains (see #77 — delegated signing servers).
+                // They are not meaningful in access-control (readPolicy) context where
+                // we evaluate against a verified prefix set from a SignedRequest.
+                Err(PolicyError::EvaluationError(
+                    "delegate() nodes are not supported in signed policy evaluation \
+                     — delegation is an issuance concern, not an access-control concern"
+                        .to_string(),
+                ))
             }
 
             PolicyNode::Weighted(min_weight, pairs) => {
@@ -1052,6 +1049,28 @@ mod tests {
             .unwrap();
         assert!(result.is_satisfied);
         assert!(result.nested_verifications.contains_key(&inner.said));
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_rejects_delegate_nodes() {
+        // Delegate is an issuance-side concern (#77 — delegated signing servers).
+        // It is not meaningful for access-control (readPolicy) evaluation.
+        let delegator = test_digest("delegator");
+        let delegate = test_digest("delegate");
+        let policy =
+            Policy::build(&format!("delegate({delegator}, {delegate})"), None, false).unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::from([delegator, delegate]);
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("delegate()"),
+            "Expected delegate rejection error, got: {}",
+            err
+        );
     }
 
     #[tokio::test]

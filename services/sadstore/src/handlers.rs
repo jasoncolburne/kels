@@ -108,11 +108,12 @@ async fn reap_expired_records(
             state.repo.sad_objects.pool.fetch(expired_query).await?;
 
         for entry in &expired {
-            // Delete from DB
-            let delete =
-                verifiable_storage::Delete::<kels_core::SadObjectEntry>::for_table("sad_objects")
-                    .eq("sad_said", entry.sad_said.as_ref());
-            state.repo.sad_objects.pool.delete(delete).await?;
+            // Delete from DB (via repository method for consistency with `once` path)
+            state
+                .repo
+                .sad_objects
+                .delete_by_sad_said(&entry.sad_said)
+                .await?;
 
             // Delete from MinIO (best-effort — if this fails, orphaned object
             // is harmless and will be cleaned up on next cycle or manually)
@@ -532,7 +533,8 @@ enum GossipPolicy {
 /// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
 /// gossip not yet implemented — records are accepted but not replicated).
 ///
-/// Fails open: if we can't resolve the custody or node set, broadcast to be safe.
+/// Fails secure: if `nodes` is set but can't be resolved, skip gossip
+/// (LocalOnly) to avoid leaking restricted data to unauthorized peers.
 async fn resolve_gossip_policy(
     custody_said: &Option<cesr::Digest256>,
     state: &AppState,
@@ -550,7 +552,9 @@ async fn resolve_gossip_policy(
         return GossipPolicy::BroadcastAll;
     };
 
-    // Resolve the NodeSet from MinIO to check prefix count
+    // Resolve the NodeSet from MinIO to check prefix count.
+    // Fail secure: if resolution fails, skip gossip rather than broadcasting
+    // restricted data to all peers.
     match state.object_store.get(&nodes_said).await {
         Ok(data) => {
             if let Ok(node_set) = serde_json::from_slice::<kels_core::NodeSet>(&data) {
@@ -569,13 +573,19 @@ async fn resolve_gossip_policy(
                     GossipPolicy::LocalOnly
                 }
             } else {
-                warn!("Failed to parse NodeSet {}", nodes_said);
-                GossipPolicy::BroadcastAll
+                warn!(
+                    "Failed to parse NodeSet {} — skipping gossip (fail secure)",
+                    nodes_said
+                );
+                GossipPolicy::LocalOnly
             }
         }
         Err(e) => {
-            warn!("Failed to resolve NodeSet {}: {}", nodes_said, e);
-            GossipPolicy::BroadcastAll
+            warn!(
+                "Failed to resolve NodeSet {} — skipping gossip (fail secure): {}",
+                nodes_said, e
+            );
+            GossipPolicy::LocalOnly
         }
     }
 }

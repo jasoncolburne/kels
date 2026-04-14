@@ -375,9 +375,15 @@ async fn test_chain_fetch_not_found() {
     };
 
     let nonexistent = test_digest("nonexistent-chain-prefix");
+    let body = kels_core::SadPointerPageRequest {
+        prefix: nonexistent,
+        since: None,
+        limit: None,
+    };
     let resp = harness
         .client()
-        .get(harness.url(&format!("/api/v1/sad/pointers/{}", nonexistent)))
+        .post(harness.url("/api/v1/sad/pointers/fetch"))
+        .json(&body)
         .send()
         .await
         .unwrap();
@@ -391,12 +397,13 @@ async fn test_effective_said_not_found() {
     };
 
     let nonexistent = test_digest("nonexistent-chain-prefix");
+    let body = kels_core::SadPointerEffectiveSaidRequest {
+        prefix: nonexistent,
+    };
     let resp = harness
         .client()
-        .get(harness.url(&format!(
-            "/api/v1/sad/pointers/{}/effective-said",
-            nonexistent
-        )))
+        .post(harness.url("/api/v1/sad/pointers/effective-said"))
+        .json(&body)
         .send()
         .await
         .unwrap();
