@@ -1,3 +1,4 @@
+mod custody;
 mod object;
 mod pointer;
 mod repair;
@@ -5,6 +6,7 @@ mod request;
 mod sync;
 mod verification;
 
+pub use custody::*;
 pub use object::*;
 pub use pointer::*;
 pub use repair::*;

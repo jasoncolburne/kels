@@ -7,38 +7,46 @@ CREATE TABLE IF NOT EXISTS sad_pointers (
     prefix TEXT NOT NULL,
     previous TEXT,
     version BIGINT NOT NULL,
-    kel_prefix TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    content_said TEXT
+    topic TEXT NOT NULL,
+    content TEXT,
+    custody TEXT,                    -- SAID of custody SAD
+    write_policy TEXT NOT NULL       -- denormalized from custody for chain keying
 );
 
 CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);
-CREATE INDEX IF NOT EXISTS sad_pointers_prefix_version_idx ON sad_pointers(prefix, version);
-
--- SAD pointer signatures (1:1 with sad_pointers, separate to keep SAID table clean)
-CREATE TABLE IF NOT EXISTS sad_pointer_signatures (
-    said TEXT PRIMARY KEY,
-    pointer_said TEXT NOT NULL REFERENCES sad_pointers(said) ON DELETE CASCADE,
-    signature TEXT NOT NULL,
-    establishment_serial BIGINT NOT NULL
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS sad_pointer_signatures_pointer_said_idx ON sad_pointer_signatures(pointer_said);
+CREATE INDEX IF NOT EXISTS sad_pointers_write_policy_topic_version_idx
+    ON sad_pointers(write_policy, topic, version DESC);
 
 -- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (
     said TEXT PRIMARY KEY,
-    sad_said TEXT NOT NULL
+    sad_said TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    custody TEXT                     -- SAID of custody SAD (nullable, absent = no custody)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS sad_objects_sad_said_idx ON sad_objects(sad_said);
 
--- Archive tables: pure copies of pointers/signatures for repaired chains
+-- Cached custody SADs for fetch-time hot path (one row per distinct custody config)
+CREATE TABLE IF NOT EXISTS custodies (
+    said TEXT PRIMARY KEY,
+    write_policy TEXT,
+    read_policy TEXT,
+    ttl BIGINT,
+    once BOOLEAN,
+    nodes TEXT,                      -- SAID of NodeSet SAD
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Cached policy SADs for evaluation without MinIO round-trips
+CREATE TABLE IF NOT EXISTS policies (
+    said TEXT PRIMARY KEY,
+    policy_data TEXT NOT NULL,       -- serialized policy for evaluation
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Archive tables: copies of pointers for repaired chains
 CREATE TABLE IF NOT EXISTS sad_pointer_archives (LIKE sad_pointers INCLUDING ALL);
-CREATE TABLE IF NOT EXISTS sad_pointer_archive_signatures (LIKE sad_pointer_signatures INCLUDING ALL);
-ALTER TABLE sad_pointer_archive_signatures
-    ADD CONSTRAINT fk_archived_sigs_pointer FOREIGN KEY (pointer_said)
-    REFERENCES sad_pointer_archives(said) ON DELETE CASCADE;
 
 -- Chain repair tracking: each repair is a first-class entity
 CREATE TABLE IF NOT EXISTS sad_pointer_repairs (
