@@ -590,7 +590,7 @@ pub async fn remove(
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
-    base64::engine::general_purpose::STANDARD
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(data)
         .map_err(|e| e.to_string())
 }

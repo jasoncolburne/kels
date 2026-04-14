@@ -107,7 +107,7 @@ impl MailClient {
         let send_request = crate::SendRequest::create(
             kels_core::crypto::generate_nonce(),
             *recipient,
-            base64::engine::general_purpose::STANDARD.encode(envelope_bytes),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(envelope_bytes),
         )
         .map_err(|e| MailClientError::Signing(e.to_string()))?;
 
