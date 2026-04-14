@@ -18,7 +18,7 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use tracing::{debug, warn};
-use verifiable_storage::{Chained, SelfAddressed};
+use verifiable_storage::{Chained, QueryExecutor, SelfAddressed};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
@@ -516,9 +516,177 @@ async fn extract_and_cache_custody(
 
 pub async fn fetch_sad_object(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    body: Bytes,
 ) -> impl IntoResponse {
-    match state.object_store.get(&request.said).await {
+    // Try parsing as SignedRequest<SadFetchRequest> first, fall back to SadRequest
+    let (object_said, signed_request) = match parse_fetch_request(&body) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+
+    // Look up the record in sad_objects to get custody info
+    let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            // Not tracked in index — try MinIO directly (legacy or uncustodied)
+            return serve_from_minio(&state.object_store, &object_said).await;
+        }
+        Err(e) => {
+            warn!("Failed to look up SAD object: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+        }
+    };
+
+    // No custody → serve directly
+    let Some(custody_said) = entry.custody else {
+        return serve_from_minio(&state.object_store, &object_said).await;
+    };
+
+    // Fetch cached custody
+    let custody = match state.repo.custodies.get_by_said(&custody_said).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            warn!("Custody {} referenced but not cached", custody_said);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "custody not found").into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch custody: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+        }
+    };
+
+    // readPolicy enforcement
+    if let Some(ref record_read_policy) = custody.read_policy {
+        let Some(ref signed) = signed_request else {
+            return (
+                StatusCode::FORBIDDEN,
+                "readPolicy requires authenticated request",
+            )
+                .into_response();
+        };
+
+        // Signer must commit to which readPolicy they're satisfying
+        let request_read_policy = signed.payload.read_policy.as_ref();
+        if request_read_policy != Some(record_read_policy) {
+            return (
+                StatusCode::FORBIDDEN,
+                "read_policy mismatch or missing in request",
+            )
+                .into_response();
+        }
+
+        // Verify signatures and evaluate policy
+        let verified = match authenticate_fetch_request(&state, signed).await {
+            Ok(v) => v,
+            Err(response) => return response,
+        };
+
+        let policy_resolver = SadStorePolicyResolver {
+            policies: state.repo.clone(),
+            object_store: state.object_store.clone(),
+        };
+
+        match kels_policy::evaluate_signed_policy(record_read_policy, &verified, &policy_resolver)
+            .await
+        {
+            Ok(v) if v.is_satisfied => {}
+            Ok(_) => {
+                return (StatusCode::FORBIDDEN, "readPolicy not satisfied").into_response();
+            }
+            Err(e) => {
+                warn!("Policy evaluation failed: {}", e);
+                return (StatusCode::FORBIDDEN, "policy evaluation failed").into_response();
+            }
+        }
+    }
+
+    // TTL check (per-record: sad_objects.created_at + custodies.ttl)
+    if let Some(ttl) = custody.ttl {
+        let created = entry.created_at.inner().timestamp();
+        let now = verifiable_storage::StorageDatetime::now()
+            .inner()
+            .timestamp();
+        if now > created + ttl as i64 {
+            return (StatusCode::NOT_FOUND, "expired").into_response();
+        }
+    }
+
+    // once: atomic delete — if we delete the row, we serve; if count=0, already consumed
+    if custody.once == Some(true) {
+        let delete =
+            verifiable_storage::Delete::<kels_core::SadObjectEntry>::for_table("sad_objects")
+                .eq("sad_said", object_said.as_ref());
+        match state.repo.sad_objects.pool.delete(delete).await {
+            Ok(1) => {
+                // We consumed it — serve from MinIO. If MinIO fetch fails after
+                // the PG delete, the record becomes inaccessible. Acceptable for
+                // ephemeral records — that's the semantics of once.
+                return serve_from_minio(&state.object_store, &object_said).await;
+            }
+            Ok(0) => {
+                return (StatusCode::NOT_FOUND, "already consumed").into_response();
+            }
+            Ok(_) => {
+                warn!("Unexpected delete count for once object {}", object_said);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+            Err(e) => {
+                warn!("Failed to delete once object: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+        }
+    }
+
+    serve_from_minio(&state.object_store, &object_said).await
+}
+
+/// Parse a fetch request body as either `SignedRequest<SadFetchRequest>` or `SadRequest`.
+#[allow(clippy::result_large_err)]
+fn parse_fetch_request(
+    body: &[u8],
+) -> Result<
+    (
+        cesr::Digest256,
+        Option<kels_core::SignedRequest<kels_core::SadFetchRequest>>,
+    ),
+    axum::response::Response,
+> {
+    // Try authenticated request first
+    if let Ok(signed) =
+        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SadFetchRequest>>(body)
+    {
+        return Ok((signed.payload.object_said, Some(signed)));
+    }
+
+    // Fall back to unauthenticated request
+    if let Ok(request) = serde_json::from_slice::<kels_core::SadRequest>(body) {
+        return Ok((request.said, None));
+    }
+
+    Err((StatusCode::BAD_REQUEST, "Invalid request body").into_response())
+}
+
+/// Verify signatures on a fetch request and return verified prefixes.
+async fn authenticate_fetch_request(
+    state: &AppState,
+    signed: &kels_core::SignedRequest<kels_core::SadFetchRequest>,
+) -> Result<std::collections::HashSet<cesr::Digest256>, axum::response::Response> {
+    authenticate_peer_request(
+        state,
+        signed,
+        &signed.payload.created_at,
+        &signed.payload.nonce,
+    )
+    .await
+    .map_err(|(status, msg)| (status, msg).into_response())
+}
+
+/// Serve a SAD object directly from MinIO.
+async fn serve_from_minio(
+    object_store: &ObjectStore,
+    said: &cesr::Digest256,
+) -> axum::response::Response {
+    match object_store.get(said).await {
         Ok(data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -532,6 +700,45 @@ pub async fn fetch_sad_object(
             warn!("Failed to retrieve SAD object: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
+    }
+}
+
+/// Policy resolver backed by the Postgres `policies` cache with MinIO fallback.
+/// Fail secure: if a policy can't be resolved, return an error.
+struct SadStorePolicyResolver {
+    policies: Arc<SadStoreRepository>,
+    object_store: Arc<ObjectStore>,
+}
+
+#[async_trait::async_trait]
+impl kels_policy::PolicyResolver for SadStorePolicyResolver {
+    async fn resolve_policy(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<kels_policy::Policy, kels_policy::PolicyError> {
+        // Hot path: Postgres cache
+        if let Ok(Some(policy)) = self.policies.policies.get_by_said(said).await {
+            return Ok(policy);
+        }
+
+        // Fallback: MinIO
+        let data = self
+            .object_store
+            .get(said)
+            .await
+            .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
+
+        let policy: kels_policy::Policy = serde_json::from_slice(&data)
+            .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
+
+        policy.verify_said().map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("SAID verification failed: {}", e))
+        })?;
+
+        // Cache for next time (best-effort)
+        let _ = self.policies.policies.store(&policy).await;
+
+        Ok(policy)
     }
 }
 
