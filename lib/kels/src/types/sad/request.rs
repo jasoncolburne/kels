@@ -17,12 +17,16 @@ pub struct SadFetchRequest {
     pub object_said: cesr::Digest256,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_policy: Option<cesr::Digest256>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
 }
 
 /// Request body for fetching or checking existence of a SAD object or pointer by SAID.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRequest {
     pub said: cesr::Digest256,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
 }
 
 /// Request body for fetching a page of SAD pointer chain records.
