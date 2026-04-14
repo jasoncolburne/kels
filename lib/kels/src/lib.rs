@@ -40,6 +40,7 @@ pub mod hardware;
 pub mod builder;
 pub mod client;
 pub mod crypto;
+pub mod disclosure;
 pub mod error;
 pub mod merge;
 pub mod repository;
@@ -73,6 +74,7 @@ pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
+pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};

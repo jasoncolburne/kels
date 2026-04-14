@@ -2,60 +2,40 @@
 
 ## Build & Verify
 
-- Run `make` to verify changes (format, deny, clippy, test, build). Never use naked cargo commands. Only run `make` when Rust source files (`.rs`), `Cargo.toml`, or `deny.toml` were modified — skip it for documentation, shell scripts, garden configs, and manifest templates.
-- Make targets exist for all cargo commands (`make fmt`, `make clippy`, `make test`, etc.).
-- `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build` — in that order.
-- `make coverage` produces per-file coverage with `cargo-llvm-cov`.
-- Dependency crates live at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`, and we may modify them.
-- After substantial changes, verify the full deployment pipeline:
-  1. Deployment — services start and pass health checks
-  2. Federation — registries form Raft cluster, member KELs sync
-  3. Voting — peer proposals, multi-party votes, approval threshold
-  4. Gossip network — peers connect, mesh forms, events propagate
-  5. Adversarial tests — divergence, recovery, contest, decommission
-  6. Gossip tests — anti-entropy, delta sync, bootstrap
+- `make` verifies changes (fmt, deny, clippy, test, build). Never use naked cargo commands. Only run when `.rs`, `Cargo.toml`, or `deny.toml` changed.
+- `make all` runs: `fmt-check`, `deny`, `clippy`, `test`, `build`. Individual targets exist (`make fmt`, `make clippy`, etc.).
+- `make coverage` produces per-file coverage via `cargo-llvm-cov`.
+- Dependency crates at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs` — we may modify them.
+- When adding a local `lib/` crate as a dependency to a service or client, also update the Garden config and Dockerfile to include the new lib in the build context. Services' Docker builds only copy explicitly listed lib dirs.
+- After substantial changes, verify the full deployment pipeline: deploy → federation → voting → gossip → adversarial tests → gossip tests.
 
 ## Code Style
 
 ### Imports
 
-Imports go at the top of each file, nested where possible, sorted in three groups separated by blank lines:
-
-1. System/core dependencies (`std`, `tokio`, `serde`, etc.)
-2. External crates (`verifiable_storage`, ``, etc.)
-3. Local imports (`crate::`, `super::`, things in this repo)
+Three groups at file top, nested, sorted, separated by blank lines: (1) std/core, (2) external crates, (3) local (`crate::`, `super::`). No inline imports except inside `#[cfg(feature)]` blocks. Fix imports when touching a file.
 
 ```rust
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 use anyhow::Result;
-use clap::Parser;
 use verifiable_storage::{SelfAddressed, StorageError};
 
 use crate::{handlers::AppState, repository::KelsRepository};
 ```
 
-Never import inline within function bodies, unless inside a feature-gated block (e.g. `#[cfg(feature = "...")]`).
-
-Note: some older files may not follow this convention perfectly. When touching a file, fix its imports to match.
-
 ### General
 
 - Fail **secure**, not safe. Default to restrictive behavior when state is unknown.
-- No unnecessary abstractions or over-engineering, but reuse code where appropriate. It's okay to make traits.
-- This is a greenfield project. There are no existing deployments or backwards compatibility concerns.
-- When creating database schema migrations, edit the existing initial migrations in place rather than adding new migration files.
-- Never hardcode event kind strings (`"icp"`, `"kels/events/v1/icp"`, etc.) — use `EventKind` enum methods (`establishment_kinds()`, `as_str()`, `to_string()`).
-- Never use `.unwrap()`. If a failure is truly impossible, use `.expect("reason")` with `#[allow(clippy::expect_used)]` on the enclosing scope.
-- Use `cesr` types (`cesr::Digest256`, `cesr::Signature`, `cesr::VerificationKey`, `cesr::SigningKey`, etc.) wherever possible instead of raw `String` or `&str` for cryptographic material. Parse into cesr types at system boundaries and pass typed values throughout.
-- Use `create()` not `new()` when constructing `SelfAddressed` types. `new()` leaves the SAID as a placeholder and doesn't set `created_at`; `create()` derives both and returns `Result`. The only reason to use `new()` is if you need to mutate the struct before deriving — and even then, call `derive_said()` explicitly before use.
-- All signatures are computed over the SAID's QB64 byte representation, never over serialized payload bytes. Payloads that need signing must derive `SelfAddressed` so they have a SAID. Signers call `payload.get_said()`, convert to QB64 bytes (the CESR text encoding), and sign those bytes. This commits to the CESR type code alongside the hash, so a Blake3-256 digest and a hypothetical Blake3-512 digest of the same content produce different signatures. Verifiers verify the SAID from the payload content, then verify the signature against the same QB64 bytes. This gives fixed-size signature input, eliminates serialization-order ambiguity, and is consistent across KEL events, credentials, and request payloads.
-- All HTTP endpoints use POST with JSON request bodies — never encode identifiers (SAIDs, prefixes, etc.) in URL paths or query parameters. URL paths and query strings are logged by proxies, CDNs, and access logs, enabling correlation of which identifiers a client queries. POST bodies are not logged by default, reducing this attack surface.
+- Greenfield project — no backwards compatibility concerns. Edit initial migrations in place, don't add new migration files.
+- No unnecessary abstractions, but reuse code where appropriate. Traits are fine.
+- Never hardcode event kind strings — use `EventKind` enum methods.
+- Never `.unwrap()`. Use `.expect("reason")` with `#[allow(clippy::expect_used)]` if truly infallible.
+- Use `cesr` types (`Digest256`, `Signature`, `VerificationKey`, `SigningKey`, etc.) for all cryptographic material. Parse at system boundaries, pass typed values throughout.
+- Use `create()` not `new()` for `SelfAddressed` types. `new()` leaves SAID as placeholder; `create()` derives SAID + `created_at`.
+- Sign the SAID's QB64 bytes, never serialized payloads. Payloads needing signatures must derive `SelfAddressed`. This commits to the CESR type code, gives fixed-size input, and eliminates serialization-order ambiguity.
+- All HTTP endpoints use POST with JSON bodies — never encode identifiers in URL paths or query params (logged by proxies/CDNs).
 
 ## Core Concepts
 

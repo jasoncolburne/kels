@@ -15,10 +15,10 @@ pub(crate) mod store;
 pub(crate) mod verification;
 
 pub use credential::{Compactable, Credential};
-pub use disclosure::{PathToken, apply_disclosure, parse_disclosure};
+pub use disclosure::apply_disclosure;
 pub use edge::{Edge, Edges};
 pub use error::CredentialError;
-pub use kels_core::{InMemorySadStore, SadStore};
+pub use kels_core::{InMemorySadStore, PathToken, SadStore, parse_disclosure};
 pub use rule::{Rule, Rules};
 pub use schema::{
     Schema, SchemaField, SchemaFieldType, SchemaValidationReport, SchemaValidationResult,

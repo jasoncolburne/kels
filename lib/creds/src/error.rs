@@ -44,7 +44,10 @@ pub enum CredentialError {
 
 impl From<kels_core::KelsError> for CredentialError {
     fn from(e: kels_core::KelsError) -> Self {
-        CredentialError::KelError(e.to_string())
+        match e {
+            kels_core::KelsError::InvalidDisclosure(msg) => CredentialError::InvalidDisclosure(msg),
+            other => CredentialError::KelError(other.to_string()),
+        }
     }
 }
 
