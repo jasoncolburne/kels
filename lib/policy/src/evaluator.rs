@@ -23,14 +23,14 @@ pub fn poison_hash(credential_said: &str) -> Digest256 {
 ///
 /// Walks the policy AST, checking each endorser's KEL for anchoring and poisoning.
 /// Returns a `PolicyVerification` with the satisfaction result and per-endorser status.
-pub async fn evaluate_policy(
+pub async fn evaluate_anchored_policy(
     policy: &Policy,
     credential_said: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
     resolver: &dyn PolicyResolver,
 ) -> Result<PolicyVerification, PolicyError> {
     let mut visited = BTreeSet::new();
-    evaluate_policy_inner(
+    evaluate_anchored_policy_inner(
         policy,
         credential_said,
         source,
@@ -41,7 +41,7 @@ pub async fn evaluate_policy(
     .await
 }
 
-async fn evaluate_policy_inner(
+async fn evaluate_anchored_policy_inner(
     policy: &Policy,
     credential_said: &cesr::Digest256,
     source: &(dyn PagedKelSource + Sync),
@@ -230,7 +230,7 @@ fn evaluate_node<'a>(
                 }
 
                 let resolved = resolver.resolve_policy(said).await?;
-                let verification = evaluate_policy_inner(
+                let verification = evaluate_anchored_policy_inner(
                     &resolved,
                     credential_said,
                     source,
@@ -348,6 +348,151 @@ async fn verify_delegation(
     }
 }
 
+/// Evaluate a policy against a set of verified prefixes (no KEL verification).
+///
+/// Used for `readPolicy` enforcement at fetch time. The caller has already
+/// verified the signers' KELs and collected the verified prefix set.
+/// This function resolves the policy by SAID, walks the AST, and checks
+/// whether the verified prefixes satisfy the threshold — no anchoring,
+/// no poison checks, no async KEL calls.
+pub async fn evaluate_signed_policy(
+    policy_said: &cesr::Digest256,
+    verified_prefixes: &std::collections::HashSet<cesr::Digest256>,
+    resolver: &dyn PolicyResolver,
+) -> Result<PolicyVerification, PolicyError> {
+    let mut visited = BTreeSet::new();
+    evaluate_signed_policy_inner(
+        policy_said,
+        verified_prefixes,
+        resolver,
+        &mut visited,
+        MAX_POLICY_DEPTH,
+    )
+    .await
+}
+
+async fn evaluate_signed_policy_inner(
+    policy_said: &cesr::Digest256,
+    verified_prefixes: &std::collections::HashSet<cesr::Digest256>,
+    resolver: &dyn PolicyResolver,
+    visited: &mut BTreeSet<cesr::Digest256>,
+    remaining_depth: usize,
+) -> Result<PolicyVerification, PolicyError> {
+    if remaining_depth == 0 {
+        return Err(PolicyError::EvaluationError(
+            "maximum policy nesting depth exceeded".to_string(),
+        ));
+    }
+
+    if !visited.insert(*policy_said) {
+        return Err(PolicyError::EvaluationError(format!(
+            "circular policy reference detected: {policy_said}"
+        )));
+    }
+
+    let policy = resolver.resolve_policy(policy_said).await?;
+    let ast = policy.parse()?;
+    let mut endorsements = BTreeMap::new();
+    let mut nested = BTreeMap::new();
+
+    let is_satisfied = evaluate_signed_node(
+        &ast,
+        verified_prefixes,
+        resolver,
+        &mut endorsements,
+        &mut nested,
+        visited,
+        remaining_depth,
+    )
+    .await?;
+
+    visited.remove(policy_said);
+
+    Ok(PolicyVerification {
+        policy: *policy_said,
+        is_satisfied,
+        endorsements,
+        nested_verifications: nested,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_signed_node<'a>(
+    node: &'a PolicyNode,
+    verified_prefixes: &'a std::collections::HashSet<cesr::Digest256>,
+    resolver: &'a dyn PolicyResolver,
+    endorsements: &'a mut BTreeMap<cesr::Digest256, EndorsementStatus>,
+    nested: &'a mut BTreeMap<cesr::Digest256, PolicyVerification>,
+    visited: &'a mut BTreeSet<cesr::Digest256>,
+    remaining_depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, PolicyError>> + Send + 'a>> {
+    Box::pin(async move {
+        match node {
+            PolicyNode::Endorse(prefix) => {
+                let endorsed = verified_prefixes.contains(prefix);
+                endorsements.insert(
+                    *prefix,
+                    if endorsed {
+                        EndorsementStatus::Endorsed
+                    } else {
+                        EndorsementStatus::NotEndorsed
+                    },
+                );
+                Ok(endorsed)
+            }
+
+            PolicyNode::Delegate(delegator, _delegate) => {
+                // For signed policy evaluation, delegation is not checked —
+                // only the delegator's prefix membership matters.
+                let endorsed = verified_prefixes.contains(delegator);
+                endorsements.insert(
+                    *delegator,
+                    if endorsed {
+                        EndorsementStatus::Endorsed
+                    } else {
+                        EndorsementStatus::NotEndorsed
+                    },
+                );
+                Ok(endorsed)
+            }
+
+            PolicyNode::Weighted(min_weight, pairs) => {
+                let mut total_weight = 0u64;
+                for (child, weight) in pairs {
+                    if evaluate_signed_node(
+                        child,
+                        verified_prefixes,
+                        resolver,
+                        endorsements,
+                        nested,
+                        visited,
+                        remaining_depth - 1,
+                    )
+                    .await?
+                    {
+                        total_weight = total_weight.saturating_add(*weight);
+                    }
+                }
+                Ok(total_weight >= *min_weight)
+            }
+
+            PolicyNode::Policy(said) => {
+                let verification = evaluate_signed_policy_inner(
+                    said,
+                    verified_prefixes,
+                    resolver,
+                    visited,
+                    remaining_depth - 1,
+                )
+                .await?;
+                let satisfied = verification.is_satisfied;
+                nested.insert(*said, verification);
+                Ok(satisfied)
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -396,7 +541,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -415,7 +560,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -458,7 +603,7 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -494,7 +639,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store_a.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -514,7 +659,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -537,7 +682,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -561,7 +706,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -599,7 +744,7 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -619,7 +764,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::new(vec![inner_policy.clone()]);
-        let result = evaluate_policy(&outer_policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&outer_policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -646,7 +791,8 @@ mod tests {
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
 
-        let result = evaluate_policy(&policy, &test_digest("cycle-test"), &source, &resolver).await;
+        let result =
+            evaluate_anchored_policy(&policy, &test_digest("cycle-test"), &source, &resolver).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -671,7 +817,7 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store_a.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -711,7 +857,7 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -748,7 +894,7 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -792,7 +938,7 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result = evaluate_policy(&policy, &credential_said, &source, &resolver)
+        let result = evaluate_anchored_policy(&policy, &credential_said, &source, &resolver)
             .await
             .unwrap();
 
@@ -814,5 +960,119 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    // ==================== evaluate_signed_policy Tests ====================
+
+    #[tokio::test]
+    async fn test_signed_policy_single_endorser_satisfied() {
+        let prefix = test_digest("signer-a");
+        let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::from([prefix]);
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver)
+            .await
+            .unwrap();
+        assert!(result.is_satisfied);
+        assert_eq!(
+            result.endorsements.get(&prefix),
+            Some(&EndorsementStatus::Endorsed)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_single_endorser_not_satisfied() {
+        let prefix = test_digest("signer-a");
+        let policy = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::new(); // nobody verified
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver)
+            .await
+            .unwrap();
+        assert!(!result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_threshold_2_of_3() {
+        let a = test_digest("signer-a");
+        let b = test_digest("signer-b");
+        let c = test_digest("signer-c");
+        let policy = Policy::build(
+            &format!("threshold(2, [endorse({a}), endorse({b}), endorse({c})])"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::from([a, b]);
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver)
+            .await
+            .unwrap();
+        assert!(result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_threshold_not_met() {
+        let a = test_digest("signer-a");
+        let b = test_digest("signer-b");
+        let c = test_digest("signer-c");
+        let policy = Policy::build(
+            &format!("threshold(2, [endorse({a}), endorse({b}), endorse({c})])"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::from([a]); // only 1 of 2
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver)
+            .await
+            .unwrap();
+        assert!(!result.is_satisfied);
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_nested() {
+        let prefix = test_digest("signer-a");
+        let inner = Policy::build(&format!("endorse({prefix})"), None, false).unwrap();
+        let outer = Policy::build(&format!("policy({})", inner.said), None, false).unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![inner.clone(), outer.clone()]);
+        let verified = std::collections::HashSet::from([prefix]);
+
+        let result = evaluate_signed_policy(&outer.said, &verified, &resolver)
+            .await
+            .unwrap();
+        assert!(result.is_satisfied);
+        assert!(result.nested_verifications.contains_key(&inner.said));
+    }
+
+    #[tokio::test]
+    async fn test_signed_policy_no_poison_checks() {
+        // Signed policy evaluation ignores poison — it's prefix membership only.
+        // Even if the policy has a poison expression, it's not evaluated.
+        let prefix = test_digest("signer-a");
+        let policy = Policy::build(
+            &format!("endorse({prefix})"),
+            Some(&format!("endorse({prefix})")),
+            false,
+        )
+        .unwrap();
+
+        let resolver = InMemoryPolicyResolver::new(vec![policy.clone()]);
+        let verified = std::collections::HashSet::from([prefix]);
+
+        let result = evaluate_signed_policy(&policy.said, &verified, &resolver)
+            .await
+            .unwrap();
+        // Satisfied — no poison checks in signed policy evaluation
+        assert!(result.is_satisfied);
     }
 }

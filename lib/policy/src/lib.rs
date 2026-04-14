@@ -14,7 +14,7 @@ pub(crate) mod verification;
 
 pub use ast::PolicyNode;
 pub use error::PolicyError;
-pub use evaluator::{evaluate_policy, poison_hash};
+pub use evaluator::{evaluate_anchored_policy, evaluate_signed_policy, poison_hash};
 pub use parser::{canonicalize, parse};
 pub use policy::Policy;
 pub use resolver::{InMemoryPolicyResolver, PolicyResolver};
