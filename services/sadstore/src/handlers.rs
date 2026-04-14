@@ -517,7 +517,8 @@ enum GossipPolicy {
 ///
 /// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
 /// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
-/// LocalOnly (home-node), >1 prefixes → rejected at write time so not reachable.
+/// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
+/// gossip not yet implemented — records are accepted but not replicated).
 ///
 /// Fails open: if we can't resolve the custody or node set, broadcast to be safe.
 async fn resolve_gossip_policy(
@@ -544,14 +545,16 @@ async fn resolve_gossip_policy(
                 if node_set.prefixes.len() <= 1 {
                     GossipPolicy::LocalOnly
                 } else {
-                    // Multi-node selective replication is rejected at write time,
-                    // so this should not be reachable. Fail open just in case.
-                    warn!(
-                        "NodeSet {} has {} prefixes — multi-node not yet supported, broadcasting",
+                    // TODO: selective multi-node gossip — resolve target peers
+                    // from the NodeSet prefix list and forward only to them.
+                    // For now, skip gossip; the record is stored locally and
+                    // will be available when selective replication is implemented.
+                    debug!(
+                        "NodeSet {} has {} prefixes — skipping gossip until selective multi-node replication is implemented",
                         nodes_said,
                         node_set.prefixes.len()
                     );
-                    GossipPolicy::BroadcastAll
+                    GossipPolicy::LocalOnly
                 }
             } else {
                 warn!("Failed to parse NodeSet {}", nodes_said);
@@ -606,45 +609,6 @@ async fn extract_and_cache_custody(
     // Verify custody SAID
     if custody.verify_said().is_err() {
         return Err((StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response());
-    }
-
-    // Validate nodes: multi-node selective replication is not yet supported.
-    // Resolve the NodeSet (if present) and reject if >1 prefix.
-    if let Some(ref nodes_said) = custody.nodes {
-        match state.object_store.get(nodes_said).await {
-            Ok(data) => match serde_json::from_slice::<kels_core::NodeSet>(&data) {
-                Ok(node_set) => {
-                    if node_set.prefixes.len() > 1 {
-                        return Err((
-                                StatusCode::BAD_REQUEST,
-                                format!(
-                                    "Multi-node selective replication not yet supported: NodeSet {} has {} prefixes. \
-                                     Use an empty set (local cache), a single prefix (home-node), or omit nodes (broadcast all).",
-                                    nodes_said, node_set.prefixes.len()
-                                ),
-                            ).into_response());
-                    }
-                }
-                Err(e) => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        format!("Failed to parse NodeSet {}: {}", nodes_said, e),
-                    )
-                        .into_response());
-                }
-            },
-            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Referenced NodeSet {} not found in SADStore", nodes_said),
-                )
-                    .into_response());
-            }
-            Err(e) => {
-                warn!("Failed to fetch NodeSet {}: {}", nodes_said, e);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
-            }
-        }
     }
 
     let custody_said = custody.said;
