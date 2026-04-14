@@ -693,6 +693,8 @@ pub(crate) async fn list_prefixes(
         .as_ref()
         .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
 
+    // TODO(#105): filter signatures down to only prefixes referenced by the applicable
+    // policy before iterating — prevents amplification
     let mut verifications = std::collections::HashMap::new();
     for prefix in signed_request.signatures.keys() {
         let peer = get_verified_peer(redis_conn, prefix).await?;

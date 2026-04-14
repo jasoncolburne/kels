@@ -163,6 +163,8 @@ fn check_ip_rate_limit(limits: &DashMap<IpAddr, (u32, Instant)>, ip: IpAddr) -> 
 ///
 /// Returns the set of verified signer prefixes. Callers decide what to do with the set
 /// (e.g., check against a single expected sender or a policy threshold).
+// TODO(#105): filter signatures down to only prefixes referenced by the applicable
+// policy before iterating — prevents amplification
 async fn authenticate_request<T: SelfAddressed + serde::Serialize>(
     state: &AppState,
     signed_request: &kels_core::SignedRequest<T>,
@@ -323,6 +325,8 @@ pub async fn send_mail(
         )
             .into_response();
     }
+    // sender_serial check removed: SignedRequest authentication proves current key;
+    // recipient verifies envelope signature against sender_serial via open().
 
     let blob_digest = compute_blob_digest(&blob);
 
