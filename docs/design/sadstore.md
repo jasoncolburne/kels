@@ -7,7 +7,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **Chained Records** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
+- **Pointer Chains** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
 
 ## Data Model
 
