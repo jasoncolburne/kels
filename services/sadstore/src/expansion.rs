@@ -19,12 +19,12 @@ const MAX_EXPANSIONS: usize = 1000;
 
 /// Adapter wrapping MinIO `ObjectStore` as a `SadStore` for disclosure expansion.
 /// Read-only — write/list/delete operations return errors.
-pub struct ObjectStoreSadAdapter<'a> {
+struct ObjectStoreSadAdapter<'a> {
     object_store: &'a ObjectStore,
 }
 
 impl<'a> ObjectStoreSadAdapter<'a> {
-    pub fn new(object_store: &'a ObjectStore) -> Self {
+    fn new(object_store: &'a ObjectStore) -> Self {
         Self { object_store }
     }
 }
@@ -80,41 +80,54 @@ pub async fn apply_disclosure_to_sad(
         return Ok(value);
     }
 
+    apply_tokens(&mut value, &tokens, &adapter).await?;
+    Ok(value)
+}
+
+/// Apply parsed disclosure tokens to a value using the given SAD store.
+///
+/// Shared between production (`apply_disclosure_to_sad`) and tests.
+async fn apply_tokens(
+    value: &mut serde_json::Value,
+    tokens: &[PathToken],
+    sad_store: &dyn SadStore,
+) -> Result<(), KelsError> {
     let mut state = ExpansionState { count: 0 };
 
-    for token in &tokens {
+    for token in tokens {
         match token {
             PathToken::ExpandRecursive(path) if path.is_empty() => {
-                expand_recursive(&mut value, &adapter, &mut state, 0).await?;
+                expand_recursive(value, sad_store, &mut state, 0).await?;
             }
             PathToken::CompactRecursive(path) if path.is_empty() => {
                 // Compact all children but keep root expanded
-                compact_children_only(&mut value);
+                compact_children_only(value);
             }
             PathToken::Expand(path) => {
-                expand_at_path(&mut value, path, &adapter, &mut state).await?;
+                expand_at_path(value, path, sad_store, &mut state).await?;
             }
             PathToken::ExpandRecursive(path) => {
-                expand_at_path(&mut value, path, &adapter, &mut state).await?;
+                expand_at_path(value, path, sad_store, &mut state).await?;
                 // After expanding at path, recursively expand within that subtree
-                if let Some(child) = navigate_to_value_mut(&mut value, path) {
-                    expand_recursive(child, &adapter, &mut state, 0).await?;
+                // Depth starts at path.len() since we're already that deep in the document
+                if let Some(child) = navigate_to_value_mut(value, path) {
+                    expand_recursive(child, sad_store, &mut state, path.len()).await?;
                 }
             }
             PathToken::Compact(path) => {
-                compact_at_path(&mut value, path);
+                compact_at_path(value, path);
             }
             PathToken::CompactRecursive(path) => {
-                if let Some(child) = navigate_to_value_mut(&mut value, path) {
+                if let Some(child) = navigate_to_value_mut(value, path) {
                     compact_recursive(child);
                     // Compact the target itself to its SAID
-                    compact_at_path(&mut value, path);
+                    compact_at_path(value, path);
                 }
             }
         }
     }
 
-    Ok(value)
+    Ok(())
 }
 
 /// Mutable walk state tracking SADbomb protection limits.
@@ -176,7 +189,7 @@ fn expand_recursive<'a>(
                         if let Some(said_str) = child.as_str() {
                             if let Ok(digest) = cesr::Digest256::from_qb64(said_str)
                                 && state.can_expand()
-                                && let Ok(Some(expanded)) = sad_store.load(&digest).await
+                                && let Some(expanded) = sad_store.load(&digest).await?
                             {
                                 state.record();
                                 *child = expanded;
@@ -199,7 +212,7 @@ fn expand_recursive<'a>(
                     if let Some(said_str) = elem.as_str() {
                         if let Ok(digest) = cesr::Digest256::from_qb64(said_str)
                             && state.can_expand()
-                            && let Ok(Some(expanded)) = sad_store.load(&digest).await
+                            && let Some(expanded) = sad_store.load(&digest).await?
                         {
                             state.record();
                             *elem = expanded;
@@ -427,37 +440,7 @@ mod tests {
             return Ok(value);
         }
 
-        let mut state = ExpansionState { count: 0 };
-
-        for token in &tokens {
-            match token {
-                PathToken::ExpandRecursive(path) if path.is_empty() => {
-                    expand_recursive(&mut value, store, &mut state, 0).await?;
-                }
-                PathToken::CompactRecursive(path) if path.is_empty() => {
-                    compact_children_only(&mut value);
-                }
-                PathToken::Expand(path) => {
-                    expand_at_path(&mut value, path, store, &mut state).await?;
-                }
-                PathToken::ExpandRecursive(path) => {
-                    expand_at_path(&mut value, path, store, &mut state).await?;
-                    if let Some(child) = navigate_to_value_mut(&mut value, path) {
-                        expand_recursive(child, store, &mut state, 0).await?;
-                    }
-                }
-                PathToken::Compact(path) => {
-                    compact_at_path(&mut value, path);
-                }
-                PathToken::CompactRecursive(path) => {
-                    if let Some(child) = navigate_to_value_mut(&mut value, path) {
-                        compact_recursive(child);
-                        compact_at_path(&mut value, path);
-                    }
-                }
-            }
-        }
-
+        apply_tokens(&mut value, &tokens, store).await?;
         Ok(value)
     }
 
