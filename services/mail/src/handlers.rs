@@ -188,7 +188,7 @@ async fn authenticate_request<T: SelfAddressed + serde::Serialize>(
     let mut verifications = std::collections::HashMap::new();
     for prefix in signed_request.signatures.keys() {
         let verifier = kels_core::KelVerifier::new(prefix);
-        let kel_verification = kels_core::verify_key_events(
+        match kels_core::verify_key_events(
             prefix,
             &kel_source,
             verifier,
@@ -196,8 +196,12 @@ async fn authenticate_request<T: SelfAddressed + serde::Serialize>(
             kels_core::max_pages(),
         )
         .await
-        .map_err(|_| (StatusCode::FORBIDDEN, "KEL verification failed".into()))?;
-        verifications.insert(*prefix, kel_verification);
+        {
+            Ok(kel_verification) => {
+                verifications.insert(*prefix, kel_verification);
+            }
+            Err(_) => continue, // Skip signers whose KEL can't be verified
+        }
     }
 
     let verified = signed_request.verify_signatures(&verifications);

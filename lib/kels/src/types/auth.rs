@@ -38,6 +38,20 @@ impl<T: SelfAddressed + Serialize> SignedRequest<T> {
         prefix: &cesr::Digest256,
         kel_verification: &KelVerification,
     ) -> Result<(), KelsError> {
+        self.payload
+            .verify_said()
+            .map_err(|_| KelsError::VerificationFailed("SAID verification failed".into()))?;
+
+        self.verify_signature_only(prefix, kel_verification)
+    }
+
+    /// Verify a single signature without re-checking the payload SAID.
+    /// Used by `verify_signatures()` which checks the SAID once upfront.
+    fn verify_signature_only(
+        &self,
+        prefix: &cesr::Digest256,
+        kel_verification: &KelVerification,
+    ) -> Result<(), KelsError> {
         if kel_verification.is_divergent() {
             return Err(KelsError::Divergent);
         }
@@ -45,10 +59,6 @@ impl<T: SelfAddressed + Serialize> SignedRequest<T> {
         let public_key = kel_verification
             .current_public_key()
             .ok_or_else(|| KelsError::VerificationFailed("No public key in verified KEL".into()))?;
-
-        self.payload
-            .verify_said()
-            .map_err(|_| KelsError::VerificationFailed("SAID verification failed".into()))?;
 
         let signature = self
             .signatures
@@ -64,18 +74,23 @@ impl<T: SelfAddressed + Serialize> SignedRequest<T> {
 
     /// Verify all signatures. Returns set of verified prefixes.
     ///
+    /// Verifies the payload SAID once, then checks each signature individually.
     /// Does NOT error on individual failures — just excludes unverified signers.
     /// Callers decide if the set meets their threshold.
     pub fn verify_signatures(
         &self,
         verifications: &HashMap<cesr::Digest256, KelVerification>,
     ) -> HashSet<cesr::Digest256> {
+        if self.payload.verify_said().is_err() {
+            return HashSet::new();
+        }
+
         self.signatures
             .keys()
             .filter(|prefix| {
                 verifications
                     .get(prefix)
-                    .and_then(|v| self.verify_one(prefix, v).ok())
+                    .and_then(|v| self.verify_signature_only(prefix, v).ok())
                     .is_some()
             })
             .copied()
@@ -342,7 +357,7 @@ mod tests {
 
         let (prefix, verification, builder) = make_verified_kel().await;
 
-        // Deliberately use new() + derive_said() so we can mutate after to simulate tampering
+        // Create normally, then mutate after to simulate tampering
         let mut payload = TestPayload::create("original".to_string()).unwrap();
 
         let signature = builder

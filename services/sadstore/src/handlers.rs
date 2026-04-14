@@ -271,7 +271,7 @@ async fn authenticate_peer_request<T: verifiable_storage::SelfAddressed + serde:
 
         // Verify peer's KEL via KELS service
         let verifier = kels_core::KelVerifier::new(prefix);
-        let kel_verification = kels_core::verify_key_events(
+        match kels_core::verify_key_events(
             prefix,
             &kel_source,
             verifier,
@@ -279,8 +279,12 @@ async fn authenticate_peer_request<T: verifiable_storage::SelfAddressed + serde:
             kels_core::max_pages(),
         )
         .await
-        .map_err(|_| (StatusCode::FORBIDDEN, "Peer KEL verification failed".into()))?;
-        verifications.insert(*prefix, kel_verification);
+        {
+            Ok(kel_verification) => {
+                verifications.insert(*prefix, kel_verification);
+            }
+            Err(_) => continue, // Skip signers whose KEL can't be verified
+        }
     }
 
     let verified = signed_request.verify_signatures(&verifications);

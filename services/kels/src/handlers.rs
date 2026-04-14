@@ -704,7 +704,7 @@ pub(crate) async fn list_prefixes(
         }
 
         let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
-        let kel_verification = kels_core::completed_verification(
+        match kels_core::completed_verification(
             &mut loader,
             prefix,
             kels_core::page_size(),
@@ -712,8 +712,12 @@ pub(crate) async fn list_prefixes(
             std::iter::empty::<cesr::Digest256>(),
         )
         .await
-        .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
-        verifications.insert(*prefix, kel_verification);
+        {
+            Ok(kel_verification) => {
+                verifications.insert(*prefix, kel_verification);
+            }
+            Err(_) => continue, // Skip signers whose KEL can't be verified
+        }
     }
 
     let verified = signed_request.verify_signatures(&verifications);
