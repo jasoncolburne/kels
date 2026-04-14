@@ -6,15 +6,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::{collections::HashMap, net::TcpListener, sync::OnceLock, time::Duration};
+
 use cesr::{Digest256, test_digest, test_signature};
-use chrono::Utc;
 use ctor::dtor;
 use kels_core::{
     KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider, SubmitEventsResponse,
     VerificationKeyCode,
 };
 use reqwest::Client;
-use std::{net::TcpListener, sync::OnceLock, time::Duration};
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
 use tokio::{sync::OnceCell, time::sleep};
@@ -389,14 +389,13 @@ async fn test_list_prefixes() {
 
     // List prefixes via signed POST
     let request = kels_core::SignedRequest {
-        payload: kels_core::PaginatedSelfAddressedRequest {
-            timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
-            cursor: None,
-            limit: None,
-        },
-        prefix: test_digest("mock"),
-        signature: test_signature("mock"),
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            None,
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("mock"), test_signature("mock"))]),
     };
 
     let response = harness
@@ -539,14 +538,13 @@ async fn test_list_prefixes_with_limit() {
 
     // List with limit=2 via signed POST
     let request = kels_core::SignedRequest {
-        payload: kels_core::PaginatedSelfAddressedRequest {
-            timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
-            cursor: None,
-            limit: Some(2),
-        },
-        prefix: test_digest("mock"),
-        signature: test_signature("mock"),
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            Some(2),
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("mock"), test_signature("mock"))]),
     };
 
     let response = harness
@@ -678,14 +676,13 @@ async fn test_list_prefixes_pagination_with_cursor() {
 
     // Get first page with limit=1 via signed POST
     let request = kels_core::SignedRequest {
-        payload: kels_core::PaginatedSelfAddressedRequest {
-            timestamp: Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
-            cursor: None,
-            limit: Some(1),
-        },
-        prefix: test_digest("mock"),
-        signature: test_signature("mock"),
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            Some(1),
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("mock"), test_signature("mock"))]),
     };
 
     let response = harness
@@ -703,14 +700,13 @@ async fn test_list_prefixes_pagination_with_cursor() {
     // Use cursor to get next page if available
     if let Some(cursor) = &result.next_cursor {
         let request = kels_core::SignedRequest {
-            payload: kels_core::PaginatedSelfAddressedRequest {
-                timestamp: Utc::now().timestamp(),
-                nonce: kels_core::generate_nonce(),
-                cursor: Some(*cursor),
-                limit: Some(1),
-            },
-            prefix: test_digest("mock"),
-            signature: test_signature("mock"),
+            payload: kels_core::PaginatedSelfAddressedRequest::create(
+                kels_core::generate_nonce(),
+                Some(*cursor),
+                Some(1),
+            )
+            .unwrap(),
+            signatures: HashMap::from([(test_digest("mock"), test_signature("mock"))]),
         };
 
         let response = harness

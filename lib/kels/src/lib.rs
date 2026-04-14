@@ -100,8 +100,9 @@ pub use types::{
     SignedRequest, SignedSadPointer, StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote,
     collect_establishment_serials, completed_verification, compute_approval_threshold,
     compute_rotation_hash, compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer,
-    hash_effective_said, truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
+    hash_effective_said, single_signer, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
+    verify_sad_pointer,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

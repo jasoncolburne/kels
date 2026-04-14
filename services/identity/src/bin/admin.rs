@@ -84,10 +84,8 @@ async fn manage_kel(
     prefix: &cesr::Digest256,
     operation: kels_core::ManageKelOperation,
 ) -> anyhow::Result<kels_core::ManageKelResponse> {
-    let request = kels_core::ManageKelRequest {
-        prefix: *prefix,
-        operation,
-    };
+    let request = kels_core::ManageKelRequest::create(*prefix, operation)
+        .map_err(|e| anyhow::anyhow!("Failed to create request: {}", e))?;
     identity_client
         .manage_kel(&request)
         .await

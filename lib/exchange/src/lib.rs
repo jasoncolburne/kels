@@ -21,6 +21,6 @@ pub use essr::{EssrEnvelope, EssrInner, SignedEssrEnvelope, open, seal};
 pub use key_publication::{ENCAP_KEY_KIND, EncapsulationKeyPublication, ML_KEM_768, ML_KEM_1024};
 pub use mail::{
     AckRequest, FetchRequest, InboxRequest, InboxResponse, MAIL_GOSSIP_TOPIC, MailAnnouncement,
-    MailMessage, SendRequest, compute_blob_digest,
+    MailMessage, RemoveRequest, ReplicateRequest, SendRequest, compute_blob_digest,
 };
 pub use message::{EXCHANGE_TOPIC, ExchangeKind, ExchangeMessage, ExchangePayload};

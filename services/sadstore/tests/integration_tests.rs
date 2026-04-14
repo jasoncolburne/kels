@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{net::TcpListener, sync::OnceLock, time::Duration};
+use std::{collections::HashMap, net::TcpListener, sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use cesr::{test_digest, test_signature};
@@ -443,14 +443,13 @@ async fn test_list_prefixes_empty() {
     };
 
     let body = kels_core::SignedRequest {
-        payload: kels_core::PaginatedSelfAddressedRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
-            cursor: None,
-            limit: None,
-        },
-        prefix: test_digest("test"),
-        signature: test_signature("test"),
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            None,
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("test"), test_signature("test"))]),
     };
 
     let resp = harness
@@ -474,14 +473,13 @@ async fn test_list_objects_empty() {
     };
 
     let body = kels_core::SignedRequest {
-        payload: kels_core::PaginatedSelfAddressedRequest {
-            timestamp: chrono::Utc::now().timestamp(),
-            nonce: kels_core::generate_nonce(),
-            cursor: None,
-            limit: None,
-        },
-        prefix: test_digest("test"),
-        signature: test_signature("test"),
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            None,
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("test"), test_signature("test"))]),
     };
 
     let resp = harness

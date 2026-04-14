@@ -667,7 +667,7 @@ pub(crate) async fn list_prefixes(
 ) -> Result<Json<PrefixListResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
-    if !kels_core::validate_timestamp(signed_request.payload.timestamp, 60) {
+    if !kels_core::validate_timestamp(signed_request.payload.created_at.inner().timestamp(), 60) {
         return Err(ApiError::forbidden("Request timestamp expired"));
     }
 
@@ -692,32 +692,51 @@ pub(crate) async fn list_prefixes(
         .redis_conn
         .as_ref()
         .ok_or_else(|| ApiError::forbidden("Peer verification unavailable in standalone mode"))?;
-    let peer = get_verified_peer(redis_conn, &signed_request.prefix).await?;
-    let _peer = match peer {
-        Some(p) => p,
-        None => {
-            refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            get_verified_peer(redis_conn, &signed_request.prefix)
-                .await?
-                .ok_or_else(|| ApiError::forbidden("Peer not authorized"))?
+
+    // TODO(#82): filter signatures down to only prefixes referenced by the applicable
+    // policy before iterating — prevents amplification
+
+    // Check if any prefix is unknown, and refresh the peer cache at most once
+    let mut needs_refresh = false;
+    for prefix in signed_request.signatures.keys() {
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            needs_refresh = true;
+            break;
         }
-    };
+    }
+    if needs_refresh {
+        refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+    }
 
-    // Consuming: verify peer's KEL (paginated) to extract trusted public key
-    let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
-    let kel_verification = kels_core::completed_verification(
-        &mut loader,
-        &signed_request.prefix,
-        kels_core::page_size(),
-        kels_core::max_pages(),
-        std::iter::empty::<cesr::Digest256>(),
-    )
-    .await
-    .map_err(|_| ApiError::forbidden("Peer KEL verification failed"))?;
+    let mut verifications = std::collections::HashMap::new();
+    for prefix in signed_request.signatures.keys() {
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            continue;
+        }
 
-    signed_request
-        .verify_signature(&kel_verification)
-        .map_err(|_| ApiError::unauthorized("Signature verification failed"))?;
+        let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
+        match kels_core::completed_verification(
+            &mut loader,
+            prefix,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            std::iter::empty::<cesr::Digest256>(),
+        )
+        .await
+        {
+            Ok(kel_verification) => {
+                verifications.insert(*prefix, kel_verification);
+            }
+            Err(_) => continue, // Skip signers whose KEL can't be verified
+        }
+    }
+
+    let verified = signed_request.verify_signatures(&verifications);
+    if verified.is_empty() {
+        return Err(ApiError::unauthorized(
+            "No valid signatures from authorized peers",
+        ));
+    }
 
     query_prefixes(
         &state,

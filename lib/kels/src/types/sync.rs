@@ -2,6 +2,7 @@
 
 use cesr::Digest256;
 use serde::{Deserialize, Serialize};
+use verifiable_storage::SelfAddressed;
 
 /// Hash a domain-qualified label into a deterministic CESR-encoded Blake3 digest.
 ///
@@ -13,10 +14,13 @@ pub fn hash_effective_said(input: &str) -> cesr::Digest256 {
 }
 
 /// Request payload for authenticated prefix listing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct PaginatedSelfAddressedRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: verifiable_storage::StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub cursor: Option<cesr::Digest256>,
     pub limit: Option<usize>,
@@ -26,10 +30,13 @@ pub struct PaginatedSelfAddressedRequest {
 ///
 /// Used with `SignedRequest<AdminRequest>` to authenticate admin CLI requests
 /// against the registry's own identity (via HSM-backed signing).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminRequest {
-    pub timestamp: i64,
+    #[said]
+    pub said: cesr::Digest256,
+    #[created_at]
+    pub created_at: verifiable_storage::StorageDatetime,
     pub nonce: cesr::Nonce256,
 }
 

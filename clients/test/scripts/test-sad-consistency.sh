@@ -30,8 +30,10 @@ NODE_E_SADSTORE_HOST="${NODE_E_SADSTORE_HOST:-sadstore.node-e.kels}"
 NODE_F_SADSTORE_HOST="${NODE_F_SADSTORE_HOST:-sadstore.node-f.kels}"
 
 # Dummy CESR values for test endpoints that skip auth but still deserialize
-DUMMY_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-DUMMY_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_SAID="KMOCK_SAID__________________________________"
+MOCK_PREFIX="KMOCK_PREFIX________________________________"
+MOCK_SIGNATURE="0CMOCK_SIGNATURE________________________________________________________________________"
+MOCK_CREATED_AT="2026-01-01T00:00:00.000000Z"
 
 declare -a NODE_NAMES=(a b c d e f)
 declare -a NODE_URLS=(
@@ -80,9 +82,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     reachable=true
     while true; do
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:$cursor,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         else
-            body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:null,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/pointers/prefixes" 2>/dev/null)
@@ -108,9 +110,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     cursor=""
     while true; do
         if [ -n "$cursor" ]; then
-            body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:$cursor,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:$cursor,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         else
-            body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{timestamp:0,nonce:$nonce,cursor:null,limit:1000},prefix:"'"$DUMMY_PREFIX"'",signature:"'"$DUMMY_SIGNATURE"'"}')
+            body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:null,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         fi
 
         response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/saids" 2>/dev/null)
