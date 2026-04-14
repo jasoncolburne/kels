@@ -629,46 +629,7 @@ async fn extract_and_cache_custody(
         (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
     })?;
 
-    // Cache referenced policies if they exist in MinIO
-    for policy_said in [custody.write_policy, custody.read_policy]
-        .into_iter()
-        .flatten()
-    {
-        // Only cache if not already cached
-        if state
-            .repo
-            .policies
-            .get_by_said(&policy_said)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            continue;
-        }
-
-        // Try to load from MinIO and cache
-        match state.object_store.get(&policy_said).await {
-            Ok(data) => {
-                if let Ok(policy) = serde_json::from_slice::<kels_policy::Policy>(&data)
-                    && policy.verify_said().is_ok()
-                    && let Err(e) = state.repo.policies.store(&policy).await
-                {
-                    warn!("Failed to cache policy {}: {}", policy_said, e);
-                }
-            }
-            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Referenced policy {} not found in SADStore", policy_said),
-                )
-                    .into_response());
-            }
-            Err(e) => {
-                warn!("Failed to fetch policy {}: {}", policy_said, e);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
-            }
-        }
-    }
+    cache_referenced_policies(&custody, state).await?;
 
     Ok(Some(custody_said))
 }
@@ -735,7 +696,17 @@ async fn resolve_and_cache_custody_by_said(
         Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
     }
 
-    // Cache referenced policies
+    cache_referenced_policies(&custody, state).await?;
+
+    Ok(Some(*custody_said))
+}
+
+/// Cache the write_policy and read_policy SADs referenced by a custody.
+/// Fetches each from MinIO if not already cached in Postgres.
+async fn cache_referenced_policies(
+    custody: &kels_core::Custody,
+    state: &AppState,
+) -> Result<(), axum::response::Response> {
     for policy_said in [custody.write_policy, custody.read_policy]
         .into_iter()
         .flatten()
@@ -774,7 +745,7 @@ async fn resolve_and_cache_custody_by_said(
         }
     }
 
-    Ok(Some(*custody_said))
+    Ok(())
 }
 
 pub async fn fetch_sad_object(
