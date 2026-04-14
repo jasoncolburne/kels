@@ -6,7 +6,7 @@
 )]
 
 pub mod compaction;
-pub mod expansion;
+pub(crate) mod expansion;
 mod handlers;
 pub mod object_store;
 pub mod repository;

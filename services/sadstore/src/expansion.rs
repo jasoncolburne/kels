@@ -175,6 +175,12 @@ fn expand_recursive<'a>(
                     .collect();
 
                 for key in keys {
+                    if !state.can_expand() {
+                        break;
+                    }
+
+                    // Skip `said` — expanding it would self-reference the
+                    // containing object, causing incorrect replacement.
                     if key == "said" {
                         continue;
                     }
@@ -188,7 +194,6 @@ fn expand_recursive<'a>(
                     if let Some(child) = child {
                         if let Some(said_str) = child.as_str() {
                             if let Ok(digest) = cesr::Digest256::from_qb64(said_str)
-                                && state.can_expand()
                                 && let Some(expanded) = sad_store.load(&digest).await?
                             {
                                 state.record();
@@ -211,7 +216,6 @@ fn expand_recursive<'a>(
 
                     if let Some(said_str) = elem.as_str() {
                         if let Ok(digest) = cesr::Digest256::from_qb64(said_str)
-                            && state.can_expand()
                             && let Some(expanded) = sad_store.load(&digest).await?
                         {
                             state.record();
@@ -255,6 +259,8 @@ async fn expand_at_path(
 }
 
 /// Compact a value at a path to its SAID string (if it has a `said` field).
+/// Silent no-op when the target has no `said` field — the heuristic path is
+/// best-effort; callers validate the result against their schema.
 fn compact_at_path(value: &mut serde_json::Value, path: &[String]) {
     if path.is_empty() {
         return;
