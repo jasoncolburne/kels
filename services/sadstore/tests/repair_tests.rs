@@ -1,5 +1,5 @@
 //! Repository-level tests for SAD chain repair: truncate_and_replace,
-//! get_repairs, get_repair_records, and save_batch_with_verified_signatures.
+//! get_repairs, get_repair_records, and save_batch.
 //!
 //! Uses a shared Postgres testcontainer (no MinIO or KELS service needed).
 //! Each test connects independently to avoid cross-runtime pool issues.
@@ -9,7 +9,6 @@
 use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
-use cesr::{SigningKey, VerificationKey, generate_secp256r1};
 use ctor::dtor;
 use kels_core::SadPointer;
 use serial_test::serial;
@@ -106,12 +105,8 @@ async fn connect_repo() -> Option<SadStoreRepository> {
 
 // ==================== Helpers ====================
 
-fn test_keys() -> (VerificationKey, SigningKey) {
-    generate_secp256r1().unwrap()
-}
-
 /// Build a chain of v0..v(count-1).
-fn build_chain(kel_prefix: &str, kind: &str, count: usize, _sk: &SigningKey) -> Vec<SadPointer> {
+fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
     let mut pointers = Vec::with_capacity(count);
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer::create(kind.to_string(), None, None, kel_digest).unwrap();
@@ -130,7 +125,6 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize, _sk: &SigningKey) -> 
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
 /// `content_tag` differentiates replacement chains so they produce unique SAIDs.
-#[allow(clippy::too_many_arguments)]
 fn build_replacement(
     previous_said: &cesr::Digest256,
     prefix: &cesr::Digest256,
@@ -139,7 +133,6 @@ fn build_replacement(
     from_version: u64,
     count: usize,
     content_tag: &str,
-    _sk: &SigningKey,
 ) -> Vec<SadPointer> {
     let mut pointers = Vec::with_capacity(count);
 
@@ -196,12 +189,11 @@ async fn test_save_batch_and_truncate_and_replace() {
         return;
     };
 
-    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_test_kel_1______________________________";
     let kind = "kels/v1/test-repair";
 
     // Save a 5-record chain: v0..v4
-    let chain = build_chain(kel_prefix, kind, 5, &sk);
+    let chain = build_chain(kel_prefix, kind, 5);
     let count = repo.sad_pointers.save_batch(&chain).await.unwrap();
     assert_eq!(count, 5);
 
@@ -227,7 +219,6 @@ async fn test_save_batch_and_truncate_and_replace() {
         3,
         2,
         "replacement",
-        &sk,
     );
 
     repo.sad_pointers
@@ -307,40 +298,21 @@ async fn test_get_repairs_pagination() {
         return;
     };
 
-    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_pagination_kel__________________________";
     let kind = "kels/v1/test-paginate";
 
     // Save a 5-record chain
-    let chain = build_chain(kel_prefix, kind, 5, &sk);
+    let chain = build_chain(kel_prefix, kind, 5);
     repo.sad_pointers.save_batch(&chain).await.unwrap();
 
     let prefix = chain[0].prefix;
 
     // First repair: replace from v4
-    let r1 = build_replacement(
-        &chain[3].said,
-        &prefix,
-        kel_prefix,
-        kind,
-        4,
-        1,
-        "repair_a",
-        &sk,
-    );
+    let r1 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_a");
     repo.sad_pointers.truncate_and_replace(&r1).await.unwrap();
 
     // Second repair: replace from v4 again (replacing the first replacement)
-    let r2 = build_replacement(
-        &chain[3].said,
-        &prefix,
-        kel_prefix,
-        kind,
-        4,
-        1,
-        "repair_b",
-        &sk,
-    );
+    let r2 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_b");
     repo.sad_pointers.truncate_and_replace(&r2).await.unwrap();
 
     // Paginate with limit=1
@@ -371,12 +343,11 @@ async fn test_get_repair_records_pagination() {
         return;
     };
 
-    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_rec_paginate_kel________________________";
     let kind = "kels/v1/test-recpage";
 
     // Save a 4-record chain, replace from v1 (archiving v1, v2, v3 = 3 records)
-    let chain = build_chain(kel_prefix, kind, 4, &sk);
+    let chain = build_chain(kel_prefix, kind, 4);
     repo.sad_pointers.save_batch(&chain).await.unwrap();
 
     let prefix = chain[0].prefix;
@@ -388,7 +359,6 @@ async fn test_get_repair_records_pagination() {
         1,
         3,
         "replacement",
-        &sk,
     );
     repo.sad_pointers
         .truncate_and_replace(&replacement)
@@ -444,19 +414,18 @@ async fn test_truncate_and_replace_from_v0() {
         return;
     };
 
-    let (_, sk) = test_keys();
     let kel_prefix = "Erepair_full_replace_kel________________________";
     let kind = "kels/v1/test-fullrepl";
 
     // Save a 3-record chain
-    let chain = build_chain(kel_prefix, kind, 3, &sk);
+    let chain = build_chain(kel_prefix, kind, 3);
     repo.sad_pointers.save_batch(&chain).await.unwrap();
 
     let prefix = chain[0].prefix;
 
     // Replace the entire chain from v0
     // For v0 replacement, the record needs no previous and must re-derive the prefix
-    let new_chain = build_chain(kel_prefix, kind, 2, &sk);
+    let new_chain = build_chain(kel_prefix, kind, 2);
     // The new chain has the same prefix (deterministic from kel_prefix + kind)
     assert_eq!(new_chain[0].prefix, prefix);
 

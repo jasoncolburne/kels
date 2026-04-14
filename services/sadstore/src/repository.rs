@@ -471,6 +471,19 @@ impl SadObjectIndex {
         self.pool.fetch_optional(query).await
     }
 
+    /// Atomically delete a SAD object index entry by its MinIO SAID.
+    /// Returns the number of rows deleted (1 = consumed, 0 = not found/already consumed).
+    /// Used for `once` semantics.
+    pub async fn delete_by_sad_said(
+        &self,
+        sad_said: &cesr::Digest256,
+    ) -> Result<u64, StorageError> {
+        let delete =
+            verifiable_storage::Delete::<kels_core::SadObjectEntry>::for_table(Self::TABLE_NAME)
+                .eq("sad_said", sad_said.as_ref());
+        self.pool.delete(delete).await
+    }
+
     /// Check if a SAD object is tracked.
     pub async fn is_tracked(&self, sad_said: &str) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;

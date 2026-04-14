@@ -85,11 +85,9 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which performs two-pass O(page_size) verification:
 
-1. **Pass 1 (structure):** Pages through the chain, verifying SAID integrity, chain linkage, version monotonicity, and consistent kel_prefix/kind. Collects establishment serials.
-2. **Between:** Verifies the owner's KEL, collecting establishment keys for the referenced serials.
-3. **Pass 2 (signatures):** Pages through the chain again, verifying each record's signature against its establishment key.
+Single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent write_policy/topic. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `current_record()`, `current_content_said()`, `establishment_serial()`.
+Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`.
 
 ## API
 

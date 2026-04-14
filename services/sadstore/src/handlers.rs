@@ -18,7 +18,7 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use tracing::{debug, warn};
-use verifiable_storage::{Chained, QueryExecutor, SelfAddressed};
+use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
@@ -101,7 +101,7 @@ async fn reap_expired_records(
             verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
                 "sad_objects",
             )
-            .eq("custody", custody.said.as_ref())
+            .eq("custody", custody.said.to_string())
             .lt("created_at", threshold)
             .limit(TTL_REAPER_BATCH_SIZE as u64);
         let expired: Vec<kels_core::SadObjectEntry> =
@@ -431,11 +431,15 @@ pub async fn post_sad_object(
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
     }
 
-    // Compact: recursively store nested SADs in MinIO, replace with SAIDs
-    if let Err(e) = crate::compaction::compact_sad(&mut value, &state.object_store).await {
-        warn!("Compaction failed: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "compaction error").into_response();
-    }
+    // Phase 1: compact in memory — compute SAIDs, build compacted JSON, collect
+    // nested SAD bytes. No MinIO writes yet (prevents resource amplification).
+    let collected = match crate::compaction::compact_sad(&mut value) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Compaction failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "compaction error").into_response();
+        }
+    };
 
     // Derive canonical SAID on the fully compacted form
     if value.derive_said().is_err() {
@@ -444,7 +448,7 @@ pub async fn post_sad_object(
 
     let said = value.get_said();
 
-    // HEAD check — short-circuit if already exists
+    // HEAD check — short-circuit if already exists (before any MinIO writes)
     match state.object_store.exists(&said).await {
         Ok(true) => {
             debug!("SAD object already exists: {}", said);
@@ -457,13 +461,21 @@ pub async fn post_sad_object(
         }
     }
 
-    // Extract and validate custody if present
-    let custody_said = match extract_and_cache_custody(&value, &state).await {
-        Ok(said) => said,
-        Err(response) => return response,
-    };
+    // Phase 2: commit nested SADs to MinIO (only after HEAD check passes)
+    if let Err(e) = crate::compaction::commit_compacted(&collected, &state.object_store).await {
+        warn!("Failed to commit nested SADs: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+    }
 
-    // Store compacted SAD in MinIO + track in DB index with custody
+    // Extract and validate custody if present
+    let custody_said =
+        match extract_and_cache_custody(&value, kels_core::CustodyContext::SadObject, &state).await
+        {
+            Ok(said) => said,
+            Err(response) => return response,
+        };
+
+    // Store compacted parent SAD in MinIO + track in DB index with custody
     let compacted_bytes = match serde_json::to_vec(&value) {
         Ok(b) => b,
         Err(e) => {
@@ -574,16 +586,17 @@ async fn resolve_gossip_policy(
 /// `Ok(None)` if absent or safety-valve disengaged.
 async fn extract_and_cache_custody(
     value: &serde_json::Value,
+    context: kels_core::CustodyContext,
     state: &AppState,
 ) -> Result<Option<cesr::Digest256>, axum::response::Response> {
     let custody_value = match value.get("custody") {
         Some(v) if v.is_string() => {
-            // Already compacted to a SAID string — the custody SAD is in MinIO.
-            // Parse the SAID and look up the cached custody.
+            // Already compacted to a SAID string — resolve from cache/MinIO,
+            // validate, and cache before accepting.
             let custody_said_str = v.as_str().unwrap_or_default();
             let custody_said = cesr::Digest256::from_qb64(custody_said_str)
                 .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid custody SAID").into_response())?;
-            return Ok(Some(custody_said));
+            return resolve_and_cache_custody_by_said(&custody_said, context, state).await;
         }
         Some(v) if v.is_object() => v.clone(),
         Some(_) => {
@@ -597,10 +610,7 @@ async fn extract_and_cache_custody(
     };
 
     // Validate the custody object
-    let custody = match kels_core::parse_and_validate_custody(
-        &custody_value,
-        kels_core::CustodyContext::SadObject,
-    ) {
+    let custody = match kels_core::parse_and_validate_custody(&custody_value, context) {
         Ok(Some(c)) => c,
         Ok(None) => return Ok(None), // Safety valve — unknown fields, no enforcement
         Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
@@ -661,6 +671,110 @@ async fn extract_and_cache_custody(
     }
 
     Ok(Some(custody_said))
+}
+
+/// Resolve a pre-compacted custody SAID: fetch from cache (or MinIO fallback),
+/// validate the allowlist for the given context, and cache custody + policies.
+/// Rejects if the custody is unresolvable or fails context validation.
+async fn resolve_and_cache_custody_by_said(
+    custody_said: &cesr::Digest256,
+    context: kels_core::CustodyContext,
+    state: &AppState,
+) -> Result<Option<cesr::Digest256>, axum::response::Response> {
+    // Try Postgres cache first
+    let custody = if let Ok(Some(c)) = state.repo.custodies.get_by_said(custody_said).await {
+        c
+    } else {
+        // Fallback: fetch from MinIO
+        let data = state
+            .object_store
+            .get(custody_said)
+            .await
+            .map_err(|e| match e {
+                crate::object_store::ObjectStoreError::NotFound(_) => (
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced custody {} not found in SADStore", custody_said),
+                )
+                    .into_response(),
+                other => {
+                    warn!("Failed to fetch custody {}: {}", custody_said, other);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+                }
+            })?;
+
+        let custody: kels_core::Custody = serde_json::from_slice(&data).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to parse custody {}: {}", custody_said, e),
+            )
+                .into_response()
+        })?;
+
+        if custody.verify_said().is_err() {
+            return Err(
+                (StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response(),
+            );
+        }
+
+        // Cache for future lookups
+        if let Err(e) = state.repo.custodies.store(&custody).await {
+            warn!("Failed to cache custody {}: {}", custody_said, e);
+        }
+
+        custody
+    };
+
+    // Validate context-specific allowlist
+    let custody_json = serde_json::to_value(&custody).map_err(|e| {
+        warn!("Failed to serialize custody for validation: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+    })?;
+    match kels_core::parse_and_validate_custody(&custody_json, context) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Ok(None), // Safety valve
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
+    }
+
+    // Cache referenced policies
+    for policy_said in [custody.write_policy, custody.read_policy]
+        .into_iter()
+        .flatten()
+    {
+        if state
+            .repo
+            .policies
+            .get_by_said(&policy_said)
+            .await
+            .unwrap_or(None)
+            .is_some()
+        {
+            continue;
+        }
+
+        match state.object_store.get(&policy_said).await {
+            Ok(data) => {
+                if let Ok(policy) = serde_json::from_slice::<kels_policy::Policy>(&data)
+                    && policy.verify_said().is_ok()
+                    && let Err(e) = state.repo.policies.store(&policy).await
+                {
+                    warn!("Failed to cache policy {}: {}", policy_said, e);
+                }
+            }
+            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced policy {} not found in SADStore", policy_said),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                warn!("Failed to fetch policy {}: {}", policy_said, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
+            }
+        }
+    }
+
+    Ok(Some(*custody_said))
 }
 
 pub async fn fetch_sad_object(
@@ -762,10 +876,12 @@ pub async fn fetch_sad_object(
 
     // once: atomic delete — if we delete the row, we serve; if count=0, already consumed
     if custody.once == Some(true) {
-        let delete =
-            verifiable_storage::Delete::<kels_core::SadObjectEntry>::for_table("sad_objects")
-                .eq("sad_said", object_said.as_ref());
-        match state.repo.sad_objects.pool.delete(delete).await {
+        match state
+            .repo
+            .sad_objects
+            .delete_by_sad_said(&object_said)
+            .await
+        {
             Ok(1) => {
                 // We consumed it — serve from MinIO. If MinIO fetch fails after
                 // the PG delete, the record becomes inaccessible. Acceptable for
@@ -1001,6 +1117,19 @@ pub async fn submit_sad_pointer(
             "Prefix derivation verification failed",
         )
             .into_response();
+    }
+
+    // Validate custody for pointer context — reject ttl/once (structurally
+    // incompatible with chained data). This is a hard design requirement.
+    if let Some(custody_said) = records[0].custody
+        && let Err(response) = resolve_and_cache_custody_by_said(
+            &custody_said,
+            kels_core::CustodyContext::Pointer,
+            &state,
+        )
+        .await
+    {
+        return response;
     }
 
     let is_repair = query.repair.unwrap_or(false);
