@@ -83,8 +83,24 @@ impl SadPointerRepository {
         }
 
         let prefix = records[0].prefix;
+        let write_policy = records[0].write_policy;
         let mut tx = self.pool.begin_transaction().await?;
         tx.acquire_advisory_lock(prefix.as_ref()).await?;
+
+        // Verify write_policy matches the existing chain's v0
+        let v0_query =
+            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                .eq("prefix", &prefix)
+                .eq("version", 0u64)
+                .limit(1);
+        let existing_v0: Vec<SadPointer> = tx.fetch(v0_query).await?;
+        if let Some(v0) = existing_v0.first()
+            && v0.write_policy != write_policy
+        {
+            return Err(StorageError::StorageError(
+                "Repair write_policy does not match existing chain".to_string(),
+            ));
+        }
 
         // Skip leading records that already exist locally
         let (new_records, from_version) = {

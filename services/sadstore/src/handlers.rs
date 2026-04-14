@@ -74,6 +74,7 @@ pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     });
 }
 
+// TODO: periodic custody GC — delete custodies with zero references from sad_objects and pointers
 async fn reap_expired_records(
     state: &AppState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -96,7 +96,7 @@ sad_chain_exists() {
 get_chain_tip_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq -r '.pointers[-1].pointer.said // empty'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq -r '.pointers[-1].said // empty'
 }
 
 get_effective_said() {
@@ -201,7 +201,7 @@ run_test "Effective SAID non-existent returns 404" \
 
 # Submit pointer with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"pointer\":{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"kelPrefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\",\"kind\":\"test\"},\"signature\":\"${MOCK_SIGNATURE}\",\"establishmentSerial\":0}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"writePolicy\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
 
 echo ""
 
@@ -248,7 +248,7 @@ echo ""
 # Scenario 5: Chain Record Submission via CLI
 # ========================================
 echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
-echo "Create a KEL, build chain pointers, sign + submit via CLI, fetch via CLI"
+echo "Create a KEL, build chain pointers, submit via CLI, fetch via CLI"
 echo ""
 
 SAD_KIND="kels/v1/test-data"
@@ -270,8 +270,8 @@ else
         bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/fetch') = '404' ]"
 
     # --- Build v0 inception pointer ---
-    V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
-        '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
+    V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$KEL_PREFIX" --arg k "$SAD_KIND" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp}')
     V0_PREFIX=$(compute_prefix "$V0_JSON")
     V0_JSON=$(echo "$V0_JSON" | jq -c --arg pfx "$V0_PREFIX" '.prefix = $pfx')
     V0_SAID=$(compute_said "$V0_JSON")
@@ -280,13 +280,8 @@ else
     # Verify our prefix matches the CLI's
     run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
 
-    # Sign v0 with the KEL's signing key via CLI
-    V0_SIG=$(kels-cli sign --prefix "$KEL_PREFIX" "$V0_SAID" 2>/dev/null)
-    run_test "v0 signed via CLI" [ -n "$V0_SIG" ]
-
     # Build the submission JSON and write to file
-    echo "[$(jq -nc --argjson r "$V0_JSON" --arg sig "$V0_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v0-submit.json"
+    echo "[$V0_JSON]" > "$TEMP_DIR/v0-submit.json"
 
     # Submit via kels-cli sad submit
     run_test "v0 submitted via CLI (sad submit)" \
@@ -298,21 +293,17 @@ else
     run_test "Chain fetched via CLI (sad pointer) with 1 pointer" [ "$CHAIN_LEN" = "1" ]
 
     # Verify the fetched pointer's SAID matches
-    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.pointers[0].pointer.said' 2>/dev/null)
+    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.pointers[0].said' 2>/dev/null)
     run_test "Fetched pointer SAID matches v0" [ "$FETCHED_SAID" = "$V0_SAID" ]
 
     # --- Build v1 pointer ---
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
-        --arg kp "$KEL_PREFIX" --arg k "$SAD_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k}')
+        --arg wp "$KEL_PREFIX" --arg k "$SAD_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, writePolicy: $wp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
 
-    V1_SIG=$(kels-cli sign --prefix "$KEL_PREFIX" "$V1_SAID" 2>/dev/null)
-    run_test "v1 signed via CLI" [ -n "$V1_SIG" ]
-
-    echo "[$(jq -nc --argjson r "$V1_JSON" --arg sig "$V1_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/v1-submit.json"
+    echo "[$V1_JSON]" > "$TEMP_DIR/v1-submit.json"
 
     run_test "v1 submitted via CLI (sad submit)" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v1-submit.json"
@@ -390,16 +381,14 @@ else
     echo "Chain prefix: $DIV_PREFIX"
 
     # --- Build and submit v0 to node-a ---
-    D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
+    D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
     D_V0_SAID=$(compute_said "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg s "$D_V0_SAID" '.said = $s')
 
-    D_V0_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V0_SAID" 2>/dev/null)
-    echo "[$(jq -nc --argjson r "$D_V0_JSON" --arg sig "$D_V0_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v0.json"
+    echo "[$D_V0_JSON]" > "$TEMP_DIR/div-v0.json"
 
     run_test "Divergence: v0 submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v0.json"
@@ -411,25 +400,21 @@ else
     # --- Build two conflicting v1 pointers ---
     # v1-a: submitted to node-a
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_a__________________________________"}')
+        --arg wp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
-    D_V1A_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V1A_SAID" 2>/dev/null)
-    echo "[$(jq -nc --argjson r "$D_V1A_JSON" --arg sig "$D_V1A_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v1a.json"
+    echo "[$D_V1A_JSON]" > "$TEMP_DIR/div-v1a.json"
 
-    # v1-b: submitted to node-b (different content_said → different SAID)
+    # v1-b: submitted to node-b (different content → different SAID)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_b__________________________________"}')
+        --arg wp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 
-    D_V1B_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_V1B_SAID" 2>/dev/null)
-    echo "[$(jq -nc --argjson r "$D_V1B_JSON" --arg sig "$D_V1B_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-v1b.json"
+    echo "[$D_V1B_JSON]" > "$TEMP_DIR/div-v1b.json"
 
     run_test "Divergence: v1-a and v1-b have different SAIDs" [ "$D_V1A_SAID" != "$D_V1B_SAID" ]
 
@@ -453,14 +438,12 @@ else
 
     # --- Repair: submit replacement v1 with --repair ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg kp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, kelPrefix: $kp, kind: $k, contentSaid: "Kcontent_repaired___________________________"}')
+        --arg wp "$DIV_KEL_PREFIX" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_repaired___________________________", writePolicy: $wp}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
 
-    D_REPAIR_SIG=$(kels-cli sign --prefix "$DIV_KEL_PREFIX" "$D_REPAIR_SAID" 2>/dev/null)
-    echo "[$(jq -nc --argjson r "$D_REPAIR_JSON" --arg sig "$D_REPAIR_SIG" \
-        '{pointer: $r, signature: $sig, establishmentSerial: 0}')]" > "$TEMP_DIR/div-repair.json"
+    echo "[$D_REPAIR_JSON]" > "$TEMP_DIR/div-repair.json"
 
     run_test "Repair: submitted with --repair to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit --repair "$TEMP_DIR/div-repair.json"
