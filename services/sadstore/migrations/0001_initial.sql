@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS sad_objects (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS sad_objects_sad_said_idx ON sad_objects(sad_said);
+CREATE INDEX IF NOT EXISTS sad_objects_custody_idx ON sad_objects(custody);
 
 -- Cached custody SADs for fetch-time hot path (one row per distinct custody config)
 CREATE TABLE IF NOT EXISTS custodies (

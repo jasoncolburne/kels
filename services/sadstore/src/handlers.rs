@@ -545,7 +545,20 @@ async fn resolve_gossip_policy(
 
     let custody = match state.repo.custodies.get_by_said(said).await {
         Ok(Some(c)) => c,
-        _ => return GossipPolicy::BroadcastAll,
+        Ok(None) => {
+            warn!(
+                "Custody {} referenced but not cached — skipping gossip (fail secure)",
+                said
+            );
+            return GossipPolicy::LocalOnly;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to resolve custody {} — skipping gossip (fail secure): {}",
+                said, e
+            );
+            return GossipPolicy::LocalOnly;
+        }
     };
 
     let Some(nodes_said) = custody.nodes else {
@@ -1102,15 +1115,22 @@ pub async fn submit_sad_pointer(
 
     // Validate custody for pointer context — reject ttl/once (structurally
     // incompatible with chained data). This is a hard design requirement.
-    if let Some(custody_said) = records[0].custody
-        && let Err(response) = resolve_and_cache_custody_by_said(
-            &custody_said,
-            kels_core::CustodyContext::Pointer,
-            &state,
-        )
-        .await
+    // Check every unique custody SAID in the batch, not just the first record.
     {
-        return response;
+        let mut validated_custodies = std::collections::HashSet::new();
+        for record in &records {
+            if let Some(custody_said) = record.custody
+                && validated_custodies.insert(custody_said)
+                && let Err(response) = resolve_and_cache_custody_by_said(
+                    &custody_said,
+                    kels_core::CustodyContext::Pointer,
+                    &state,
+                )
+                .await
+            {
+                return response;
+            }
+        }
     }
 
     let is_repair = query.repair.unwrap_or(false);
