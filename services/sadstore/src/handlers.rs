@@ -782,6 +782,14 @@ pub async fn fetch_sad_object(
         Err(response) => return response,
     };
 
+    // Validate disclosure expression early — before custody consumption logic.
+    // An invalid expression must not consume a once-use object.
+    if let Some(ref d) = disclosure
+        && let Err(e) = kels_core::parse_disclosure(d)
+    {
+        return (StatusCode::BAD_REQUEST, format!("invalid disclosure: {e}")).into_response();
+    }
+
     // Look up the record in sad_objects to get custody info
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
         Ok(Some(entry)) => entry,

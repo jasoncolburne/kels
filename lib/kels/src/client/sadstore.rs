@@ -159,6 +159,9 @@ impl SadStoreClient {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(said.to_string()))
+        } else if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::InvalidDisclosure(text))
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
