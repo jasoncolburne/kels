@@ -35,7 +35,7 @@ CONCURRENCY=${2:-10}
 COUNT=$(( (COUNT / MAX_CHAIN_VERSIONS) * MAX_CHAIN_VERSIONS ))
 GROUP_COUNT=$(( COUNT / MAX_CHAIN_VERSIONS ))
 
-PLACEHOLDER="############################################"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 echo "========================================="
 echo "SADStore Load Test"
@@ -48,31 +48,6 @@ echo "SADStore URL: $SADSTORE_URL"
 echo "Algorithm:    $ALGORITHM"
 echo "Kind:         $KIND"
 echo "========================================="
-
-# Compute a CESR Blake3 SAID from a string argument.
-# Prepend 00 to hex hash, convert to binary, base64url, take last 43 chars, prepend "K".
-cesr_blake3() {
-    local data="$1"
-    local padded
-    padded=$(echo "00$(printf '%s' "$data" | b3sum --no-names)" | xxd -r -p | base64 | tr '/' '_' | tr '+' '-')
-    echo "K${padded:(-43)}"
-}
-
-# Compute a SAID for a JSON object.
-compute_said() {
-    local json="$1"
-    local with_placeholder
-    with_placeholder=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p')
-    cesr_blake3 "$with_placeholder"
-}
-
-# Compute prefix for a v0 inception record (both said AND prefix are placeholders).
-compute_prefix() {
-    local json="$1"
-    local with_placeholders
-    with_placeholders=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p | .prefix = $p')
-    cesr_blake3 "$with_placeholders"
-}
 
 create_group() {
     local group=$1
@@ -106,6 +81,8 @@ create_group() {
         put_code=$(echo "$put_resp" | tail -1)
         if [ "$put_code" != "201" ] && [ "$put_code" != "200" ]; then
             echo "ERROR [group $group]: SAD object PUT failed (HTTP $put_code): $(echo "$put_resp" | head -1)" >&2
+            rm -rf "$tmpdir"
+            return 1
         fi
 
         object_saids+=("$said")

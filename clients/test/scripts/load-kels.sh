@@ -7,6 +7,8 @@
 
 set -e
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
+
 # Unset Kubernetes-injected service environment variables
 unset KELS_SERVICE_HOST KELS_SERVICE_PORT KELS_PORT
 
@@ -43,14 +45,18 @@ create_kel() {
         return 1
     fi
     for j in $(seq 1 "$EVENTS_PER_KEL"); do
-        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" interact "$prefix" --anchor "load-test-${i}-${j}" >/dev/null 2>&1; then
-            echo "ERROR [kel $i]: interaction event $j failed" >&2
+        local anchor_said interact_output
+        anchor_said=$(cesr_blake3 "load-test-${i}-${j}")
+        if ! interact_output=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$anchor_said" 2>&1); then
+            echo "ERROR [kel $i]: interaction event $j failed: $interact_output" >&2
+            rm -rf "$tmpdir"
+            return 1
         fi
     done
     rm -rf "$tmpdir"
 }
 
-export -f create_kel
+export -f create_kel cesr_blake3
 export KELS_URL ALGORITHM EVENTS_PER_KEL
 
 start=$(date +%s)
