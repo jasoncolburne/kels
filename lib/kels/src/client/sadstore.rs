@@ -139,6 +139,32 @@ impl SadStoreClient {
         }
     }
 
+    /// Retrieve a self-addressed JSON object with disclosure expansion.
+    ///
+    /// Like `get_sad_object`, but applies a disclosure DSL expression to
+    /// selectively expand compacted nested SADs in the response.
+    pub async fn get_sad_object_with_disclosure(
+        &self,
+        said: &cesr::Digest256,
+        disclosure: &str,
+    ) -> Result<serde_json::Value, KelsError> {
+        let url = format!("{}/api/v1/sad/fetch", self.base_url);
+        let body = crate::SadRequest {
+            said: *said,
+            disclosure: Some(disclosure.to_string()),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(said.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
     /// List SAD object SAIDs (paginated, authenticated). Used for bootstrap and anti-entropy.
     pub async fn fetch_sad_objects(
         &self,
