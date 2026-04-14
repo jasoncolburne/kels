@@ -260,15 +260,22 @@ async fn authenticate_peer_request<T: verifiable_storage::SelfAddressed + serde:
         )
     })?;
 
+    // Check if any prefix is unknown, and refresh the peer cache at most once
+    let mut needs_refresh = false;
+    for prefix in signed_request.signatures.keys() {
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            needs_refresh = true;
+            break;
+        }
+    }
+    if needs_refresh {
+        refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+    }
+
     let mut verifications = std::collections::HashMap::new();
     for prefix in signed_request.signatures.keys() {
-        // Check peer allowlist
-        let peer = get_verified_peer(redis_conn, prefix).await?;
-        if peer.is_none() {
-            refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            if get_verified_peer(redis_conn, prefix).await?.is_none() {
-                continue; // Skip unauthorized peer
-            }
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            continue; // Skip unauthorized peer
         }
 
         // Verify peer's KEL via KELS service

@@ -41,9 +41,9 @@ declare -a NODE_URLS=(
 )
 
 # Dummy CESR values for test endpoints that skip auth but still deserialize
-MOCK_SAID="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-MOCK_PREFIX="KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-MOCK_SIGNATURE="0CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MOCK_SAID="KMOCK_SAID__________________________________"
+MOCK_PREFIX="KMOCK_PREFIX________________________________"
+MOCK_SIGNATURE="0CMOCK_SIGNATURE________________________________________________________________________"
 MOCK_CREATED_AT="2026-01-01T00:00:00.000000Z"
 
 # Nodes with KELS_TEST_ENDPOINTS enabled (unauthenticated test prefixes endpoint)

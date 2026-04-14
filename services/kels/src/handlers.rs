@@ -695,14 +695,23 @@ pub(crate) async fn list_prefixes(
 
     // TODO(#105): filter signatures down to only prefixes referenced by the applicable
     // policy before iterating — prevents amplification
+
+    // Check if any prefix is unknown, and refresh the peer cache at most once
+    let mut needs_refresh = false;
+    for prefix in signed_request.signatures.keys() {
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            needs_refresh = true;
+            break;
+        }
+    }
+    if needs_refresh {
+        refresh_verified_peers(redis_conn, &state.registry_urls).await?;
+    }
+
     let mut verifications = std::collections::HashMap::new();
     for prefix in signed_request.signatures.keys() {
-        let peer = get_verified_peer(redis_conn, prefix).await?;
-        if peer.is_none() {
-            refresh_verified_peers(redis_conn, &state.registry_urls).await?;
-            if get_verified_peer(redis_conn, prefix).await?.is_none() {
-                continue;
-            }
+        if get_verified_peer(redis_conn, prefix).await?.is_none() {
+            continue;
         }
 
         let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
