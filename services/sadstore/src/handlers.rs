@@ -224,7 +224,7 @@ async fn refresh_verified_peers(
 /// Validates timestamp, deduplicates nonce, verifies peer is in the federation
 /// allowlist (via Redis cache), verifies peer's KEL via the KELS service,
 /// and verifies the request signature against the peer's current verification key.
-// TODO(#105): filter signatures down to only prefixes referenced by the applicable
+// TODO(#82): filter signatures down to only prefixes referenced by the applicable
 // policy before iterating — prevents amplification
 async fn authenticate_peer_request<T: verifiable_storage::SelfAddressed + serde::Serialize>(
     state: &AppState,
