@@ -16,7 +16,7 @@ RUN apt-get update && \
 # Copy all source code
 COPY lib/derive /app/lib/derive
 COPY lib/kels /app/lib/kels
-COPY lib/policy app/lib/policy
+COPY lib/policy /app/lib/policy
 COPY services/sadstore /app/services/sadstore
 
 # Build with BuildKit cache mounts for cargo registry and target directory

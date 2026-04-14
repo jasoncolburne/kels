@@ -879,7 +879,19 @@ pub async fn fetch_sad_object(
                 // We consumed it — serve from MinIO. If MinIO fetch fails after
                 // the PG delete, the record becomes inaccessible. Acceptable for
                 // ephemeral records — that's the semantics of once.
-                return serve_from_minio(&state.object_store, &object_said).await;
+                let response = serve_from_minio(&state.object_store, &object_said).await;
+
+                // Best-effort MinIO cleanup — prevents orphaned objects from
+                // accumulating. The reaper catches failures on its next cycle.
+                let os = state.object_store.clone();
+                let said = object_said;
+                tokio::spawn(async move {
+                    if let Err(e) = os.delete(&said).await {
+                        warn!("Failed to delete consumed once object {}: {}", said, e);
+                    }
+                });
+
+                return response;
             }
             Ok(0) => {
                 return (StatusCode::NOT_FOUND, "already consumed").into_response();
