@@ -6,14 +6,14 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 
 Two layers:
 
-- **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack.
-- **Chained Records** (PostgreSQL) — Versioned chains with deterministic prefix discovery and KEL ownership. Chain metadata references content in the SAD store via `content_said`. Authenticated via signature verified against the owner's KEL.
+- **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
+- **Pointer Chains** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
 
 ## Data Model
 
 ### SadPointer
 
-A chained, self-addressed record. The v0 (inception) record has `content_said: None`, making the prefix fully deterministic from `kel_prefix` + `kind` alone. Content is added in v1+ records.
+A chained, self-addressed pointer record. The v0 (inception) record has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ records.
 
 No `created_at` field — intentionally omitted so inception records produce deterministic prefixes.
 
@@ -22,43 +22,48 @@ Fields:
 - `prefix` — Chain identifier (derived from inception content)
 - `previous` — SAID of previous record (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
-- `kel_prefix` — The owning KEL's prefix
-- `kind` — Record type (e.g., `kels/exchange/v1/keys/mlkem`)
-- `content_said` — SAID of the content object in MinIO (None for v0)
+- `topic` — Record type (e.g., `kels/exchange/v1/keys/mlkem`)
+- `content` — SAID of the content object in MinIO (None for v0)
+- `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
+- `write_policy` — SAID of the write policy (denormalized from custody for chain keying, required)
 
 ### Deterministic Prefix
 
-Anyone can compute a chain prefix offline:
+Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a chain prefix offline:
 
 ```rust
-let prefix = compute_sad_pointer_prefix(kel_prefix, kind)?;
+let prefix = compute_sad_pointer_prefix(write_policy, topic)?;
 ```
 
 This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
 
-### SignedSadPointer
+### Custody
 
-A SAD record paired with its signature and the server-derived `establishment_serial`, as returned by the chain API. Analogous to `SignedKeyEvent`.
+Per-record storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in MinIO, referenced by SAID in the parent record. The SAID covers all custody fields, making storage policy tamper-evident.
 
 Fields:
-- `record` — The `SadPointer`
-- `signature` — Signature over the record's SAID
-- `establishment_serial` — Which KEL establishment event's key signed this
+- `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
+- `readPolicy` — SAID of a policy SAD controlling reads (server-enforced at fetch time)
+- `ttl` — Seconds until expiry (per-record: `sad_objects.created_at + ttl`)
+- `once` — Atomic delete on first successful retrieval
+- `nodes` — SAID of a `NodeSet` SAD for selective replication
 
-### SadPointerSubmission
+**Safety valve:** If the custody object contains any unrecognized fields (e.g., from a newer client), all server-side enforcement is disengaged. This ensures forward compatibility without blocking storage.
 
-The submission type for creating/updating chains. Contains `record` + `signature` but no `establishment_serial` — the server determines it by finding the most recent establishment event in the owner's KEL.
+**Context validation:** `ttl` and `once` are rejected on pointer records (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
+
+### NodeSet
+
+A set of node prefixes for selective replication. Prefixes are sorted lexicographically before SAID derivation so the same set always produces the same SAID regardless of insertion order.
 
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **Chain records**: Each record is signed with the owner's current KEL signing key. The server verifies the signature against the most recent establishment event in the KEL. Only the current key is accepted — old/rotated keys are rejected.
-
-The `establishment_serial` is server-derived and stored in a separate `sad_record_signatures` table (keeping the SAID-driven record table clean).
+- **Chain records**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the record's SAID in their KELs. Consumers verify the anchoring when they use the data.
 
 ## Divergence and Repair
 
-When two conflicting records exist at the same version (e.g., from key compromise or concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception records are fully deterministic).
+When two conflicting records exist at the same version (e.g., from concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception records are fully deterministic).
 
 The **effective SAID** for a chain represents its current state:
 - Non-divergent: the tip record's SAID
@@ -70,10 +75,9 @@ The chain owner repairs divergence by submitting a replacement batch with `?repa
 
 1. The batch starts at the divergent version
 2. `truncate_and_replace` deletes all records at and after that version
-3. Replacement records are inserted with chain integrity checks (predecessor linkage, internal chain linkage, sequential versions, consistent kel_prefix/kind)
-4. Signatures on replacement records are verified against the owner's KEL
+3. Replacement records are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent write_policy/topic)
 
-Displaced records are archived to `sad_record_archives` and `sad_record_archive_signatures` (mirror tables). A `sad_chain_repairs` entry is created as an audit record, and `sad_chain_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
+Displaced records are archived to `sad_pointer_archives` (mirror table). A `sad_pointer_repairs` entry is created as an audit record, and `sad_pointer_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
 
 ### Repair Propagation
 
@@ -83,47 +87,65 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_records()`, which performs two-pass O(page_size) verification:
+The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_pointer()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent write_policy/topic. No signature verification — authorization is via the anchoring model (consumer-side).
 
-1. **Pass 1 (structure):** Pages through the chain, verifying SAID integrity, chain linkage, version monotonicity, and consistent kel_prefix/kind. Collects establishment serials.
-2. **Between:** Verifies the owner's KEL, collecting establishment keys for the referenced serials.
-3. **Pass 2 (signatures):** Pages through the chain again, verifying each record's signature against its establishment key.
+Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`.
 
-Accessors: `current_record()`, `current_content_said()`, `establishment_serial()`.
+## Policy Evaluation Modes
+
+Two distinct policy evaluation modes exist for different contexts:
+
+### `evaluate_anchored_policy` — Issuance/Endorsement Context
+
+Used for credential issuance and endorsement verification. Evaluates a policy against KEL state for a given credential SAID.
+
+- Checks KEL anchors: each endorser must have anchored the credential SAID in their KEL via an `ixn` event
+- Supports `Endorse`, `Weighted`, `Delegate`, and `Policy` (nested) nodes
+- `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
+- Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
+
+### `evaluate_signed_policy` — Access Control Context (readPolicy)
+
+Used for `readPolicy` enforcement at SAD object fetch time. Evaluates a policy against a verified prefix set from a `SignedRequest`.
+
+- Checks prefix set membership: the caller has already verified the signers' KELs and collected verified prefixes
+- Supports `Endorse`, `Weighted`, and `Policy` (nested) nodes only
+- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. readPolicies should use direct `endorse()` nodes for any party that needs read access
+- No poison checks, no async KEL calls — synchronous evaluation against the verified set
 
 ## API
+
+All endpoints use POST with JSON request bodies. Identifiers are never placed in URL paths or query parameters (logged by proxies/CDNs).
 
 ### SAD Object Store (Layer 1)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad` | Store a self-addressed object (SAID derived from body) |
-| `GET` | `/api/v1/sad/:said` | Retrieve by SAID |
+| `POST` | `/api/v1/sad` | Store a self-addressed object (JSON body with `said` field) |
+| `POST` | `/api/v1/sad/fetch` | Retrieve by SAID (body: `{ "said": "..." }`) |
+| `POST` | `/api/v1/sad/exists` | Check existence (body: `{ "said": "..." }`) |
+| `POST` | `/api/v1/sad/saids` | List SAD object SAIDs (authenticated, paginated) |
 
 ### Chain Records (Layer 2)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/pointers` | Submit signed chain records; `?repair=true` to repair divergent chain |
-| `GET` | `/api/v1/sad/pointers/:prefix` | Fetch chain (returns `SignedSadPointer`s with signatures); `?since=N` for delta |
-| `GET` | `/api/v1/sad/pointers/:prefix/effective-said` | Tip SAID for sync comparison |
-| `GET` | `/api/v1/sad/pointers/:prefix/repairs` | Paginated repair history (`?limit=N&offset=N`); returns `SadChainRepairPage` |
-| `GET` | `/api/v1/sad/pointers/:prefix/repairs/:said/records` | Archived records displaced by a specific repair (`?limit=N&offset=N`); returns `SadPointerPage` |
-
-### Listing (for bootstrap + anti-entropy)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/sad/saids` | List SAD object SAIDs (paginated: `?cursor=&limit=`) |
-| `GET` | `/api/v1/sad/pointers/prefixes` | List chain prefixes with tip SAIDs (paginated: `?cursor=&limit=`) |
+| `POST` | `/api/v1/sad/pointers` | Submit chain records; `?repair=true` to repair divergent chain |
+| `POST` | `/api/v1/sad/pointers/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
+| `POST` | `/api/v1/sad/pointers/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
+| `POST` | `/api/v1/sad/pointers/exists` | Check pointer existence (body: `{ "said": "..." }`) |
+| `POST` | `/api/v1/sad/pointers/prefixes` | List chain prefixes (authenticated, paginated) |
+| `POST` | `/api/v1/sad/pointers/repairs` | Paginated repair history (body: `{ "prefix": "...", "limit": N, "offset": N }`) |
+| `POST` | `/api/v1/sad/pointers/repairs/records` | Archived records for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
 
 ### Client Workflow
 
 1. Create content object, derive its SAID
 2. `POST /api/v1/sad` — store content in SAD store
-3. Create chain record with `content_said` pointing to that SAID
-4. Sign the record's SAID with current KEL key
-5. `POST /api/v1/sad/pointers` — submit the signed chain record
+3. Create chain record with `content` pointing to that SAID
+4. `POST /api/v1/sad/pointers` — submit the chain record
+
+Authorization is consumer-side: endorsing parties anchor the record's SAID in their KELs. The SADStore does not verify signatures on submission.
 
 ## Gossip Replication
 
@@ -139,6 +161,15 @@ enum SadGossipMessage {
 ```
 
 The `repair` flag (default `false`) signals that a divergent chain was repaired. Receiving nodes use `?repair=true` to replace their local divergent state.
+
+### Gossip Policy
+
+When a custody specifies `nodes`, the gossip policy controls replication:
+
+- No `nodes` field → broadcast to all peers (default)
+- `nodes` present → skip gossip (selective multi-node gossip not yet implemented)
+
+**Fail secure:** If the NodeSet can't be resolved (fetch or parse error), gossip is skipped rather than broadcasting restricted data to unauthorized peers.
 
 ### Flow
 
@@ -167,20 +198,23 @@ Environment variables:
 | `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `256` | Per-IP write rate (token bucket refill) |
 | `SADSTORE_IP_RATE_LIMIT_BURST` | `1024` | Per-IP token bucket burst size |
 | `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |
+| `SADSTORE_TTL_REAPER_INTERVAL` | `60` | TTL reaper check interval in seconds |
 
 On the gossip service, `BASE_DOMAIN` env var derives both KELS and SADStore URLs for local and peer service discovery.
 
 ## CLI
 
 ```
-kels-cli sad put <file>              # Store a self-addressed object
-kels-cli sad get <said>              # Retrieve object by SAID
-kels-cli sad submit <file>           # Submit signed chain record
-kels-cli sad pointer <prefix>          # Fetch pointer chain
-kels-cli sad prefix <kel-prefix> <kind>  # Compute prefix offline
+kels-cli sad put <file>                          # Store a self-addressed object
+kels-cli sad get <said>                          # Retrieve object by SAID
+kels-cli sad submit <file> [--repair]            # Submit chain records (--repair for divergent chains)
+kels-cli sad chain <prefix>                      # Fetch pointer chain
+kels-cli sad prefix <write-policy> <topic>       # Compute prefix offline
 ```
 
 ## Use Cases
 
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication chain prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
+- **Ephemeral records** — `once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `ttl` for auto-expiring records.
+- **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a policy.

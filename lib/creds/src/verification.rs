@@ -4,7 +4,7 @@ use serde::Serialize;
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
 use kels_core::{PagedKelSource, SadStore};
-use kels_policy::{PolicyResolver, PolicyVerification, evaluate_policy};
+use kels_policy::{PolicyResolver, PolicyVerification, evaluate_anchored_policy};
 
 use crate::{
     compaction::{MAX_RECURSION_DEPTH, expand_with_schema},
@@ -148,9 +148,10 @@ fn verify_credential_bounded<'a, T: Claims>(
         let schema_validation = validate_credential_report(credential, schema)?;
 
         // Policy evaluation — check anchoring and poisoning via policy evaluator
-        let policy_verification = evaluate_policy(policy, &compacted_said, source, resolver)
-            .await
-            .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
+        let policy_verification =
+            evaluate_anchored_policy(policy, &compacted_said, source, resolver)
+                .await
+                .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
 
         // Check expiration
         let is_expired = credential

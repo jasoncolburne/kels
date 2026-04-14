@@ -51,6 +51,87 @@ pub fn spawn_rate_limit_reaper(state: Arc<AppState>) {
     });
 }
 
+/// Default TTL reaper interval in seconds. Override with `SADSTORE_TTL_REAPER_INTERVAL`.
+fn ttl_reaper_interval_secs() -> u64 {
+    kels_core::env_usize("SADSTORE_TTL_REAPER_INTERVAL", 60) as u64
+}
+
+/// Max expired records to reap per cycle.
+const TTL_REAPER_BATCH_SIZE: usize = 100;
+
+/// Spawn a background task that periodically deletes TTL-expired records.
+/// Queries custodies with TTL, then finds expired sad_objects for each,
+/// deletes from DB and MinIO.
+pub fn spawn_ttl_reaper(state: Arc<AppState>) {
+    let interval = Duration::from_secs(ttl_reaper_interval_secs());
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(e) = reap_expired_records(&state).await {
+                warn!("TTL reaper error: {}", e);
+            }
+        }
+    });
+}
+
+// TODO: periodic custody GC — delete custodies with zero references from sad_objects and pointers
+async fn reap_expired_records(
+    state: &AppState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use verifiable_storage_postgres::QueryExecutor;
+
+    // Fetch all custodies with TTL set
+    let query = verifiable_storage_postgres::Query::<kels_core::Custody>::for_table("custodies")
+        .filter(verifiable_storage_postgres::Filter::IsNotNull(
+            "ttl".to_string(),
+        ))
+        .limit(TTL_REAPER_BATCH_SIZE as u64);
+    let custodies: Vec<kels_core::Custody> = state.repo.custodies.pool.fetch(query).await?;
+
+    let now = verifiable_storage::StorageDatetime::now();
+
+    for custody in &custodies {
+        let Some(ttl) = custody.ttl else { continue };
+
+        // Compute the expiry threshold: records created before this time are expired
+        let threshold: verifiable_storage::StorageDatetime =
+            (*now.inner() - chrono::Duration::seconds(ttl as i64)).into();
+
+        // Find expired records for this custody
+        let expired_query =
+            verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
+                "sad_objects",
+            )
+            .eq("custody", custody.said.to_string())
+            .lt("created_at", threshold)
+            .limit(TTL_REAPER_BATCH_SIZE as u64);
+        let expired: Vec<kels_core::SadObjectEntry> =
+            state.repo.sad_objects.pool.fetch(expired_query).await?;
+
+        for entry in &expired {
+            // Delete from DB (via repository method for consistency with `once` path)
+            state
+                .repo
+                .sad_objects
+                .delete_by_sad_said(&entry.sad_said)
+                .await?;
+
+            // Delete from MinIO (best-effort — if this fails, orphaned object
+            // is harmless and will be cleaned up on next cycle or manually)
+            if let Err(e) = state.object_store.delete(&entry.sad_said).await {
+                warn!(
+                    "Failed to delete expired object {} from MinIO: {}",
+                    entry.sad_said, e
+                );
+            } else {
+                debug!("Reaped expired SAD object: {}", entry.sad_said);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Max chain records per prefix per day. Low — chains represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
     kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY", 8) as u32
@@ -339,21 +420,37 @@ pub async fn post_sad_object(
             .into_response();
     }
 
-    // Parse and verify SAID
-    let value: serde_json::Value = match serde_json::from_slice(&body) {
+    // Parse JSON
+    let mut value: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response();
         }
     };
 
+    // Verify SAID — reject tampered or malformed documents
     if value.verify_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
     }
 
+    // Phase 1: compact in memory — compute SAIDs, build compacted JSON, collect
+    // nested SAD bytes. No MinIO writes yet (prevents resource amplification).
+    let collected = match crate::compaction::compact_sad(&mut value) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Compaction failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "compaction error").into_response();
+        }
+    };
+
+    // Derive canonical SAID on the fully compacted form
+    if value.derive_said().is_err() {
+        return (StatusCode::BAD_REQUEST, "SAID derivation failed").into_response();
+    }
+
     let said = value.get_said();
 
-    // HEAD check — short-circuit if already exists
+    // HEAD check — short-circuit if already exists (before any MinIO writes)
     match state.object_store.exists(&said).await {
         Ok(true) => {
             debug!("SAD object already exists: {}", said);
@@ -366,38 +463,501 @@ pub async fn post_sad_object(
         }
     }
 
-    // Store in MinIO + track in DB index atomically
+    // Phase 2: commit nested SADs to MinIO (only after HEAD check passes)
+    if let Err(e) = crate::compaction::commit_compacted(&collected, &state.object_store).await {
+        warn!("Failed to commit nested SADs: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+    }
+
+    // Extract and validate custody if present
+    let custody_said =
+        match extract_and_cache_custody(&value, kels_core::CustodyContext::SadObject, &state).await
+        {
+            Ok(said) => said,
+            Err(response) => return response,
+        };
+
+    // Store compacted parent SAD in MinIO + track in DB index with custody
+    let compacted_bytes = match serde_json::to_vec(&value) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to serialize compacted SAD: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "serialization error").into_response();
+        }
+    };
+
     if let Err(e) = state
         .repo
         .sad_objects
-        .store(&said, &state.object_store, &body)
+        .store(&said, custody_said, &state.object_store, &compacted_bytes)
         .await
     {
         warn!("Failed to store SAD object: {}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
     }
 
-    // Publish to Redis for gossip
-    if let Some(ref conn) = state.redis_conn {
-        let mut conn = conn.clone();
-        if let Err(e) = redis::cmd("PUBLISH")
-            .arg("sad_updates")
-            .arg(said.as_ref())
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to publish SAD update: {}", e);
+    // Gossip: check nodes replication policy before publishing
+    match resolve_gossip_policy(&custody_said, &state).await {
+        GossipPolicy::BroadcastAll => {
+            if let Some(ref conn) = state.redis_conn {
+                let mut conn = conn.clone();
+                if let Err(e) = redis::cmd("PUBLISH")
+                    .arg("sad_updates")
+                    .arg(said.as_ref())
+                    .query_async::<()>(&mut conn)
+                    .await
+                {
+                    warn!("Failed to publish SAD update: {}", e);
+                }
+            }
+        }
+        GossipPolicy::LocalOnly => {
+            debug!("Skipping gossip: custody.nodes restricts to local/home-node");
         }
     }
 
     (StatusCode::CREATED, "stored").into_response()
 }
 
+/// Gossip replication decision for a record.
+enum GossipPolicy {
+    /// No nodes restriction — broadcast to all peers (default).
+    BroadcastAll,
+    /// Nodes present with 0 or 1 entries — keep at origin, no gossip.
+    LocalOnly,
+}
+
+/// Resolve the gossip policy from a custody SAID.
+///
+/// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
+/// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
+/// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
+/// gossip not yet implemented — records are accepted but not replicated).
+///
+/// Fails secure: if `nodes` is set but can't be resolved, skip gossip
+/// (LocalOnly) to avoid leaking restricted data to unauthorized peers.
+async fn resolve_gossip_policy(
+    custody_said: &Option<cesr::Digest256>,
+    state: &AppState,
+) -> GossipPolicy {
+    let Some(said) = custody_said else {
+        return GossipPolicy::BroadcastAll;
+    };
+
+    let custody = match state.repo.custodies.get_by_said(said).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            warn!(
+                "Custody {} referenced but not cached — skipping gossip (fail secure)",
+                said
+            );
+            return GossipPolicy::LocalOnly;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to resolve custody {} — skipping gossip (fail secure): {}",
+                said, e
+            );
+            return GossipPolicy::LocalOnly;
+        }
+    };
+
+    let Some(nodes_said) = custody.nodes else {
+        return GossipPolicy::BroadcastAll;
+    };
+
+    // Resolve the NodeSet from MinIO to check prefix count.
+    // Fail secure: if resolution fails, skip gossip rather than broadcasting
+    // restricted data to all peers.
+    match state.object_store.get(&nodes_said).await {
+        Ok(data) => {
+            if let Ok(node_set) = serde_json::from_slice::<kels_core::NodeSet>(&data) {
+                if node_set.prefixes.len() <= 1 {
+                    GossipPolicy::LocalOnly
+                } else {
+                    // TODO: selective multi-node gossip — resolve target peers
+                    // from the NodeSet prefix list and forward only to them.
+                    // For now, skip gossip; the record is stored locally and
+                    // will be available when selective replication is implemented.
+                    debug!(
+                        "NodeSet {} has {} prefixes — skipping gossip until selective multi-node replication is implemented",
+                        nodes_said,
+                        node_set.prefixes.len()
+                    );
+                    GossipPolicy::LocalOnly
+                }
+            } else {
+                warn!(
+                    "Failed to parse NodeSet {} — skipping gossip (fail secure)",
+                    nodes_said
+                );
+                GossipPolicy::LocalOnly
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to resolve NodeSet {} — skipping gossip (fail secure): {}",
+                nodes_said, e
+            );
+            GossipPolicy::LocalOnly
+        }
+    }
+}
+
+/// Extract the `custody` key from a compacted SAD, validate it, and cache
+/// the custody and any referenced policies in Postgres.
+/// Returns `Ok(Some(custody_said))` if custody is present and enforced,
+/// `Ok(None)` if absent or safety-valve disengaged.
+async fn extract_and_cache_custody(
+    value: &serde_json::Value,
+    context: kels_core::CustodyContext,
+    state: &AppState,
+) -> Result<Option<cesr::Digest256>, axum::response::Response> {
+    let custody_value = match value.get("custody") {
+        Some(v) if v.is_string() => {
+            // Already compacted to a SAID string — resolve from cache/MinIO,
+            // validate, and cache before accepting.
+            let custody_said_str = v.as_str().unwrap_or_default();
+            let custody_said = cesr::Digest256::from_qb64(custody_said_str)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid custody SAID").into_response())?;
+            return resolve_and_cache_custody_by_said(&custody_said, context, state).await;
+        }
+        Some(v) if v.is_object() => v.clone(),
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "custody must be an object or SAID string",
+            )
+                .into_response());
+        }
+        None => return Ok(None),
+    };
+
+    // Validate the custody object
+    let custody = match kels_core::parse_and_validate_custody(&custody_value, context) {
+        Ok(Some(c)) => c,
+        Ok(None) => return Ok(None), // Safety valve — unknown fields, no enforcement
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
+    };
+
+    // Verify custody SAID
+    if custody.verify_said().is_err() {
+        return Err((StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response());
+    }
+
+    let custody_said = custody.said;
+
+    // Cache custody in Postgres (idempotent)
+    state.repo.custodies.store(&custody).await.map_err(|e| {
+        warn!("Failed to cache custody: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+    })?;
+
+    cache_referenced_policies(&custody, state).await?;
+
+    Ok(Some(custody_said))
+}
+
+/// Resolve a pre-compacted custody SAID: fetch from cache (or MinIO fallback),
+/// validate the allowlist for the given context, and cache custody + policies.
+/// Rejects if the custody is unresolvable or fails context validation.
+async fn resolve_and_cache_custody_by_said(
+    custody_said: &cesr::Digest256,
+    context: kels_core::CustodyContext,
+    state: &AppState,
+) -> Result<Option<cesr::Digest256>, axum::response::Response> {
+    // Try Postgres cache first
+    let custody = if let Ok(Some(c)) = state.repo.custodies.get_by_said(custody_said).await {
+        c
+    } else {
+        // Fallback: fetch from MinIO
+        let data = state
+            .object_store
+            .get(custody_said)
+            .await
+            .map_err(|e| match e {
+                crate::object_store::ObjectStoreError::NotFound(_) => (
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced custody {} not found in SADStore", custody_said),
+                )
+                    .into_response(),
+                other => {
+                    warn!("Failed to fetch custody {}: {}", custody_said, other);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+                }
+            })?;
+
+        let custody: kels_core::Custody = serde_json::from_slice(&data).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to parse custody {}: {}", custody_said, e),
+            )
+                .into_response()
+        })?;
+
+        if custody.verify_said().is_err() {
+            return Err(
+                (StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response(),
+            );
+        }
+
+        // Cache for future lookups
+        if let Err(e) = state.repo.custodies.store(&custody).await {
+            warn!("Failed to cache custody {}: {}", custody_said, e);
+        }
+
+        custody
+    };
+
+    // Validate context-specific allowlist
+    let custody_json = serde_json::to_value(&custody).map_err(|e| {
+        warn!("Failed to serialize custody for validation: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+    })?;
+    match kels_core::parse_and_validate_custody(&custody_json, context) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Ok(None), // Safety valve
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
+    }
+
+    cache_referenced_policies(&custody, state).await?;
+
+    Ok(Some(*custody_said))
+}
+
+/// Cache the write_policy and read_policy SADs referenced by a custody.
+/// Fetches each from MinIO if not already cached in Postgres.
+async fn cache_referenced_policies(
+    custody: &kels_core::Custody,
+    state: &AppState,
+) -> Result<(), axum::response::Response> {
+    for policy_said in [custody.write_policy, custody.read_policy]
+        .into_iter()
+        .flatten()
+    {
+        if state
+            .repo
+            .policies
+            .get_by_said(&policy_said)
+            .await
+            .unwrap_or(None)
+            .is_some()
+        {
+            continue;
+        }
+
+        match state.object_store.get(&policy_said).await {
+            Ok(data) => {
+                if let Ok(policy) = serde_json::from_slice::<kels_policy::Policy>(&data)
+                    && policy.verify_said().is_ok()
+                    && let Err(e) = state.repo.policies.store(&policy).await
+                {
+                    warn!("Failed to cache policy {}: {}", policy_said, e);
+                }
+            }
+            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced policy {} not found in SADStore", policy_said),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                warn!("Failed to fetch policy {}: {}", policy_said, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn fetch_sad_object(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    body: Bytes,
 ) -> impl IntoResponse {
-    match state.object_store.get(&request.said).await {
+    // Try parsing as SignedRequest<SadFetchRequest> first, fall back to SadRequest
+    let (object_said, signed_request) = match parse_fetch_request(&body) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+
+    // Look up the record in sad_objects to get custody info
+    let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        }
+        Err(e) => {
+            warn!("Failed to look up SAD object: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+        }
+    };
+
+    // No custody → serve directly
+    let Some(custody_said) = entry.custody else {
+        return serve_from_minio(&state.object_store, &object_said).await;
+    };
+
+    // Fetch cached custody
+    let custody = match state.repo.custodies.get_by_said(&custody_said).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            warn!("Custody {} referenced but not cached", custody_said);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "custody not found").into_response();
+        }
+        Err(e) => {
+            warn!("Failed to fetch custody: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+        }
+    };
+
+    // readPolicy enforcement
+    if let Some(ref record_read_policy) = custody.read_policy {
+        let Some(ref signed) = signed_request else {
+            return (
+                StatusCode::FORBIDDEN,
+                "readPolicy requires authenticated request",
+            )
+                .into_response();
+        };
+
+        // Signer must commit to which readPolicy they're satisfying
+        let request_read_policy = signed.payload.read_policy.as_ref();
+        if request_read_policy != Some(record_read_policy) {
+            return (
+                StatusCode::FORBIDDEN,
+                "read_policy mismatch or missing in request",
+            )
+                .into_response();
+        }
+
+        // Verify signatures and evaluate policy
+        let verified = match authenticate_fetch_request(&state, signed).await {
+            Ok(v) => v,
+            Err(response) => return response,
+        };
+
+        let policy_resolver = SadStorePolicyResolver {
+            policies: state.repo.clone(),
+            object_store: state.object_store.clone(),
+        };
+
+        match kels_policy::evaluate_signed_policy(record_read_policy, &verified, &policy_resolver)
+            .await
+        {
+            Ok(v) if v.is_satisfied => {}
+            Ok(_) => {
+                return (StatusCode::FORBIDDEN, "readPolicy not satisfied").into_response();
+            }
+            Err(e) => {
+                warn!("Policy evaluation failed: {}", e);
+                return (StatusCode::FORBIDDEN, "policy evaluation failed").into_response();
+            }
+        }
+    }
+
+    // TTL check (per-record: sad_objects.created_at + custodies.ttl)
+    if let Some(ttl) = custody.ttl {
+        let created = entry.created_at.inner().timestamp();
+        let now = verifiable_storage::StorageDatetime::now()
+            .inner()
+            .timestamp();
+        if now > created + ttl as i64 {
+            return (StatusCode::NOT_FOUND, "expired").into_response();
+        }
+    }
+
+    // once: atomic delete — if we delete the row, we serve; if count=0, already consumed
+    if custody.once == Some(true) {
+        match state
+            .repo
+            .sad_objects
+            .delete_by_sad_said(&object_said)
+            .await
+        {
+            Ok(1) => {
+                // We consumed it — serve from MinIO. If MinIO fetch fails after
+                // the PG delete, the record becomes inaccessible. Acceptable for
+                // ephemeral records — that's the semantics of once.
+                let response = serve_from_minio(&state.object_store, &object_said).await;
+
+                // Best-effort MinIO cleanup — prevents orphaned objects from
+                // accumulating. The reaper catches failures on its next cycle.
+                let os = state.object_store.clone();
+                let said = object_said;
+                tokio::spawn(async move {
+                    if let Err(e) = os.delete(&said).await {
+                        warn!("Failed to delete consumed once object {}: {}", said, e);
+                    }
+                });
+
+                return response;
+            }
+            Ok(0) => {
+                return (StatusCode::NOT_FOUND, "already consumed").into_response();
+            }
+            Ok(_) => {
+                warn!("Unexpected delete count for once object {}", object_said);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+            Err(e) => {
+                warn!("Failed to delete once object: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
+            }
+        }
+    }
+
+    serve_from_minio(&state.object_store, &object_said).await
+}
+
+/// Parse a fetch request body as either `SignedRequest<SadFetchRequest>` or `SadRequest`.
+#[allow(clippy::result_large_err)]
+fn parse_fetch_request(
+    body: &[u8],
+) -> Result<
+    (
+        cesr::Digest256,
+        Option<kels_core::SignedRequest<kels_core::SadFetchRequest>>,
+    ),
+    axum::response::Response,
+> {
+    // Try authenticated request first
+    if let Ok(signed) =
+        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SadFetchRequest>>(body)
+    {
+        return Ok((signed.payload.object_said, Some(signed)));
+    }
+
+    // Fall back to unauthenticated request
+    if let Ok(request) = serde_json::from_slice::<kels_core::SadRequest>(body) {
+        return Ok((request.said, None));
+    }
+
+    Err((StatusCode::BAD_REQUEST, "Invalid request body").into_response())
+}
+
+/// Verify signatures on a fetch request and return verified prefixes.
+async fn authenticate_fetch_request(
+    state: &AppState,
+    signed: &kels_core::SignedRequest<kels_core::SadFetchRequest>,
+) -> Result<std::collections::HashSet<cesr::Digest256>, axum::response::Response> {
+    authenticate_peer_request(
+        state,
+        signed,
+        &signed.payload.created_at,
+        &signed.payload.nonce,
+    )
+    .await
+    .map_err(|(status, msg)| (status, msg).into_response())
+}
+
+/// Serve a SAD object directly from MinIO.
+async fn serve_from_minio(
+    object_store: &ObjectStore,
+    said: &cesr::Digest256,
+) -> axum::response::Response {
+    match object_store.get(said).await {
         Ok(data) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -411,6 +971,45 @@ pub async fn fetch_sad_object(
             warn!("Failed to retrieve SAD object: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
+    }
+}
+
+/// Policy resolver backed by the Postgres `policies` cache with MinIO fallback.
+/// Fail secure: if a policy can't be resolved, return an error.
+struct SadStorePolicyResolver {
+    policies: Arc<SadStoreRepository>,
+    object_store: Arc<ObjectStore>,
+}
+
+#[async_trait::async_trait]
+impl kels_policy::PolicyResolver for SadStorePolicyResolver {
+    async fn resolve_policy(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<kels_policy::Policy, kels_policy::PolicyError> {
+        // Hot path: Postgres cache
+        if let Ok(Some(policy)) = self.policies.policies.get_by_said(said).await {
+            return Ok(policy);
+        }
+
+        // Fallback: MinIO
+        let data = self
+            .object_store
+            .get(said)
+            .await
+            .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
+
+        let policy: kels_policy::Policy = serde_json::from_slice(&data)
+            .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
+
+        policy.verify_said().map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("SAID verification failed: {}", e))
+        })?;
+
+        // Cache for next time (best-effort)
+        let _ = self.policies.policies.store(&policy).await;
+
+        Ok(policy)
     }
 }
 
@@ -452,11 +1051,11 @@ pub struct RecordSubmitQuery {
     pub repair: Option<bool>,
 }
 
-/// Submit signed SAD records — unified endpoint for clients, gossip sync, and repair.
+/// Submit SAD pointer records — unified endpoint for clients, gossip sync, and repair.
 ///
-/// Accepts `Vec<SignedSadPointer>` (with establishment serials from the source node).
-/// Verifies the KEL once, collecting establishment keys for all referenced serials,
-/// then verifies each record's signature and stores all records.
+/// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency,
+/// write_policy required). No signature verification — authorization is via
+/// the anchoring model (consumer-side).
 ///
 /// With `?repair=true`, truncates all records at version >= the first record's version
 /// before inserting. This is the repair mechanism for divergent chains.
@@ -464,7 +1063,7 @@ pub async fn submit_sad_pointer(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels_core::SignedSadPointer>>,
+    Json(records): Json<Vec<kels_core::SadPointer>>,
 ) -> impl IntoResponse {
     if records.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
@@ -476,8 +1075,8 @@ pub async fn submit_sad_pointer(
     }
 
     // All records must be for the same chain prefix
-    let chain_prefix = &records[0].pointer.prefix;
-    if records.iter().any(|r| r.pointer.prefix != *chain_prefix) {
+    let chain_prefix = &records[0].prefix;
+    if records.iter().any(|r| r.prefix != *chain_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -494,125 +1093,30 @@ pub async fn submit_sad_pointer(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // All records must be for the same KEL prefix
-    let kel_prefix_digest = &records[0].pointer.kel_prefix;
-    let kel_prefix = kel_prefix_digest.to_string();
-    if records
-        .iter()
-        .any(|r| r.pointer.kel_prefix != *kel_prefix_digest)
-    {
+    // All records must have the same write_policy
+    let write_policy = &records[0].write_policy;
+    if records.iter().any(|r| r.write_policy != *write_policy) {
         return (
             StatusCode::BAD_REQUEST,
-            "All records must have the same kel_prefix",
+            "All records must have the same write_policy",
         )
             .into_response();
     }
 
     // Verify SAID integrity for all records
     for r in &records {
-        if r.pointer.verify_said().is_err() {
+        if r.verify_said().is_err() {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Record SAID verification failed: {}", r.pointer.said),
-            )
-                .into_response();
-        }
-    }
-
-    // Collect unique establishment serials from both existing chain and incoming batch
-    let mut establishment_serials: std::collections::BTreeSet<u64> =
-        records.iter().map(|r| r.establishment_serial).collect();
-
-    match state
-        .repo
-        .sad_pointers
-        .existing_establishment_serials(chain_prefix, kels_core::max_collected_keys())
-        .await
-    {
-        Ok(existing) => establishment_serials.extend(existing),
-        Err(e) => {
-            warn!("Failed to fetch existing establishment serials: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    }
-
-    // Verify KEL once, collecting establishment keys for all serials
-    let verifier = match kels_core::KelVerifier::new(kel_prefix_digest)
-        .with_establishment_key_collection(establishment_serials, kels_core::max_collected_keys())
-    {
-        Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("{}", e)).into_response();
-        }
-    };
-
-    let kel_source = match state.kels_client.as_kel_source() {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to build HTTP client: {}", e),
-            )
-                .into_response();
-        }
-    };
-
-    let (verification, establishment_keys) =
-        match kels_core::verify_key_events_collecting_establishment_keys(
-            kel_prefix_digest,
-            &kel_source,
-            verifier,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                warn!("Failed to verify KEL for {}: {}", kel_prefix, e);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("KEL verification failed: {}", e),
-                )
-                    .into_response();
-            }
-        };
-
-    if verification.is_divergent() {
-        return (StatusCode::CONFLICT, "KEL is divergent").into_response();
-    }
-
-    // Verify each incoming record's signature against its establishment key
-    for r in &records {
-        let Some(verification_key) = establishment_keys.get(&r.establishment_serial) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "No establishment key found for serial {} (record {})",
-                    r.establishment_serial, r.pointer.said
-                ),
-            )
-                .into_response();
-        };
-
-        if verification_key
-            .verify(r.pointer.said.qb64().as_bytes(), &r.signature)
-            .is_err()
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "Signature verification failed for record {} at serial {}",
-                    r.pointer.said, r.establishment_serial
-                ),
+                format!("Record SAID verification failed: {}", r.said),
             )
                 .into_response();
         }
     }
 
     // Verify prefix derivation for v0 if present
-    if let Some(v0) = records.iter().find(|r| r.pointer.version == 0)
-        && v0.pointer.verify_prefix().is_err()
+    if let Some(v0) = records.iter().find(|r| r.version == 0)
+        && v0.verify_prefix().is_err()
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -621,21 +1125,24 @@ pub async fn submit_sad_pointer(
             .into_response();
     }
 
-    // Build (record, signature) pairs for storage
-    let mut pairs = Vec::with_capacity(records.len());
-    for r in &records {
-        let sig_record = match kels_core::SadPointerSignature::create(
-            r.pointer.said,
-            r.signature.clone(),
-            r.establishment_serial,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to create signature record: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    // Validate custody for pointer context — reject ttl/once (structurally
+    // incompatible with chained data). This is a hard design requirement.
+    // Check every unique custody SAID in the batch, not just the first record.
+    {
+        let mut validated_custodies = std::collections::HashSet::new();
+        for record in &records {
+            if let Some(custody_said) = record.custody
+                && validated_custodies.insert(custody_said)
+                && let Err(response) = resolve_and_cache_custody_by_said(
+                    &custody_said,
+                    kels_core::CustodyContext::Pointer,
+                    &state,
+                )
+                .await
+            {
+                return response;
             }
-        };
-        pairs.push((r.pointer.clone(), sig_record));
+        }
     }
 
     let is_repair = query.repair.unwrap_or(false);
@@ -644,26 +1151,14 @@ pub async fn submit_sad_pointer(
     let should_publish;
 
     if is_repair {
-        // Repair mode: truncate from the first record's version and replace
-        if let Err(e) = state
-            .repo
-            .sad_pointers
-            .truncate_and_replace(&pairs, &establishment_keys)
-            .await
-        {
+        if let Err(e) = state.repo.sad_pointers.truncate_and_replace(&records).await {
             warn!("Failed to repair chain: {}", e);
             return (StatusCode::CONFLICT, format!("{}", e)).into_response();
         }
-        new_record_count = pairs.len() as u32;
-        should_publish = true; // repairs always store (records validated non-empty above)
+        new_record_count = records.len() as u32;
+        should_publish = true;
     } else {
-        // Normal mode: store batch with full chain verification and advisory lock
-        match state
-            .repo
-            .sad_pointers
-            .save_batch_with_verified_signatures(&pairs, &establishment_keys)
-            .await
-        {
+        match state.repo.sad_pointers.save_batch(&records).await {
             Ok(count) => {
                 new_record_count = count;
                 should_publish = count > 0;
@@ -678,11 +1173,17 @@ pub async fn submit_sad_pointer(
     // Accrue only actual new records to prefix rate limit
     accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
-    // Publish the effective SAID to Redis for gossip. Using the effective SAID
-    // (not the tip record SAID) ensures the gossip feedback loop cache key matches
-    // for both divergent and non-divergent chains.
-    // Repair updates include a ":repair" suffix so the gossip subscriber
-    // can propagate the repair flag to other nodes.
+    // Check nodes replication policy for gossip
+    let pointer_custody = records.first().and_then(|r| r.custody);
+    if matches!(
+        resolve_gossip_policy(&pointer_custody, &state).await,
+        GossipPolicy::LocalOnly
+    ) {
+        debug!("Skipping pointer gossip: custody.nodes restricts to local/home-node");
+        return (StatusCode::CREATED, "stored").into_response();
+    }
+
+    // Publish the effective SAID to Redis for gossip.
     let effective_said = if should_publish {
         match state.repo.sad_pointers.effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),

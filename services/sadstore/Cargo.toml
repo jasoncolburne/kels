@@ -20,12 +20,16 @@ cesr = { git = "https://github.com/jasoncolburne/cesr-rs" }
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 kels-core = { path = "../../lib/kels", features = ["redis", "server"] }
+kels-policy = { path = "../../lib/policy" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
 axum = "0.7"
+
+# Timestamps
+chrono = "0.4"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -11,13 +11,13 @@ use crate::{
 
 // ==================== FFI Functions ====================
 
-/// Compute the deterministic SAD pointer prefix for a given KEL prefix and kind.
+/// Compute the deterministic SAD pointer prefix for a given write policy SAID and topic.
 ///
 /// This is an offline operation -- no network access needed.
 ///
 /// # Arguments
-/// * `kel_prefix` - The KEL prefix (owner of the pointer chain)
-/// * `kind` - The pointer kind (e.g., "kels/exchange/v1/keys/mlkem")
+/// * `write_policy` - The write policy SAID
+/// * `topic` - The pointer topic (e.g., "kels/exchange/v1/keys/mlkem")
 ///
 /// # Returns
 /// The computed pointer prefix string, or NULL on error.
@@ -27,30 +27,30 @@ use crate::{
 /// - Both arguments must be valid C strings
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
-    kel_prefix: *const c_char,
-    kind: *const c_char,
+    write_policy: *const c_char,
+    topic: *const c_char,
 ) -> *mut c_char {
     clear_last_error();
 
-    let Some(prefix) = from_c_string(kel_prefix) else {
-        set_last_error("Invalid KEL prefix");
+    let Some(policy_str) = from_c_string(write_policy) else {
+        set_last_error("Invalid write policy");
         return std::ptr::null_mut();
     };
 
-    let Some(kind_str) = from_c_string(kind) else {
-        set_last_error("Invalid kind");
+    let Some(topic_str) = from_c_string(topic) else {
+        set_last_error("Invalid topic");
         return std::ptr::null_mut();
     };
 
-    let prefix_digest = match cesr::Digest256::from_qb64(&prefix) {
+    let policy_digest = match cesr::Digest256::from_qb64(&policy_str) {
         Ok(d) => d,
         Err(e) => {
-            set_last_error(&format!("Invalid KEL prefix CESR: {e}"));
+            set_last_error(&format!("Invalid write policy CESR: {e}"));
             return std::ptr::null_mut();
         }
     };
 
-    match kels_core::compute_sad_pointer_prefix(prefix_digest, &kind_str) {
+    match kels_core::compute_sad_pointer_prefix(policy_digest, &topic_str) {
         Ok(pointer_prefix) => to_c_string(pointer_prefix.as_ref()),
         Err(e) => {
             set_last_error(&format!("Prefix computation failed: {e}"));
@@ -182,11 +182,11 @@ pub unsafe extern "C" fn kels_sad_get_object(
     }
 }
 
-/// Submit signed SAD pointer records to a SADStore.
+/// Submit SAD pointer records to a SADStore.
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
-/// * `json_signed_records` - JSON string of `Vec<SignedSadPointer>`
+/// * `json_signed_records` - JSON string of `Vec<SadPointer>`
 ///
 /// # Returns
 /// 0 on success, -1 on error
@@ -210,7 +210,7 @@ pub unsafe extern "C" fn kels_sad_submit_pointer(
         return KelsStatus::Error;
     };
 
-    let records: Vec<kels_core::SignedSadPointer> = match serde_json::from_str(&records_str) {
+    let records: Vec<kels_core::SadPointer> = match serde_json::from_str(&records_str) {
         Ok(r) => r,
         Err(e) => {
             set_last_error(&format!("Invalid records JSON: {e}"));

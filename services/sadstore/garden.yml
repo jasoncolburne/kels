@@ -11,6 +11,7 @@ source:
 include:
   - lib/kels/**/*
   - lib/derive/**/*
+  - lib/policy/**/*
   - services/sadstore/**/*
   - project.garden.yml
 

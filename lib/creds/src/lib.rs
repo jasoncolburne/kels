@@ -29,5 +29,5 @@ pub use verification::{CredentialVerification, verify_credential};
 
 // Re-export kels-policy types for convenience
 pub use kels_policy::{
-    InMemoryPolicyResolver, Policy, PolicyResolver, PolicyVerification, evaluate_policy,
+    InMemoryPolicyResolver, Policy, PolicyResolver, PolicyVerification, evaluate_anchored_policy,
 };
