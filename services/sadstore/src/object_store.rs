@@ -113,6 +113,20 @@ impl ObjectStore {
         Ok(())
     }
 
+    /// Delete an object by SAID. Used for `once` and TTL reaper.
+    pub async fn delete(&self, said: &cesr::Digest256) -> Result<(), ObjectStoreError> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(said.as_ref())
+            .send()
+            .await
+            .map_err(|e| ObjectStoreError::S3(e.to_string()))?;
+
+        debug!("Deleted SAD object: {}", said);
+        Ok(())
+    }
+
     /// Retrieve a JSON object by SAID.
     pub async fn get(&self, said: &cesr::Digest256) -> Result<Vec<u8>, ObjectStoreError> {
         let response = match self

@@ -22,6 +22,7 @@ use crate::{
 ///
 /// `poison` and `immune` cannot both be set.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "policies")]
 #[serde(rename_all = "camelCase")]
 #[crate_new]
 pub struct Policy {

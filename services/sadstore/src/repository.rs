@@ -2,7 +2,10 @@
 
 use cesr::VerificationKey;
 
-use kels_core::{SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature};
+use kels_core::{
+    Custody, SadPointer, SadPointerRepair, SadPointerRepairRecord, SadPointerSignature,
+};
+use kels_policy::Policy;
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
     UnchainedRepository, Value,
@@ -718,10 +721,11 @@ impl SadObjectIndex {
     pub async fn store(
         &self,
         sad_said: &cesr::Digest256,
+        custody: Option<cesr::Digest256>,
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        let entry = kels_core::SadObjectEntry::create(*sad_said)?;
+        let entry = kels_core::SadObjectEntry::create(*sad_said, custody)?;
 
         let mut tx = self.pool.begin_transaction().await?;
 
@@ -741,6 +745,21 @@ impl SadObjectIndex {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Fetch a SAD object index entry by its MinIO SAID.
+    pub async fn get_by_sad_said(
+        &self,
+        sad_said: &cesr::Digest256,
+    ) -> Result<Option<kels_core::SadObjectEntry>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
+            Self::TABLE_NAME,
+        )
+        .eq("sad_said", sad_said.as_ref())
+        .limit(1);
+        self.pool.fetch_optional(query).await
     }
 
     /// Check if a SAD object is tracked.
@@ -808,9 +827,73 @@ impl SadObjectIndex {
     }
 }
 
+/// Cached custody SADs for the fetch-time hot path.
+#[derive(Stored)]
+#[stored(item_type = Custody, table = "custodies", chained = false)]
+pub struct CustodyRepository {
+    pub pool: PgPool,
+}
+
+impl CustodyRepository {
+    /// Store a custody SAD in the cache (idempotent — same SAID = same content).
+    pub async fn store(&self, custody: &Custody) -> Result<(), StorageError> {
+        match self.insert(custody.clone()).await {
+            Ok(_) => Ok(()),
+            Err(StorageError::DuplicateRecord(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetch a cached custody by SAID.
+    pub async fn get_by_said(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<Option<Custody>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<Custody>::for_table(Self::TABLE_NAME)
+            .eq("said", said.as_ref())
+            .limit(1);
+        self.pool.fetch_optional(query).await
+    }
+}
+
+/// Cached policy SADs for evaluation without MinIO round-trips.
+#[derive(Stored)]
+#[stored(item_type = Policy, table = "policies", chained = false)]
+pub struct PolicyRepository {
+    pub pool: PgPool,
+}
+
+impl PolicyRepository {
+    /// Store a policy SAD in the cache (idempotent — same SAID = same content).
+    pub async fn store(&self, policy: &Policy) -> Result<(), StorageError> {
+        match self.insert(policy.clone()).await {
+            Ok(_) => Ok(()),
+            Err(StorageError::DuplicateRecord(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetch a cached policy by SAID.
+    pub async fn get_by_said(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<Option<Policy>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<Policy>::for_table(Self::TABLE_NAME)
+            .eq("said", said.as_ref())
+            .limit(1);
+        self.pool.fetch_optional(query).await
+    }
+}
+
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
     pub sad_pointers: SadPointerRepository,
     pub sad_objects: SadObjectIndex,
+    pub custodies: CustodyRepository,
+    pub policies: PolicyRepository,
 }

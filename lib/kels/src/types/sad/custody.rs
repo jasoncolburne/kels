@@ -19,6 +19,7 @@ use verifiable_storage::SelfAddressed;
 /// - `once` — atomic delete on first successful retrieval
 /// - `nodes` — SAID of a `NodeSet` SAD for selective replication
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[storable(table = "custodies")]
 #[serde(rename_all = "camelCase")]
 pub struct Custody {
     #[said]

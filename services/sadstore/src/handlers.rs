@@ -339,16 +339,28 @@ pub async fn post_sad_object(
             .into_response();
     }
 
-    // Parse and verify SAID
-    let value: serde_json::Value = match serde_json::from_slice(&body) {
+    // Parse JSON
+    let mut value: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response();
         }
     };
 
+    // Verify SAID — reject tampered or malformed documents
     if value.verify_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID verification failed").into_response();
+    }
+
+    // Compact: recursively store nested SADs in MinIO, replace with SAIDs
+    if let Err(e) = crate::compaction::compact_sad(&mut value, &state.object_store).await {
+        warn!("Compaction failed: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "compaction error").into_response();
+    }
+
+    // Derive canonical SAID on the fully compacted form
+    if value.derive_said().is_err() {
+        return (StatusCode::BAD_REQUEST, "SAID derivation failed").into_response();
     }
 
     let said = value.get_said();
@@ -366,11 +378,25 @@ pub async fn post_sad_object(
         }
     }
 
-    // Store in MinIO + track in DB index atomically
+    // Extract and validate custody if present
+    let custody_said = match extract_and_cache_custody(&value, &state).await {
+        Ok(said) => said,
+        Err(response) => return response,
+    };
+
+    // Store compacted SAD in MinIO + track in DB index with custody
+    let compacted_bytes = match serde_json::to_vec(&value) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to serialize compacted SAD: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "serialization error").into_response();
+        }
+    };
+
     if let Err(e) = state
         .repo
         .sad_objects
-        .store(&said, &state.object_store, &body)
+        .store(&said, custody_said, &state.object_store, &compacted_bytes)
         .await
     {
         warn!("Failed to store SAD object: {}", e);
@@ -391,6 +417,101 @@ pub async fn post_sad_object(
     }
 
     (StatusCode::CREATED, "stored").into_response()
+}
+
+/// Extract the `custody` key from a compacted SAD, validate it, and cache
+/// the custody and any referenced policies in Postgres.
+/// Returns `Ok(Some(custody_said))` if custody is present and enforced,
+/// `Ok(None)` if absent or safety-valve disengaged.
+async fn extract_and_cache_custody(
+    value: &serde_json::Value,
+    state: &AppState,
+) -> Result<Option<cesr::Digest256>, axum::response::Response> {
+    let custody_value = match value.get("custody") {
+        Some(v) if v.is_string() => {
+            // Already compacted to a SAID string — the custody SAD is in MinIO.
+            // Parse the SAID and look up the cached custody.
+            let custody_said_str = v.as_str().unwrap_or_default();
+            let custody_said = cesr::Digest256::from_qb64(custody_said_str)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid custody SAID").into_response())?;
+            return Ok(Some(custody_said));
+        }
+        Some(v) if v.is_object() => v.clone(),
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "custody must be an object or SAID string",
+            )
+                .into_response());
+        }
+        None => return Ok(None),
+    };
+
+    // Validate the custody object
+    let custody = match kels_core::parse_and_validate_custody(
+        &custody_value,
+        kels_core::CustodyContext::SadObject,
+    ) {
+        Ok(Some(c)) => c,
+        Ok(None) => return Ok(None), // Safety valve — unknown fields, no enforcement
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
+    };
+
+    // Verify custody SAID
+    if custody.verify_said().is_err() {
+        return Err((StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response());
+    }
+
+    let custody_said = custody.said;
+
+    // Cache custody in Postgres (idempotent)
+    state.repo.custodies.store(&custody).await.map_err(|e| {
+        warn!("Failed to cache custody: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+    })?;
+
+    // Cache referenced policies if they exist in MinIO
+    for policy_said in [custody.write_policy, custody.read_policy]
+        .into_iter()
+        .flatten()
+    {
+        // Only cache if not already cached
+        if state
+            .repo
+            .policies
+            .get_by_said(&policy_said)
+            .await
+            .unwrap_or(None)
+            .is_some()
+        {
+            continue;
+        }
+
+        // Try to load from MinIO and cache
+        match state.object_store.get(&policy_said).await {
+            Ok(data) => {
+                if let Ok(policy) = serde_json::from_slice::<kels_policy::Policy>(&data)
+                    && policy.verify_said().is_ok()
+                    && let Err(e) = state.repo.policies.store(&policy).await
+                {
+                    warn!("Failed to cache policy {}: {}", policy_said, e);
+                }
+            }
+            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced policy {} not found in SADStore", policy_said),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                warn!("Failed to fetch policy {}: {}", policy_said, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
+            }
+        }
+    }
+
+    Ok(Some(custody_said))
 }
 
 pub async fn fetch_sad_object(

@@ -5,6 +5,7 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
+pub mod compaction;
 mod handlers;
 pub mod object_store;
 pub mod repository;
