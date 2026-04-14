@@ -785,8 +785,7 @@ pub async fn fetch_sad_object(
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
         Ok(Some(entry)) => entry,
         Ok(None) => {
-            // Not tracked in index — try MinIO directly (legacy or uncustodied)
-            return serve_from_minio(&state.object_store, &object_said).await;
+            return (StatusCode::NOT_FOUND, "not found").into_response();
         }
         Err(e) => {
             warn!("Failed to look up SAD object: {}", e);
