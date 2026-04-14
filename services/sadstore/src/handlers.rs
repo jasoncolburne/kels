@@ -482,20 +482,87 @@ pub async fn post_sad_object(
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
     }
 
-    // Publish to Redis for gossip
-    if let Some(ref conn) = state.redis_conn {
-        let mut conn = conn.clone();
-        if let Err(e) = redis::cmd("PUBLISH")
-            .arg("sad_updates")
-            .arg(said.as_ref())
-            .query_async::<()>(&mut conn)
-            .await
-        {
-            warn!("Failed to publish SAD update: {}", e);
+    // Gossip: check nodes replication policy before publishing
+    match resolve_gossip_policy(&custody_said, &state).await {
+        GossipPolicy::BroadcastAll => {
+            if let Some(ref conn) = state.redis_conn {
+                let mut conn = conn.clone();
+                if let Err(e) = redis::cmd("PUBLISH")
+                    .arg("sad_updates")
+                    .arg(said.as_ref())
+                    .query_async::<()>(&mut conn)
+                    .await
+                {
+                    warn!("Failed to publish SAD update: {}", e);
+                }
+            }
+        }
+        GossipPolicy::LocalOnly => {
+            debug!("Skipping gossip: custody.nodes restricts to local/home-node");
         }
     }
 
     (StatusCode::CREATED, "stored").into_response()
+}
+
+/// Gossip replication decision for a record.
+enum GossipPolicy {
+    /// No nodes restriction — broadcast to all peers (default).
+    BroadcastAll,
+    /// Nodes present with 0 or 1 entries — keep at origin, no gossip.
+    LocalOnly,
+}
+
+/// Resolve the gossip policy from a custody SAID.
+///
+/// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
+/// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
+/// LocalOnly (home-node), >1 prefixes → rejected at write time so not reachable.
+///
+/// Fails open: if we can't resolve the custody or node set, broadcast to be safe.
+async fn resolve_gossip_policy(
+    custody_said: &Option<cesr::Digest256>,
+    state: &AppState,
+) -> GossipPolicy {
+    let Some(said) = custody_said else {
+        return GossipPolicy::BroadcastAll;
+    };
+
+    let custody = match state.repo.custodies.get_by_said(said).await {
+        Ok(Some(c)) => c,
+        _ => return GossipPolicy::BroadcastAll,
+    };
+
+    let Some(nodes_said) = custody.nodes else {
+        return GossipPolicy::BroadcastAll;
+    };
+
+    // Resolve the NodeSet from MinIO to check prefix count
+    match state.object_store.get(&nodes_said).await {
+        Ok(data) => {
+            if let Ok(node_set) = serde_json::from_slice::<kels_core::NodeSet>(&data) {
+                if node_set.prefixes.len() <= 1 {
+                    GossipPolicy::LocalOnly
+                } else {
+                    // Multi-node selective replication is rejected at write time,
+                    // so this should not be reachable. Fail open just in case.
+                    warn!(
+                        "NodeSet {} has {} prefixes — multi-node not yet supported, broadcasting",
+                        nodes_said,
+                        node_set.prefixes.len()
+                    );
+                    GossipPolicy::BroadcastAll
+                }
+            } else {
+                warn!("Failed to parse NodeSet {}", nodes_said);
+                GossipPolicy::BroadcastAll
+            }
+        }
+        Err(e) => {
+            warn!("Failed to resolve NodeSet {}: {}", nodes_said, e);
+            GossipPolicy::BroadcastAll
+        }
+    }
 }
 
 /// Extract the `custody` key from a compacted SAD, validate it, and cache
@@ -539,6 +606,45 @@ async fn extract_and_cache_custody(
     // Verify custody SAID
     if custody.verify_said().is_err() {
         return Err((StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response());
+    }
+
+    // Validate nodes: multi-node selective replication is not yet supported.
+    // Resolve the NodeSet (if present) and reject if >1 prefix.
+    if let Some(ref nodes_said) = custody.nodes {
+        match state.object_store.get(nodes_said).await {
+            Ok(data) => match serde_json::from_slice::<kels_core::NodeSet>(&data) {
+                Ok(node_set) => {
+                    if node_set.prefixes.len() > 1 {
+                        return Err((
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "Multi-node selective replication not yet supported: NodeSet {} has {} prefixes. \
+                                     Use an empty set (local cache), a single prefix (home-node), or omit nodes (broadcast all).",
+                                    nodes_said, node_set.prefixes.len()
+                                ),
+                            ).into_response());
+                    }
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Failed to parse NodeSet {}: {}", nodes_said, e),
+                    )
+                        .into_response());
+                }
+            },
+            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Referenced NodeSet {} not found in SADStore", nodes_said),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                warn!("Failed to fetch NodeSet {}: {}", nodes_said, e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
+            }
+        }
     }
 
     let custody_said = custody.said;
@@ -961,11 +1067,17 @@ pub async fn submit_sad_pointer(
     // Accrue only actual new records to prefix rate limit
     accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
 
-    // Publish the effective SAID to Redis for gossip. Using the effective SAID
-    // (not the tip record SAID) ensures the gossip feedback loop cache key matches
-    // for both divergent and non-divergent chains.
-    // Repair updates include a ":repair" suffix so the gossip subscriber
-    // can propagate the repair flag to other nodes.
+    // Check nodes replication policy for gossip
+    let pointer_custody = records.first().and_then(|r| r.custody);
+    if matches!(
+        resolve_gossip_policy(&pointer_custody, &state).await,
+        GossipPolicy::LocalOnly
+    ) {
+        debug!("Skipping pointer gossip: custody.nodes restricts to local/home-node");
+        return (StatusCode::CREATED, "stored").into_response();
+    }
+
+    // Publish the effective SAID to Redis for gossip.
     let effective_said = if should_publish {
         match state.repo.sad_pointers.effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
