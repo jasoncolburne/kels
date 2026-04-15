@@ -1,5 +1,5 @@
 use cesr::Matter;
-use kels_core::SadStore;
+use kels_core::{SadStore, navigate_to_value_mut};
 
 pub use kels_core::{PathToken, parse_disclosure};
 
@@ -55,14 +55,13 @@ pub async fn apply_disclosure(
                 compact_children(&mut value, schema)?;
             }
             PathToken::Expand(path) => {
-                expand_at_path(&mut value, path, sad_store).await?;
+                expand_or_error(&mut value, path, sad_store).await?;
             }
             PathToken::ExpandRecursive(path) => {
-                expand_at_path(&mut value, path, sad_store).await?;
+                expand_or_error(&mut value, path, sad_store).await?;
                 // After expanding the field, recursively expand its children
                 // using schema-aware expansion
-                let (parent, last) = navigate_to_field(&mut value, path)?;
-                if let Some(child) = parent.get_mut(last)
+                if let Some(child) = navigate_to_value_mut(&mut value, path)
                     && let Some(sub_fields) = resolve_schema_fields_at_path(&schema.fields, path)
                 {
                     expand_with_fields(child, &sub_fields, sad_store).await?;
@@ -105,28 +104,21 @@ fn resolve_schema_fields_at_path(
 }
 
 /// Expand a field at the given path (single level, not recursive).
-async fn expand_at_path(
+/// Errors if the path doesn't exist. Tolerates already-expanded fields
+/// (returns Ok if the target is an object, not a SAID string).
+async fn expand_or_error(
     value: &mut serde_json::Value,
     path: &[String],
     sad_store: &dyn SadStore,
 ) -> Result<(), CredentialError> {
-    let (parent, last) = navigate_to_field(value, path)?;
-
-    let current = parent
-        .get(last)
-        .ok_or_else(|| CredentialError::InvalidDisclosure(format!("field '{}' not found", last)))?;
-
-    if let Some(said_str) = current.as_str() {
-        let digest = cesr::Digest256::from_qb64(said_str)?;
-        let expanded = sad_store.load(&digest).await?.ok_or_else(|| {
-            CredentialError::ExpansionError(format!(
-                "chunk not found in store for SAID: {}",
-                said_str
-            ))
-        })?;
-        parent.insert(last.to_string(), expanded);
+    if !kels_core::expand_at_path(value, path, sad_store).await?
+        && navigate_to_value_mut(value, path).is_none()
+    {
+        let field_name = path.last().map_or("(empty)", |s| s.as_str());
+        return Err(CredentialError::ExpansionError(format!(
+            "could not expand field '{field_name}' — path not found"
+        )));
     }
-
     Ok(())
 }
 
@@ -137,27 +129,26 @@ fn compact_at_path(
     path: &[String],
     schema: &Schema,
 ) -> Result<(), CredentialError> {
-    let (parent, last) = navigate_to_field(value, path)?;
+    let target = navigate_to_value_mut(value, path).ok_or_else(|| {
+        let field_name = path.last().map_or("(empty)", |s| s.as_str());
+        CredentialError::InvalidDisclosure(format!("field '{field_name}' not found"))
+    })?;
 
-    let child = parent
-        .get_mut(last)
-        .ok_or_else(|| CredentialError::InvalidDisclosure(format!("field '{}' not found", last)))?;
-
-    if child.is_string() {
+    if target.is_string() {
         // Already compacted
         return Ok(());
     }
 
-    if !child.is_object() || child.get("said").is_none() {
+    if !target.is_object() || target.get("said").is_none() {
+        let field_name = path.last().map_or("(empty)", |s| s.as_str());
         return Err(CredentialError::InvalidDisclosure(format!(
-            "field '{}' is not a compactable object (missing 'said' field)",
-            last
+            "field '{field_name}' is not a compactable object (missing 'said' field)",
         )));
     }
 
     // Resolve the sub-schema fields at this path for schema-aware compaction
     let sub_fields = resolve_schema_fields_at_path(&schema.fields, path).unwrap_or_default();
-    compact_with_fields(child, &sub_fields)?;
+    compact_with_fields(target, &sub_fields)?;
 
     Ok(())
 }
@@ -178,31 +169,6 @@ fn compact_children(value: &mut serde_json::Value, schema: &Schema) -> Result<()
         ))?
         .clone();
     Ok(())
-}
-
-/// Navigate to the parent of the field at the given path and return the parent map + last key.
-fn navigate_to_field<'a>(
-    value: &'a mut serde_json::Value,
-    path: &'a [String],
-) -> Result<(&'a mut serde_json::Map<String, serde_json::Value>, &'a str), CredentialError> {
-    if path.is_empty() {
-        return Err(CredentialError::InvalidDisclosure("empty path".to_string()));
-    }
-
-    let mut current = value;
-    for segment in &path[..path.len() - 1] {
-        current = current.get_mut(segment.as_str()).ok_or_else(|| {
-            CredentialError::InvalidDisclosure(format!("path segment '{}' not found", segment))
-        })?;
-    }
-
-    let parent = current
-        .as_object_mut()
-        .ok_or_else(|| CredentialError::InvalidDisclosure("parent is not an object".to_string()))?;
-
-    let last = &path[path.len() - 1];
-
-    Ok((parent, last.as_str()))
 }
 
 #[cfg(test)]
