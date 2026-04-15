@@ -104,16 +104,19 @@ fn resolve_schema_fields_at_path(
 }
 
 /// Expand a field at the given path (single level, not recursive).
-/// Errors if the path doesn't exist or the SAID can't be resolved.
+/// Errors if the path doesn't exist. Tolerates already-expanded fields
+/// (returns Ok if the target is an object, not a SAID string).
 async fn expand_or_error(
     value: &mut serde_json::Value,
     path: &[String],
     sad_store: &dyn SadStore,
 ) -> Result<(), CredentialError> {
-    if !kels_core::expand_at_path(value, path, sad_store).await? {
+    if !kels_core::expand_at_path(value, path, sad_store).await?
+        && navigate_to_value_mut(value, path).is_none()
+    {
         let field_name = path.last().map_or("(empty)", |s| s.as_str());
         return Err(CredentialError::ExpansionError(format!(
-            "could not expand field '{field_name}' — path not found or not a resolvable SAID"
+            "could not expand field '{field_name}' — path not found"
         )));
     }
     Ok(())

@@ -93,7 +93,7 @@ pub async fn expand_at_path(
 
 /// Compact a value at a path to its SAID string (if it has a `said` field).
 ///
-/// Returns `Ok(true)` if the value was compacted, `Ok(false)` if the target
+/// Returns `true` if the value was compacted, `false` if the target
 /// has no `said` field or the path doesn't exist.
 pub fn compact_at_path(value: &mut serde_json::Value, path: &[String]) -> bool {
     if path.is_empty() {
@@ -208,21 +208,19 @@ mod tests {
     async fn test_expand_at_path_success() {
         let store = InMemorySadStore::new();
         let child = json!({"said": "Kchild_said_placeholder_____________________", "data": "leaf"});
-        let digest = cesr::Digest256::from_qb64("Kchild_said_placeholder_____________________");
-        if let Ok(d) = digest {
-            store.store(&d, &child).await.unwrap();
+        let d = cesr::Digest256::from_qb64("Kchild_said_placeholder_____________________").unwrap();
+        store.store(&d, &child).await.unwrap();
 
-            let mut value = json!({
-                "said": "",
-                "child": d.to_string()
-            });
+        let mut value = json!({
+            "said": "",
+            "child": d.to_string()
+        });
 
-            let result = expand_at_path(&mut value, &["child".to_string()], &store)
-                .await
-                .unwrap();
-            assert!(result);
-            assert!(value.get("child").unwrap().is_object());
-        }
+        let result = expand_at_path(&mut value, &["child".to_string()], &store)
+            .await
+            .unwrap();
+        assert!(result);
+        assert!(value.get("child").unwrap().is_object());
     }
 
     #[tokio::test]
