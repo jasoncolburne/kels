@@ -140,11 +140,11 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | GET | `/health` | None | Health check |
 | GET | `/ready` | None | Readiness check |
 | POST | `/api/v1/sad` | None | Store a self-addressed JSON object (idempotent, SAID verified from body) |
-| POST | `/api/v1/sad/fetch` | None | Retrieve a self-addressed object; `SadRequest` body (`said`) |
-| POST | `/api/v1/sad/exists` | None | Check if a SAD object exists; `SadRequest` body (`said`); returns 200 or 404 |
+| POST | `/api/v1/sad/fetch` | None | Retrieve a self-addressed object; `SadFetchRequest` body (`said`) |
+| POST | `/api/v1/sad/exists` | None | Check if a SAD object exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/pointers` | **KEL signature** | Submit signed chain pointer(s) (`Vec<SignedSadPointer>`) |
 | POST | `/api/v1/sad/pointers/fetch` | None | Fetch chain; `SadPointerPageRequest` body (`prefix`, `since`, `limit`); returns `SadPointerPage` |
-| POST | `/api/v1/sad/pointers/exists` | None | Check if a pointer exists; `SadRequest` body (`said`); returns 200 or 404 |
+| POST | `/api/v1/sad/pointers/exists` | None | Check if a pointer exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/pointers/effective-said` | None | Tip SAID for sync comparison; `SadPointerEffectiveSaidRequest` body (`prefix`) |
 | POST | `/api/v1/sad/pointers/repairs` | None | Get paginated repair records; `SadRepairsRequest` body (`prefix`, `limit`, `offset`); returns `SadPointerRepairPage` |
 | POST | `/api/v1/sad/pointers/repairs/records` | None | Get archived records for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadPointerPage` |

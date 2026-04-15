@@ -8,7 +8,7 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 /// they believe governs the record. Server rejects if it doesn't match.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
-pub struct SadFetchRequest {
+pub struct SignedSadFetchRequest {
     #[said]
     pub said: cesr::Digest256,
     #[created_at]
@@ -23,7 +23,7 @@ pub struct SadFetchRequest {
 
 /// Request body for fetching or checking existence of a SAD object or pointer by SAID.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SadRequest {
+pub struct SadFetchRequest {
     pub said: cesr::Digest256,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disclosure: Option<String>,

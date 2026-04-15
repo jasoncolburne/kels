@@ -106,7 +106,7 @@ impl SadStoreClient {
     /// Check if a self-addressed object exists by SAID.
     pub async fn sad_object_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/exists", self.base_url);
-        let body = crate::SadRequest {
+        let body = crate::SadFetchRequest {
             said: *said,
             disclosure: None,
         };
@@ -123,7 +123,7 @@ impl SadStoreClient {
         said: &cesr::Digest256,
     ) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/fetch", self.base_url);
-        let body = crate::SadRequest {
+        let body = crate::SadFetchRequest {
             said: *said,
             disclosure: None,
         };
@@ -149,7 +149,7 @@ impl SadStoreClient {
         disclosure: &str,
     ) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/fetch", self.base_url);
-        let body = crate::SadRequest {
+        let body = crate::SadFetchRequest {
             said: *said,
             disclosure: Some(disclosure.to_string()),
         };
@@ -279,7 +279,7 @@ impl SadStoreClient {
     /// Check if a pointer with the given SAID exists on this SADStore.
     pub async fn sad_pointer_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/exists", self.base_url);
-        let body = crate::SadRequest {
+        let body = crate::SadFetchRequest {
             said: *said,
             disclosure: None,
         };

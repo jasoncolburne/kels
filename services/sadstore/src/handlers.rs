@@ -928,21 +928,21 @@ fn parse_fetch_request(
 ) -> Result<
     (
         cesr::Digest256,
-        Option<kels_core::SignedRequest<kels_core::SadFetchRequest>>,
+        Option<kels_core::SignedRequest<kels_core::SignedSadFetchRequest>>,
         Option<String>,
     ),
     axum::response::Response,
 > {
     // Try authenticated request first
     if let Ok(signed) =
-        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SadFetchRequest>>(body)
+        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SignedSadFetchRequest>>(body)
     {
         let disclosure = signed.payload.disclosure.clone();
         return Ok((signed.payload.object_said, Some(signed), disclosure));
     }
 
     // Fall back to unauthenticated request
-    if let Ok(request) = serde_json::from_slice::<kels_core::SadRequest>(body) {
+    if let Ok(request) = serde_json::from_slice::<kels_core::SadFetchRequest>(body) {
         let disclosure = request.disclosure.clone();
         return Ok((request.said, None, disclosure));
     }
@@ -953,7 +953,7 @@ fn parse_fetch_request(
 /// Verify signatures on a fetch request and return verified prefixes.
 async fn authenticate_fetch_request(
     state: &AppState,
-    signed: &kels_core::SignedRequest<kels_core::SadFetchRequest>,
+    signed: &kels_core::SignedRequest<kels_core::SignedSadFetchRequest>,
 ) -> Result<std::collections::HashSet<cesr::Digest256>, axum::response::Response> {
     authenticate_peer_request(
         state,
@@ -1069,7 +1069,7 @@ impl kels_policy::PolicyResolver for SadStorePolicyResolver {
 
 pub async fn sad_object_exists(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
     match state.object_store.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
@@ -1083,7 +1083,7 @@ pub async fn sad_object_exists(
 
 pub async fn sad_pointer_exists(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
     match state.repo.sad_pointers.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
