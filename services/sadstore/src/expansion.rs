@@ -7,15 +7,12 @@
 use async_trait::async_trait;
 use cesr::Matter;
 
-use kels_core::{KelsError, PathToken, SadStore, parse_disclosure};
+use kels_core::{
+    ExpansionState, KelsError, MAX_EXPANSION_DEPTH, PathToken, SadStore, compact_children_only,
+    compact_recursive, navigate_to_value_mut, parse_disclosure,
+};
 
 use crate::object_store::{ObjectStore, ObjectStoreError};
-
-/// Maximum recursion depth for heuristic expansion.
-const MAX_EXPANSION_DEPTH: usize = 32;
-
-/// Maximum total SAID resolutions per request.
-const MAX_EXPANSIONS: usize = 1000;
 
 /// Adapter wrapping MinIO `ObjectStore` as a `SadStore` for disclosure expansion.
 /// Read-only — write/list/delete operations return errors.
@@ -92,7 +89,7 @@ async fn apply_tokens(
     tokens: &[PathToken],
     sad_store: &dyn SadStore,
 ) -> Result<(), KelsError> {
-    let mut state = ExpansionState { count: 0 };
+    let mut state = ExpansionState::new();
 
     for token in tokens {
         match token {
@@ -104,10 +101,14 @@ async fn apply_tokens(
                 compact_children_only(value);
             }
             PathToken::Expand(path) => {
-                expand_at_path(value, path, sad_store, &mut state).await?;
+                if state.can_expand() && kels_core::expand_at_path(value, path, sad_store).await? {
+                    state.record();
+                }
             }
             PathToken::ExpandRecursive(path) => {
-                expand_at_path(value, path, sad_store, &mut state).await?;
+                if state.can_expand() && kels_core::expand_at_path(value, path, sad_store).await? {
+                    state.record();
+                }
                 // After expanding at path, recursively expand within that subtree
                 // Depth starts at path.len() since we're already that deep in the document
                 if let Some(child) = navigate_to_value_mut(value, path) {
@@ -115,37 +116,19 @@ async fn apply_tokens(
                 }
             }
             PathToken::Compact(path) => {
-                compact_at_path(value, path);
+                kels_core::compact_at_path(value, path);
             }
             PathToken::CompactRecursive(path) => {
                 if let Some(child) = navigate_to_value_mut(value, path) {
                     compact_recursive(child);
                     // Compact the target itself to its SAID
-                    compact_at_path(value, path);
+                    kels_core::compact_at_path(value, path);
                 }
             }
         }
     }
 
     Ok(())
-}
-
-/// Mutable walk state tracking SADbomb protection limits.
-struct ExpansionState {
-    /// Total SAID resolutions performed so far.
-    count: usize,
-}
-
-impl ExpansionState {
-    /// Check if we can still perform expansions.
-    fn can_expand(&self) -> bool {
-        self.count < MAX_EXPANSIONS
-    }
-
-    /// Record an expansion.
-    fn record(&mut self) {
-        self.count += 1;
-    }
 }
 
 /// Recursively expand all SAID-like strings in a value.
@@ -234,130 +217,10 @@ fn expand_recursive<'a>(
     })
 }
 
-/// Expand a single SAID at a specific path. One level only, no recursion.
-async fn expand_at_path(
-    value: &mut serde_json::Value,
-    path: &[String],
-    sad_store: &dyn SadStore,
-    state: &mut ExpansionState,
-) -> Result<(), KelsError> {
-    if path.is_empty() || !state.can_expand() {
-        return Ok(());
-    }
-
-    let target = navigate_to_value_mut(value, path);
-    if let Some(target) = target
-        && let Some(said_str) = target.as_str().map(|s| s.to_string())
-        && let Ok(digest) = cesr::Digest256::from_qb64(&said_str)
-        && let Some(expanded) = sad_store.load(&digest).await?
-    {
-        state.record();
-        *target = expanded;
-    }
-
-    Ok(())
-}
-
-/// Compact a value at a path to its SAID string (if it has a `said` field).
-/// Silent no-op when the target has no `said` field — the heuristic path is
-/// best-effort; callers validate the result against their schema.
-fn compact_at_path(value: &mut serde_json::Value, path: &[String]) {
-    if path.is_empty() {
-        return;
-    }
-
-    let target = navigate_to_value_mut(value, path);
-    if let Some(target) = target
-        && let Some(said) = target
-            .get("said")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string())
-    {
-        *target = serde_json::Value::String(said);
-    }
-}
-
-/// Recursively compact all expanded objects back to their SAID strings.
-/// Any object with a `said` field gets replaced with that SAID string.
-fn compact_recursive(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(_) => {
-            // First compact children
-            #[allow(clippy::expect_used)]
-            let keys: Vec<String> = value
-                .as_object()
-                .expect("matched Object variant")
-                .keys()
-                .cloned()
-                .collect();
-
-            for key in keys {
-                if key == "said" {
-                    continue;
-                }
-                #[allow(clippy::expect_used)]
-                if let Some(child) = value
-                    .as_object_mut()
-                    .expect("matched Object variant")
-                    .get_mut(&key)
-                {
-                    compact_recursive(child);
-                }
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for elem in arr.iter_mut() {
-                compact_recursive(elem);
-            }
-        }
-        _ => {}
-    }
-
-    // After compacting children, compact this value itself if it has a SAID
-    if let Some(said) = value
-        .get("said")
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string())
-    {
-        *value = serde_json::Value::String(said);
-    }
-}
-
-/// Compact all children of a value recursively, but keep the root itself expanded.
-fn compact_children_only(value: &mut serde_json::Value) {
-    if let Some(obj) = value.as_object_mut() {
-        let keys: Vec<String> = obj.keys().cloned().collect();
-        for key in keys {
-            if key == "said" {
-                continue;
-            }
-            if let Some(child) = obj.get_mut(&key) {
-                compact_recursive(child);
-            }
-        }
-    }
-}
-
-/// Navigate to a mutable reference at the given path.
-fn navigate_to_value_mut<'a>(
-    value: &'a mut serde_json::Value,
-    path: &[String],
-) -> Option<&'a mut serde_json::Value> {
-    if path.is_empty() {
-        return Some(value);
-    }
-
-    let mut current = value;
-    for segment in path {
-        current = current.get_mut(segment.as_str())?;
-    }
-    Some(current)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kels_core::InMemorySadStore;
+    use kels_core::{InMemorySadStore, MAX_EXPANSIONS};
     use serde_json::json;
     use verifiable_storage::compute_said_from_value;
 
