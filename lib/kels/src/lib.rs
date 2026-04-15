@@ -44,6 +44,7 @@ pub mod disclosure;
 pub mod error;
 pub mod merge;
 pub mod repository;
+pub mod sad;
 pub mod serving;
 pub mod store;
 pub mod types;
@@ -78,6 +79,10 @@ pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
+pub use sad::{
+    ExpansionState, MAX_EXPANSION_DEPTH, MAX_EXPANSIONS, compact_at_path, compact_children_only,
+    compact_recursive, expand_at_path, navigate_to_value_mut,
+};
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
     FileKelStore, FileSadStore, InMemorySadStore, KelStore, KelStoreSink, RepositoryKelStore,
