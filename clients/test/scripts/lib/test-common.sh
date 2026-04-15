@@ -71,6 +71,35 @@ exit_with_result() {
     fi
 }
 
+# --- CESR / SAID helpers ---
+
+PLACEHOLDER="############################################"
+
+# Compute a CESR Blake3 SAID from a string argument.
+# Prepend 00 to hex hash, convert to binary, base64url, take last 43 chars, prepend "K".
+cesr_blake3() {
+    local data="$1"
+    local padded
+    padded=$(echo "00$(printf '%s' "$data" | b3sum --no-names)" | xxd -r -p | base64 | tr '/' '_' | tr '+' '-')
+    echo "K${padded:(-43)}"
+}
+
+# Compute a SAID for a JSON object (blanks "said" field, hashes).
+compute_said() {
+    local json="$1"
+    local with_placeholder
+    with_placeholder=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p')
+    cesr_blake3 "$with_placeholder"
+}
+
+# Compute prefix for a v0 inception pointer (blanks both said AND prefix).
+compute_prefix() {
+    local json="$1"
+    local with_placeholders
+    with_placeholders=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p | .prefix = $p')
+    cesr_blake3 "$with_placeholders"
+}
+
 # --- Setup helpers ---
 
 init_temp_dir() {

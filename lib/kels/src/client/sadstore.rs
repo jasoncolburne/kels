@@ -106,7 +106,10 @@ impl SadStoreClient {
     /// Check if a self-addressed object exists by SAID.
     pub async fn sad_object_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/exists", self.base_url);
-        let body = crate::SadRequest { said: *said };
+        let body = crate::SadFetchRequest {
+            said: *said,
+            disclosure: None,
+        };
         let resp = self.client.post(&url).json(&body).send().await?;
         Ok(resp.status().is_success())
     }
@@ -120,13 +123,45 @@ impl SadStoreClient {
         said: &cesr::Digest256,
     ) -> Result<serde_json::Value, KelsError> {
         let url = format!("{}/api/v1/sad/fetch", self.base_url);
-        let body = crate::SadRequest { said: *said };
+        let body = crate::SadFetchRequest {
+            said: *said,
+            disclosure: None,
+        };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
             Ok(resp.json().await?)
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Err(KelsError::NotFound(said.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Retrieve a self-addressed JSON object with disclosure expansion.
+    ///
+    /// Like `get_sad_object`, but applies a disclosure DSL expression to
+    /// selectively expand compacted nested SADs in the response.
+    pub async fn get_sad_object_with_disclosure(
+        &self,
+        said: &cesr::Digest256,
+        disclosure: &str,
+    ) -> Result<serde_json::Value, KelsError> {
+        let url = format!("{}/api/v1/sad/fetch", self.base_url);
+        let body = crate::SadFetchRequest {
+            said: *said,
+            disclosure: Some(disclosure.to_string()),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(said.to_string()))
+        } else if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::InvalidDisclosure(text))
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -244,7 +279,10 @@ impl SadStoreClient {
     /// Check if a pointer with the given SAID exists on this SADStore.
     pub async fn sad_pointer_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/pointers/exists", self.base_url);
-        let body = crate::SadRequest { said: *said };
+        let body = crate::SadFetchRequest {
+            said: *said,
+            disclosure: None,
+        };
         let resp = self.client.post(&url).json(&body).send().await?;
         Ok(resp.status().is_success())
     }

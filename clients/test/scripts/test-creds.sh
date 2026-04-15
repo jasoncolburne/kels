@@ -53,16 +53,6 @@ echo "========================================="
 echo "Phase 2: Prepare Schema & Policy"
 echo "========================================="
 
-PLACEHOLDER="############################################"
-
-# Compute a CESR Blake3 SAID from a string argument.
-cesr_blake3() {
-    local data="$1"
-    local padded
-    padded=$(echo "00$(printf '%s' "$data" | b3sum --no-names)" | xxd -r -p | base64 | tr '/' '_' | tr '+' '-')
-    echo "K${padded:(-43)}"
-}
-
 # Build a self-addressed schema
 test_create_schema() {
     # Schema must define all credential envelope fields + custom claims fields.

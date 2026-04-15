@@ -1,9 +1,10 @@
 #!/bin/bash
 # load-sads.sh - Populate a SADStore node with SAD objects and chain records
 #
-# For each group, creates a KEL, stores SAD objects, then creates a chain with
-# a random number [1, MAX_CHAIN_VERSIONS] of versions, each referencing a
-# different SAD object as content.
+# For each group, creates a KEL (using its prefix as the write_policy),
+# stores SAD objects, then creates a pointer chain with a random number
+# [1, MAX_CHAIN_VERSIONS] of versions, each referencing a different SAD
+# object as content.
 #
 # Usage: load-sads.sh [count] [concurrency]
 #   count:       number of SAD objects to create (default: 900, rounded to group size)
@@ -34,7 +35,7 @@ CONCURRENCY=${2:-10}
 COUNT=$(( (COUNT / MAX_CHAIN_VERSIONS) * MAX_CHAIN_VERSIONS ))
 GROUP_COUNT=$(( COUNT / MAX_CHAIN_VERSIONS ))
 
-PLACEHOLDER="############################################"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 echo "========================================="
 echo "SADStore Load Test"
@@ -47,31 +48,6 @@ echo "SADStore URL: $SADSTORE_URL"
 echo "Algorithm:    $ALGORITHM"
 echo "Kind:         $KIND"
 echo "========================================="
-
-# Compute a CESR Blake3 SAID from a string argument.
-# Prepend 00 to hex hash, convert to binary, base64url, take last 43 chars, prepend "K".
-cesr_blake3() {
-    local data="$1"
-    local padded
-    padded=$(echo "00$(printf '%s' "$data" | b3sum --no-names)" | xxd -r -p | base64 | tr '/' '_' | tr '+' '-')
-    echo "K${padded:(-43)}"
-}
-
-# Compute a SAID for a JSON object.
-compute_said() {
-    local json="$1"
-    local with_placeholder
-    with_placeholder=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p')
-    cesr_blake3 "$with_placeholder"
-}
-
-# Compute prefix for a v0 inception record (both said AND prefix are placeholders).
-compute_prefix() {
-    local json="$1"
-    local with_placeholders
-    with_placeholders=$(echo "$json" | jq -c --arg p "$PLACEHOLDER" '.said = $p | .prefix = $p')
-    cesr_blake3 "$with_placeholders"
-}
 
 create_group() {
     local group=$1
@@ -105,12 +81,15 @@ create_group() {
         put_code=$(echo "$put_resp" | tail -1)
         if [ "$put_code" != "201" ] && [ "$put_code" != "200" ]; then
             echo "ERROR [group $group]: SAD object PUT failed (HTTP $put_code): $(echo "$put_resp" | head -1)" >&2
+            rm -rf "$tmpdir"
+            return 1
         fi
 
         object_saids+=("$said")
     done
 
     # 3. Compute chain prefix (use kels-cli for correctness)
+    # kels-cli sad prefix takes (write_policy, topic) — we use the KEL prefix as write_policy
     local chain_prefix
     chain_prefix=$(kels-cli sad prefix "$prefix" "$KIND" 2>&1)
     if [ -z "$chain_prefix" ]; then
@@ -123,10 +102,10 @@ create_group() {
     local n=$(( (RANDOM % MAX_CHAIN_VERSIONS) + 1 ))
 
     # 5. Build chain records: v0 (inception, no content) then v1..vN
-    # v0: deterministic inception record
+    # v0: deterministic inception record (no content for v0)
     local v0_json
-    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg kp "$prefix" --arg k "$KIND" \
-        '{said: $p, prefix: $p, version: 0, kelPrefix: $kp, kind: $k}')
+    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$prefix" \
+        '{said: $p, prefix: $p, version: 0, topic: $t, writePolicy: $wp}')
     local v0_prefix
     v0_prefix=$(compute_prefix "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg pfx "$v0_prefix" '.prefix = $pfx')
@@ -134,18 +113,8 @@ create_group() {
     v0_said=$(compute_said "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg s "$v0_said" '.said = $s')
 
-    # Sign v0
-    local v0_sig
-    v0_sig=$(kels-cli --config-dir "$tmpdir" sign --prefix "$prefix" "$v0_said" 2>&1)
-    if [ -z "$v0_sig" ] || echo "$v0_sig" | grep -qi "^error"; then
-        echo "ERROR [group $group]: v0 signing failed: $v0_sig" >&2
-        rm -rf "$tmpdir"
-        return 1
-    fi
-
     local records_json="[]"
-    records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" --arg sig "$v0_sig" \
-        '. + [{pointer: $r, signature: $sig, establishmentSerial: 0}]')
+    records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" '. + [$r]')
 
     local prev_said="$v0_said"
 
@@ -153,21 +122,13 @@ create_group() {
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-            --argjson ver "$i" --arg kp "$prefix" --arg k "$KIND" --arg cs "$content_said" \
-            '{said: $p, prefix: $pfx, previous: $prev, version: $ver, kelPrefix: $kp, kind: $k, contentSaid: $cs}')
+            --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$prefix" \
+            '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp}')
         local vi_said
         vi_said=$(compute_said "$vi_json")
         vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')
 
-        local vi_sig
-        vi_sig=$(kels-cli --config-dir "$tmpdir" sign --prefix "$prefix" "$vi_said" 2>&1)
-        if [ -z "$vi_sig" ] || echo "$vi_sig" | grep -qi "^error"; then
-            echo "ERROR [group $group]: v$i signing failed: $vi_sig" >&2
-            break
-        fi
-
-        records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" --arg sig "$vi_sig" \
-            '. + [{pointer: $r, signature: $sig, establishmentSerial: 0}]')
+        records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" '. + [$r]')
 
         prev_said="$vi_said"
     done
@@ -182,6 +143,8 @@ create_group() {
     if [ "$submit_code" != "201" ]; then
         echo "ERROR [group $group]: chain record submit failed (HTTP $submit_code): $(echo "$submit_resp" | head -1)" >&2
         echo "  First record: $(echo "$records_json" | jq -c '.[0]')" >&2
+        rm -rf "$tmpdir"
+        return 1
     fi
 
     rm -rf "$tmpdir"
@@ -192,9 +155,15 @@ export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)
 seq 1 "$GROUP_COUNT" | xargs -P "$CONCURRENCY" -I {} bash -c 'create_group {}'
+xargs_status=$?
 end=$(date +%s)
 
 elapsed=$((end - start))
 echo ""
 echo "Created $COUNT SAD objects + $GROUP_COUNT chains in ${elapsed}s"
 echo "Rate: $(( GROUP_COUNT / (elapsed > 0 ? elapsed : 1) )) chains/s"
+
+if [ "$xargs_status" -ne 0 ]; then
+    echo "ERROR: one or more groups failed" >&2
+    exit 1
+fi

@@ -103,6 +103,6 @@ Use this exact structure:
 - Open findings get a plain `### N. Title`. Resolved findings get `### ~~N. Title~~ — RESOLVED`.
 - Include file paths with line numbers where applicable.
 - Include 4-6 positive observations — acknowledge good design decisions, not just problems.
-- Reference prior claudit rounds when tracking resolved findings (e.g., "All N findings from rounds 1-M are resolved").
+- **Each round is a clean document with only new findings.** Resolved findings are updated inline in their original document (strikethrough + resolution note), NOT carried forward into new round documents. A new round document should only contain new findings discovered in that round. The summary table at the top of each document reflects that document's findings only.
 - Do NOT fix any issues — this is a read-only audit. The user will decide what to fix.
-- If the branch has had prior claudit rounds, note the total resolved findings count.
+- If the branch has had prior claudit rounds, note the total resolved findings count in the summary.

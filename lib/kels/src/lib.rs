@@ -40,6 +40,7 @@ pub mod hardware;
 pub mod builder;
 pub mod client;
 pub mod crypto;
+pub mod disclosure;
 pub mod error;
 pub mod merge;
 pub mod repository;
@@ -73,6 +74,7 @@ pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
+pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
@@ -97,12 +99,12 @@ pub use types::{
     SadObjectEntry, SadObjectListResponse, SadPointer, SadPointerEffectiveSaidRequest,
     SadPointerPage, SadPointerPageRequest, SadPointerRepair, SadPointerRepairPage,
     SadPointerRepairRecord, SadPointerVerification, SadRepairPageRequest, SadRepairsRequest,
-    SadRequest, SignedKeyEvent, SignedKeyEventPage, SignedRequest, StoreKelSource, StorePageLoader,
-    SubmitEventsResponse, Vote, completed_verification, compute_approval_threshold,
-    compute_rotation_hash, compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer,
-    hash_effective_said, parse_and_validate_custody, single_signer, truncate_incomplete_generation,
-    validate_timestamp, verify_key_events, verify_key_events_collecting_establishment_keys,
-    verify_key_events_with, verify_sad_pointer,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource,
+    StorePageLoader, SubmitEventsResponse, Vote, completed_verification,
+    compute_approval_threshold, compute_rotation_hash, compute_sad_pointer_prefix,
+    forward_key_events, forward_sad_pointer, hash_effective_said, parse_and_validate_custody,
+    single_signer, truncate_incomplete_generation, validate_timestamp, verify_key_events,
+    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

@@ -146,6 +146,9 @@ pub enum KelsError {
 
     #[error("All registries failed: {0}")]
     RegistryFailure(String),
+
+    #[error("Invalid disclosure expression: {0}")]
+    InvalidDisclosure(String),
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -263,6 +266,7 @@ mod tests {
             KelsError::HardwareError("hw error".to_string()),
             KelsError::NoReadyNodes,
             KelsError::RegistryFailure("all failed".to_string()),
+            KelsError::InvalidDisclosure("bad expression".to_string()),
         ];
 
         for err in errors {

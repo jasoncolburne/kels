@@ -777,10 +777,18 @@ pub async fn fetch_sad_object(
     body: Bytes,
 ) -> impl IntoResponse {
     // Try parsing as SignedRequest<SadFetchRequest> first, fall back to SadRequest
-    let (object_said, signed_request) = match parse_fetch_request(&body) {
+    let (object_said, signed_request, disclosure) = match parse_fetch_request(&body) {
         Ok(parsed) => parsed,
         Err(response) => return response,
     };
+
+    // Validate disclosure expression early — before custody consumption logic.
+    // An invalid expression must not consume a once-use object.
+    if let Some(ref d) = disclosure
+        && let Err(e) = kels_core::parse_disclosure(d)
+    {
+        return (StatusCode::BAD_REQUEST, format!("invalid disclosure: {e}")).into_response();
+    }
 
     // Look up the record in sad_objects to get custody info
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
@@ -796,7 +804,7 @@ pub async fn fetch_sad_object(
 
     // No custody → serve directly
     let Some(custody_said) = entry.custody else {
-        return serve_from_minio(&state.object_store, &object_said).await;
+        return serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
     };
 
     // Fetch cached custody
@@ -880,7 +888,8 @@ pub async fn fetch_sad_object(
                 // We consumed it — serve from MinIO. If MinIO fetch fails after
                 // the PG delete, the record becomes inaccessible. Acceptable for
                 // ephemeral records — that's the semantics of once.
-                let response = serve_from_minio(&state.object_store, &object_said).await;
+                let response =
+                    serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
 
                 // Best-effort MinIO cleanup — prevents orphaned objects from
                 // accumulating. The reaper catches failures on its next cycle.
@@ -908,30 +917,34 @@ pub async fn fetch_sad_object(
         }
     }
 
-    serve_from_minio(&state.object_store, &object_said).await
+    serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await
 }
 
 /// Parse a fetch request body as either `SignedRequest<SadFetchRequest>` or `SadRequest`.
-#[allow(clippy::result_large_err)]
+/// Returns `(object_said, signed_request, disclosure)`.
+#[allow(clippy::result_large_err, clippy::type_complexity)]
 fn parse_fetch_request(
     body: &[u8],
 ) -> Result<
     (
         cesr::Digest256,
-        Option<kels_core::SignedRequest<kels_core::SadFetchRequest>>,
+        Option<kels_core::SignedRequest<kels_core::SignedSadFetchRequest>>,
+        Option<String>,
     ),
     axum::response::Response,
 > {
     // Try authenticated request first
     if let Ok(signed) =
-        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SadFetchRequest>>(body)
+        serde_json::from_slice::<kels_core::SignedRequest<kels_core::SignedSadFetchRequest>>(body)
     {
-        return Ok((signed.payload.object_said, Some(signed)));
+        let disclosure = signed.payload.disclosure.clone();
+        return Ok((signed.payload.object_said, Some(signed), disclosure));
     }
 
     // Fall back to unauthenticated request
-    if let Ok(request) = serde_json::from_slice::<kels_core::SadRequest>(body) {
-        return Ok((request.said, None));
+    if let Ok(request) = serde_json::from_slice::<kels_core::SadFetchRequest>(body) {
+        let disclosure = request.disclosure.clone();
+        return Ok((request.said, None, disclosure));
     }
 
     Err((StatusCode::BAD_REQUEST, "Invalid request body").into_response())
@@ -940,7 +953,7 @@ fn parse_fetch_request(
 /// Verify signatures on a fetch request and return verified prefixes.
 async fn authenticate_fetch_request(
     state: &AppState,
-    signed: &kels_core::SignedRequest<kels_core::SadFetchRequest>,
+    signed: &kels_core::SignedRequest<kels_core::SignedSadFetchRequest>,
 ) -> Result<std::collections::HashSet<cesr::Digest256>, axum::response::Response> {
     authenticate_peer_request(
         state,
@@ -952,7 +965,48 @@ async fn authenticate_fetch_request(
     .map_err(|(status, msg)| (status, msg).into_response())
 }
 
-/// Serve a SAD object directly from MinIO.
+/// Serve a SAD object, applying disclosure expansion if requested.
+///
+/// If `disclosure` is None, serves raw bytes from MinIO (no parsing overhead).
+/// If `disclosure` is Some, applies heuristic expansion via the disclosure DSL.
+async fn serve_sad(
+    object_store: &ObjectStore,
+    said: &cesr::Digest256,
+    disclosure: Option<&str>,
+) -> axum::response::Response {
+    let Some(disclosure) = disclosure else {
+        return serve_from_minio(object_store, said).await;
+    };
+
+    match crate::expansion::apply_disclosure_to_sad(said, disclosure, object_store).await {
+        Ok(expanded) => match serde_json::to_vec(&expanded) {
+            Ok(data) => (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                data,
+            )
+                .into_response(),
+            Err(e) => {
+                warn!("Failed to serialize expanded SAD: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "serialization error").into_response()
+            }
+        },
+        Err(kels_core::KelsError::InvalidDisclosure(msg)) => (
+            StatusCode::BAD_REQUEST,
+            format!("invalid disclosure: {msg}"),
+        )
+            .into_response(),
+        Err(kels_core::KelsError::NotFound(msg)) => {
+            (StatusCode::NOT_FOUND, format!("not found: {msg}")).into_response()
+        }
+        Err(e) => {
+            warn!("Disclosure expansion failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "expansion error").into_response()
+        }
+    }
+}
+
+/// Serve a SAD object directly from MinIO (no disclosure expansion).
 async fn serve_from_minio(
     object_store: &ObjectStore,
     said: &cesr::Digest256,
@@ -1015,7 +1069,7 @@ impl kels_policy::PolicyResolver for SadStorePolicyResolver {
 
 pub async fn sad_object_exists(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
     match state.object_store.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
@@ -1029,7 +1083,7 @@ pub async fn sad_object_exists(
 
 pub async fn sad_pointer_exists(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadRequest>,
+    Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
     match state.repo.sad_pointers.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
