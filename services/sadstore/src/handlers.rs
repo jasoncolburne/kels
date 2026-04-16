@@ -1097,9 +1097,10 @@ pub struct RecordSubmitQuery {
 
 /// Submit SAD pointer records — unified endpoint for clients, gossip sync, and repair.
 ///
-/// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency,
-/// write_policy required). No signature verification — authorization is via
-/// the anchoring model (consumer-side).
+/// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency)
+/// and write_policy authorization via verify-then-extend: re-verifies the entire
+/// existing chain from scratch, then verifies new records in context. Rejects
+/// unauthorized write_policy advances with 403.
 ///
 /// With `?repair=true`, truncates all records at version >= the first record's version
 /// before inserting. This is the repair mechanism for divergent chains.
@@ -1135,16 +1136,6 @@ pub async fn submit_sad_pointer(
         records.len() as u32,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-    }
-
-    // All records must have the same write_policy
-    let write_policy = &records[0].write_policy;
-    if records.iter().any(|r| r.write_policy != *write_policy) {
-        return (
-            StatusCode::BAD_REQUEST,
-            "All records must have the same write_policy",
-        )
-            .into_response();
     }
 
     // Verify SAID integrity for all records
@@ -1186,6 +1177,91 @@ pub async fn submit_sad_pointer(
             {
                 return response;
             }
+        }
+    }
+
+    // Verify-then-extend: re-verify the existing chain from scratch, then verify
+    // the new records in context. Follows the KEL merge engine pattern (merge.rs).
+    // If write_policy authorization fails, reject with 403.
+    {
+        let kel_source = match state.kels_client.as_kel_source() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build KEL source: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to build KEL source",
+                )
+                    .into_response();
+            }
+        };
+        let policy_resolver = SadStorePolicyResolver {
+            policies: state.repo.clone(),
+            object_store: state.object_store.clone(),
+        };
+        let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
+        let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
+
+        // Verify existing records page by page
+        let page_size = kels_core::page_size() as u64;
+        let mut since: Option<cesr::Digest256> = None;
+        loop {
+            let existing = match state
+                .repo
+                .sad_pointers
+                .get_stored(
+                    chain_prefix.as_ref(),
+                    since.as_ref().map(|s| s.as_ref()),
+                    Some(page_size),
+                )
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Failed to fetch existing chain: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+            if existing.is_empty() {
+                break;
+            }
+            let page_len = existing.len();
+            since = existing.last().map(|r| r.said);
+            if let Err(e) = verifier.verify_page(&existing).await {
+                warn!("Existing chain verification failed: {}", e);
+                return (
+                    StatusCode::CONFLICT,
+                    format!("Chain verification failed: {}", e),
+                )
+                    .into_response();
+            }
+            if (page_len as u64) < page_size {
+                break;
+            }
+        }
+
+        // Verify new submitted records
+        if let Err(e) = verifier.verify_page(&records).await {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Record verification failed: {}", e),
+            )
+                .into_response();
+        }
+
+        let verification = match verifier.finish().await {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Chain verification failed: {}", e),
+                )
+                    .into_response();
+            }
+        };
+
+        if !verification.policy_satisfied() {
+            return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
         }
     }
 
