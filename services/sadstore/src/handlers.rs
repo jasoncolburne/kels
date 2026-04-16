@@ -830,16 +830,6 @@ pub async fn fetch_sad_object(
                 .into_response();
         };
 
-        // Signer must commit to which readPolicy they're satisfying
-        let request_read_policy = signed.payload.read_policy.as_ref();
-        if request_read_policy != Some(record_read_policy) {
-            return (
-                StatusCode::FORBIDDEN,
-                "read_policy mismatch or missing in request",
-            )
-                .into_response();
-        }
-
         // Verify signatures and evaluate policy
         let verified = match authenticate_fetch_request(&state, signed).await {
             Ok(v) => v,

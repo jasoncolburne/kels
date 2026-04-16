@@ -4,8 +4,8 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 /// Authenticated fetch request for a SAD object.
 ///
 /// Used as `SignedRequest<SadFetchRequest>` for objects with `readPolicy`.
-/// The `read_policy` field proves intent — the signer declares which readPolicy
-/// they believe governs the record. Server rejects if it doesn't match.
+/// The `object_said` binds the request to a specific record — the server knows
+/// the record's custody and evaluates the readPolicy directly.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedSadFetchRequest {
@@ -15,8 +15,6 @@ pub struct SignedSadFetchRequest {
     pub created_at: StorageDatetime,
     pub nonce: cesr::Nonce256,
     pub object_said: cesr::Digest256,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub read_policy: Option<cesr::Digest256>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disclosure: Option<String>,
 }
