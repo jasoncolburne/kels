@@ -369,16 +369,18 @@ impl SadStoreClient {
 
     /// Verify a SAD pointer chain and return a verification token.
     ///
-    /// Single-pass structural verification: SAID, chain linkage, version
-    /// monotonicity, consistent write_policy/topic. No signature verification —
-    /// authorization is via the anchoring model (consumer-side).
+    /// Structural + policy verification: SAID, chain linkage, version
+    /// monotonicity, topic consistency, and write_policy authorization via
+    /// the provided `PolicyChecker`.
     pub async fn verify_sad_pointer(
         &self,
         prefix: &cesr::Digest256,
+        checker: &(dyn crate::PolicyChecker + Sync),
     ) -> Result<SadPointerVerification, KelsError> {
         crate::verify_sad_pointer(
             prefix,
             &self.as_sad_source()?,
+            checker,
             crate::page_size(),
             crate::max_pages(),
         )
