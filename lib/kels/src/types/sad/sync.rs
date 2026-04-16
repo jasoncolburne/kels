@@ -6,7 +6,7 @@
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_pointer` — structural verify (no signatures with anchoring model)
+//! - `verify_sad_pointer` — structural + policy verification via `PolicyChecker`
 //! - `forward_sad_pointer` — forward without verification, supports delta via `since`
 
 use async_trait::async_trait;
@@ -154,11 +154,11 @@ impl PagedSadSink for HttpSadSink {
 // ==================== Core Transfer Function ====================
 
 /// Page through a SAD chain from source to sink, optionally verifying.
-async fn transfer_sad_pointer(
+async fn transfer_sad_pointer<'a>(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
-    mut verifier: Option<&mut SadChainVerifier>,
+    mut verifier: Option<&mut SadChainVerifier<'a>>,
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
@@ -181,7 +181,7 @@ async fn transfer_sad_pointer(
         since = pointers.last().map(|r| r.said);
 
         if let Some(ref mut v) = verifier {
-            v.verify_page(&pointers)?;
+            v.verify_page(&pointers).await?;
         }
 
         sink.store_page(&pointers).await?;
@@ -201,15 +201,16 @@ async fn transfer_sad_pointer(
 
 /// Verify a SAD pointer chain by paging through a source. Returns a verification token.
 ///
-/// Single-pass structural verification (no signatures with anchoring model).
-/// Verifies SAID, prefix, topic, write_policy, and chain linkage.
+/// Structural + policy verification. Verifies SAID, prefix, topic, chain linkage,
+/// and write_policy authorization via the provided `PolicyChecker`.
 pub async fn verify_sad_pointer(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
+    checker: &(dyn super::verification::PolicyChecker + Sync),
     page_size: usize,
     max_pages: usize,
 ) -> Result<SadPointerVerification, KelsError> {
-    let mut verifier = SadChainVerifier::new(prefix);
+    let mut verifier = SadChainVerifier::new(prefix, checker);
     transfer_sad_pointer(
         prefix,
         source,
@@ -221,8 +222,7 @@ pub async fn verify_sad_pointer(
     )
     .await?;
 
-    let tip = verifier.finish()?;
-    Ok(SadPointerVerification::new(tip))
+    verifier.finish().await
 }
 
 /// Forward SAD pointers from source to sink without verification. Supports delta via `since`.

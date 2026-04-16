@@ -5,16 +5,17 @@ use std::{collections::BTreeSet, path::PathBuf};
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{KelVerifier, KeyProvider, ProviderConfig, VerificationKeyCode};
+use kels_core::{KelVerifier, KeyEventBuilder, KeyProvider, ProviderConfig, VerificationKeyCode};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::Cli;
 use crate::helpers::*;
 
-/// The write_policy for exchange key publication is the KEL prefix itself.
-/// This means only the identity owner can author the pointer chain.
-fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> cesr::Digest256 {
-    *kel_prefix
+/// Build the write_policy for exchange key publication.
+/// Creates a single-endorser policy from the KEL prefix.
+fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> Result<kels_policy::Policy> {
+    kels_policy::Policy::build(&format!("endorse({})", kel_prefix), None, false)
+        .context("Failed to build exchange write policy")
 }
 
 pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
@@ -108,7 +109,10 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     // Create SadPointer chain (v0 inception + v1 with content)
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
-    let write_policy = exchange_write_policy(&prefix_digest);
+    let policy = exchange_write_policy(&prefix_digest)?;
+    let policy_json = serde_json::to_value(&policy)?;
+    sad_client.post_sad_object(&policy_json).await?;
+    let write_policy = policy.said;
     let v0 = kels_core::SadPointer::create(
         kels_exchange::ENCAP_KEY_KIND.to_string(),
         None,
@@ -120,6 +124,25 @@ pub(crate) async fn cmd_exchange_publish_key(
     let mut v1 = v0.clone();
     v1.content = Some(publication.said);
     v1.increment().context("Failed to increment pointer")?;
+
+    // Anchor pointer SAIDs in the KEL (required for write_policy authorization)
+    let client = create_client(cli).await?;
+    let kel_store = create_kel_store(cli, prefix).await?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(&prefix_digest),
+    )
+    .await?;
+    builder
+        .interact(&v0.said)
+        .await
+        .context("Failed to anchor v0 SAID in KEL")?;
+    builder
+        .interact(&v1.said)
+        .await
+        .context("Failed to anchor v1 SAID in KEL")?;
 
     let records = vec![v0.clone(), v1];
 
@@ -179,7 +202,10 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     // Fetch current chain to get tip for increment
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
-    let write_policy = exchange_write_policy(&prefix_digest);
+    let policy = exchange_write_policy(&prefix_digest)?;
+    let policy_json = serde_json::to_value(&policy)?;
+    sad_client.post_sad_object(&policy_json).await?;
+    let write_policy = policy.said;
     let chain_prefix =
         kels_core::compute_sad_pointer_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
@@ -197,6 +223,21 @@ pub(crate) async fn cmd_exchange_rotate_key(
     next.content = Some(publication.said);
     next.increment().context("Failed to increment pointer")?;
 
+    // Anchor pointer SAID in the KEL (required for write_policy authorization)
+    let client = create_client(cli).await?;
+    let kel_store = create_kel_store(cli, prefix).await?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(&prefix_digest),
+    )
+    .await?;
+    builder
+        .interact(&next.said)
+        .await
+        .context("Failed to anchor pointer SAID in KEL")?;
+
     sad_client.submit_sad_pointer(&[next]).await?;
 
     println!("{}", "Key rotated!".green().bold());
@@ -205,7 +246,8 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
 pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Result<()> {
     let kel_digest = cesr::Digest256::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
-    let write_policy = exchange_write_policy(&kel_digest);
+    let policy = exchange_write_policy(&kel_digest)?;
+    let write_policy = policy.said;
     let chain_prefix =
         kels_core::compute_sad_pointer_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute pointer prefix")?;
@@ -268,7 +310,8 @@ pub(crate) async fn cmd_exchange_send(
     // Look up recipient's encapsulation key
     let recipient_digest =
         cesr::Digest256::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
-    let recipient_write_policy = exchange_write_policy(&recipient_digest);
+    let recipient_policy = exchange_write_policy(&recipient_digest)?;
+    let recipient_write_policy = recipient_policy.said;
     let chain_prefix = kels_core::compute_sad_pointer_prefix(
         recipient_write_policy,
         kels_exchange::ENCAP_KEY_KIND,

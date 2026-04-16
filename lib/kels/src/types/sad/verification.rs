@@ -1,4 +1,4 @@
-//! SAD chain verification (structural only — no signatures with anchoring model)
+//! SAD chain verification (structural + policy authorization)
 
 use std::collections::HashMap;
 
@@ -6,6 +6,36 @@ use verifiable_storage::{Chained, SelfAddressed};
 
 use super::pointer::SadPointer;
 use crate::KelsError;
+
+// ==================== Policy Checker Trait ====================
+
+/// Trait for checking policy satisfaction during chain verification.
+///
+/// `SadChainVerifier` calls this at each generation:
+/// - v0: `self_satisfies(record)` — the inception must be authorized by its own write_policy
+/// - v1+: `satisfies(record, &branch_tip.write_policy)` — each advance must be authorized
+///   by the current write_policy (unconditionally, whether or not the policy changed)
+///
+/// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
+/// calls `evaluate_anchored_policy` to check KEL anchoring).
+#[async_trait::async_trait]
+pub trait PolicyChecker: Send + Sync {
+    /// Check if the advance to `new_record` is authorized by `previous_policy`.
+    ///
+    /// Evaluates `previous_policy` via anchoring — the endorsers required by
+    /// `previous_policy` must have anchored `new_record.said` in their KELs.
+    async fn satisfies(
+        &self,
+        new_record: &SadPointer,
+        previous_policy: &cesr::Digest256,
+    ) -> Result<bool, KelsError>;
+
+    /// Check if v0 inception with this record is authorized.
+    ///
+    /// Evaluates `record.write_policy` via anchoring — endorsers must have
+    /// anchored `record.said` in their KELs.
+    async fn self_satisfies(&self, record: &SadPointer) -> Result<bool, KelsError>;
+}
 
 // ==================== Incremental Chain Verification ====================
 
@@ -15,16 +45,19 @@ struct SadBranchState {
     tip: SadPointer,
 }
 
-/// Streaming structural verifier for SAD pointer chains.
+/// Streaming structural + policy verifier for SAD pointer chains.
 ///
 /// Mirrors `KelVerifier` — verifies incrementally page by page without holding
 /// the full chain in memory. Tracks per-branch state so that both forks of a
-/// divergent chain are fully verified (SAID, prefix, topic, write_policy, chain linkage).
+/// divergent chain are fully verified (SAID, prefix, topic, chain linkage,
+/// and write_policy authorization via `PolicyChecker`).
 ///
-/// No signature verification — the anchoring model defers authorization to consumers.
-pub struct SadChainVerifier {
+/// The verifier never errors on policy failure — it records the result in
+/// `policy_satisfied`. Structural errors (bad SAID, wrong prefix, etc.)
+/// still return errors. Callers check `policy_satisfied()` on the verification
+/// token to decide what to do (e.g., server returns 403, client logs a warning).
+pub struct SadChainVerifier<'a> {
     prefix: cesr::Digest256,
-    write_policy: Option<cesr::Digest256>,
     topic: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
     branches: HashMap<cesr::Digest256, SadBranchState>,
@@ -33,18 +66,21 @@ pub struct SadChainVerifier {
     /// The version of the current buffered generation.
     current_generation_version: Option<u64>,
     saw_any_records: bool,
+    policy_satisfied: bool,
+    checker: &'a dyn PolicyChecker,
 }
 
-impl SadChainVerifier {
-    pub fn new(prefix: &cesr::Digest256) -> Self {
+impl<'a> SadChainVerifier<'a> {
+    pub fn new(prefix: &cesr::Digest256, checker: &'a dyn PolicyChecker) -> Self {
         Self {
             prefix: *prefix,
-            write_policy: None,
             topic: None,
             branches: HashMap::new(),
             generation_buffer: Vec::new(),
             current_generation_version: None,
             saw_any_records: false,
+            policy_satisfied: true,
+            checker,
         }
     }
 
@@ -52,7 +88,7 @@ impl SadChainVerifier {
         self.branches.len() > 1
     }
 
-    /// Verify a single record's SAID, prefix, write_policy, and topic.
+    /// Verify a single record's SAID, prefix, and topic.
     fn verify_record(&self, record: &SadPointer) -> Result<(), KelsError> {
         record.verify_said()?;
 
@@ -60,15 +96,6 @@ impl SadChainVerifier {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD record {} prefix {} doesn't match chain prefix {}",
                 record.said, record.prefix, self.prefix
-            )));
-        }
-
-        if let Some(ref expected) = self.write_policy
-            && &record.write_policy != expected
-        {
-            return Err(KelsError::VerificationFailed(format!(
-                "SAD record {} write_policy {} doesn't match chain write_policy {}",
-                record.said, record.write_policy, expected
             )));
         }
 
@@ -85,7 +112,7 @@ impl SadChainVerifier {
     }
 
     /// Process a complete generation (all records at the same version).
-    fn flush_generation(&mut self) -> Result<(), KelsError> {
+    async fn flush_generation(&mut self) -> Result<(), KelsError> {
         let records = std::mem::take(&mut self.generation_buffer);
         let version = match self.current_generation_version.take() {
             Some(v) => v,
@@ -121,6 +148,11 @@ impl SadChainVerifier {
             }
 
             record.verify_prefix()?;
+
+            // Policy check: v0 must self-satisfy
+            if !self.checker.self_satisfies(record).await? {
+                self.policy_satisfied = false;
+            }
 
             self.branches.insert(
                 record.said,
@@ -165,6 +197,15 @@ impl SadChainVerifier {
                 )));
             }
 
+            // Policy check: every v1+ record must satisfy the branch tip's write_policy
+            if !self
+                .checker
+                .satisfies(record, &branch.tip.write_policy)
+                .await?
+            {
+                self.policy_satisfied = false;
+            }
+
             new_branches.insert(
                 record.said,
                 SadBranchState {
@@ -185,15 +226,12 @@ impl SadChainVerifier {
     }
 
     /// Verify a page of records incrementally.
-    pub fn verify_page(&mut self, records: &[SadPointer]) -> Result<(), KelsError> {
+    pub async fn verify_page(&mut self, records: &[SadPointer]) -> Result<(), KelsError> {
         for record in records {
             self.saw_any_records = true;
 
             self.verify_record(record)?;
 
-            if self.write_policy.is_none() {
-                self.write_policy = Some(record.write_policy);
-            }
             if self.topic.is_none() {
                 self.topic = Some(record.topic.clone());
             }
@@ -201,7 +239,7 @@ impl SadChainVerifier {
             if let Some(current_version) = self.current_generation_version
                 && record.version != current_version
             {
-                self.flush_generation()?;
+                self.flush_generation().await?;
             }
 
             self.current_generation_version = Some(record.version);
@@ -211,8 +249,8 @@ impl SadChainVerifier {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<SadPointer, KelsError> {
-        self.flush_generation()?;
+    pub async fn finish(mut self) -> Result<super::pointer::SadPointerVerification, KelsError> {
+        self.flush_generation().await?;
 
         if !self.saw_any_records {
             return Err(KelsError::VerificationFailed(
@@ -233,7 +271,10 @@ impl SadChainVerifier {
             .map(|b| b.tip)
             .ok_or_else(|| KelsError::VerificationFailed("No tip after verification".into()))?;
 
-        Ok(tip)
+        Ok(super::pointer::SadPointerVerification::new(
+            tip,
+            self.policy_satisfied,
+        ))
     }
 }
 
@@ -249,8 +290,41 @@ mod tests {
         cesr::Digest256::blake3_256(label)
     }
 
-    #[test]
-    fn test_sad_chain_verifier_valid_chain() {
+    struct AlwaysPassChecker;
+    #[async_trait::async_trait]
+    impl PolicyChecker for AlwaysPassChecker {
+        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
+    struct RejectingChecker;
+    #[async_trait::async_trait]
+    impl PolicyChecker for RejectingChecker {
+        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
+            Ok(false)
+        }
+        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
+    struct RejectInceptionChecker;
+    #[async_trait::async_trait]
+    impl PolicyChecker for RejectInceptionChecker {
+        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sad_chain_verifier_valid_chain() {
         let wp = test_digest(b"write-policy");
         let v0 =
             SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
@@ -258,20 +332,23 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        assert!(verifier.verify_page(&[v0.clone(), v1]).is_ok());
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        assert!(verifier.verify_page(&[v0.clone(), v1]).await.is_ok());
         assert!(!verifier.is_divergent());
-        assert!(verifier.finish().is_ok());
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 1);
     }
 
-    #[test]
-    fn test_sad_chain_verifier_empty_fails() {
-        let verifier = SadChainVerifier::new(&test_digest(b"test"));
-        assert!(verifier.finish().is_err());
+    #[tokio::test]
+    async fn test_sad_chain_verifier_empty_fails() {
+        let checker = AlwaysPassChecker;
+        let verifier = SadChainVerifier::new(&test_digest(b"test"), &checker);
+        assert!(verifier.finish().await.is_err());
     }
 
-    #[test]
-    fn test_sad_chain_verifier_wrong_version_fails() {
+    #[tokio::test]
+    async fn test_sad_chain_verifier_wrong_version_fails() {
         let wp = test_digest(b"write-policy");
         let v0 =
             SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
@@ -281,9 +358,10 @@ mod tests {
         v1.version = 5;
         v1.derive_said().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        verifier.verify_page(&[v0, v1]).unwrap();
-        let err = verifier.finish().unwrap_err();
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
         assert!(
             err.to_string().contains("has version 5 but expected 1"),
             "Expected version error, got: {}",
@@ -291,8 +369,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_sad_chain_verifier_multi_page() {
+    #[tokio::test]
+    async fn test_sad_chain_verifier_multi_page() {
         let wp = test_digest(b"write-policy");
         let v0 =
             SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
@@ -303,11 +381,93 @@ mod tests {
         v2.content = Some(test_digest(b"content2"));
         v2.increment().unwrap();
 
-        let mut verifier = SadChainVerifier::new(&v0.prefix);
-        assert!(verifier.verify_page(&[v0]).is_ok());
-        assert!(verifier.verify_page(&[v1, v2]).is_ok());
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        assert!(verifier.verify_page(&[v0]).await.is_ok());
+        assert!(verifier.verify_page(&[v1, v2]).await.is_ok());
 
-        let tip = verifier.finish().unwrap();
-        assert_eq!(tip.version, 2);
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_same_write_policy_authorized() {
+        let wp = test_digest(b"write-policy");
+        let v0 =
+            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(verification.policy_satisfied());
+    }
+
+    #[tokio::test]
+    async fn test_evolving_write_policy_authorized() {
+        let wp1 = test_digest(b"write-policy-1");
+        let wp2 = test_digest(b"write-policy-2");
+        let v0 =
+            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.write_policy = wp2;
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(verification.policy_satisfied());
+    }
+
+    #[tokio::test]
+    async fn test_rejected_write_policy_evolution() {
+        let wp1 = test_digest(b"write-policy-1");
+        let wp2 = test_digest(b"write-policy-2");
+        let v0 =
+            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.write_policy = wp2;
+        v1.increment().unwrap();
+
+        let checker = RejectingChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(!verification.policy_satisfied());
+    }
+
+    #[tokio::test]
+    async fn test_rejected_same_write_policy() {
+        let wp = test_digest(b"write-policy");
+        let v0 =
+            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.increment().unwrap();
+
+        let checker = RejectingChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(!verification.policy_satisfied());
+    }
+
+    #[tokio::test]
+    async fn test_self_satisfies_failure() {
+        let wp = test_digest(b"write-policy");
+        let v0 =
+            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+
+        let checker = RejectInceptionChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(!verification.policy_satisfied());
     }
 }

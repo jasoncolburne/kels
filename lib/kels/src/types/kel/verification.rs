@@ -476,7 +476,7 @@ impl KelVerifier {
             .collect();
 
         // Deterministic ordering for SAID derivation
-        branch_tips.sort_by(|a, b| a.tip.event.said.cmp(&b.tip.event.said));
+        branch_tips.sort_by_key(|a| a.tip.event.said);
 
         let mut kel_verification = KelVerification::new(
             self.prefix,

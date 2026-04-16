@@ -5,9 +5,9 @@
 //! - **Chained records** — versioned chains with deterministic prefix discovery and
 //!   policy-based ownership. Each pointer references content in the SAD store via `content`.
 //!
-//! Chains are keyed by `(write_policy SAID, topic)`. Prefix derivation is fully
-//! deterministic: given a write_policy SAID and topic, anyone can compute the chain
-//! prefix offline.
+//! Chain prefix is derived from v0's `(write_policy SAID, topic)`. Prefix derivation
+//! is fully deterministic: given the inception write_policy SAID and topic, anyone
+//! can compute the chain prefix offline. Write_policy can evolve across versions.
 
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageError};
@@ -65,16 +65,20 @@ pub fn compute_sad_pointer_prefix(
 ///
 /// Cannot be constructed outside this crate — only via `SadChainVerifier`.
 /// Having a `SadPointerVerification` proves the chain was fully verified
-/// (structural integrity verified against the chain).
+/// (structural integrity and policy authorization checked).
 #[derive(Debug, Clone)]
 pub struct SadPointerVerification {
     tip: SadPointer,
+    policy_satisfied: bool,
 }
 
 impl SadPointerVerification {
     /// Create a new verification token. Crate-internal only.
-    pub(crate) fn new(tip: SadPointer) -> Self {
-        Self { tip }
+    pub(crate) fn new(tip: SadPointer, policy_satisfied: bool) -> Self {
+        Self {
+            tip,
+            policy_satisfied,
+        }
     }
 
     /// The latest verified pointer in the chain.
@@ -100,6 +104,11 @@ impl SadPointerVerification {
     /// The pointer topic.
     pub fn topic(&self) -> &str {
         &self.tip.topic
+    }
+
+    /// Whether all write_policy checks were satisfied during verification.
+    pub fn policy_satisfied(&self) -> bool {
+        self.policy_satisfied
     }
 }
 

@@ -1,12 +1,12 @@
 #!/bin/bash
-# load-sads.sh - Populate a SADStore node with SAD objects and chain records
+# load-sad.sh - Populate a SADStore node with SAD objects and chain records
 #
-# For each group, creates a KEL (using its prefix as the write_policy),
-# stores SAD objects, then creates a pointer chain with a random number
-# [1, MAX_CHAIN_VERSIONS] of versions, each referencing a different SAD
-# object as content.
+# For each group, creates a KEL, builds a single-endorser policy from its
+# prefix (using the policy SAID as write_policy), stores SAD objects, then
+# creates a pointer chain with a random number [1, MAX_CHAIN_VERSIONS] of
+# versions, each referencing a different SAD object as content.
 #
-# Usage: load-sads.sh [count] [concurrency]
+# Usage: load-sad.sh [count] [concurrency]
 #   count:       number of SAD objects to create (default: 900, rounded to group size)
 #   concurrency: parallel workers (default: 10)
 
@@ -63,6 +63,26 @@ create_group() {
         return 1
     fi
 
+    # 1b. Build a real policy (single endorser) and store as SAD object
+    local policy_json
+    policy_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($prefix)" \
+        '{said: $p, expression: $expr}')
+    local policy_said
+    policy_said=$(compute_said "$policy_json")
+    policy_json=$(echo "$policy_json" | jq -c --arg s "$policy_said" '.said = $s')
+
+    local policy_resp
+    policy_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad" \
+        -H 'Content-Type: application/json' \
+        -d "$policy_json")
+    local policy_code
+    policy_code=$(echo "$policy_resp" | tail -1)
+    if [ "$policy_code" != "201" ] && [ "$policy_code" != "200" ]; then
+        echo "ERROR [group $group]: policy upload failed (HTTP $policy_code)" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
     # 2. Create 9 SAD objects and collect their SAIDs
     local object_saids=()
     for i in $(seq 1 "$MAX_CHAIN_VERSIONS"); do
@@ -89,9 +109,9 @@ create_group() {
     done
 
     # 3. Compute chain prefix (use kels-cli for correctness)
-    # kels-cli sad prefix takes (write_policy, topic) — we use the KEL prefix as write_policy
+    # kels-cli sad prefix takes (write_policy, topic) — we use the policy SAID as write_policy
     local chain_prefix
-    chain_prefix=$(kels-cli sad prefix "$prefix" "$KIND" 2>&1)
+    chain_prefix=$(kels-cli sad prefix "$policy_said" "$KIND" 2>&1)
     if [ -z "$chain_prefix" ]; then
         echo "ERROR [group $group]: chain prefix computation failed" >&2
         rm -rf "$tmpdir"
@@ -104,7 +124,7 @@ create_group() {
     # 5. Build chain records: v0 (inception, no content) then v1..vN
     # v0: deterministic inception record (no content for v0)
     local v0_json
-    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$prefix" \
+    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$policy_said" \
         '{said: $p, prefix: $p, version: 0, topic: $t, writePolicy: $wp}')
     local v0_prefix
     v0_prefix=$(compute_prefix "$v0_json")
@@ -112,6 +132,13 @@ create_group() {
     local v0_said
     v0_said=$(compute_said "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg s "$v0_said" '.said = $s')
+
+    # Anchor v0 SAID in the KEL (required for write_policy authorization)
+    if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$v0_said" >/dev/null 2>&1; then
+        echo "ERROR [group $group]: failed to anchor v0 SAID $v0_said" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
 
     local records_json="[]"
     records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" '. + [$r]')
@@ -122,11 +149,18 @@ create_group() {
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-            --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$prefix" \
+            --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
             '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp}')
         local vi_said
         vi_said=$(compute_said "$vi_json")
         vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')
+
+        # Anchor each version's SAID in the KEL
+        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
+            echo "ERROR [group $group]: failed to anchor v${i} SAID $vi_said" >&2
+            rm -rf "$tmpdir"
+            return 1
+        fi
 
         records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" '. + [$r]')
 
