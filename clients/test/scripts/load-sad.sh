@@ -1,12 +1,12 @@
 #!/bin/bash
-# load-sads.sh - Populate a SADStore node with SAD objects and chain records
+# load-sad.sh - Populate a SADStore node with SAD objects and chain records
 #
 # For each group, creates a KEL, builds a single-endorser policy from its
 # prefix (using the policy SAID as write_policy), stores SAD objects, then
 # creates a pointer chain with a random number [1, MAX_CHAIN_VERSIONS] of
 # versions, each referencing a different SAD object as content.
 #
-# Usage: load-sads.sh [count] [concurrency]
+# Usage: load-sad.sh [count] [concurrency]
 #   count:       number of SAD objects to create (default: 900, rounded to group size)
 #   concurrency: parallel workers (default: 10)
 
@@ -133,6 +133,13 @@ create_group() {
     v0_said=$(compute_said "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg s "$v0_said" '.said = $s')
 
+    # Anchor v0 SAID in the KEL (required for write_policy authorization)
+    if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$v0_said" >/dev/null 2>&1; then
+        echo "ERROR [group $group]: failed to anchor v0 SAID $v0_said" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
     local records_json="[]"
     records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" '. + [$r]')
 
@@ -147,6 +154,13 @@ create_group() {
         local vi_said
         vi_said=$(compute_said "$vi_json")
         vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')
+
+        # Anchor each version's SAID in the KEL
+        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
+            echo "ERROR [group $group]: failed to anchor v${i} SAID $vi_said" >&2
+            rm -rf "$tmpdir"
+            return 1
+        fi
 
         records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" '. + [$r]')
 

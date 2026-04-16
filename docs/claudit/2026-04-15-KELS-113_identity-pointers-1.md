@@ -89,4 +89,4 @@ New `_in` variants (`save_batch_in`, `truncate_and_replace_in`, `get_stored_in`)
 
 - **Clean import structure in new files.** Both `identity_chain.rs` and `policy_checker.rs` follow the three-group import convention (std, external, local) with correct sorting. The `lib.rs` re-exports use `pub(crate)` for modules and selective `pub use` for the public API.
 
-- **Shell script policy construction is correct.** `load-sads.sh` correctly constructs the policy JSON with the `said` placeholder, computes the SAID via `compute_said`, and uploads it before using the SAID as `writePolicy`. The SAID computation matches the Rust `Policy::build` derivation because both use the same Blake3-of-JSON-with-placeholder approach.
+- **Shell script policy construction is correct.** `load-sad.sh` correctly constructs the policy JSON with the `said` placeholder, computes the SAID via `compute_said`, and uploads it before using the SAID as `writePolicy`. The SAID computation matches the Rust `Policy::build` derivation because both use the same Blake3-of-JSON-with-placeholder approach.
