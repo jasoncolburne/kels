@@ -85,22 +85,11 @@ impl SadPointerRepository {
         }
 
         let prefix = records[0].prefix;
-        let write_policy = records[0].write_policy;
 
-        // Verify write_policy matches the existing chain's v0
-        let v0_query =
-            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                .eq("prefix", &prefix)
-                .eq("version", 0u64)
-                .limit(1);
-        let existing_v0: Vec<SadPointer> = tx.fetch(v0_query).await?;
-        if let Some(v0) = existing_v0.first()
-            && v0.write_policy != write_policy
-        {
-            return Err(StorageError::StorageError(
-                "Repair write_policy does not match existing chain".to_string(),
-            ));
-        }
+        // Note: no write_policy consistency check here — write_policy can evolve across
+        // versions, so repair records at v3+ may legitimately differ from v0's write_policy.
+        // Callers must verify policy satisfaction independently (the handler does this via
+        // SadChainVerifier + PolicyChecker after truncate_and_replace).
 
         // Skip leading records that already exist locally
         let (new_records, from_version) = {
@@ -213,68 +202,19 @@ impl SadPointerRepository {
     /// Get the chain as bare `SadPointer`s.
     ///
     /// Ordering: `version ASC, said ASC` — deterministic across nodes.
+    /// Delegates to `get_stored_in` via an implicit transaction.
     pub async fn get_stored(
         &self,
         prefix: &str,
         since_said: Option<&str>,
         limit: Option<u64>,
     ) -> Result<Vec<SadPointer>, StorageError> {
-        use verifiable_storage_postgres::QueryExecutor;
-
-        let since_position: Option<(u64, cesr::Digest256)> = if let Some(said) = since_said {
-            let cursor_query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .eq("said", said)
-                    .limit(1);
-            self.pool
-                .fetch(cursor_query)
-                .await?
-                .into_iter()
-                .next()
-                .map(|r| (r.version, r.said))
-        } else {
-            None
-        };
-
-        let mut query =
-            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                .eq("prefix", prefix)
-                .order_by("version", verifiable_storage_postgres::Order::Asc)
-                .order_by("said", verifiable_storage_postgres::Order::Asc);
-
-        if let Some((version, _)) = &since_position {
-            query = query.gte("version", *version);
-        }
-
-        if let Some(limit) = limit {
-            let fetch_limit = if since_position.is_some() {
-                limit + 2
-            } else {
-                limit
-            };
-            query = query.limit(fetch_limit);
-        }
-
-        let mut records: Vec<SadPointer> = self.pool.fetch(query).await?;
-
-        if let Some((version, said)) = &since_position {
-            let skipped = records.len();
-            records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
-            let skipped = skipped - records.len();
-
-            if skipped > 2 {
-                return Err(StorageError::StorageError(format!(
-                    "Chain integrity violation: {} records skipped at version {} for prefix {} — possible DB tampering",
-                    skipped, version, prefix
-                )));
-            }
-
-            if let Some(limit) = limit {
-                records.truncate(limit as usize);
-            }
-        }
-
-        Ok(records)
+        let mut tx = self.pool.begin_transaction().await?;
+        let result = self
+            .get_stored_in(&mut tx, prefix, since_said, limit)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Get chain records within an existing transaction.

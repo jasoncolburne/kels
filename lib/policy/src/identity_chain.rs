@@ -42,6 +42,12 @@ pub fn advance(
     verification: &SadPointerVerification,
     new_policy: &Policy,
 ) -> Result<SadPointer, PolicyError> {
+    if !verification.policy_satisfied() {
+        return Err(PolicyError::InvalidPolicy(
+            "Cannot advance — chain policy not satisfied".to_string(),
+        ));
+    }
+
     new_policy
         .verify_said()
         .map_err(|e| PolicyError::InvalidPolicy(format!("Policy SAID verification failed: {e}")))?;
@@ -97,6 +103,17 @@ mod tests {
     impl PolicyChecker for AlwaysPassChecker {
         async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
+        }
+        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
+    struct RejectAdvanceChecker;
+    #[async_trait::async_trait]
+    impl PolicyChecker for RejectAdvanceChecker {
+        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
+            Ok(false)
         }
         async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
             Ok(true)
@@ -203,5 +220,26 @@ mod tests {
         // Advance with the same policy — should fail
         let err = advance(&verification, &policy).unwrap_err();
         assert!(err.to_string().contains("unchanged write_policy"));
+    }
+
+    #[tokio::test]
+    async fn test_advance_rejects_unsatisfied_policy() {
+        let policy1 = test_policy("policy-1");
+        let policy2 = test_policy("policy-2");
+        let v0 = create(&policy1).unwrap();
+
+        // Build a v1 so the checker can reject it
+        let mut v1 = v0.clone();
+        v1.content = Some(cesr::Digest256::blake3_256(b"content"));
+        v1.increment().unwrap();
+
+        let checker = RejectAdvanceChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(!verification.policy_satisfied());
+
+        let err = advance(&verification, &policy2).unwrap_err();
+        assert!(err.to_string().contains("policy not satisfied"));
     }
 }
