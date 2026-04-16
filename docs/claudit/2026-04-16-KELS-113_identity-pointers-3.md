@@ -7,8 +7,8 @@ Branch `KELS-113_identity-pointers` vs `main`: ~1078 insertions, 192 deletions a
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High     | 0    | 0        |
-| Medium   | 1    | 0        |
-| Low      | 1    | 0        |
+| Medium   | 0    | 1        |
+| Low      | 0    | 1        |
 
 Prior rounds: 10 findings, all resolved.
 
@@ -16,25 +16,25 @@ Prior rounds: 10 findings, all resolved.
 
 ## Medium Priority
 
-### 1. Duplicated pagination loop in handler normal and repair paths
+### ~~1. Duplicated pagination loop in handler normal and repair paths~~ — RESOLVED
 
 **Files:** `services/sadstore/src/handlers.rs:1238-1275` (repair) and `services/sadstore/src/handlers.rs:1302-1339` (normal)
 
-Both paths have ~35 lines of nearly identical pagination logic: initialize `since`, loop calling `get_stored_in`, break on empty, update cursor, call `verify_page`, break on short page. The only difference is the error message string ("repair" vs "existing"). A bug fix to cursor handling or page-boundary logic must be replicated in both blocks.
+~~Both paths have ~35 lines of nearly identical pagination logic: initialize `since`, loop calling `get_stored_in`, break on empty, update cursor, call `verify_page`, break on short page. The only difference is the error message string ("repair" vs "existing"). A bug fix to cursor handling or page-boundary logic must be replicated in both blocks.~~
 
-**Suggested fix:** Extract a helper like `verify_chain_in_tx(tx, repo, prefix, verifier) -> Result<(), Response>` that encapsulates the pagination loop, then call it from both paths.
+**Resolution:** Extracted `verify_existing_chain()` helper function that encapsulates the pagination loop. Both paths now call it and handle the rollback on error.
 
 ---
 
 ## Low Priority
 
-### 2. Redundant `+ 'a` lifetime bound on `PolicyChecker` trait object
+### ~~2. Redundant `+ 'a` lifetime bound on `PolicyChecker` trait object~~ — RESOLVED
 
 **File:** `lib/kels/src/types/sad/verification.rs:70`
 
-`checker: &'a (dyn PolicyChecker + 'a)` — the explicit `+ 'a` is the default for `&'a dyn Trait` per Rust's lifetime elision rules. `&'a dyn PolicyChecker` is equivalent and more idiomatic.
+~~`checker: &'a (dyn PolicyChecker + 'a)` — the explicit `+ 'a` is the default for `&'a dyn Trait` per Rust's lifetime elision rules. `&'a dyn PolicyChecker` is equivalent and more idiomatic.~~
 
-**Suggested fix:** Change to `checker: &'a dyn PolicyChecker`.
+**Resolution:** Changed to `checker: &'a dyn PolicyChecker`.
 
 ---
 
