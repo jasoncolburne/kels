@@ -6,7 +6,7 @@
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_pointer` — structural verify (no signatures with anchoring model)
+//! - `verify_sad_pointer` — structural + policy verification via `PolicyChecker`
 //! - `forward_sad_pointer` — forward without verification, supports delta via `since`
 
 use async_trait::async_trait;

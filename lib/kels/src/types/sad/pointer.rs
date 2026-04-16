@@ -5,9 +5,9 @@
 //! - **Chained records** — versioned chains with deterministic prefix discovery and
 //!   policy-based ownership. Each pointer references content in the SAD store via `content`.
 //!
-//! Chains are keyed by `(write_policy SAID, topic)`. Prefix derivation is fully
-//! deterministic: given a write_policy SAID and topic, anyone can compute the chain
-//! prefix offline.
+//! Chain prefix is derived from v0's `(write_policy SAID, topic)`. Prefix derivation
+//! is fully deterministic: given the inception write_policy SAID and topic, anyone
+//! can compute the chain prefix offline. Write_policy can evolve across versions.
 
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageError};

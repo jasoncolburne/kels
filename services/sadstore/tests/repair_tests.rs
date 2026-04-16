@@ -17,6 +17,8 @@ use testcontainers_modules::postgres::Postgres;
 use verifiable_storage::{Chained, SelfAddressed};
 use verifiable_storage_postgres::RepositoryConnection;
 
+use verifiable_storage::{QueryExecutor, TransactionExecutor};
+
 use kels_sadstore::SadStoreRepository;
 
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
@@ -104,6 +106,32 @@ async fn connect_repo() -> Option<SadStoreRepository> {
 }
 
 // ==================== Helpers ====================
+
+/// Run `save_batch` in a self-managed transaction with advisory lock.
+async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u32 {
+    let prefix = records[0].prefix;
+    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
+    tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
+    let count = repo
+        .sad_pointers
+        .save_batch(&mut tx, records)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    count
+}
+
+/// Run `truncate_and_replace` in a self-managed transaction with advisory lock.
+async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadPointer]) {
+    let prefix = records[0].prefix;
+    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
+    tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
+    repo.sad_pointers
+        .truncate_and_replace(&mut tx, records)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
 
 /// Build a chain of v0..v(count-1).
 fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
@@ -194,8 +222,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Save a 5-record chain: v0..v4
     let chain = build_chain(kel_prefix, kind, 5);
-    let count = repo.sad_pointers.save_batch(&chain).await.unwrap();
-    assert_eq!(count, 5);
+    assert_eq!(save_batch_txn(&repo, &chain).await, 5);
 
     let prefix = chain[0].prefix;
 
@@ -221,10 +248,7 @@ async fn test_save_batch_and_truncate_and_replace() {
         "replacement",
     );
 
-    repo.sad_pointers
-        .truncate_and_replace(&replacement)
-        .await
-        .unwrap();
+    truncate_and_replace_txn(&repo, &replacement).await;
 
     // Verify effective SAID is now the new v4's SAID
     let (effective, divergent) = repo
@@ -283,8 +307,14 @@ async fn test_truncate_and_replace_empty_batch_fails() {
 
     let empty: Vec<SadPointer> = Vec::new();
 
-    let result = repo.sad_pointers.truncate_and_replace(&empty).await;
+    // Empty batch should fail — no prefix to lock on, use a dummy transaction
+    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
+    let result = repo
+        .sad_pointers
+        .truncate_and_replace(&mut tx, &empty)
+        .await;
     assert!(result.is_err());
+    let _ = tx.rollback().await;
 }
 
 // Note: the previous test_truncate_and_replace_bad_signature_rolls_back test
@@ -303,17 +333,17 @@ async fn test_get_repairs_pagination() {
 
     // Save a 5-record chain
     let chain = build_chain(kel_prefix, kind, 5);
-    repo.sad_pointers.save_batch(&chain).await.unwrap();
+    save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
 
     // First repair: replace from v4
     let r1 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_a");
-    repo.sad_pointers.truncate_and_replace(&r1).await.unwrap();
+    truncate_and_replace_txn(&repo, &r1).await;
 
     // Second repair: replace from v4 again (replacing the first replacement)
     let r2 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_b");
-    repo.sad_pointers.truncate_and_replace(&r2).await.unwrap();
+    truncate_and_replace_txn(&repo, &r2).await;
 
     // Paginate with limit=1
     let (page1, has_more1) = repo
@@ -348,7 +378,7 @@ async fn test_get_repair_records_pagination() {
 
     // Save a 4-record chain, replace from v1 (archiving v1, v2, v3 = 3 records)
     let chain = build_chain(kel_prefix, kind, 4);
-    repo.sad_pointers.save_batch(&chain).await.unwrap();
+    save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
     let replacement = build_replacement(
@@ -360,10 +390,7 @@ async fn test_get_repair_records_pagination() {
         3,
         "replacement",
     );
-    repo.sad_pointers
-        .truncate_and_replace(&replacement)
-        .await
-        .unwrap();
+    truncate_and_replace_txn(&repo, &replacement).await;
 
     let (repairs, _) = repo
         .sad_pointers
@@ -419,7 +446,7 @@ async fn test_truncate_and_replace_from_v0() {
 
     // Save a 3-record chain
     let chain = build_chain(kel_prefix, kind, 3);
-    repo.sad_pointers.save_batch(&chain).await.unwrap();
+    save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
 
@@ -429,10 +456,7 @@ async fn test_truncate_and_replace_from_v0() {
     // The new chain has the same prefix (deterministic from kel_prefix + kind)
     assert_eq!(new_chain[0].prefix, prefix);
 
-    repo.sad_pointers
-        .truncate_and_replace(&new_chain)
-        .await
-        .unwrap();
+    truncate_and_replace_txn(&repo, &new_chain).await;
 
     // Chain should now be 2 records
     let stored = repo

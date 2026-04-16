@@ -18,7 +18,7 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use tracing::{debug, warn};
-use verifiable_storage::{Chained, SelfAddressed};
+use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecutor};
 
 use crate::{object_store::ObjectStore, repository::SadStoreRepository};
 
@@ -1180,9 +1180,12 @@ pub async fn submit_sad_pointer(
         }
     }
 
-    // Verify-then-extend: re-verify the existing chain from scratch, then verify
-    // the new records in context. Follows the KEL merge engine pattern (merge.rs).
-    // If write_policy authorization fails, reject with 403.
+    // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
+    // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
+    let is_repair = query.repair.unwrap_or(false);
+    let new_record_count;
+    let should_publish;
+
     {
         let kel_source = match state.kels_client.as_kel_source() {
             Ok(s) => s,
@@ -1199,94 +1202,184 @@ pub async fn submit_sad_pointer(
             policies: state.repo.clone(),
             object_store: state.object_store.clone(),
         };
-        let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-        let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
 
-        // Verify existing records page by page
-        let page_size = kels_core::page_size() as u64;
-        let mut since: Option<cesr::Digest256> = None;
-        loop {
-            let existing = match state
-                .repo
-                .sad_pointers
-                .get_stored(
-                    chain_prefix.as_ref(),
-                    since.as_ref().map(|s| s.as_ref()),
-                    Some(page_size),
-                )
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!("Failed to fetch existing chain: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
-                }
-            };
-            if existing.is_empty() {
-                break;
-            }
-            let page_len = existing.len();
-            since = existing.last().map(|r| r.said);
-            if let Err(e) = verifier.verify_page(&existing).await {
-                warn!("Existing chain verification failed: {}", e);
-                return (
-                    StatusCode::CONFLICT,
-                    format!("Chain verification failed: {}", e),
-                )
-                    .into_response();
-            }
-            if (page_len as u64) < page_size {
-                break;
-            }
-        }
-
-        // Verify new submitted records
-        if let Err(e) = verifier.verify_page(&records).await {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Record verification failed: {}", e),
-            )
-                .into_response();
-        }
-
-        let verification = match verifier.finish().await {
-            Ok(v) => v,
+        let mut tx = match state.repo.sad_pointers.pool.begin_transaction().await {
+            Ok(tx) => tx,
             Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Chain verification failed: {}", e),
-                )
-                    .into_response();
+                warn!("Failed to begin transaction: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
         };
 
-        if !verification.policy_satisfied() {
-            return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
+        if let Err(e) = tx.acquire_advisory_lock(chain_prefix.as_ref()).await {
+            warn!("Failed to acquire advisory lock: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
-    }
 
-    let is_repair = query.repair.unwrap_or(false);
-
-    let new_record_count;
-    let should_publish;
-
-    if is_repair {
-        if let Err(e) = state.repo.sad_pointers.truncate_and_replace(&records).await {
-            warn!("Failed to repair chain: {}", e);
-            return (StatusCode::CONFLICT, format!("{}", e)).into_response();
-        }
-        new_record_count = records.len() as u32;
-        should_publish = true;
-    } else {
-        match state.repo.sad_pointers.save_batch(&records).await {
-            Ok(count) => {
-                new_record_count = count;
-                should_publish = count > 0;
-            }
-            Err(e) => {
-                warn!("Failed to store records: {}", e);
+        if is_repair {
+            // Repair path: truncate/archive first, then verify remaining + repair records.
+            // truncate_and_replace does the archival within this transaction.
+            if let Err(e) = state
+                .repo
+                .sad_pointers
+                .truncate_and_replace(&mut tx, &records)
+                .await
+            {
+                warn!("Failed to truncate for repair: {}", e);
+                let _ = tx.rollback().await;
                 return (StatusCode::CONFLICT, format!("{}", e)).into_response();
             }
+
+            // Now verify the entire chain (post-truncation + repair records) from scratch.
+            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
+            let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
+            let page_size = kels_core::page_size() as u64;
+            let mut since: Option<cesr::Digest256> = None;
+            loop {
+                let page = match state
+                    .repo
+                    .sad_pointers
+                    .get_stored_in(
+                        &mut tx,
+                        chain_prefix.as_ref(),
+                        since.as_ref().map(|s| s.as_ref()),
+                        Some(page_size),
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!("Failed to fetch chain for repair verification: {}", e);
+                        let _ = tx.rollback().await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                            .into_response();
+                    }
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = page.len();
+                since = page.last().map(|r| r.said);
+                if let Err(e) = verifier.verify_page(&page).await {
+                    warn!("Repair chain verification failed: {}", e);
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::CONFLICT,
+                        format!("Chain verification failed: {}", e),
+                    )
+                        .into_response();
+                }
+                if (page_len as u64) < page_size {
+                    break;
+                }
+            }
+
+            let verification = match verifier.finish().await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Chain verification failed: {}", e),
+                    )
+                        .into_response();
+                }
+            };
+
+            if !verification.policy_satisfied() {
+                let _ = tx.rollback().await;
+                return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
+            }
+
+            new_record_count = records.len() as u32;
+            should_publish = true;
+        } else {
+            // Normal path: verify existing chain + new records, then save.
+            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
+            let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
+            let page_size = kels_core::page_size() as u64;
+            let mut since: Option<cesr::Digest256> = None;
+            loop {
+                let existing = match state
+                    .repo
+                    .sad_pointers
+                    .get_stored_in(
+                        &mut tx,
+                        chain_prefix.as_ref(),
+                        since.as_ref().map(|s| s.as_ref()),
+                        Some(page_size),
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!("Failed to fetch existing chain: {}", e);
+                        let _ = tx.rollback().await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                            .into_response();
+                    }
+                };
+                if existing.is_empty() {
+                    break;
+                }
+                let page_len = existing.len();
+                since = existing.last().map(|r| r.said);
+                if let Err(e) = verifier.verify_page(&existing).await {
+                    warn!("Existing chain verification failed: {}", e);
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::CONFLICT,
+                        format!("Chain verification failed: {}", e),
+                    )
+                        .into_response();
+                }
+                if (page_len as u64) < page_size {
+                    break;
+                }
+            }
+
+            if let Err(e) = verifier.verify_page(&records).await {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Record verification failed: {}", e),
+                )
+                    .into_response();
+            }
+
+            let verification = match verifier.finish().await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Chain verification failed: {}", e),
+                    )
+                        .into_response();
+                }
+            };
+
+            if !verification.policy_satisfied() {
+                let _ = tx.rollback().await;
+                return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
+            }
+
+            match state.repo.sad_pointers.save_batch(&mut tx, &records).await {
+                Ok(count) => {
+                    new_record_count = count;
+                    should_publish = count > 0;
+                }
+                Err(e) => {
+                    warn!("Failed to store records: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+        }
+
+        if let Err(e) = tx.commit().await {
+            warn!("Failed to commit transaction: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
     }
 

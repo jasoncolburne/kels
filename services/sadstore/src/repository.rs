@@ -15,22 +15,20 @@ pub struct SadPointerRepository {
 }
 
 impl SadPointerRepository {
-    /// Store a batch of pointer records with advisory lock and chain verification.
+    /// Store a batch of pointer records within a caller-managed transaction.
     ///
-    /// Acquires an advisory lock on the chain prefix, then appends the batch.
-    /// If a record already exists at the same version with a different SAID,
-    /// both are stored and the chain is considered divergent.
-    ///
-    /// No signature verification — authorization is via the anchoring model.
+    /// Caller must hold an advisory lock on the chain prefix.
     /// Returns the number of new records actually inserted.
-    pub async fn save_batch(&self, records: &[SadPointer]) -> Result<u32, StorageError> {
+    pub async fn save_batch<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        records: &[SadPointer],
+    ) -> Result<u32, StorageError> {
         if records.is_empty() {
             return Ok(0);
         }
 
         let prefix = records[0].prefix;
-        let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix.as_ref()).await?;
 
         // Quick divergence check — reject appends to frozen chains
         let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
@@ -65,11 +63,10 @@ impl SadPointerRepository {
             if existing_saids.contains(&record.said) {
                 continue;
             }
-            self.insert_in(&mut tx, record.clone()).await?;
+            self.insert_in(tx, record.clone()).await?;
             count += 1;
         }
 
-        tx.commit().await?;
         Ok(count)
     }
 
@@ -77,15 +74,18 @@ impl SadPointerRepository {
     ///
     /// Used to repair divergent chains. Archives displaced records, creates a repair
     /// audit record, then inserts the replacements.
-    pub async fn truncate_and_replace(&self, records: &[SadPointer]) -> Result<(), StorageError> {
+    /// Caller must hold an advisory lock on the chain prefix.
+    pub async fn truncate_and_replace<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        records: &[SadPointer],
+    ) -> Result<(), StorageError> {
         if records.is_empty() {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
 
         let prefix = records[0].prefix;
         let write_policy = records[0].write_policy;
-        let mut tx = self.pool.begin_transaction().await?;
-        tx.acquire_advisory_lock(prefix.as_ref()).await?;
 
         // Verify write_policy matches the existing chain's v0
         let v0_query =
@@ -181,10 +181,9 @@ impl SadPointerRepository {
 
         // Insert replacements
         for record in new_records {
-            self.insert_in(&mut tx, record.clone()).await?;
+            self.insert_in(tx, record.clone()).await?;
         }
 
-        tx.commit().await?;
         Ok(())
     }
 
@@ -257,6 +256,71 @@ impl SadPointerRepository {
         }
 
         let mut records: Vec<SadPointer> = self.pool.fetch(query).await?;
+
+        if let Some((version, said)) = &since_position {
+            let skipped = records.len();
+            records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
+            let skipped = skipped - records.len();
+
+            if skipped > 2 {
+                return Err(StorageError::StorageError(format!(
+                    "Chain integrity violation: {} records skipped at version {} for prefix {} — possible DB tampering",
+                    skipped, version, prefix
+                )));
+            }
+
+            if let Some(limit) = limit {
+                records.truncate(limit as usize);
+            }
+        }
+
+        Ok(records)
+    }
+
+    /// Get chain records within an existing transaction.
+    ///
+    /// Same ordering as `get_stored`: `version ASC, said ASC`.
+    pub async fn get_stored_in<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        prefix: &str,
+        since_said: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<SadPointer>, StorageError> {
+        let since_position: Option<(u64, cesr::Digest256)> = if let Some(said) = since_said {
+            let cursor_query =
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    .eq("said", said)
+                    .limit(1);
+            tx.fetch(cursor_query)
+                .await?
+                .into_iter()
+                .next()
+                .map(|r| (r.version, r.said))
+        } else {
+            None
+        };
+
+        let mut query =
+            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .order_by("version", verifiable_storage_postgres::Order::Asc)
+                .order_by("said", verifiable_storage_postgres::Order::Asc);
+
+        if let Some((version, _)) = &since_position {
+            query = query.gte("version", *version);
+        }
+
+        if let Some(limit) = limit {
+            let fetch_limit = if since_position.is_some() {
+                limit + 2
+            } else {
+                limit
+            };
+            query = query.limit(fetch_limit);
+        }
+
+        let mut records: Vec<SadPointer> = tx.fetch(query).await?;
 
         if let Some((version, said)) = &since_position {
             let skipped = records.len();
