@@ -20,7 +20,10 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecutor};
 
-use crate::{object_store::ObjectStore, repository::SadStoreRepository};
+use crate::{
+    object_store::ObjectStore,
+    repository::{SadPointerRepository, SadStoreRepository},
+};
 
 const SECS_PER_DAY: u64 = 86_400;
 const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
@@ -1087,6 +1090,48 @@ pub async fn sad_pointer_exists(
 
 // === Layer 2: Chain Records (Postgres) ===
 
+/// Page through existing chain records in a transaction, feeding each page to the verifier.
+async fn verify_existing_chain<Tx: TransactionExecutor>(
+    tx: &mut Tx,
+    repo: &SadPointerRepository,
+    prefix: &cesr::Digest256,
+    verifier: &mut kels_core::SadChainVerifier<'_>,
+) -> Result<(), axum::response::Response> {
+    let page_size = kels_core::page_size() as u64;
+    let mut since: Option<cesr::Digest256> = None;
+    loop {
+        let page = repo
+            .get_stored_in(
+                tx,
+                prefix.as_ref(),
+                since.as_ref().map(|s| s.as_ref()),
+                Some(page_size),
+            )
+            .await
+            .map_err(|e| {
+                warn!("Failed to fetch chain for verification: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response()
+            })?;
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        since = page.last().map(|r| r.said);
+        verifier.verify_page(&page).await.map_err(|e| {
+            warn!("Chain verification failed: {}", e);
+            (
+                StatusCode::CONFLICT,
+                format!("Chain verification failed: {}", e),
+            )
+                .into_response()
+        })?;
+        if (page_len as u64) < page_size {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Query parameters for record submission.
 #[derive(Deserialize)]
 pub struct RecordSubmitQuery {
@@ -1233,45 +1278,16 @@ pub async fn submit_sad_pointer(
             // Now verify the entire chain (post-truncation + repair records) from scratch.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
-            let page_size = kels_core::page_size() as u64;
-            let mut since: Option<cesr::Digest256> = None;
-            loop {
-                let page = match state
-                    .repo
-                    .sad_pointers
-                    .get_stored_in(
-                        &mut tx,
-                        chain_prefix.as_ref(),
-                        since.as_ref().map(|s| s.as_ref()),
-                        Some(page_size),
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("Failed to fetch chain for repair verification: {}", e);
-                        let _ = tx.rollback().await;
-                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
-                            .into_response();
-                    }
-                };
-                if page.is_empty() {
-                    break;
-                }
-                let page_len = page.len();
-                since = page.last().map(|r| r.said);
-                if let Err(e) = verifier.verify_page(&page).await {
-                    warn!("Repair chain verification failed: {}", e);
-                    let _ = tx.rollback().await;
-                    return (
-                        StatusCode::CONFLICT,
-                        format!("Chain verification failed: {}", e),
-                    )
-                        .into_response();
-                }
-                if (page_len as u64) < page_size {
-                    break;
-                }
+            if let Err(response) = verify_existing_chain(
+                &mut tx,
+                &state.repo.sad_pointers,
+                chain_prefix,
+                &mut verifier,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return response;
             }
 
             let verification = match verifier.finish().await {
@@ -1297,45 +1313,16 @@ pub async fn submit_sad_pointer(
             // Normal path: verify existing chain + new records, then save.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
-            let page_size = kels_core::page_size() as u64;
-            let mut since: Option<cesr::Digest256> = None;
-            loop {
-                let existing = match state
-                    .repo
-                    .sad_pointers
-                    .get_stored_in(
-                        &mut tx,
-                        chain_prefix.as_ref(),
-                        since.as_ref().map(|s| s.as_ref()),
-                        Some(page_size),
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!("Failed to fetch existing chain: {}", e);
-                        let _ = tx.rollback().await;
-                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
-                            .into_response();
-                    }
-                };
-                if existing.is_empty() {
-                    break;
-                }
-                let page_len = existing.len();
-                since = existing.last().map(|r| r.said);
-                if let Err(e) = verifier.verify_page(&existing).await {
-                    warn!("Existing chain verification failed: {}", e);
-                    let _ = tx.rollback().await;
-                    return (
-                        StatusCode::CONFLICT,
-                        format!("Chain verification failed: {}", e),
-                    )
-                        .into_response();
-                }
-                if (page_len as u64) < page_size {
-                    break;
-                }
+            if let Err(response) = verify_existing_chain(
+                &mut tx,
+                &state.repo.sad_pointers,
+                chain_prefix,
+                &mut verifier,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return response;
             }
 
             if let Err(e) = verifier.verify_page(&records).await {

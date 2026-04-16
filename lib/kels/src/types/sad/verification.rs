@@ -67,7 +67,7 @@ pub struct SadChainVerifier<'a> {
     current_generation_version: Option<u64>,
     saw_any_records: bool,
     policy_satisfied: bool,
-    checker: &'a (dyn PolicyChecker + 'a),
+    checker: &'a dyn PolicyChecker,
 }
 
 impl<'a> SadChainVerifier<'a> {
