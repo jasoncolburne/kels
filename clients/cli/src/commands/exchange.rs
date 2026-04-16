@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{KelVerifier, KeyProvider, ProviderConfig, VerificationKeyCode};
+use kels_core::{KelVerifier, KeyEventBuilder, KeyProvider, ProviderConfig, VerificationKeyCode};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::Cli;
@@ -125,6 +125,25 @@ pub(crate) async fn cmd_exchange_publish_key(
     v1.content = Some(publication.said);
     v1.increment().context("Failed to increment pointer")?;
 
+    // Anchor pointer SAIDs in the KEL (required for write_policy authorization)
+    let client = create_client(cli).await?;
+    let kel_store = create_kel_store(cli, prefix).await?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(&prefix_digest),
+    )
+    .await?;
+    builder
+        .interact(&v0.said)
+        .await
+        .context("Failed to anchor v0 SAID in KEL")?;
+    builder
+        .interact(&v1.said)
+        .await
+        .context("Failed to anchor v1 SAID in KEL")?;
+
     let records = vec![v0.clone(), v1];
 
     sad_client
@@ -203,6 +222,21 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let mut next = tip.clone();
     next.content = Some(publication.said);
     next.increment().context("Failed to increment pointer")?;
+
+    // Anchor pointer SAID in the KEL (required for write_policy authorization)
+    let client = create_client(cli).await?;
+    let kel_store = create_kel_store(cli, prefix).await?;
+    let mut builder = KeyEventBuilder::with_dependencies(
+        provider,
+        Some(client),
+        Some(std::sync::Arc::new(kel_store)),
+        Some(&prefix_digest),
+    )
+    .await?;
+    builder
+        .interact(&next.said)
+        .await
+        .context("Failed to anchor pointer SAID in KEL")?;
 
     sad_client.submit_sad_pointer(&[next]).await?;
 
