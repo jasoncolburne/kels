@@ -131,6 +131,11 @@ pub const MINIMUM_PAGE_SIZE: usize = 64;
 /// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
 pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
 
+/// Maximum non-checkpoint records between checkpoint records on pointer chains.
+/// `MINIMUM_PAGE_SIZE - 1` leaves room for the checkpoint record in the page.
+/// Unlike KELs (which need 2 slots for rec+rot), pointer checkpoints need only 1 slot.
+pub const MAX_NON_CHECKPOINT_RECORDS: usize = MINIMUM_PAGE_SIZE - 1;
+
 /// Default page size for all KEL operations: submissions, queries, and responses.
 /// Clamped to at least `MINIMUM_PAGE_SIZE` at parse time. Operators may increase
 /// this for deployments that need larger batches, but the security bound is always

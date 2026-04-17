@@ -1442,7 +1442,8 @@ pub async fn get_sad_pointer(
     Json(request): Json<kels_core::SadPointerPageRequest>,
 ) -> impl IntoResponse {
     let prefix = request.prefix;
-    let limit = request.limit.unwrap_or(kels_core::page_size()) as u64;
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
     let since_str = request.since.as_ref().map(|s| s.as_ref());
 
     match state
