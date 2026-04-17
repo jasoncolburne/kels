@@ -15,7 +15,10 @@ pub enum SaveBatchResult {
     Accepted { new_count: u32 },
     /// A version collision was detected — the forking record was inserted and
     /// the chain is now divergent (frozen). Remaining batch records were discarded.
-    DivergenceCreated { new_count: u32 },
+    DivergenceCreated {
+        new_count: u32,
+        diverged_at_version: u64,
+    },
 }
 
 #[derive(Stored)]
@@ -72,24 +75,37 @@ impl SadPointerRepository {
                 .collect()
         };
 
+        // Collect occupied versions in one query: fetch existing records in the
+        // batch's version range, extract their versions into a HashSet.
+        let occupied_versions: std::collections::HashSet<u64> = {
+            let min_version = records.iter().map(|r| r.version).min().unwrap_or(0);
+            let max_version = records.iter().map(|r| r.version).max().unwrap_or(0);
+            let query =
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", &prefix)
+                    .gte("version", min_version)
+                    .lte("version", max_version);
+            tx.fetch(query)
+                .await?
+                .into_iter()
+                .map(|r: SadPointer| r.version)
+                .collect()
+        };
+
         let mut count = 0u32;
         for record in records {
             if existing_saids.contains(&record.said) {
                 continue;
             }
 
-            // Check for version collision: does a record already exist at this
-            // version with a different SAID? If so, this creates divergence.
-            let collision_query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", &prefix)
-                    .eq("version", record.version);
-            let existing_at_version: Vec<SadPointer> = tx.fetch(collision_query).await?;
-            if !existing_at_version.is_empty() {
-                // Version collision — insert this forking record then freeze
+            // Version collision creates divergence — insert this forking record then freeze
+            if occupied_versions.contains(&record.version) {
                 self.insert_in(tx, record.clone()).await?;
                 count += 1;
-                return Ok(SaveBatchResult::DivergenceCreated { new_count: count });
+                return Ok(SaveBatchResult::DivergenceCreated {
+                    new_count: count,
+                    diverged_at_version: record.version,
+                });
             }
 
             self.insert_in(tx, record.clone()).await?;

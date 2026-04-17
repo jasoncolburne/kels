@@ -41,6 +41,15 @@ pub struct SadPointerEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
+/// Response from pointer chain submission.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitPointersResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diverged_at: Option<u64>,
+    pub applied: bool,
+}
+
 /// Request body for listing repairs for a SAD pointer chain.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairsRequest {

@@ -1230,6 +1230,7 @@ pub async fn submit_sad_pointer(
     let is_repair = query.repair.unwrap_or(false);
     let new_record_count;
     let should_publish;
+    let mut diverged_at_version: Option<u64> = None;
 
     {
         let kel_source = match state.kels_client.as_kel_source() {
@@ -1355,7 +1356,11 @@ pub async fn submit_sad_pointer(
                 Ok(result) => {
                     let count = match &result {
                         crate::repository::SaveBatchResult::Accepted { new_count } => *new_count,
-                        crate::repository::SaveBatchResult::DivergenceCreated { new_count } => {
+                        crate::repository::SaveBatchResult::DivergenceCreated {
+                            new_count,
+                            diverged_at_version: version,
+                        } => {
+                            diverged_at_version = Some(*version);
                             *new_count
                         }
                     };
@@ -1386,7 +1391,11 @@ pub async fn submit_sad_pointer(
         GossipPolicy::LocalOnly
     ) {
         debug!("Skipping pointer gossip: custody.nodes restricts to local/home-node");
-        return (StatusCode::CREATED, "stored").into_response();
+        let response = kels_core::SubmitPointersResponse {
+            diverged_at: diverged_at_version,
+            applied: new_record_count > 0,
+        };
+        return (StatusCode::CREATED, Json(response)).into_response();
     }
 
     // Publish the effective SAID to Redis for gossip.
@@ -1440,7 +1449,11 @@ pub async fn submit_sad_pointer(
         }
     }
 
-    (StatusCode::CREATED, "stored").into_response()
+    let response = kels_core::SubmitPointersResponse {
+        diverged_at: diverged_at_version,
+        applied: new_record_count > 0,
+    };
+    (StatusCode::CREATED, Json(response)).into_response()
 }
 
 pub async fn get_sad_pointer(

@@ -350,15 +350,7 @@ async fn send_divergent_sad_pointers(
 
     // Fork record from shorter chain (creates divergence)
     if let Some(fork) = shorter.first() {
-        match sink.store_page(std::slice::from_ref(fork)).await {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::warn!(
-                    "Deferred branch submission failed \
-                     (chain may already be divergent): {e}"
-                );
-            }
-        }
+        sink.store_page(std::slice::from_ref(fork)).await?;
     }
 
     Ok(())

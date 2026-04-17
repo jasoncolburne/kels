@@ -120,7 +120,9 @@ async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u3
     tx.commit().await.unwrap();
     match result {
         kels_sadstore::repository::SaveBatchResult::Accepted { new_count } => new_count,
-        kels_sadstore::repository::SaveBatchResult::DivergenceCreated { new_count } => new_count,
+        kels_sadstore::repository::SaveBatchResult::DivergenceCreated { new_count, .. } => {
+            new_count
+        }
     }
 }
 
