@@ -403,10 +403,10 @@ else
 
     echo "[$D_V1A_JSON]" > "$TEMP_DIR/div-v1a.json"
 
-    # v1-b: submitted to node-b (different content → different SAID, same checkpoint_policy)
+    # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by checkpoint_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp, checkpointPolicy: $cp}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 

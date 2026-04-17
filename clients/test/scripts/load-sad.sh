@@ -153,11 +153,11 @@ create_group() {
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         if [ "$i" -eq 1 ]; then
-            # v1: first checkpoint (declares checkpoint_policy + is_checkpoint)
+            # v1: checkpoint_policy declaration (no is_checkpoint — first declaration only)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
                 --arg cp "$chain_cp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp, checkpointPolicy: $cp}')
         else
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \

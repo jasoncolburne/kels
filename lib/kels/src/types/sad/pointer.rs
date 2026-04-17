@@ -79,14 +79,20 @@ pub fn compute_sad_pointer_prefix(
 pub struct SadPointerVerification {
     tip: SadPointer,
     policy_satisfied: bool,
+    last_checkpoint_version: Option<u64>,
 }
 
 impl SadPointerVerification {
     /// Create a new verification token. Crate-internal only.
-    pub(crate) fn new(tip: SadPointer, policy_satisfied: bool) -> Self {
+    pub(crate) fn new(
+        tip: SadPointer,
+        policy_satisfied: bool,
+        last_checkpoint_version: Option<u64>,
+    ) -> Self {
         Self {
             tip,
             policy_satisfied,
+            last_checkpoint_version,
         }
     }
 
@@ -118,6 +124,12 @@ impl SadPointerVerification {
     /// Whether all write_policy checks were satisfied during verification.
     pub fn policy_satisfied(&self) -> bool {
         self.policy_satisfied
+    }
+
+    /// The version of the most recent evaluated checkpoint, if any.
+    /// Versions at or before this are sealed by checkpoint_policy.
+    pub fn last_checkpoint_version(&self) -> Option<u64> {
+        self.last_checkpoint_version
     }
 }
 

@@ -114,7 +114,7 @@ async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u3
     tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
     let result = repo
         .sad_pointers
-        .save_batch(&mut tx, records)
+        .save_batch(&mut tx, records, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();

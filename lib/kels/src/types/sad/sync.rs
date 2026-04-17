@@ -473,16 +473,9 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let cp = test_digest(b"checkpoint-policy");
 
-        // Build a chain: v0, v1 (checkpoint), then two records at v2 (divergence)
-        let v0 = SadPointer::create(
-            "kels/test".to_string(),
-            None,
-            None,
-            wp,
-            Some(cp),
-            Some(true),
-        )
-        .unwrap();
+        // Build a chain: v0 (declares checkpoint_policy), v1, then two records at v2 (divergence)
+        let v0 =
+            SadPointer::create("kels/test".to_string(), None, None, wp, Some(cp), None).unwrap();
 
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));

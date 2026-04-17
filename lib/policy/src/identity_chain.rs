@@ -155,11 +155,10 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
-    /// Add a first checkpoint to a pointer (sets checkpoint_policy + is_checkpoint).
-    fn add_first_checkpoint(pointer: &mut SadPointer) {
+    /// Declare checkpoint_policy on a pointer (declaration only, no is_checkpoint).
+    fn add_checkpoint_declaration(pointer: &mut SadPointer) {
         let cp_policy = test_policy("checkpoint");
         pointer.checkpoint_policy = Some(cp_policy.said);
-        pointer.is_checkpoint = Some(true);
     }
 
     #[tokio::test]
@@ -171,7 +170,7 @@ mod tests {
 
         // Create a v1 with checkpoint so the chain passes verification
         let mut v1_cp = v0.clone();
-        add_first_checkpoint(&mut v1_cp);
+        add_checkpoint_declaration(&mut v1_cp);
         v1_cp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -205,7 +204,7 @@ mod tests {
             None,
             policy.said,
             Some(cp_policy.said),
-            Some(true),
+            None,
         )
         .unwrap();
 
@@ -226,7 +225,7 @@ mod tests {
 
         // Add a v1 with checkpoint so verification passes
         let mut v1_cp = v0.clone();
-        add_first_checkpoint(&mut v1_cp);
+        add_checkpoint_declaration(&mut v1_cp);
         v1_cp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -248,7 +247,7 @@ mod tests {
         // Build a v1 with checkpoint so the checker can reject it
         let mut v1 = v0.clone();
         v1.content = Some(cesr::Digest256::blake3_256(b"content"));
-        add_first_checkpoint(&mut v1);
+        add_checkpoint_declaration(&mut v1);
         v1.increment().unwrap();
 
         let checker = RejectAdvanceChecker;

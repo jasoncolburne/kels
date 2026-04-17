@@ -1263,6 +1263,21 @@ pub async fn submit_sad_pointer(
         }
 
         if is_repair {
+            // Query the checkpoint seal before truncation — reject repairs behind the seal.
+            let last_cp_version = match state
+                .repo
+                .sad_pointers
+                .last_checkpoint_version(&mut tx, chain_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query last checkpoint version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+
             // Repair path: truncate/archive first, then verify remaining + repair records.
             // truncate_and_replace does the archival within this transaction.
             let from_version = match state
@@ -1278,6 +1293,21 @@ pub async fn submit_sad_pointer(
                     return (StatusCode::CONFLICT, format!("{}", e)).into_response();
                 }
             };
+
+            // Repair must not truncate behind the checkpoint seal
+            if let Some(cp_version) = last_cp_version
+                && from_version <= cp_version
+            {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Cannot repair at version {} — sealed by checkpoint at version {}",
+                        from_version, cp_version
+                    ),
+                )
+                    .into_response();
+            }
 
             // Repair must include a checkpoint at or after the divergence point —
             // an attacker who can only satisfy write_policy cannot repair
@@ -1414,7 +1444,11 @@ pub async fn submit_sad_pointer(
             match state
                 .repo
                 .sad_pointers
-                .save_batch(&mut tx, &new_records)
+                .save_batch(
+                    &mut tx,
+                    &new_records,
+                    verification.last_checkpoint_version(),
+                )
                 .await
             {
                 Ok(result) => {

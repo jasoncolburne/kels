@@ -42,6 +42,7 @@ impl SadPointerRepository {
         &self,
         tx: &mut Tx,
         records: &[SadPointer],
+        last_checkpoint_version: Option<u64>,
     ) -> Result<SaveBatchResult, StorageError> {
         if records.is_empty() {
             return Ok(SaveBatchResult::Accepted { new_count: 0 });
@@ -104,6 +105,15 @@ impl SadPointerRepository {
 
             // Version collision creates divergence — insert this forking record then freeze
             if occupied_versions.contains(&record.version) {
+                // Reject fork at or before the last checkpoint — sealed by checkpoint_policy
+                if let Some(cp_version) = last_checkpoint_version
+                    && record.version <= cp_version
+                {
+                    return Err(StorageError::StorageError(format!(
+                        "Cannot fork at version {} — sealed by checkpoint at version {}",
+                        record.version, cp_version,
+                    )));
+                }
                 self.insert_in(tx, record.clone()).await?;
                 count += 1;
                 return Ok(SaveBatchResult::DivergenceCreated {
@@ -255,6 +265,22 @@ impl SadPointerRepository {
             .limit(1);
         let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
         Ok(counts.first().is_some_and(|&c| c > 1))
+    }
+
+    /// Get the version of the most recent evaluated checkpoint for a chain.
+    /// Returns None if no checkpoint exists.
+    pub async fn last_checkpoint_version<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<u64>, StorageError> {
+        let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .filter(Filter::Eq("is_checkpoint".to_string(), Value::Bool(true)))
+            .order_by("version", verifiable_storage::Order::Desc)
+            .limit(1);
+        let records: Vec<SadPointer> = tx.fetch(query).await?;
+        Ok(records.first().map(|r| r.version))
     }
 
     /// Check if a pointer with the given SAID exists.
