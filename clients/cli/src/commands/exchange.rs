@@ -125,6 +125,7 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     let mut v1 = v0.clone();
     v1.content = Some(publication.said);
+    v1.checkpoint_policy = Some(write_policy); // first declaration, not evaluated
     v1.increment().context("Failed to increment pointer")?;
 
     // Anchor pointer SAIDs in the KEL (required for write_policy authorization)
