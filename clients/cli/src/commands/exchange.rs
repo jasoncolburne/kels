@@ -118,6 +118,8 @@ pub(crate) async fn cmd_exchange_publish_key(
         None,
         None,
         write_policy,
+        None,
+        None,
     )
     .context("Failed to create inception pointer")?;
 

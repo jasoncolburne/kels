@@ -28,6 +28,8 @@ pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
         None,
         None,
         initial_policy.said,
+        None,
+        None,
     )
     .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity pointer: {e}")))
 }
@@ -194,6 +196,8 @@ mod tests {
             None,
             None,
             policy.said,
+            None,
+            None,
         )
         .unwrap();
 

@@ -9,6 +9,7 @@
 //! is fully deterministic: given the inception write_policy SAID and topic, anyone
 //! can compute the chain prefix offline. Write_policy can evolve across versions.
 
+use cesr::Matter;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageError};
 
@@ -46,6 +47,15 @@ pub struct SadPointer {
     /// SAID of the write policy (denormalized from custody for chain keying).
     /// Required — a pointer without a write_policy has no chain identity.
     pub write_policy: cesr::Digest256,
+    /// Checkpoint commitment: Blake3 hash of a secret nonce. Bounds divergence
+    /// by requiring periodic nonce reveals that only the chain owner can produce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_hash: Option<cesr::Digest256>,
+    /// Nonce from the previous checkpoint, revealed to prove chain ownership.
+    /// Verifier reconstructs the hash via `compute_checkpoint_hash(&nonce)` and
+    /// compares to the tracked `checkpoint_hash` from the previous checkpoint record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_nonce: Option<cesr::Nonce256>,
 }
 
 /// Compute the SAD chain prefix for a given write policy SAID and topic.
@@ -57,8 +67,17 @@ pub fn compute_sad_pointer_prefix(
     write_policy: cesr::Digest256,
     topic: &str,
 ) -> Result<cesr::Digest256, StorageError> {
-    let pointer = SadPointer::create(topic.to_string(), None, None, write_policy)?;
+    let pointer = SadPointer::create(topic.to_string(), None, None, write_policy, None, None)?;
     Ok(pointer.prefix)
+}
+
+/// Compute the checkpoint hash from a nonce.
+///
+/// Same pattern as `compute_rotation_hash` on KEL events — hash the CESR-encoded
+/// nonce bytes via Blake3. The resulting digest is the checkpoint commitment placed
+/// on pointer records. Anyone with the nonce can recompute this hash.
+pub fn compute_checkpoint_hash(nonce: &cesr::Nonce256) -> cesr::Digest256 {
+    cesr::Digest256::blake3_256(nonce.qb64().as_bytes())
 }
 
 /// Proof-of-verification token for a SAD pointer chain.
@@ -159,6 +178,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(pointer.version, 0);
@@ -173,6 +194,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
 
@@ -195,6 +218,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert!(pointer.verify_said().is_ok());
@@ -212,6 +237,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert!(pointer.verify_prefix().is_ok());

@@ -137,7 +137,8 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadPoint
 fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
     let mut pointers = Vec::with_capacity(count);
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut pointer = SadPointer::create(kind.to_string(), None, None, kel_digest).unwrap();
+    let mut pointer =
+        SadPointer::create(kind.to_string(), None, None, kel_digest, None, None).unwrap();
     pointers.push(pointer.clone());
 
     for i in 1..count {
@@ -176,6 +177,8 @@ fn build_replacement(
         )),
         custody: None,
         write_policy: kel_digest,
+        checkpoint_hash: None,
+        checkpoint_nonce: None,
     };
     pointer.derive_said().unwrap();
     pointers.push(pointer.clone());

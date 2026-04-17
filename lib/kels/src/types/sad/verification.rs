@@ -326,8 +326,15 @@ mod tests {
     #[tokio::test]
     async fn test_sad_chain_verifier_valid_chain() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
@@ -350,8 +357,15 @@ mod tests {
     #[tokio::test]
     async fn test_sad_chain_verifier_wrong_version_fails() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
@@ -372,8 +386,15 @@ mod tests {
     #[tokio::test]
     async fn test_sad_chain_verifier_multi_page() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
@@ -393,8 +414,15 @@ mod tests {
     #[tokio::test]
     async fn test_same_write_policy_authorized() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
@@ -410,8 +438,15 @@ mod tests {
     async fn test_evolving_write_policy_authorized() {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp1,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
@@ -428,8 +463,15 @@ mod tests {
     async fn test_rejected_write_policy_evolution() {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp1,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
@@ -445,8 +487,15 @@ mod tests {
     #[tokio::test]
     async fn test_rejected_same_write_policy() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
@@ -461,8 +510,15 @@ mod tests {
     #[tokio::test]
     async fn test_self_satisfies_failure() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap();
 
         let checker = RejectInceptionChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
