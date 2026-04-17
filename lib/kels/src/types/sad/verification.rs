@@ -258,20 +258,20 @@ impl<'a> SadChainVerifier<'a> {
                 (eval_policy, 0)
             } else {
                 // Non-checkpoint record
-                // checkpoint_policy on record must match tracked (can't change without checkpointing)
-                if let Some(ref record_cp) = record.checkpoint_policy
-                    && branch.checkpoint_policy.as_ref() != Some(record_cp)
-                {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "SAD record {} changes checkpoint_policy without is_checkpoint",
-                        record.said,
-                    )));
-                }
-
-                // First declaration of checkpoint_policy (without being a checkpoint)
-                let cp = if record.checkpoint_policy.is_some() && branch.checkpoint_policy.is_none()
-                {
-                    record.checkpoint_policy
+                let cp = if let Some(ref record_cp) = record.checkpoint_policy {
+                    if let Some(ref tracked) = branch.checkpoint_policy {
+                        // Evolution: changing an established checkpoint_policy requires a checkpoint
+                        if tracked != record_cp {
+                            return Err(KelsError::VerificationFailed(format!(
+                                "SAD record {} changes checkpoint_policy without is_checkpoint",
+                                record.said,
+                            )));
+                        }
+                        branch.checkpoint_policy
+                    } else {
+                        // First declaration — just record the policy, no evaluation needed
+                        record.checkpoint_policy
+                    }
                 } else {
                     branch.checkpoint_policy
                 };

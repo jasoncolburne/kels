@@ -129,7 +129,7 @@ impl SadPointerRepository {
         &self,
         tx: &mut Tx,
         records: &[SadPointer],
-    ) -> Result<(), StorageError> {
+    ) -> Result<u64, StorageError> {
         if records.is_empty() {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
@@ -196,7 +196,25 @@ impl SadPointerRepository {
                 }
             };
 
+            // Skip records already in archives (stale gossip can re-insert fork
+            // records after a prior repair archived them)
+            let already_archived: HashSet<cesr::Digest256> = {
+                let page_saids: Vec<String> = page.iter().map(|r| r.said.to_string()).collect();
+                let archive_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
+                    Self::ARCHIVED_RECORDS_TABLE,
+                )
+                .r#in("said", page_saids);
+                tx.fetch(archive_query)
+                    .await?
+                    .into_iter()
+                    .map(|r: SadPointer| r.said)
+                    .collect()
+            };
+
             for record in &page {
+                if already_archived.contains(&record.said) {
+                    continue;
+                }
                 tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
                     .await?;
                 let repair_record = SadPointerRepairRecord::create(*repair_said_ref, record.said)?;
@@ -223,7 +241,7 @@ impl SadPointerRepository {
             self.insert_in(tx, record.clone()).await?;
         }
 
-        Ok(())
+        Ok(from_version)
     }
 
     /// Quick check: does any version appear more than once for this prefix?

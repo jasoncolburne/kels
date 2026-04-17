@@ -1263,28 +1263,35 @@ pub async fn submit_sad_pointer(
         }
 
         if is_repair {
-            // Repair records must checkpoint — an attacker who can only satisfy
-            // write_policy cannot repair (checkpoint_policy is a higher bar).
-            if !records[0].is_checkpoint.unwrap_or(false) {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "first repair record must be a checkpoint",
-                )
-                    .into_response();
-            }
-
             // Repair path: truncate/archive first, then verify remaining + repair records.
             // truncate_and_replace does the archival within this transaction.
-            if let Err(e) = state
+            let from_version = match state
                 .repo
                 .sad_pointers
                 .truncate_and_replace(&mut tx, &records)
                 .await
             {
-                warn!("Failed to truncate for repair: {}", e);
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to truncate for repair: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            };
+
+            // Repair must include a checkpoint at or after the divergence point —
+            // an attacker who can only satisfy write_policy cannot repair
+            // (checkpoint_policy is a higher bar).
+            if !records
+                .iter()
+                .any(|r| r.version >= from_version && r.is_checkpoint.unwrap_or(false))
+            {
                 let _ = tx.rollback().await;
-                return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "repair must include a checkpoint at or after the divergence point",
+                )
+                    .into_response();
             }
 
             // Now verify the entire chain (post-truncation + repair records) from scratch.
@@ -1322,7 +1329,48 @@ pub async fn submit_sad_pointer(
             new_record_count = records.len() as u32;
             should_publish = true;
         } else {
-            // Normal path: verify existing chain + new records, then save.
+            // Normal path: dedup submitted records, verify existing chain + new, then save.
+            // Follows the KEL merge engine pattern (handle_full_path): filter duplicates
+            // upfront so the verifier never sees already-processed records.
+            let new_records: Vec<kels_core::SadPointer> = {
+                let submitted_saids: Vec<String> =
+                    records.iter().map(|r| r.said.to_string()).collect();
+                let query = verifiable_storage_postgres::Query::<kels_core::SadPointer>::for_table(
+                    "sad_pointers",
+                )
+                .r#in("said", submitted_saids);
+                let existing_saids: std::collections::HashSet<cesr::Digest256> =
+                    match tx.fetch(query).await {
+                        Ok(existing) => existing
+                            .into_iter()
+                            .map(|r: kels_core::SadPointer| r.said)
+                            .collect(),
+                        Err(e) => {
+                            warn!("Failed to query existing SAIDs: {}", e);
+                            let _ = tx.rollback().await;
+                            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                                .into_response();
+                        }
+                    };
+                records
+                    .iter()
+                    .filter(|r| !existing_saids.contains(&r.said))
+                    .cloned()
+                    .collect()
+            };
+
+            if new_records.is_empty() {
+                if let Err(e) = tx.commit().await {
+                    warn!("Failed to commit transaction: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+                let response = kels_core::SubmitPointersResponse {
+                    diverged_at: None,
+                    applied: false,
+                };
+                return (StatusCode::CREATED, Json(response)).into_response();
+            }
+
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
             if let Err(response) = verify_existing_chain(
@@ -1337,7 +1385,7 @@ pub async fn submit_sad_pointer(
                 return response;
             }
 
-            if let Err(e) = verifier.verify_page(&records).await {
+            if let Err(e) = verifier.verify_page(&new_records).await {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
@@ -1363,7 +1411,12 @@ pub async fn submit_sad_pointer(
                 return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
             }
 
-            match state.repo.sad_pointers.save_batch(&mut tx, &records).await {
+            match state
+                .repo
+                .sad_pointers
+                .save_batch(&mut tx, &new_records)
+                .await
+            {
                 Ok(result) => {
                     let count = match &result {
                         crate::repository::SaveBatchResult::Accepted { new_count } => *new_count,

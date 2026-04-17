@@ -146,8 +146,8 @@ create_group() {
     local prev_said="$v0_said"
 
     # Build a checkpoint policy for this chain
-    build_checkpoint_policy "$SADSTORE_URL" "$prefix"
-    local chain_cp_said="$CHECKPOINT_POLICY_SAID"
+    local chain_cp_said
+    chain_cp_said=$(build_checkpoint_policy "$SADSTORE_URL" "$prefix")
 
     for i in $(seq 1 "$n"); do
         local content_said="${object_saids[$((i-1))]}"

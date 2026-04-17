@@ -263,7 +263,7 @@ else
     run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
 
     # --- Build v1 pointer (declares checkpoint_policy) ---
-    build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX"
+    CHECKPOINT_POLICY_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
         --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, writePolicy: $wp, checkpointPolicy: $cp}')
@@ -360,8 +360,7 @@ else
         -H 'Content-Type: application/json' -d "$DIV_POLICY_JSON"
 
     # Build checkpoint policy before v0 so v0 can declare it
-    build_checkpoint_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX"
-    DIV_CP_SAID="$CHECKPOINT_POLICY_SAID"
+    DIV_CP_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
 
     # --- Build and submit v0 (with checkpoint_policy) to node-a ---
     D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
