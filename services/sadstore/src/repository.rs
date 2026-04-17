@@ -79,7 +79,7 @@ impl SadPointerRepository {
 
         // Collect occupied versions in one query: fetch only the version column
         // for existing records at the batch's versions.
-        let occupied_versions: HashSet<u64> = {
+        let mut occupied_versions: HashSet<u64> = {
             let batch_versions: Vec<i64> = records
                 .iter()
                 .map(|r| r.version as i64)

@@ -359,16 +359,22 @@ else
     curl -s -o /dev/null -X POST "${NODE_A_SAD_URL}/api/v1/sad" \
         -H 'Content-Type: application/json' -d "$DIV_POLICY_JSON"
 
-    DIV_PREFIX=$(kels-cli sad prefix "$DIV_POLICY_SAID" "$DIV_KIND" 2>/dev/null)
-    echo "Chain prefix: $DIV_PREFIX"
+    # Build checkpoint policy before v0 so v0 can declare it
+    build_checkpoint_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX"
+    DIV_CP_SAID="$CHECKPOINT_POLICY_SAID"
 
-    # --- Build and submit v0 to node-a ---
+    # --- Build and submit v0 (with checkpoint_policy) to node-a ---
     D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp}')
+        --arg cp "$DIV_CP_SAID" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp, checkpointPolicy: $cp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
     D_V0_SAID=$(compute_said "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg s "$D_V0_SAID" '.said = $s')
+
+    # checkpoint_policy changes the prefix — use computed prefix, not CLI prefix
+    DIV_PREFIX="$D_V0_PREFIX"
+    echo "Chain prefix: $DIV_PREFIX"
 
     # Anchor v0 SAID in the KEL
     run_test "Divergence: v0 SAID anchored" \
@@ -383,9 +389,7 @@ else
     run_test "Divergence: v0 propagated to node-b" \
         wait_for_chain_propagation "$DIV_PREFIX" "$D_V0_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 
-    # --- Build two conflicting v1 pointers (each with a first checkpoint) ---
-    build_checkpoint_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX"
-    DIV_CP_SAID="$CHECKPOINT_POLICY_SAID"
+    # --- Build two conflicting v1 pointers ---
 
     # v1-a: submitted to node-a
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
