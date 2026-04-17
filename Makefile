@@ -279,4 +279,4 @@ test-node: clean-standalone deploy-fresh-node
 
 test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-peer-lifecycle test-sad-consistency test-kel-consistency
 
-test-both: clean-garden test-node test-federation
+test-all-deployments: clean-garden test-node test-federation
