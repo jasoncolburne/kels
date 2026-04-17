@@ -144,6 +144,9 @@ impl PagedSadSink for HttpSadSink {
 
         if resp.status().is_success() {
             Ok(())
+        } else if resp.status() == reqwest::StatusCode::CONFLICT {
+            // Chain already divergent on remote — that's fine, skip
+            Ok(())
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -154,6 +157,12 @@ impl PagedSadSink for HttpSadSink {
 // ==================== Core Transfer Function ====================
 
 /// Page through a SAD chain from source to sink, optionally verifying.
+///
+/// Mirrors the KEL `transfer_key_events` pattern: uses a held-back record
+/// strategy to detect divergence at page boundaries. When divergence is
+/// found (two records at the same version), switches to collection mode,
+/// accumulates all remaining records, then submits them via
+/// `send_divergent_sad_pointers` in an order the remote can accept.
 async fn transfer_sad_pointer<'a>(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
@@ -170,31 +179,189 @@ async fn transfer_sad_pointer<'a>(
     }
 
     let mut since: Option<cesr::Digest256> = since.cloned();
+    let mut held_back: Option<SadPointer> = None;
+    let mut divergence_found = false;
+    let mut pre_divergence: Vec<SadPointer> = Vec::new();
+    let mut post_divergence: Vec<SadPointer> = Vec::new();
 
     for _ in 0..max_pages {
-        let (pointers, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
+        let (fetched, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
 
-        if pointers.is_empty() {
-            return Ok(());
+        // Prepend held-back record from previous page
+        let mut records = if let Some(held) = held_back.take() {
+            let mut v = vec![held];
+            v.extend(fetched);
+            v
+        } else {
+            fetched
+        };
+
+        if records.is_empty() {
+            break;
         }
 
-        since = pointers.last().map(|r| r.said);
+        if divergence_found {
+            // Collection mode: accumulate post-divergence records
+            if let Some(ref mut v) = verifier {
+                v.verify_page(&records).await?;
+            }
+            since = records.last().map(|r| r.said);
+            post_divergence.extend(records);
+        } else {
+            // Phase 1: scan for divergence
+            if has_more || records.len() > page_size {
+                held_back = records.pop();
+            }
 
-        if let Some(ref mut v) = verifier {
-            v.verify_page(&pointers).await?;
+            if records.is_empty() {
+                if !has_more {
+                    break;
+                }
+                continue;
+            }
+
+            if let Some(ref mut v) = verifier {
+                v.verify_page(&records).await?;
+            }
+
+            // Detect divergence: two consecutive records at the same version
+            let mut divergence_idx: Option<usize> = None;
+            for i in 1..records.len() {
+                if records[i].version == records[i - 1].version {
+                    divergence_idx = Some(i - 1);
+                    break;
+                }
+            }
+
+            if let Some(div_idx) = divergence_idx {
+                let div_version = records[div_idx].version;
+                let same_version_count =
+                    records.iter().filter(|r| r.version == div_version).count();
+                if same_version_count > 2 {
+                    return Err(KelsError::InvalidKel(format!(
+                        "Generation at version {} has {} records, max 2 allowed",
+                        div_version, same_version_count
+                    )));
+                }
+
+                divergence_found = true;
+                pre_divergence = records[..div_idx].to_vec();
+                post_divergence = records[div_idx..].to_vec();
+
+                if let Some(held) = held_back.take() {
+                    since = Some(held.said);
+                    post_divergence.push(held);
+                } else {
+                    since = post_divergence.last().map(|r| r.said);
+                }
+            } else {
+                // No divergence on this page
+                sink.store_page(&records).await?;
+                since = records.last().map(|r| r.said);
+            }
         }
-
-        sink.store_page(&pointers).await?;
 
         if !has_more {
-            return Ok(());
+            break;
+        }
+
+        if let Some(ref held) = held_back {
+            since = Some(held.said);
         }
     }
 
-    Err(KelsError::InvalidKel(format!(
-        "SAD chain for {} exceeds max_pages limit ({}) — transfer incomplete",
-        prefix, max_pages,
-    )))
+    // Process final held-back record
+    if let Some(held) = held_back {
+        if divergence_found {
+            post_divergence.push(held);
+        } else {
+            if let Some(ref mut v) = verifier {
+                v.verify_page(std::slice::from_ref(&held)).await?;
+            }
+            sink.store_page(std::slice::from_ref(&held)).await?;
+        }
+    }
+
+    if !divergence_found {
+        return Ok(());
+    }
+
+    send_divergent_sad_pointers(sink, &pre_divergence, post_divergence, page_size).await
+}
+
+/// Separate post-divergence records into two branches by tracing `previous`
+/// pointers, then send to the sink in an order the remote can accept.
+///
+/// Pointer chains have no recovery/contest — divergent chains just freeze.
+/// Strategy:
+///   1. Pre-divergence + longer branch (paged, non-divergent appends)
+///   2. Fork record from shorter branch (creates divergence on remote)
+async fn send_divergent_sad_pointers(
+    sink: &(dyn PagedSadSink + Sync),
+    pre_divergence: &[SadPointer],
+    post_divergence: Vec<SadPointer>,
+    page_size: usize,
+) -> Result<(), KelsError> {
+    if post_divergence.len() < 2 {
+        return Err(KelsError::InvalidKel(
+            "Divergent chain must have at least 2 records at divergence point".to_string(),
+        ));
+    }
+
+    // Trace previous pointers to separate into two branches
+    let mut chain_a_saids = std::collections::HashSet::new();
+    let mut chain_b_saids = std::collections::HashSet::new();
+    chain_a_saids.insert(post_divergence[0].said);
+    chain_b_saids.insert(post_divergence[1].said);
+
+    for record in &post_divergence[2..] {
+        if let Some(ref prev) = record.previous {
+            if chain_a_saids.contains(prev) {
+                chain_a_saids.insert(record.said);
+            } else if chain_b_saids.contains(prev) {
+                chain_b_saids.insert(record.said);
+            }
+        }
+    }
+
+    let mut chain_a: Vec<SadPointer> = Vec::new();
+    let mut chain_b: Vec<SadPointer> = Vec::new();
+    for record in post_divergence {
+        if chain_a_saids.contains(&record.said) {
+            chain_a.push(record);
+        } else {
+            chain_b.push(record);
+        }
+    }
+
+    // Longer chain first as non-divergent appends, then fork record from shorter
+    let (longer, shorter) = if chain_a.len() >= chain_b.len() {
+        (chain_a, chain_b)
+    } else {
+        (chain_b, chain_a)
+    };
+
+    // Pre-divergence + longer chain (non-divergent appends)
+    let mut non_divergent = pre_divergence.to_vec();
+    non_divergent.extend(longer);
+    for chunk in non_divergent.chunks(page_size) {
+        sink.store_page(chunk).await?;
+    }
+
+    // Fork record from shorter chain (creates divergence)
+    if let Some(fork) = shorter.first() {
+        match sink.store_page(std::slice::from_ref(fork)).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "Deferred branch submission failed \
+                     (chain may already be divergent): {e}"
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ==================== Public API ====================
