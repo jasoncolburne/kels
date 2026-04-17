@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS sad_pointers (
     content TEXT,
     custody TEXT,                    -- SAID of custody SAD
     write_policy TEXT NOT NULL,      -- denormalized from custody for chain keying
-    checkpoint_hash TEXT,            -- Blake3 hash of secret nonce (checkpoint commitment)
-    checkpoint_nonce TEXT            -- revealed nonce from previous checkpoint
+    checkpoint_policy TEXT,          -- SAID of checkpoint policy (higher threshold than write_policy)
+    is_checkpoint BOOLEAN            -- whether this record is a checkpoint
 );
 
 CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);

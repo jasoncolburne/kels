@@ -145,12 +145,24 @@ create_group() {
 
     local prev_said="$v0_said"
 
+    # Build a checkpoint policy for this chain
+    build_checkpoint_policy "$SADSTORE_URL" "$prefix"
+    local chain_cp_said="$CHECKPOINT_POLICY_SAID"
+
     for i in $(seq 1 "$n"); do
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
-        vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-            --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
-            '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp}')
+        if [ "$i" -eq 1 ]; then
+            # v1: first checkpoint (declares checkpoint_policy + is_checkpoint)
+            vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
+                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
+                --arg cp "$chain_cp_said" \
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
+        else
+            vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
+                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp}')
+        fi
         local vi_said
         vi_said=$(compute_said "$vi_json")
         vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')

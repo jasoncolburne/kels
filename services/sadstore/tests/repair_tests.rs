@@ -180,8 +180,8 @@ fn build_replacement(
         )),
         custody: None,
         write_policy: kel_digest,
-        checkpoint_hash: None,
-        checkpoint_nonce: None,
+        checkpoint_policy: None,
+        is_checkpoint: None,
     };
     pointer.derive_said().unwrap();
     pointers.push(pointer.clone());

@@ -155,11 +155,11 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
-    /// Add a first checkpoint to a pointer (no reveal, just commitment).
+    /// Add a first checkpoint to a pointer (sets checkpoint_policy + is_checkpoint).
     fn add_first_checkpoint(pointer: &mut SadPointer) {
-        let nonce = cesr::Nonce256::generate();
-        let hash = kels_core::compute_checkpoint_hash(&nonce);
-        pointer.checkpoint_hash = Some(hash);
+        let cp_policy = test_policy("checkpoint");
+        pointer.checkpoint_policy = Some(cp_policy.said);
+        pointer.is_checkpoint = Some(true);
     }
 
     #[tokio::test]
@@ -196,17 +196,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_rejects_wrong_topic() {
-        // Create a non-identity chain pointer with checkpoint and verify it
+        // Create a non-identity chain pointer with checkpoint_policy and verify it
         let policy = test_policy("test");
-        let nonce = cesr::Nonce256::generate();
-        let hash = kels_core::compute_checkpoint_hash(&nonce);
+        let cp_policy = test_policy("checkpoint");
         let v0 = SadPointer::create(
             "kels/exchange/v1/keys/mlkem".to_string(),
             None,
             None,
             policy.said,
-            Some(hash),
-            None,
+            Some(cp_policy.said),
+            Some(true),
         )
         .unwrap();
 

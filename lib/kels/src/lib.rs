@@ -106,11 +106,10 @@ pub use types::{
     SadPointerRepairPage, SadPointerRepairRecord, SadPointerVerification, SadRepairPageRequest,
     SadRepairsRequest, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest,
     StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, completed_verification,
-    compute_approval_threshold, compute_checkpoint_hash, compute_rotation_hash,
-    compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer, hash_effective_said,
-    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
-    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
-    verify_sad_pointer,
+    compute_approval_threshold, compute_rotation_hash, compute_sad_pointer_prefix,
+    forward_key_events, forward_sad_pointer, hash_effective_said, parse_and_validate_custody,
+    single_signer, truncate_incomplete_generation, validate_timestamp, verify_key_events,
+    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

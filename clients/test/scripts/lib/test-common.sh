@@ -100,6 +100,21 @@ compute_prefix() {
     cesr_blake3 "$with_placeholders"
 }
 
+# Build a checkpoint policy and store it as a SAD object.
+# Sets CHECKPOINT_POLICY_SAID for use in pointer JSON.
+# Usage: build_checkpoint_policy "$SAD_URL" "$KEL_PREFIX"
+build_checkpoint_policy() {
+    local sad_url="$1"
+    local kel_prefix="$2"
+    local cp_json
+    cp_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
+        '{said: $p, expression: $expr}')
+    CHECKPOINT_POLICY_SAID=$(compute_said "$cp_json")
+    cp_json=$(echo "$cp_json" | jq -c --arg s "$CHECKPOINT_POLICY_SAID" '.said = $s')
+    curl -s -o /dev/null -X POST "${sad_url}/api/v1/sad" \
+        -H 'Content-Type: application/json' -d "$cp_json"
+}
+
 # --- Setup helpers ---
 
 init_temp_dir() {
