@@ -19,7 +19,7 @@ export TRUSTED_REGISTRY_MEMBERS
 
 .PHONY: all build check clean clean-docker clean-test-containers clippy clippy-fix coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-grow-federation test-shrink-federation test-peer-lifecycle test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
 
-all: fmt-check deny clippy test build
+all: fmt-check deny check clippy test build
 
 benchmark: clean-garden
 	scripts/coredns.sh reset
