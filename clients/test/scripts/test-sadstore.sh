@@ -16,6 +16,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
+FEDERATED="${FEDERATED:-true}"
 PROPAGATION_DELAY="${PROPAGATION_DELAY:-5}"
 CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
@@ -38,8 +39,11 @@ echo "========================================="
 echo "SADStore Integration Test Suite"
 echo "========================================="
 echo "Node-A SADStore: $NODE_A_SAD_URL"
-echo "Node-B SADStore: $NODE_B_SAD_URL"
+if [ "$FEDERATED" = "true" ]; then
+    echo "Node-B SADStore: $NODE_B_SAD_URL"
+fi
 echo "Node-A KELS:     $NODE_A_KELS_URL"
+echo "Federated:       ${FEDERATED}"
 echo "Propagation:     ${PROPAGATION_DELAY}s"
 echo "========================================="
 echo ""
@@ -47,7 +51,9 @@ echo ""
 # Wait for services
 echo "Waiting for services..."
 wait_for_health "$NODE_A_SAD_URL" "Node-A SADStore" || exit 1
-wait_for_health "$NODE_B_SAD_URL" "Node-B SADStore" || exit 1
+if [ "$FEDERATED" = "true" ]; then
+    wait_for_health "$NODE_B_SAD_URL" "Node-B SADStore" || exit 1
+fi
 wait_for_health "$NODE_A_KELS_URL" "Node-A KELS" || exit 1
 echo ""
 
@@ -288,8 +294,10 @@ else
     run_test "Chain fetched via CLI (sad pointer) with 2 pointers" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
-    run_test "Chain propagated to node-b" \
-        wait_for_chain_propagation "$CHAIN_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+    if [ "$FEDERATED" = "true" ]; then
+        run_test "Chain propagated to node-b" \
+            wait_for_chain_propagation "$CHAIN_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+    fi
 fi
 
 echo ""
@@ -322,16 +330,20 @@ if [ -n "$SAD_SAID" ]; then
     GET_FIELD=$(echo "$GET_OUTPUT" | jq -r '.testField // empty' 2>/dev/null)
     run_test "Retrieved object content matches" [ "$GET_FIELD" = "$UNIQUE_VALUE" ]
 
-    # Wait for gossip propagation to node-b
-    run_test "Object propagated to node-b" \
-        wait_for_sad_object_propagation "$SAD_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+    if [ "$FEDERATED" = "true" ]; then
+        # Wait for gossip propagation to node-b
+        run_test "Object propagated to node-b" \
+            wait_for_sad_object_propagation "$SAD_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 
-    # GET from node-b via CLI
-    GET_B_SAID=$(kels-cli --sadstore-url "$NODE_B_SAD_URL" sad get "$SAD_SAID" 2>/dev/null | jq -r '.said // empty' 2>/dev/null)
-    run_test "Object retrievable from node-b via CLI (sad get)" [ "$GET_B_SAID" = "$SAD_SAID" ]
+        # GET from node-b via CLI
+        GET_B_SAID=$(kels-cli --sadstore-url "$NODE_B_SAD_URL" sad get "$SAD_SAID" 2>/dev/null | jq -r '.said // empty' 2>/dev/null)
+        run_test "Object retrievable from node-b via CLI (sad get)" [ "$GET_B_SAID" = "$SAD_SAID" ]
+    fi
 fi
 
 echo ""
+
+if [ "$FEDERATED" = "true" ]; then
 
 # ========================================
 # Scenario 7: Divergence Detection + Repair
@@ -468,6 +480,8 @@ else
 fi
 
 echo ""
+
+fi # FEDERATED
 
 print_summary "SADStore Test Summary"
 exit_with_result

@@ -272,7 +272,10 @@ deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-ide
 test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-sadstore.sh
 	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-exchange.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
 test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-peer-lifecycle test-sad-consistency test-kel-consistency
+
+both: clean-garden test-node test-federation
