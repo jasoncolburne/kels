@@ -1352,7 +1352,13 @@ pub async fn submit_sad_pointer(
             }
 
             match state.repo.sad_pointers.save_batch(&mut tx, &records).await {
-                Ok(count) => {
+                Ok(result) => {
+                    let count = match &result {
+                        crate::repository::SaveBatchResult::Accepted { new_count } => *new_count,
+                        crate::repository::SaveBatchResult::DivergenceCreated { new_count } => {
+                            *new_count
+                        }
+                    };
                     new_record_count = count;
                     should_publish = count > 0;
                 }

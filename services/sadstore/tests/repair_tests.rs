@@ -112,13 +112,16 @@ async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u3
     let prefix = records[0].prefix;
     let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
     tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
-    let count = repo
+    let result = repo
         .sad_pointers
         .save_batch(&mut tx, records)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    count
+    match result {
+        kels_sadstore::repository::SaveBatchResult::Accepted { new_count } => new_count,
+        kels_sadstore::repository::SaveBatchResult::DivergenceCreated { new_count } => new_count,
+    }
 }
 
 /// Run `truncate_and_replace` in a self-managed transaction with advisory lock.

@@ -8,6 +8,16 @@ use verifiable_storage::{
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
+/// Result of a `save_batch` operation on a pointer chain.
+#[derive(Debug)]
+pub enum SaveBatchResult {
+    /// Records were accepted, chain remains non-divergent.
+    Accepted { new_count: u32 },
+    /// A version collision was detected — the forking record was inserted and
+    /// the chain is now divergent (frozen). Remaining batch records were discarded.
+    DivergenceCreated { new_count: u32 },
+}
+
 #[derive(Stored)]
 #[stored(item_type = SadPointer, table = "sad_pointers", chained = true)]
 pub struct SadPointerRepository {
@@ -18,14 +28,18 @@ impl SadPointerRepository {
     /// Store a batch of pointer records within a caller-managed transaction.
     ///
     /// Caller must hold an advisory lock on the chain prefix.
-    /// Returns the number of new records actually inserted.
+    ///
+    /// If the chain is already divergent, returns an error. If a record in the
+    /// batch collides at the same version as an existing record (creating
+    /// divergence), inserts only up to and including the forking record, then
+    /// discards the rest. The chain freezes immediately.
     pub async fn save_batch<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
         records: &[SadPointer],
-    ) -> Result<u32, StorageError> {
+    ) -> Result<SaveBatchResult, StorageError> {
         if records.is_empty() {
-            return Ok(0);
+            return Ok(SaveBatchResult::Accepted { new_count: 0 });
         }
 
         let prefix = records[0].prefix;
@@ -45,7 +59,7 @@ impl SadPointerRepository {
             ));
         }
 
-        // Insert records, skipping duplicates
+        // Collect existing SAIDs for dedup
         let existing_saids: std::collections::HashSet<cesr::Digest256> = {
             let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
             let query =
@@ -63,11 +77,26 @@ impl SadPointerRepository {
             if existing_saids.contains(&record.said) {
                 continue;
             }
+
+            // Check for version collision: does a record already exist at this
+            // version with a different SAID? If so, this creates divergence.
+            let collision_query =
+                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    .eq("prefix", &prefix)
+                    .eq("version", record.version);
+            let existing_at_version: Vec<SadPointer> = tx.fetch(collision_query).await?;
+            if !existing_at_version.is_empty() {
+                // Version collision — insert this forking record then freeze
+                self.insert_in(tx, record.clone()).await?;
+                count += 1;
+                return Ok(SaveBatchResult::DivergenceCreated { new_count: count });
+            }
+
             self.insert_in(tx, record.clone()).await?;
             count += 1;
         }
 
-        Ok(count)
+        Ok(SaveBatchResult::Accepted { new_count: count })
     }
 
     /// Truncate records at and after the first replacement's version and insert replacements.
