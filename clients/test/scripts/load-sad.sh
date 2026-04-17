@@ -196,7 +196,7 @@ create_group() {
     rm -rf "$tmpdir"
 }
 
-export -f create_group cesr_blake3 compute_said compute_prefix
+export -f create_group cesr_blake3 compute_said compute_prefix build_checkpoint_policy
 export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)

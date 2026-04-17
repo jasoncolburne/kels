@@ -249,6 +249,9 @@ async fn transfer_sad_pointer<'a>(
                 post_divergence = records[div_idx..].to_vec();
 
                 if let Some(held) = held_back.take() {
+                    if let Some(ref mut v) = verifier {
+                        v.verify_page(std::slice::from_ref(&held)).await?;
+                    }
                     since = Some(held.said);
                     post_divergence.push(held);
                 } else {
@@ -348,7 +351,9 @@ async fn send_divergent_sad_pointers(
         sink.store_page(chunk).await?;
     }
 
-    // Fork record from shorter chain (creates divergence)
+    // Fork record from shorter chain (creates divergence).
+    // The shorter branch is always exactly one record — the batch truncation
+    // invariant prevents extensions past divergence.
     if let Some(fork) = shorter.first() {
         sink.store_page(std::slice::from_ref(fork)).await?;
     }

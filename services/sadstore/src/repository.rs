@@ -113,6 +113,7 @@ impl SadPointerRepository {
             }
 
             self.insert_in(tx, record.clone()).await?;
+            occupied_versions.insert(record.version);
             count += 1;
         }
 
