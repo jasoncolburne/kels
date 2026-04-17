@@ -390,10 +390,10 @@ else
 
     # --- Build two conflicting v1 pointers ---
 
-    # v1-a: submitted to node-a
+    # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp, checkpointPolicy: $cp}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
