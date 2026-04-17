@@ -395,3 +395,138 @@ pub async fn forward_sad_pointer(
 ) -> Result<(), KelsError> {
     transfer_sad_pointer(prefix, source, sink, None, page_size, max_pages, since).await
 }
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use verifiable_storage::Chained;
+
+    use super::*;
+
+    fn test_digest(label: &[u8]) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label)
+    }
+
+    /// In-memory source that serves records in pages, simulating page-boundary splits.
+    struct VecSadSource {
+        records: Vec<SadPointer>,
+        page_size: usize,
+    }
+
+    #[async_trait]
+    impl PagedSadSource for VecSadSource {
+        async fn fetch_page(
+            &self,
+            _prefix: &cesr::Digest256,
+            since: Option<&cesr::Digest256>,
+            limit: usize,
+        ) -> Result<(Vec<SadPointer>, bool), KelsError> {
+            let limit = limit.min(self.page_size);
+            let start = if let Some(since_said) = since {
+                self.records
+                    .iter()
+                    .position(|r| r.said == *since_said)
+                    .map(|i| i + 1)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let end = (start + limit).min(self.records.len());
+            let page = self.records[start..end].to_vec();
+            let has_more = end < self.records.len();
+            Ok((page, has_more))
+        }
+    }
+
+    /// Collecting sink that records all stored pages.
+    struct CollectingSink {
+        pages: tokio::sync::Mutex<Vec<Vec<SadPointer>>>,
+    }
+
+    impl CollectingSink {
+        fn new() -> Self {
+            Self {
+                pages: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn all_records(&self) -> Vec<SadPointer> {
+            self.pages.lock().await.iter().flatten().cloned().collect()
+        }
+    }
+
+    #[async_trait]
+    impl PagedSadSink for CollectingSink {
+        async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError> {
+            self.pages.lock().await.push(pointers.to_vec());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_divergence_detection_at_page_boundary() {
+        let wp = test_digest(b"write-policy");
+        let cp = test_digest(b"checkpoint-policy");
+
+        // Build a chain: v0, v1 (checkpoint), then two records at v2 (divergence)
+        let v0 = SadPointer::create(
+            "kels/test".to_string(),
+            None,
+            None,
+            wp,
+            Some(cp),
+            Some(true),
+        )
+        .unwrap();
+
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.increment().unwrap();
+
+        // Two conflicting v2 records (same previous = v1.said)
+        let mut v2_a = v1.clone();
+        v2_a.content = Some(test_digest(b"content2a"));
+        v2_a.increment().unwrap();
+
+        let mut v2_b = v1.clone();
+        v2_b.content = Some(test_digest(b"content2b"));
+        v2_b.increment().unwrap();
+
+        let prefix = v0.prefix;
+
+        // page_size=2: page 1 = [v0, v1], page 2 = [v2_a, v2_b]
+        // Divergence is within page 2 — no boundary split.
+        // Now test page_size=3: page 1 = [v0, v1, v2_a], held-back = v2_a,
+        // page 2 starts with v2_b which has same version → divergence at boundary.
+        let source = VecSadSource {
+            records: vec![v0, v1, v2_a.clone(), v2_b.clone()],
+            page_size: 3,
+        };
+        let sink = CollectingSink::new();
+
+        forward_sad_pointer(&prefix, &source, &sink, 3, 100, None)
+            .await
+            .unwrap();
+
+        let stored = sink.all_records().await;
+
+        // All 4 records should be forwarded (pre-divergence + both branches)
+        assert_eq!(
+            stored.len(),
+            4,
+            "Expected 4 records (including both divergent), got {}",
+            stored.len()
+        );
+
+        // Both v2 records present
+        let saids: std::collections::HashSet<_> = stored.iter().map(|r| r.said).collect();
+        assert!(
+            saids.contains(&v2_a.said),
+            "v2_a missing from forwarded records"
+        );
+        assert!(
+            saids.contains(&v2_b.said),
+            "v2_b missing from forwarded records"
+        );
+    }
+}

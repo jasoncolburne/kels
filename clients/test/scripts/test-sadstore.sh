@@ -262,47 +262,30 @@ else
     # Verify our prefix matches the CLI's
     run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
 
-    # Anchor v0 SAID in the KEL (required for write_policy authorization)
+    # --- Build v1 pointer (declares checkpoint_policy) ---
+    build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX"
+    V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
+        --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, writePolicy: $wp, checkpointPolicy: $cp}')
+    V1_SAID=$(compute_said "$V1_JSON")
+    V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
+
+    # Anchor both SAIDs in the KEL (required for write_policy authorization)
     run_test "v0 SAID anchored in KEL" \
         kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$KEL_PREFIX" --said "$V0_SAID"
+    run_test "v1 SAID anchored in KEL" \
+        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$KEL_PREFIX" --said "$V1_SAID"
 
-    # Build the submission JSON and write to file
-    echo "[$V0_JSON]" > "$TEMP_DIR/v0-submit.json"
+    # Submit [v0, v1] as inception batch (v1 declares checkpoint_policy)
+    echo "[$V0_JSON,$V1_JSON]" > "$TEMP_DIR/inception-submit.json"
 
-    # Submit via kels-cli sad submit
-    run_test "v0 submitted via CLI (sad submit)" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v0-submit.json"
+    run_test "Inception batch [v0, v1] submitted via CLI (sad submit)" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/inception-submit.json"
 
     # Fetch the chain via kels-cli sad pointer
     CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
     CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.pointers | length' 2>/dev/null)
-    run_test "Chain fetched via CLI (sad pointer) with 1 pointer" [ "$CHAIN_LEN" = "1" ]
-
-    # Verify the fetched pointer's SAID matches
-    FETCHED_SAID=$(echo "$CHAIN_OUTPUT" | jq -r '.pointers[0].said' 2>/dev/null)
-    run_test "Fetched pointer SAID matches v0" [ "$FETCHED_SAID" = "$V0_SAID" ]
-
-    # --- Build v1 pointer (with first checkpoint) ---
-    build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX"
-    V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
-        --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
-    V1_SAID=$(compute_said "$V1_JSON")
-    V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
-
-    # Anchor v1 SAID in the KEL
-    run_test "v1 SAID anchored in KEL" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$KEL_PREFIX" --said "$V1_SAID"
-
-    echo "[$V1_JSON]" > "$TEMP_DIR/v1-submit.json"
-
-    run_test "v1 submitted via CLI (sad submit)" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/v1-submit.json"
-
-    # Verify chain now has 2 pointers
-    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
-    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.pointers | length' 2>/dev/null)
-    run_test "Chain has 2 pointers after v1 submit" [ "$CHAIN_LEN" = "2" ]
+    run_test "Chain fetched via CLI (sad pointer) with 2 pointers" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
     run_test "Chain propagated to node-b" \

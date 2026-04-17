@@ -1,5 +1,7 @@
 //! PostgreSQL Repository for KELS SADStore
 
+use std::collections::HashSet;
+
 use kels_core::{Custody, SadPointer, SadPointerRepair, SadPointerRepairRecord};
 use kels_policy::Policy;
 use verifiable_storage::{
@@ -63,7 +65,7 @@ impl SadPointerRepository {
         }
 
         // Collect existing SAIDs for dedup
-        let existing_saids: std::collections::HashSet<cesr::Digest256> = {
+        let existing_saids: HashSet<cesr::Digest256> = {
             let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -75,20 +77,22 @@ impl SadPointerRepository {
                 .collect()
         };
 
-        // Collect occupied versions in one query: fetch existing records in the
-        // batch's version range, extract their versions into a HashSet.
-        let occupied_versions: std::collections::HashSet<u64> = {
-            let min_version = records.iter().map(|r| r.version).min().unwrap_or(0);
-            let max_version = records.iter().map(|r| r.version).max().unwrap_or(0);
-            let query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .eq("prefix", &prefix)
-                    .gte("version", min_version)
-                    .lte("version", max_version);
-            tx.fetch(query)
+        // Collect occupied versions in one query: fetch only the version column
+        // for existing records at the batch's versions.
+        let occupied_versions: HashSet<u64> = {
+            let batch_versions: Vec<i64> = records
+                .iter()
+                .map(|r| r.version as i64)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let query = ColumnQuery::new(Self::TABLE_NAME, "version")
+                .eq("prefix", &prefix)
+                .r#in("version", batch_versions);
+            tx.fetch_column_i64(query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.version)
+                .map(|v| v as u64)
                 .collect()
         };
 
@@ -142,7 +146,7 @@ impl SadPointerRepository {
             let existing_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
-            let existing: std::collections::HashSet<cesr::Digest256> = tx
+            let existing: HashSet<cesr::Digest256> = tx
                 .fetch(existing_query)
                 .await?
                 .into_iter()
@@ -463,7 +467,7 @@ impl SadPointerRepository {
             .group_by("prefix")
             .group_by("version")
             .having_count_gt(1);
-        let divergent_prefixes: std::collections::HashSet<String> = self
+        let divergent_prefixes: HashSet<String> = self
             .pool
             .fetch_column(divergent_query)
             .await?

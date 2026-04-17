@@ -103,6 +103,8 @@ compute_prefix() {
 # Build a checkpoint policy and store it as a SAD object.
 # Sets CHECKPOINT_POLICY_SAID for use in pointer JSON.
 # Usage: build_checkpoint_policy "$SAD_URL" "$KEL_PREFIX"
+# TODO: Production checkpoint policies should use higher thresholds than write_policy
+# (e.g., threshold(3, [...]) vs threshold(2, [...])). Single-endorser is fine for tests.
 build_checkpoint_policy() {
     local sad_url="$1"
     local kel_prefix="$2"

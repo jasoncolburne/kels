@@ -167,12 +167,8 @@ impl<'a> SadChainVerifier<'a> {
                         "Checkpoint record at v0 has is_checkpoint but no checkpoint_policy".into(),
                     ));
                 }
-                // v0 checkpoint: evaluate against checkpoint_policy
-                if let Some(ref cp) = checkpoint_policy
-                    && !self.checker.satisfies(record, cp).await?
-                {
-                    self.policy_satisfied = false;
-                }
+                // v0 checkpoint: first declaration, just record the policy.
+                // No evaluation — there's no prior commitment to verify against.
                 0
             } else {
                 0
@@ -236,20 +232,22 @@ impl<'a> SadChainVerifier<'a> {
             let (checkpoint_policy, records_since_checkpoint) = if record.is_checkpoint
                 == Some(true)
             {
-                // Checkpoint record: must have a checkpoint_policy to evaluate against
+                // Checkpoint record: evaluate against tracked checkpoint_policy
                 let eval_policy = if let Some(ref tracked) = branch.checkpoint_policy {
-                    // Policy evolution: if record changes checkpoint_policy,
-                    // evaluate against the PREVIOUS (tracked) policy
+                    // Evaluate against the tracked (previous) checkpoint_policy
                     if !self.checker.satisfies(record, tracked).await? {
-                        self.policy_satisfied = false;
+                        // Policy evolution with failed evaluation is a structural error —
+                        // the higher authority did not approve this checkpoint.
+                        return Err(KelsError::VerificationFailed(format!(
+                            "SAD record {} checkpoint policy not satisfied",
+                            record.said,
+                        )));
                     }
                     // Use the new policy going forward (or keep tracked if unchanged)
                     record.checkpoint_policy.or(Some(*tracked))
                 } else if let Some(ref cp) = record.checkpoint_policy {
-                    // First checkpoint declaration on this branch
-                    if !self.checker.satisfies(record, cp).await? {
-                        self.policy_satisfied = false;
-                    }
+                    // First checkpoint declaration — just record the policy.
+                    // No evaluation: there's no prior commitment to verify against.
                     Some(*cp)
                 } else {
                     return Err(KelsError::VerificationFailed(format!(
@@ -567,6 +565,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
+        v1.is_checkpoint = None;
         v1.increment().unwrap();
 
         let checker = RejectingChecker;
@@ -582,6 +581,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.is_checkpoint = None;
         v1.increment().unwrap();
 
         let checker = RejectingChecker;

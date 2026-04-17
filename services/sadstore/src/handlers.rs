@@ -1263,6 +1263,17 @@ pub async fn submit_sad_pointer(
         }
 
         if is_repair {
+            // Repair records must checkpoint — an attacker who can only satisfy
+            // write_policy cannot repair (checkpoint_policy is a higher bar).
+            if !records[0].is_checkpoint.unwrap_or(false) {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "first repair record must be a checkpoint",
+                )
+                    .into_response();
+            }
+
             // Repair path: truncate/archive first, then verify remaining + repair records.
             // truncate_and_replace does the archival within this transaction.
             if let Err(e) = state

@@ -44,6 +44,7 @@ pub struct SadPointerEffectiveSaidRequest {
 /// Response from pointer chain submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[must_use = "SubmitPointersResponse.applied must be checked — records may be rejected"]
 pub struct SubmitPointersResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
