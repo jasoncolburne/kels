@@ -224,6 +224,8 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     let mut next = tip.clone();
     next.content = Some(publication.said);
+    next.checkpoint_policy = None;
+    next.is_checkpoint = None;
     next.increment().context("Failed to increment pointer")?;
 
     // Anchor pointer SAID in the KEL (required for write_policy authorization)

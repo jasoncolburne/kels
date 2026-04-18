@@ -404,8 +404,8 @@ else
 
     # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp, checkpointPolicy: $cp}')
+        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
@@ -417,8 +417,8 @@ else
 
     # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by checkpoint_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp, checkpointPolicy: $cp}')
+        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 

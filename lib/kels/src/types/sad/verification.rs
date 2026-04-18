@@ -259,16 +259,13 @@ impl<'a> SadChainVerifier<'a> {
                 (eval_policy, 0)
             } else {
                 // Non-checkpoint record
-                let cp = if let Some(ref record_cp) = record.checkpoint_policy {
-                    if let Some(ref tracked) = branch.checkpoint_policy {
+                let cp = if record.checkpoint_policy.is_some() {
+                    if branch.checkpoint_policy.is_some() {
                         // Evolution: changing an established checkpoint_policy requires a checkpoint
-                        if tracked != record_cp {
-                            return Err(KelsError::VerificationFailed(format!(
-                                "SAD record {} changes checkpoint_policy without is_checkpoint",
-                                record.said,
-                            )));
-                        }
-                        branch.checkpoint_policy
+                        return Err(KelsError::VerificationFailed(format!(
+                            "SAD record {} sets checkpoint_policy without is_checkpoint",
+                            record.said,
+                        )));
                     } else {
                         // First declaration — just record the policy, no evaluation needed
                         record.checkpoint_policy
@@ -468,6 +465,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -491,6 +489,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
         v1.version = 5;
         v1.derive_said().unwrap();
@@ -512,6 +511,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
         let mut v2 = v1.clone();
         v2.content = Some(test_digest(b"content2"));
@@ -532,6 +532,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -549,6 +550,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -566,6 +568,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
+        v1.checkpoint_policy = None;
         v1.is_checkpoint = None;
         v1.increment().unwrap();
 
@@ -582,6 +585,7 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.is_checkpoint = None;
         v1.increment().unwrap();
 
@@ -679,6 +683,7 @@ mod tests {
         records.push(current.clone());
 
         // v2..v63: 62 more non-checkpoint records (total 63 non-checkpoint: v1..v63)
+        current.checkpoint_policy = None; // clear after declaration — can't carry forward
         for i in 2..=63 {
             current.content = Some(test_digest(format!("content_{}", i).as_bytes()));
             current.increment().unwrap();
@@ -732,7 +737,7 @@ mod tests {
         let err = verifier.finish().await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("changes checkpoint_policy without is_checkpoint"),
+                .contains("sets checkpoint_policy without is_checkpoint"),
             "Expected policy change error, got: {}",
             err
         );
