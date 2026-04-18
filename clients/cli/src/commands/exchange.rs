@@ -118,11 +118,14 @@ pub(crate) async fn cmd_exchange_publish_key(
         None,
         None,
         write_policy,
+        None,
+        None,
     )
     .context("Failed to create inception pointer")?;
 
     let mut v1 = v0.clone();
     v1.content = Some(publication.said);
+    v1.checkpoint_policy = Some(write_policy); // first declaration, not evaluated
     v1.increment().context("Failed to increment pointer")?;
 
     // Anchor pointer SAIDs in the KEL (required for write_policy authorization)
@@ -221,6 +224,8 @@ pub(crate) async fn cmd_exchange_rotate_key(
 
     let mut next = tip.clone();
     next.content = Some(publication.said);
+    next.checkpoint_policy = None;
+    next.is_checkpoint = None;
     next.increment().context("Failed to increment pointer")?;
 
     // Anchor pointer SAID in the KEL (required for write_policy authorization)

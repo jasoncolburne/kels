@@ -100,6 +100,25 @@ compute_prefix() {
     cesr_blake3 "$with_placeholders"
 }
 
+# Build a checkpoint policy and store it as a SAD object.
+# Echoes the policy SAID to stdout.
+# Usage: CP_SAID=$(build_checkpoint_policy "$SAD_URL" "$KEL_PREFIX")
+# TODO: Production checkpoint policies should use higher thresholds than write_policy
+# (e.g., threshold(3, [...]) vs threshold(2, [...])). Single-endorser is fine for tests.
+build_checkpoint_policy() {
+    local sad_url="$1"
+    local kel_prefix="$2"
+    local cp_json
+    cp_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
+        '{said: $p, expression: $expr}')
+    local cp_said
+    cp_said=$(compute_said "$cp_json")
+    cp_json=$(echo "$cp_json" | jq -c --arg s "$cp_said" '.said = $s')
+    curl -s -o /dev/null -X POST "${sad_url}/api/v1/sad" \
+        -H 'Content-Type: application/json' -d "$cp_json"
+    echo "$cp_said"
+}
+
 # --- Setup helpers ---
 
 init_temp_dir() {

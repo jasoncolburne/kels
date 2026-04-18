@@ -19,7 +19,7 @@ export TRUSTED_REGISTRY_MEMBERS
 
 .PHONY: all build check clean clean-docker clean-test-containers clippy clippy-fix coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-grow-federation test-shrink-federation test-peer-lifecycle test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
 
-all: fmt-check deny clippy test build
+all: fmt-check deny check clippy test build
 
 benchmark: clean-garden
 	scripts/coredns.sh reset
@@ -206,7 +206,7 @@ seed-sads:
 	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 50
 
 wait-for-gossip:
-	scripts/wait-for-gossip.sh 120 node-a node-b node-c node-d node-e node-f
+	scripts/wait-for-gossip.sh 180 node-a node-b node-c node-d node-e node-f
 
 test-rotation:
 	# Run scheduled-rotate 4 times on registry-a identity
@@ -272,7 +272,11 @@ deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-ide
 test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
+	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-sadstore.sh
 	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-exchange.sh
+	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-creds.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
 test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-peer-lifecycle test-sad-consistency test-kel-consistency
+
+test-all-deployments: clean-garden test-node test-federation

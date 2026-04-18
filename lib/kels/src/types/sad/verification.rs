@@ -43,6 +43,11 @@ pub trait PolicyChecker: Send + Sync {
 #[derive(Debug, Clone)]
 struct SadBranchState {
     tip: SadPointer,
+    /// The checkpoint policy SAID tracked on this branch.
+    /// `None` until the first checkpoint_policy is declared.
+    checkpoint_policy: Option<cesr::Digest256>,
+    /// Number of records since the last checkpoint (or since chain start).
+    records_since_checkpoint: usize,
 }
 
 /// Streaming structural + policy verifier for SAD pointer chains.
@@ -67,6 +72,9 @@ pub struct SadChainVerifier<'a> {
     current_generation_version: Option<u64>,
     saw_any_records: bool,
     policy_satisfied: bool,
+    /// The version of the most recent evaluated checkpoint across all branches.
+    /// For divergent chains, this is the minimum across branches (weakest seal).
+    last_checkpoint_version: Option<u64>,
     checker: &'a dyn PolicyChecker,
 }
 
@@ -80,6 +88,7 @@ impl<'a> SadChainVerifier<'a> {
             current_generation_version: None,
             saw_any_records: false,
             policy_satisfied: true,
+            last_checkpoint_version: None,
             checker,
         }
     }
@@ -154,10 +163,22 @@ impl<'a> SadChainVerifier<'a> {
                 self.policy_satisfied = false;
             }
 
+            // Checkpoint policy tracking for v0 — declaration only, no is_checkpoint
+            if record.is_checkpoint == Some(true) {
+                return Err(KelsError::VerificationFailed(
+                    "v0 cannot set is_checkpoint — first declaration is not an evaluated checkpoint"
+                        .into(),
+                ));
+            }
+            let checkpoint_policy = record.checkpoint_policy;
+            let records_since_checkpoint = 0;
+
             self.branches.insert(
                 record.said,
                 SadBranchState {
                     tip: record.clone(),
+                    checkpoint_policy,
+                    records_since_checkpoint,
                 },
             );
             return Ok(());
@@ -206,10 +227,71 @@ impl<'a> SadChainVerifier<'a> {
                 self.policy_satisfied = false;
             }
 
+            // Checkpoint policy enforcement
+            let (checkpoint_policy, records_since_checkpoint) = if record.is_checkpoint
+                == Some(true)
+            {
+                // Checkpoint record: evaluate against tracked checkpoint_policy
+                let eval_policy = if let Some(ref tracked) = branch.checkpoint_policy {
+                    // Evaluate against the tracked (previous) checkpoint_policy
+                    if !self.checker.satisfies(record, tracked).await? {
+                        // Policy evolution with failed evaluation is a structural error —
+                        // the higher authority did not approve this checkpoint.
+                        return Err(KelsError::VerificationFailed(format!(
+                            "SAD record {} checkpoint policy not satisfied",
+                            record.said,
+                        )));
+                    }
+                    // Use the new policy going forward (or keep tracked if unchanged)
+                    // Track the checkpoint version as a seal
+                    self.last_checkpoint_version = Some(match self.last_checkpoint_version {
+                        Some(existing) => existing.min(record.version),
+                        None => record.version,
+                    });
+                    record.checkpoint_policy.or(Some(*tracked))
+                } else {
+                    // is_checkpoint with no established checkpoint_policy — can't evaluate
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SAD record {} has is_checkpoint but no checkpoint_policy established",
+                        record.said,
+                    )));
+                };
+                (eval_policy, 0)
+            } else {
+                // Non-checkpoint record
+                let cp = if record.checkpoint_policy.is_some() {
+                    if branch.checkpoint_policy.is_some() {
+                        // Evolution: changing an established checkpoint_policy requires a checkpoint
+                        return Err(KelsError::VerificationFailed(format!(
+                            "SAD record {} sets checkpoint_policy without is_checkpoint",
+                            record.said,
+                        )));
+                    } else {
+                        // First declaration — just record the policy, no evaluation needed
+                        record.checkpoint_policy
+                    }
+                } else {
+                    branch.checkpoint_policy
+                };
+
+                let count = branch.records_since_checkpoint + 1;
+                if count > crate::MAX_NON_CHECKPOINT_RECORDS {
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SAD record {} exceeds checkpoint bound ({} non-checkpoint records, max {})",
+                        record.said,
+                        count,
+                        crate::MAX_NON_CHECKPOINT_RECORDS,
+                    )));
+                }
+                (cp, count)
+            };
+
             new_branches.insert(
                 record.said,
                 SadBranchState {
                     tip: record.clone(),
+                    checkpoint_policy,
+                    records_since_checkpoint,
                 },
             );
         }
@@ -264,6 +346,17 @@ impl<'a> SadChainVerifier<'a> {
             ));
         }
 
+        // Global invariant: at least one branch must have a checkpoint policy established
+        if !self
+            .branches
+            .values()
+            .any(|b| b.checkpoint_policy.is_some())
+        {
+            return Err(KelsError::VerificationFailed(
+                "SAD chain has no checkpoint_policy — at least one checkpoint is required".into(),
+            ));
+        }
+
         let tip = self
             .branches
             .into_values()
@@ -274,6 +367,7 @@ impl<'a> SadChainVerifier<'a> {
         Ok(super::pointer::SadPointerVerification::new(
             tip,
             self.policy_satisfied,
+            self.last_checkpoint_version,
         ))
     }
 }
@@ -288,6 +382,46 @@ mod tests {
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
+    }
+
+    /// Create a v0 pointer with checkpoint_policy declared (no is_checkpoint).
+    fn create_v0_with_checkpoint(wp: cesr::Digest256) -> SadPointer {
+        let cp = test_digest(b"checkpoint-policy");
+        SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            Some(cp),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Create a v0 pointer without checkpoint (prefix stays deterministic).
+    fn create_v0_no_checkpoint(wp: cesr::Digest256) -> SadPointer {
+        SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Declare checkpoint_policy on a pointer and increment (declaration only, no is_checkpoint).
+    fn add_checkpoint_declaration(pointer: &mut SadPointer) {
+        let cp = test_digest(b"checkpoint-policy");
+        pointer.checkpoint_policy = Some(cp);
+        pointer.increment().unwrap();
+    }
+
+    /// Set checkpoint fields on a pointer and increment it (subsequent checkpoint).
+    fn add_checkpoint(pointer: &mut SadPointer) {
+        pointer.is_checkpoint = Some(true);
+        pointer.increment().unwrap();
     }
 
     struct AlwaysPassChecker;
@@ -323,13 +457,15 @@ mod tests {
         }
     }
 
+    // ==================== Original tests (updated with checkpoints) ====================
+
     #[tokio::test]
     async fn test_sad_chain_verifier_valid_chain() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -350,10 +486,10 @@ mod tests {
     #[tokio::test]
     async fn test_sad_chain_verifier_wrong_version_fails() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
         v1.version = 5;
         v1.derive_said().unwrap();
@@ -372,10 +508,10 @@ mod tests {
     #[tokio::test]
     async fn test_sad_chain_verifier_multi_page() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
         let mut v2 = v1.clone();
         v2.content = Some(test_digest(b"content2"));
@@ -393,10 +529,10 @@ mod tests {
     #[tokio::test]
     async fn test_same_write_policy_authorized() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -410,11 +546,11 @@ mod tests {
     async fn test_evolving_write_policy_authorized() {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let v0 = create_v0_with_checkpoint(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
+        v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -428,11 +564,12 @@ mod tests {
     async fn test_rejected_write_policy_evolution() {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp1).unwrap();
+        let v0 = create_v0_with_checkpoint(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.write_policy = wp2;
+        v1.checkpoint_policy = None;
+        v1.is_checkpoint = None;
         v1.increment().unwrap();
 
         let checker = RejectingChecker;
@@ -445,10 +582,11 @@ mod tests {
     #[tokio::test]
     async fn test_rejected_same_write_policy() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = None;
+        v1.is_checkpoint = None;
         v1.increment().unwrap();
 
         let checker = RejectingChecker;
@@ -461,13 +599,315 @@ mod tests {
     #[tokio::test]
     async fn test_self_satisfies_failure() {
         let wp = test_digest(b"write-policy");
-        let v0 =
-            SadPointer::create("kels/exchange/v1/keys/mlkem".to_string(), None, None, wp).unwrap();
+        let v0 = create_v0_with_checkpoint(wp);
 
         let checker = RejectInceptionChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());
+    }
+
+    // ==================== Checkpoint policy tests ====================
+
+    #[tokio::test]
+    async fn test_v0_with_checkpoint_policy_valid() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_checkpoint(wp);
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 0);
+    }
+
+    #[tokio::test]
+    async fn test_v0_no_checkpoint_v1_first_checkpoint_valid() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        add_checkpoint_declaration(&mut v1);
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_overdue_at_64() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+
+        let mut records = vec![v0.clone()];
+        let mut current = v0.clone();
+        // 63 non-checkpoint records (v1..v63) — within bound
+        for _ in 1..=63 {
+            current.content = Some(test_digest(
+                format!("content_{}", current.version + 1).as_bytes(),
+            ));
+            current.increment().unwrap();
+            records.push(current.clone());
+        }
+
+        // v64 — should be rejected (overdue)
+        current.content = Some(test_digest(b"content_64"));
+        current.increment().unwrap();
+        records.push(current.clone());
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&records).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("checkpoint bound"),
+            "Expected checkpoint overdue error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_valid_checkpoint_cycle() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+
+        let mut records = vec![v0.clone()];
+        let mut current = v0.clone();
+
+        // v1: checkpoint_policy declaration (counts as non-checkpoint)
+        current.content = Some(test_digest(b"content_1"));
+        add_checkpoint_declaration(&mut current);
+        records.push(current.clone());
+
+        // v2..v63: 62 more non-checkpoint records (total 63 non-checkpoint: v1..v63)
+        current.checkpoint_policy = None; // clear after declaration — can't carry forward
+        for i in 2..=63 {
+            current.content = Some(test_digest(format!("content_{}", i).as_bytes()));
+            current.increment().unwrap();
+            records.push(current.clone());
+        }
+
+        // v64: first evaluated checkpoint (resets counter)
+        current.content = Some(test_digest(b"content_64"));
+        add_checkpoint(&mut current);
+        records.push(current.clone());
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&records).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 64);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_policy_evolution_on_checkpoint_valid() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        // Change checkpoint_policy on a checkpoint record — valid
+        v1.checkpoint_policy = Some(test_digest(b"new-checkpoint-policy"));
+        v1.is_checkpoint = Some(true);
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_policy_evolution_on_non_checkpoint_rejected() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        // Change checkpoint_policy without is_checkpoint — invalid
+        v1.checkpoint_policy = Some(test_digest(b"new-checkpoint-policy"));
+        v1.is_checkpoint = None;
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sets checkpoint_policy without is_checkpoint"),
+            "Expected policy change error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_is_checkpoint_without_any_policy_rejected() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        // is_checkpoint but no checkpoint_policy anywhere
+        v1.is_checkpoint = Some(true);
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("no checkpoint_policy established"),
+            "Expected missing policy error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chain_with_no_checkpoint_rejected_at_finish() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("no checkpoint"),
+            "Expected no checkpoint error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_v0_with_checkpoint_policy_changes_prefix() {
+        let wp = test_digest(b"write-policy");
+        let v0_no_cp = create_v0_no_checkpoint(wp);
+        let v0_with_cp = create_v0_with_checkpoint(wp);
+        assert_ne!(v0_no_cp.prefix, v0_with_cp.prefix);
+    }
+
+    // ==================== First-declaration regression tests ====================
+
+    #[tokio::test]
+    async fn test_first_checkpoint_declaration_with_is_checkpoint_rejected() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
+        v1.is_checkpoint = Some(true);
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("no checkpoint_policy established"),
+            "Expected rejection of is_checkpoint on first declaration, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_first_checkpoint_declaration_without_is_checkpoint_accepted() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_after_declaration_accepted() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
+        v1.increment().unwrap();
+
+        let mut v2 = v1.clone();
+        v2.content = Some(test_digest(b"content2"));
+        v2.is_checkpoint = Some(true);
+        v2.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.current_record().version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_last_checkpoint_version_tracked() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        add_checkpoint_declaration(&mut v1);
+
+        let mut v2 = v1.clone();
+        v2.content = Some(test_digest(b"content2"));
+        v2.is_checkpoint = Some(true);
+        v2.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.last_checkpoint_version(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_last_checkpoint_version_none_without_checkpoint() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        add_checkpoint_declaration(&mut v1);
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.last_checkpoint_version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_v0_with_is_checkpoint_rejected() {
+        let wp = test_digest(b"write-policy");
+        let cp = test_digest(b"checkpoint-policy");
+        let v0 = SadPointer::create(
+            "kels/exchange/v1/keys/mlkem".to_string(),
+            None,
+            None,
+            wp,
+            Some(cp),
+            Some(true),
+        )
+        .unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("v0 cannot set is_checkpoint"),
+            "Expected v0 is_checkpoint rejection, got: {}",
+            err
+        );
     }
 }

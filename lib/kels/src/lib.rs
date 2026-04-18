@@ -105,11 +105,12 @@ pub use types::{
     SadPointerEffectiveSaidRequest, SadPointerPage, SadPointerPageRequest, SadPointerRepair,
     SadPointerRepairPage, SadPointerRepairRecord, SadPointerVerification, SadRepairPageRequest,
     SadRepairsRequest, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest,
-    StoreKelSource, StorePageLoader, SubmitEventsResponse, Vote, completed_verification,
-    compute_approval_threshold, compute_rotation_hash, compute_sad_pointer_prefix,
-    forward_key_events, forward_sad_pointer, hash_effective_said, parse_and_validate_custody,
-    single_signer, truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_pointer,
+    StoreKelSource, StorePageLoader, SubmitEventsResponse, SubmitPointersResponse, Vote,
+    completed_verification, compute_approval_threshold, compute_rotation_hash,
+    compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer, hash_effective_said,
+    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
+    verify_sad_pointer,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
@@ -129,6 +130,11 @@ pub const MINIMUM_PAGE_SIZE: usize = 64;
 /// Maximum non-revealing events between recovery-revealing events.
 /// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
 pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
+
+/// Maximum non-checkpoint records between checkpoint records on pointer chains.
+/// `MINIMUM_PAGE_SIZE - 1` leaves room for the checkpoint record in the page.
+/// Unlike KELs (which need 2 slots for rec+rot), pointer checkpoints need only 1 slot.
+pub const MAX_NON_CHECKPOINT_RECORDS: usize = MINIMUM_PAGE_SIZE - 1;
 
 /// Default page size for all KEL operations: submissions, queries, and responses.
 /// Clamped to at least `MINIMUM_PAGE_SIZE` at parse time. Operators may increase

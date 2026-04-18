@@ -422,6 +422,8 @@ async fn test_submit_record_invalid_said_rejected() {
         None,
         None,
         test_digest("kel-test-prefix"),
+        None,
+        None,
     )
     .unwrap();
     pointer.topic = "tampered".to_string(); // Tamper after SAID computation

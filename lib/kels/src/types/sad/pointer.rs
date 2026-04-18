@@ -46,6 +46,15 @@ pub struct SadPointer {
     /// SAID of the write policy (denormalized from custody for chain keying).
     /// Required — a pointer without a write_policy has no chain identity.
     pub write_policy: cesr::Digest256,
+    /// SAID of the checkpoint policy — a higher-threshold policy that bounds
+    /// divergence. An attacker who satisfies write_policy but can't satisfy
+    /// checkpoint_policy has their fork bounded to ≤63 records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<cesr::Digest256>,
+    /// Signals this record is a checkpoint — the PolicyChecker evaluates it
+    /// against checkpoint_policy instead of (in addition to) write_policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_checkpoint: Option<bool>,
 }
 
 /// Compute the SAD chain prefix for a given write policy SAID and topic.
@@ -57,7 +66,7 @@ pub fn compute_sad_pointer_prefix(
     write_policy: cesr::Digest256,
     topic: &str,
 ) -> Result<cesr::Digest256, StorageError> {
-    let pointer = SadPointer::create(topic.to_string(), None, None, write_policy)?;
+    let pointer = SadPointer::create(topic.to_string(), None, None, write_policy, None, None)?;
     Ok(pointer.prefix)
 }
 
@@ -70,14 +79,20 @@ pub fn compute_sad_pointer_prefix(
 pub struct SadPointerVerification {
     tip: SadPointer,
     policy_satisfied: bool,
+    last_checkpoint_version: Option<u64>,
 }
 
 impl SadPointerVerification {
     /// Create a new verification token. Crate-internal only.
-    pub(crate) fn new(tip: SadPointer, policy_satisfied: bool) -> Self {
+    pub(crate) fn new(
+        tip: SadPointer,
+        policy_satisfied: bool,
+        last_checkpoint_version: Option<u64>,
+    ) -> Self {
         Self {
             tip,
             policy_satisfied,
+            last_checkpoint_version,
         }
     }
 
@@ -109,6 +124,12 @@ impl SadPointerVerification {
     /// Whether all write_policy checks were satisfied during verification.
     pub fn policy_satisfied(&self) -> bool {
         self.policy_satisfied
+    }
+
+    /// The version of the most recent evaluated checkpoint, if any.
+    /// Versions at or before this are sealed by checkpoint_policy.
+    pub fn last_checkpoint_version(&self) -> Option<u64> {
+        self.last_checkpoint_version
     }
 }
 
@@ -159,6 +180,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(pointer.version, 0);
@@ -173,6 +196,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
 
@@ -195,6 +220,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert!(pointer.verify_said().is_ok());
@@ -212,6 +239,8 @@ mod tests {
             None,
             None,
             test_digest(b"write-policy"),
+            None,
+            None,
         )
         .unwrap();
         assert!(pointer.verify_prefix().is_ok());

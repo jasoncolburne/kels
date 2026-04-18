@@ -28,6 +28,8 @@ pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
         None,
         None,
         initial_policy.said,
+        None,
+        None,
     )
     .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity pointer: {e}")))
 }
@@ -153,6 +155,12 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
+    /// Declare checkpoint_policy on a pointer (declaration only, no is_checkpoint).
+    fn add_checkpoint_declaration(pointer: &mut SadPointer) {
+        let cp_policy = test_policy("checkpoint");
+        pointer.checkpoint_policy = Some(cp_policy.said);
+    }
+
     #[tokio::test]
     async fn test_advance_identity_chain() {
         let policy1 = test_policy("policy-1");
@@ -160,21 +168,21 @@ mod tests {
         let v0 = create(&policy1).unwrap();
         let prefix = v0.prefix;
 
-        // Verify the chain to get a verification token
+        // Create a v1 with checkpoint so the chain passes verification
+        let mut v1_cp = v0.clone();
+        add_checkpoint_declaration(&mut v1_cp);
+        v1_cp.increment().unwrap();
+
         let checker = AlwaysPassChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
-        verifier
-            .verify_page(std::slice::from_ref(&v0))
-            .await
-            .unwrap();
+        verifier.verify_page(&[v0.clone(), v1_cp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
-        let v1 = advance(&verification, &policy2).unwrap();
-        assert_eq!(v1.version, 1);
-        assert!(v1.content.is_none());
-        assert_eq!(v1.write_policy, policy2.said);
-        assert_eq!(v1.prefix, prefix);
-        assert_eq!(v1.previous, Some(v0.said));
+        let v2 = advance(&verification, &policy2).unwrap();
+        assert_eq!(v2.version, 2);
+        assert!(v2.content.is_none());
+        assert_eq!(v2.write_policy, policy2.said);
+        assert_eq!(v2.prefix, prefix);
     }
 
     #[test]
@@ -187,13 +195,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_rejects_wrong_topic() {
-        // Create a non-identity chain pointer and verify it
+        // Create a non-identity chain pointer with checkpoint_policy and verify it
         let policy = test_policy("test");
+        let cp_policy = test_policy("checkpoint");
         let v0 = SadPointer::create(
             "kels/exchange/v1/keys/mlkem".to_string(),
             None,
             None,
             policy.said,
+            Some(cp_policy.said),
+            None,
         )
         .unwrap();
 
@@ -212,9 +223,14 @@ mod tests {
         let policy = test_policy("test-identity");
         let v0 = create(&policy).unwrap();
 
+        // Add a v1 with checkpoint so verification passes
+        let mut v1_cp = v0.clone();
+        add_checkpoint_declaration(&mut v1_cp);
+        v1_cp.increment().unwrap();
+
         let checker = AlwaysPassChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0]).await.unwrap();
+        verifier.verify_page(&[v0, v1_cp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         // Advance with the same policy — should fail
@@ -228,9 +244,10 @@ mod tests {
         let policy2 = test_policy("policy-2");
         let v0 = create(&policy1).unwrap();
 
-        // Build a v1 so the checker can reject it
+        // Build a v1 with checkpoint so the checker can reject it
         let mut v1 = v0.clone();
         v1.content = Some(cesr::Digest256::blake3_256(b"content"));
+        add_checkpoint_declaration(&mut v1);
         v1.increment().unwrap();
 
         let checker = RejectAdvanceChecker;

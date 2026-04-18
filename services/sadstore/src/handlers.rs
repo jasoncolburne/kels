@@ -1230,6 +1230,7 @@ pub async fn submit_sad_pointer(
     let is_repair = query.repair.unwrap_or(false);
     let new_record_count;
     let should_publish;
+    let mut diverged_at_version: Option<u64> = None;
 
     {
         let kel_source = match state.kels_client.as_kel_source() {
@@ -1262,17 +1263,65 @@ pub async fn submit_sad_pointer(
         }
 
         if is_repair {
+            // Query the checkpoint seal before truncation — reject repairs behind the seal.
+            let last_cp_version = match state
+                .repo
+                .sad_pointers
+                .last_checkpoint_version(&mut tx, chain_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query last checkpoint version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+
             // Repair path: truncate/archive first, then verify remaining + repair records.
             // truncate_and_replace does the archival within this transaction.
-            if let Err(e) = state
+            let from_version = match state
                 .repo
                 .sad_pointers
                 .truncate_and_replace(&mut tx, &records)
                 .await
             {
-                warn!("Failed to truncate for repair: {}", e);
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to truncate for repair: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            };
+
+            // Repair must not truncate behind the checkpoint seal
+            if let Some(cp_version) = last_cp_version
+                && from_version <= cp_version
+            {
                 let _ = tx.rollback().await;
-                return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Cannot repair at version {} — sealed by checkpoint at version {}",
+                        from_version, cp_version
+                    ),
+                )
+                    .into_response();
+            }
+
+            // Repair must include a checkpoint at or after the divergence point —
+            // an attacker who can only satisfy write_policy cannot repair
+            // (checkpoint_policy is a higher bar).
+            if !records
+                .iter()
+                .any(|r| r.version >= from_version && r.is_checkpoint.unwrap_or(false))
+            {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "repair must include a checkpoint at or after the divergence point",
+                )
+                    .into_response();
             }
 
             // Now verify the entire chain (post-truncation + repair records) from scratch.
@@ -1310,7 +1359,48 @@ pub async fn submit_sad_pointer(
             new_record_count = records.len() as u32;
             should_publish = true;
         } else {
-            // Normal path: verify existing chain + new records, then save.
+            // Normal path: dedup submitted records, verify existing chain + new, then save.
+            // Follows the KEL merge engine pattern (handle_full_path): filter duplicates
+            // upfront so the verifier never sees already-processed records.
+            let new_records: Vec<kels_core::SadPointer> = {
+                let submitted_saids: Vec<String> =
+                    records.iter().map(|r| r.said.to_string()).collect();
+                let query = verifiable_storage_postgres::Query::<kels_core::SadPointer>::for_table(
+                    "sad_pointers",
+                )
+                .r#in("said", submitted_saids);
+                let existing_saids: std::collections::HashSet<cesr::Digest256> =
+                    match tx.fetch(query).await {
+                        Ok(existing) => existing
+                            .into_iter()
+                            .map(|r: kels_core::SadPointer| r.said)
+                            .collect(),
+                        Err(e) => {
+                            warn!("Failed to query existing SAIDs: {}", e);
+                            let _ = tx.rollback().await;
+                            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                                .into_response();
+                        }
+                    };
+                records
+                    .iter()
+                    .filter(|r| !existing_saids.contains(&r.said))
+                    .cloned()
+                    .collect()
+            };
+
+            if new_records.is_empty() {
+                if let Err(e) = tx.commit().await {
+                    warn!("Failed to commit transaction: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+                let response = kels_core::SubmitPointersResponse {
+                    diverged_at: None,
+                    applied: false,
+                };
+                return (StatusCode::CREATED, Json(response)).into_response();
+            }
+
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
             if let Err(response) = verify_existing_chain(
@@ -1325,7 +1415,7 @@ pub async fn submit_sad_pointer(
                 return response;
             }
 
-            if let Err(e) = verifier.verify_page(&records).await {
+            if let Err(e) = verifier.verify_page(&new_records).await {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
@@ -1351,8 +1441,27 @@ pub async fn submit_sad_pointer(
                 return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
             }
 
-            match state.repo.sad_pointers.save_batch(&mut tx, &records).await {
-                Ok(count) => {
+            match state
+                .repo
+                .sad_pointers
+                .save_batch(
+                    &mut tx,
+                    &new_records,
+                    verification.last_checkpoint_version(),
+                )
+                .await
+            {
+                Ok(result) => {
+                    let count = match &result {
+                        crate::repository::SaveBatchResult::Accepted { new_count } => *new_count,
+                        crate::repository::SaveBatchResult::DivergenceCreated {
+                            new_count,
+                            diverged_at_version: version,
+                        } => {
+                            diverged_at_version = Some(*version);
+                            *new_count
+                        }
+                    };
                     new_record_count = count;
                     should_publish = count > 0;
                 }
@@ -1380,7 +1489,11 @@ pub async fn submit_sad_pointer(
         GossipPolicy::LocalOnly
     ) {
         debug!("Skipping pointer gossip: custody.nodes restricts to local/home-node");
-        return (StatusCode::CREATED, "stored").into_response();
+        let response = kels_core::SubmitPointersResponse {
+            diverged_at: diverged_at_version,
+            applied: new_record_count > 0,
+        };
+        return (StatusCode::CREATED, Json(response)).into_response();
     }
 
     // Publish the effective SAID to Redis for gossip.
@@ -1434,7 +1547,11 @@ pub async fn submit_sad_pointer(
         }
     }
 
-    (StatusCode::CREATED, "stored").into_response()
+    let response = kels_core::SubmitPointersResponse {
+        diverged_at: diverged_at_version,
+        applied: new_record_count > 0,
+    };
+    (StatusCode::CREATED, Json(response)).into_response()
 }
 
 pub async fn get_sad_pointer(
@@ -1442,7 +1559,8 @@ pub async fn get_sad_pointer(
     Json(request): Json<kels_core::SadPointerPageRequest>,
 ) -> impl IntoResponse {
     let prefix = request.prefix;
-    let limit = request.limit.unwrap_or(kels_core::page_size()) as u64;
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
     let since_str = request.since.as_ref().map(|s| s.as_ref());
 
     match state

@@ -8,7 +8,13 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
-CLI="kels-cli -d node-a.kels"
+FEDERATED="${FEDERATED:-true}"
+
+if [ "$FEDERATED" = "false" ]; then
+    CLI="kels-cli --kels-url http://kels --sadstore-url http://sadstore"
+else
+    CLI="kels-cli -d node-a.kels"
+fi
 
 init_temp_dir
 

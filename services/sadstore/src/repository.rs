@@ -1,5 +1,7 @@
 //! PostgreSQL Repository for KELS SADStore
 
+use std::collections::HashSet;
+
 use kels_core::{Custody, SadPointer, SadPointerRepair, SadPointerRepairRecord};
 use kels_policy::Policy;
 use verifiable_storage::{
@@ -7,6 +9,19 @@ use verifiable_storage::{
     UnchainedRepository, Value,
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
+
+/// Result of a `save_batch` operation on a pointer chain.
+#[derive(Debug)]
+pub enum SaveBatchResult {
+    /// Records were accepted, chain remains non-divergent.
+    Accepted { new_count: u32 },
+    /// A version collision was detected — the forking record was inserted and
+    /// the chain is now divergent (frozen). Remaining batch records were discarded.
+    DivergenceCreated {
+        new_count: u32,
+        diverged_at_version: u64,
+    },
+}
 
 #[derive(Stored)]
 #[stored(item_type = SadPointer, table = "sad_pointers", chained = true)]
@@ -18,14 +33,19 @@ impl SadPointerRepository {
     /// Store a batch of pointer records within a caller-managed transaction.
     ///
     /// Caller must hold an advisory lock on the chain prefix.
-    /// Returns the number of new records actually inserted.
+    ///
+    /// If the chain is already divergent, returns an error. If a record in the
+    /// batch collides at the same version as an existing record (creating
+    /// divergence), inserts only up to and including the forking record, then
+    /// discards the rest. The chain freezes immediately.
     pub async fn save_batch<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
         records: &[SadPointer],
-    ) -> Result<u32, StorageError> {
+        last_checkpoint_version: Option<u64>,
+    ) -> Result<SaveBatchResult, StorageError> {
         if records.is_empty() {
-            return Ok(0);
+            return Ok(SaveBatchResult::Accepted { new_count: 0 });
         }
 
         let prefix = records[0].prefix;
@@ -45,8 +65,8 @@ impl SadPointerRepository {
             ));
         }
 
-        // Insert records, skipping duplicates
-        let existing_saids: std::collections::HashSet<cesr::Digest256> = {
+        // Collect existing SAIDs for dedup
+        let existing_saids: HashSet<cesr::Digest256> = {
             let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
@@ -58,16 +78,56 @@ impl SadPointerRepository {
                 .collect()
         };
 
+        // Collect occupied versions in one query: fetch only the version column
+        // for existing records at the batch's versions.
+        let mut occupied_versions: HashSet<u64> = {
+            let batch_versions: Vec<i64> = records
+                .iter()
+                .map(|r| r.version as i64)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let query = ColumnQuery::new(Self::TABLE_NAME, "version")
+                .eq("prefix", &prefix)
+                .r#in("version", batch_versions);
+            tx.fetch_column_i64(query)
+                .await?
+                .into_iter()
+                .map(|v| v as u64)
+                .collect()
+        };
+
         let mut count = 0u32;
         for record in records {
             if existing_saids.contains(&record.said) {
                 continue;
             }
+
+            // Version collision creates divergence — insert this forking record then freeze
+            if occupied_versions.contains(&record.version) {
+                // Reject fork at or before the last checkpoint — sealed by checkpoint_policy
+                if let Some(cp_version) = last_checkpoint_version
+                    && record.version <= cp_version
+                {
+                    return Err(StorageError::StorageError(format!(
+                        "Cannot fork at version {} — sealed by checkpoint at version {}",
+                        record.version, cp_version,
+                    )));
+                }
+                self.insert_in(tx, record.clone()).await?;
+                count += 1;
+                return Ok(SaveBatchResult::DivergenceCreated {
+                    new_count: count,
+                    diverged_at_version: record.version,
+                });
+            }
+
             self.insert_in(tx, record.clone()).await?;
+            occupied_versions.insert(record.version);
             count += 1;
         }
 
-        Ok(count)
+        Ok(SaveBatchResult::Accepted { new_count: count })
     }
 
     /// Truncate records at and after the first replacement's version and insert replacements.
@@ -79,7 +139,7 @@ impl SadPointerRepository {
         &self,
         tx: &mut Tx,
         records: &[SadPointer],
-    ) -> Result<(), StorageError> {
+    ) -> Result<u64, StorageError> {
         if records.is_empty() {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
@@ -97,7 +157,7 @@ impl SadPointerRepository {
             let existing_query =
                 verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
-            let existing: std::collections::HashSet<cesr::Digest256> = tx
+            let existing: HashSet<cesr::Digest256> = tx
                 .fetch(existing_query)
                 .await?
                 .into_iter()
@@ -146,7 +206,25 @@ impl SadPointerRepository {
                 }
             };
 
+            // Skip records already in archives (stale gossip can re-insert fork
+            // records after a prior repair archived them)
+            let already_archived: HashSet<cesr::Digest256> = {
+                let page_saids: Vec<String> = page.iter().map(|r| r.said.to_string()).collect();
+                let archive_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
+                    Self::ARCHIVED_RECORDS_TABLE,
+                )
+                .r#in("said", page_saids);
+                tx.fetch(archive_query)
+                    .await?
+                    .into_iter()
+                    .map(|r: SadPointer| r.said)
+                    .collect()
+            };
+
             for record in &page {
+                if already_archived.contains(&record.said) {
+                    continue;
+                }
                 tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
                     .await?;
                 let repair_record = SadPointerRepairRecord::create(*repair_said_ref, record.said)?;
@@ -173,7 +251,7 @@ impl SadPointerRepository {
             self.insert_in(tx, record.clone()).await?;
         }
 
-        Ok(())
+        Ok(from_version)
     }
 
     /// Quick check: does any version appear more than once for this prefix?
@@ -187,6 +265,22 @@ impl SadPointerRepository {
             .limit(1);
         let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
         Ok(counts.first().is_some_and(|&c| c > 1))
+    }
+
+    /// Get the version of the most recent evaluated checkpoint for a chain.
+    /// Returns None if no checkpoint exists.
+    pub async fn last_checkpoint_version<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<u64>, StorageError> {
+        let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .filter(Filter::Eq("is_checkpoint".to_string(), Value::Bool(true)))
+            .order_by("version", verifiable_storage::Order::Desc)
+            .limit(1);
+        let records: Vec<SadPointer> = tx.fetch(query).await?;
+        Ok(records.first().map(|r| r.version))
     }
 
     /// Check if a pointer with the given SAID exists.
@@ -418,7 +512,7 @@ impl SadPointerRepository {
             .group_by("prefix")
             .group_by("version")
             .having_count_gt(1);
-        let divergent_prefixes: std::collections::HashSet<String> = self
+        let divergent_prefixes: HashSet<String> = self
             .pool
             .fetch_column(divergent_query)
             .await?
