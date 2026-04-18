@@ -39,15 +39,21 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`.
+**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/verification.md`, `docs/design/streaming-verification-architecture.md`.
 
-Event kinds: `icp` (incept), `rot` (rotate), `ixn` (interact), `dip` (delegated incept), `rec` (recover), `ror` (rotate recovery), `cnt` (contest/freeze), `dec` (decommission). Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service.
+**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/divergence-detection.md`, `docs/design/recovery-workflow.md`, `docs/design/reconciliation.md`.
 
-**Divergence** — conflicting events at the same serial. Chain freezes until recovery.
-
-**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested.
+**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/merge.md`.
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
+
+**Policy** — DSL for authorization: `endorse`, `credential`, `threshold`, poison, expiry, renew. See `docs/design/policy.md`.
+
+**Credentials** — verifiable claims issued under a policy, anchored in KELs. See `docs/design/creds.md`.
+
+**Exchange** — ESSR authenticated encryption, ML-KEM key publication via SAD pointer chains. See `docs/design/exchange.md`.
+
+**Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/federation-state-machine.md`, `docs/design/secure-registration.md`, `docs/design/registry-removal.md`, `docs/design/rejection-threshold.md`.
 
 **SAD Pointer Chain** — append-only, versioned, policy-governed data chain in SADStore. Each record links to previous via SAID and is authorized by `write_policy`. Checkpoint policy bounds divergence. See `docs/design/sad-pointers.md`.
 
@@ -64,6 +70,9 @@ Event kinds: `icp` (incept), `rot` (rotate), `ixn` (interact), `dip` (delegated 
 ### Libraries
 
 - **kels-core** (`lib/kels`) — types, KEL logic, client, cache
+- **kels-creds** (`lib/creds`) — credential issuance, verification, schemas
+- **kels-policy** (`lib/policy`) — policy DSL evaluation
+- **kels-exchange** (`lib/exchange`) — ESSR encryption, ML-KEM key publication, mail client
 - **kels-gossip-core** (`lib/gossip`) — gossip protocol (ML-KEM-1024 + ML-DSA + AES-GCM-256)
 - **kels-derive** (`lib/derive`) — derive macros
 - **kels-ffi** (`lib/ffi`) — C FFI bindings
