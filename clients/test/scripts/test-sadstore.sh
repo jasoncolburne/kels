@@ -179,7 +179,7 @@ run_test "Effective SAID non-existent returns 404" \
 
 # Submit pointer with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"writePolicy\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"kind\":\"kels/sad/v1/pointer/icp\",\"writePolicy\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
 
 echo ""
 
@@ -259,7 +259,7 @@ else
 
     # --- Build v0 inception pointer ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp}')
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp}')
     V0_PREFIX=$(compute_prefix "$V0_JSON")
     V0_JSON=$(echo "$V0_JSON" | jq -c --arg pfx "$V0_PREFIX" '.prefix = $pfx')
     V0_SAID=$(compute_said "$V0_JSON")
@@ -272,7 +272,7 @@ else
     CHECKPOINT_POLICY_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
         --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, writePolicy: $wp, checkpointPolicy: $cp}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/est", writePolicy: $wp, checkpointPolicy: $cp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
 
@@ -377,7 +377,7 @@ else
     # --- Build and submit v0 (with checkpoint_policy) to node-a ---
     D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
         --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, writePolicy: $wp, checkpointPolicy: $cp}')
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp, checkpointPolicy: $cp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
     D_V0_SAID=$(compute_said "$D_V0_JSON")
@@ -405,7 +405,7 @@ else
     # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_a__________________________________", writePolicy: $wp}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_a__________________________________", writePolicy: $wp}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
@@ -418,7 +418,7 @@ else
     # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by checkpoint_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_b__________________________________", writePolicy: $wp}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_b__________________________________", writePolicy: $wp}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 
@@ -448,10 +448,10 @@ else
     echo "Node-a effective: $A_EFFECTIVE (divergent: $A_DIVERGENT)"
     echo "Node-b effective: $B_EFFECTIVE (divergent: $B_DIVERGENT)"
 
-    # --- Repair: submit replacement v1 with --repair (with checkpoint) ---
+    # --- Repair: submit replacement v1 with Rpr kind ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, content: "Kcontent_repaired___________________________", writePolicy: $wp, checkpointPolicy: $cp, isCheckpoint: true}')
+        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/rpr", content: "Kcontent_repaired___________________________", writePolicy: $wp}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
 
@@ -461,8 +461,8 @@ else
 
     echo "[$D_REPAIR_JSON]" > "$TEMP_DIR/div-repair.json"
 
-    run_test "Repair: submitted with --repair to node-a" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit --repair "$TEMP_DIR/div-repair.json"
+    run_test "Repair: submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-repair.json"
 
     # Verify node-a is no longer divergent
     A_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')

@@ -9,14 +9,13 @@ use std::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
-use serde::Deserialize;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecutor};
 
@@ -1132,14 +1131,6 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     Ok(())
 }
 
-/// Query parameters for record submission.
-#[derive(Deserialize)]
-pub struct RecordSubmitQuery {
-    /// If true, truncate records at and after the first record's version before
-    /// inserting. Used to repair divergent chains.
-    pub repair: Option<bool>,
-}
-
 /// Submit SAD pointer records — unified endpoint for clients, gossip sync, and repair.
 ///
 /// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency)
@@ -1147,11 +1138,11 @@ pub struct RecordSubmitQuery {
 /// existing chain from scratch, then verifies new records in context. Rejects
 /// unauthorized write_policy advances with 403.
 ///
-/// With `?repair=true`, truncates all records at version >= the first record's version
-/// before inserting. This is the repair mechanism for divergent chains.
+/// When any submitted record has `kind: Rpr`, the handler takes the repair path:
+/// truncates all records at version >= the first record's version, then re-verifies
+/// the entire chain including the repair records.
 pub async fn submit_sad_pointer(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Query(query): Query<RecordSubmitQuery>,
     State(state): State<Arc<AppState>>,
     Json(records): Json<Vec<kels_core::SadPointer>>,
 ) -> impl IntoResponse {
@@ -1227,10 +1218,10 @@ pub async fn submit_sad_pointer(
 
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
-    let is_repair = query.repair.unwrap_or(false);
     let new_record_count;
     let should_publish;
     let mut diverged_at_version: Option<u64> = None;
+    let is_repair;
 
     {
         let kel_source = match state.kels_client.as_kel_source() {
@@ -1261,6 +1252,50 @@ pub async fn submit_sad_pointer(
             warn!("Failed to acquire advisory lock: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
+
+        // Dedup first: filter out records that already exist in the DB.
+        // This is a SAID existence check — no verification needed.
+        // Historical Rpr records dedup out; only genuinely new Rpr records trigger repair.
+        let new_records: Vec<kels_core::SadPointer> = {
+            let submitted_saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
+            let query = verifiable_storage_postgres::Query::<kels_core::SadPointer>::for_table(
+                "sad_pointers",
+            )
+            .r#in("said", submitted_saids);
+            let existing_saids: std::collections::HashSet<cesr::Digest256> =
+                match tx.fetch(query).await {
+                    Ok(existing) => existing
+                        .into_iter()
+                        .map(|r: kels_core::SadPointer| r.said)
+                        .collect(),
+                    Err(e) => {
+                        warn!("Failed to query existing SAIDs: {}", e);
+                        let _ = tx.rollback().await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                            .into_response();
+                    }
+                };
+            records
+                .iter()
+                .filter(|r| !existing_saids.contains(&r.said))
+                .cloned()
+                .collect()
+        };
+
+        if new_records.is_empty() {
+            if let Err(e) = tx.commit().await {
+                warn!("Failed to commit transaction: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+            let response = kels_core::SubmitPointersResponse {
+                diverged_at: None,
+                applied: false,
+            };
+            return (StatusCode::CREATED, Json(response)).into_response();
+        }
+
+        // Detect repair from post-dedup records — only genuinely new Rpr records trigger repair.
+        is_repair = new_records.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
             // Query the checkpoint seal before truncation — reject repairs behind the seal.
@@ -1314,7 +1349,7 @@ pub async fn submit_sad_pointer(
             // (checkpoint_policy is a higher bar).
             if !records
                 .iter()
-                .any(|r| r.version >= from_version && r.is_checkpoint.unwrap_or(false))
+                .any(|r| r.version >= from_version && r.kind.evaluates_checkpoint())
             {
                 let _ = tx.rollback().await;
                 return (
@@ -1356,51 +1391,25 @@ pub async fn submit_sad_pointer(
                 return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
             }
 
+            // Repair must not truncate at or before the establishment point
+            if let Some(est_version) = verification.establishment_version()
+                && from_version <= est_version
+            {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Cannot repair at version {} — establishment record at version {}",
+                        from_version, est_version
+                    ),
+                )
+                    .into_response();
+            }
+
             new_record_count = records.len() as u32;
             should_publish = true;
         } else {
-            // Normal path: dedup submitted records, verify existing chain + new, then save.
-            // Follows the KEL merge engine pattern (handle_full_path): filter duplicates
-            // upfront so the verifier never sees already-processed records.
-            let new_records: Vec<kels_core::SadPointer> = {
-                let submitted_saids: Vec<String> =
-                    records.iter().map(|r| r.said.to_string()).collect();
-                let query = verifiable_storage_postgres::Query::<kels_core::SadPointer>::for_table(
-                    "sad_pointers",
-                )
-                .r#in("said", submitted_saids);
-                let existing_saids: std::collections::HashSet<cesr::Digest256> =
-                    match tx.fetch(query).await {
-                        Ok(existing) => existing
-                            .into_iter()
-                            .map(|r: kels_core::SadPointer| r.said)
-                            .collect(),
-                        Err(e) => {
-                            warn!("Failed to query existing SAIDs: {}", e);
-                            let _ = tx.rollback().await;
-                            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
-                                .into_response();
-                        }
-                    };
-                records
-                    .iter()
-                    .filter(|r| !existing_saids.contains(&r.said))
-                    .cloned()
-                    .collect()
-            };
-
-            if new_records.is_empty() {
-                if let Err(e) = tx.commit().await {
-                    warn!("Failed to commit transaction: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
-                }
-                let response = kels_core::SubmitPointersResponse {
-                    diverged_at: None,
-                    applied: false,
-                };
-                return (StatusCode::CREATED, Json(response)).into_response();
-            }
-
+            // Normal path: verify existing chain + new records, then save.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
             if let Err(response) = verify_existing_chain(

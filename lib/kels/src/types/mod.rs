@@ -1273,4 +1273,248 @@ mod tests {
         assert_eq!(parsed.operation, audit.operation);
         assert_eq!(parsed.entries_json, audit.entries_json);
     }
+
+    // ==================== SadPointerKind tests ====================
+
+    #[test]
+    fn test_sad_pointer_kind_as_str() {
+        assert_eq!(SadPointerKind::Icp.as_str(), "kels/sad/v1/pointer/icp");
+        assert_eq!(SadPointerKind::Upd.as_str(), "kels/sad/v1/pointer/upd");
+        assert_eq!(SadPointerKind::Est.as_str(), "kels/sad/v1/pointer/est");
+        assert_eq!(SadPointerKind::Evl.as_str(), "kels/sad/v1/pointer/evl");
+        assert_eq!(SadPointerKind::Rpr.as_str(), "kels/sad/v1/pointer/rpr");
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_display() {
+        assert_eq!(
+            format!("{}", SadPointerKind::Icp),
+            "kels/sad/v1/pointer/icp"
+        );
+        assert_eq!(
+            format!("{}", SadPointerKind::Rpr),
+            "kels/sad/v1/pointer/rpr"
+        );
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_from_str() {
+        assert_eq!(
+            "kels/sad/v1/pointer/icp".parse::<SadPointerKind>().unwrap(),
+            SadPointerKind::Icp
+        );
+        assert_eq!(
+            "kels/sad/v1/pointer/upd".parse::<SadPointerKind>().unwrap(),
+            SadPointerKind::Upd
+        );
+        assert_eq!(
+            "kels/sad/v1/pointer/est".parse::<SadPointerKind>().unwrap(),
+            SadPointerKind::Est
+        );
+        assert_eq!(
+            "kels/sad/v1/pointer/evl".parse::<SadPointerKind>().unwrap(),
+            SadPointerKind::Evl
+        );
+        assert_eq!(
+            "kels/sad/v1/pointer/rpr".parse::<SadPointerKind>().unwrap(),
+            SadPointerKind::Rpr
+        );
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_from_str_rejects_invalid() {
+        assert!("invalid".parse::<SadPointerKind>().is_err());
+        assert!("icp".parse::<SadPointerKind>().is_err());
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_from_short_name() {
+        assert_eq!(
+            SadPointerKind::from_short_name("icp").unwrap(),
+            SadPointerKind::Icp
+        );
+        assert_eq!(
+            SadPointerKind::from_short_name("upd").unwrap(),
+            SadPointerKind::Upd
+        );
+        assert_eq!(
+            SadPointerKind::from_short_name("est").unwrap(),
+            SadPointerKind::Est
+        );
+        assert_eq!(
+            SadPointerKind::from_short_name("evl").unwrap(),
+            SadPointerKind::Evl
+        );
+        assert_eq!(
+            SadPointerKind::from_short_name("rpr").unwrap(),
+            SadPointerKind::Rpr
+        );
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_from_short_name_rejects_invalid() {
+        assert!(SadPointerKind::from_short_name("invalid").is_err());
+        assert!(SadPointerKind::from_short_name("kels/sad/v1/pointer/icp").is_err());
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_serde_roundtrip() {
+        let json = serde_json::to_string(&SadPointerKind::Icp).unwrap();
+        assert_eq!(json, "\"kels/sad/v1/pointer/icp\"");
+        let parsed: SadPointerKind = serde_json::from_str("\"kels/sad/v1/pointer/evl\"").unwrap();
+        assert_eq!(parsed, SadPointerKind::Evl);
+        // Short form rejected
+        assert!(serde_json::from_str::<SadPointerKind>("\"icp\"").is_err());
+    }
+
+    #[test]
+    fn test_sad_pointer_kind_predicates() {
+        assert!(SadPointerKind::Icp.is_inception());
+        assert!(!SadPointerKind::Upd.is_inception());
+
+        assert!(SadPointerKind::Rpr.is_repair());
+        assert!(!SadPointerKind::Evl.is_repair());
+
+        assert!(SadPointerKind::Evl.evaluates_checkpoint());
+        assert!(SadPointerKind::Rpr.evaluates_checkpoint());
+        assert!(!SadPointerKind::Upd.evaluates_checkpoint());
+        assert!(!SadPointerKind::Est.evaluates_checkpoint());
+        assert!(!SadPointerKind::Icp.evaluates_checkpoint());
+    }
+
+    // ==================== SadPointer::validate_structure tests ====================
+
+    fn make_valid_icp_pointer() -> SadPointer {
+        let wp = cesr::Digest256::blake3_256(b"wp");
+        SadPointer::create(
+            "test/topic".to_string(),
+            SadPointerKind::Icp,
+            None,
+            None,
+            wp,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_validate_structure_icp_valid() {
+        let pointer = make_valid_icp_pointer();
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_icp_with_checkpoint_policy_valid() {
+        let wp = cesr::Digest256::blake3_256(b"wp");
+        let cp = cesr::Digest256::blake3_256(b"cp");
+        let pointer = SadPointer::create(
+            "test/topic".to_string(),
+            SadPointerKind::Icp,
+            None,
+            None,
+            wp,
+            Some(cp),
+        )
+        .unwrap();
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_icp_wrong_version() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.version = 1;
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("version 0"));
+    }
+
+    #[test]
+    fn test_validate_structure_est_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Est;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_est_wrong_version() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Est;
+        pointer.version = 2;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("version 1"));
+    }
+
+    #[test]
+    fn test_validate_structure_est_missing_checkpoint_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Est;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("requires checkpointPolicy"));
+    }
+
+    #[test]
+    fn test_validate_structure_upd_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Upd;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.content = Some(cesr::Digest256::blake3_256(b"content"));
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_upd_forbids_checkpoint_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Upd;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have checkpointPolicy"));
+    }
+
+    #[test]
+    fn test_validate_structure_evl_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Evl;
+        pointer.version = 2;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_evl_with_checkpoint_policy_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Evl;
+        pointer.version = 2;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"new-cp"));
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_rpr_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Rpr;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_rpr_forbids_checkpoint_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Rpr;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have checkpointPolicy"));
+    }
 }

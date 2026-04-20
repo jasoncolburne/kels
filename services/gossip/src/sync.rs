@@ -456,9 +456,9 @@ impl SyncHandler {
 
     /// Handle a SAD chain announcement — fetch the chain if our tip differs.
     ///
-    /// When `repair` is true, the origin node repaired a divergent chain. We use
-    /// `?repair=true` to replace our local divergent state. The full chain is
-    /// fetched (no delta) since repair truncates and replaces from the divergence point.
+    /// When `repair` is true, the origin node repaired a divergent chain. The full
+    /// chain is fetched (no delta) since repair replaces from the divergence point.
+    /// The handler auto-detects Rpr records and takes the repair path.
     async fn handle_sad_chain_announcement(
         &self,
         chain_prefix: &cesr::Digest256,
@@ -520,17 +520,13 @@ impl SyncHandler {
             }
         };
 
-        // For repair: fetch full chain and submit with ?repair=true.
+        // For repair: fetch full chain — handler auto-detects Rpr records.
         // The SADStore deduplicates leading records that already exist locally,
         // so sending the full chain is safe — only the divergent tail is replaced.
         // For normal: delta fetch from local tip — but if the remote's effective
         // SAID is not a real pointer (e.g., synthetic divergent hash), delta fetch
         // from our local tip may miss branches. Use full fetch in that case.
-        let sink = match if repair {
-            local_client.as_sad_repair_sink()
-        } else {
-            local_client.as_sad_sink()
-        } {
+        let sink = match local_client.as_sad_sink() {
             Ok(s) => s,
             Err(e) => {
                 warn!("Failed to build HTTP SAD sink: {}", e);
@@ -1623,12 +1619,7 @@ pub async fn run_sad_anti_entropy_loop(
                             let Ok(local_source) = local.as_sad_source() else {
                                 continue;
                             };
-                            let sink_result = if use_repair {
-                                remote.as_sad_repair_sink()
-                            } else {
-                                remote.as_sad_sink()
-                            };
-                            let Ok(remote_sink) = sink_result else {
+                            let Ok(remote_sink) = remote.as_sad_sink() else {
                                 continue;
                             };
                             // Full fetch when repairing or when local is divergent
@@ -1669,12 +1660,7 @@ pub async fn run_sad_anti_entropy_loop(
                             let Ok(remote_source) = remote.as_sad_source() else {
                                 continue;
                             };
-                            let sink_result = if use_repair {
-                                local.as_sad_repair_sink()
-                            } else {
-                                local.as_sad_sink()
-                            };
-                            let Ok(local_sink) = sink_result else {
+                            let Ok(local_sink) = local.as_sad_sink() else {
                                 continue;
                             };
                             let since_digest = if use_repair {
@@ -1851,12 +1837,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let Ok(local_source) = local_client.as_sad_source() else {
                     continue;
                 };
-                let sink_result = if use_repair {
-                    remote_client.as_sad_repair_sink()
-                } else {
-                    remote_client.as_sad_sink()
-                };
-                let Ok(remote_sink) = sink_result else {
+                let Ok(remote_sink) = remote_client.as_sad_sink() else {
                     continue;
                 };
                 let since = if use_repair {
@@ -1892,12 +1873,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let Ok(remote_source) = remote_client.as_sad_source() else {
                     continue;
                 };
-                let sink_result = if use_repair {
-                    local_client.as_sad_repair_sink()
-                } else {
-                    local_client.as_sad_sink()
-                };
-                let Ok(local_sink) = sink_result else {
+                let Ok(local_sink) = local_client.as_sad_sink() else {
                     continue;
                 };
                 let since = if use_repair {

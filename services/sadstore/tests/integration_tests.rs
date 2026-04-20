@@ -419,10 +419,10 @@ async fn test_submit_record_invalid_said_rejected() {
     // Create a record but tamper with the SAID
     let mut pointer = SadPointer::create(
         "kels/v1/test-kind".to_string(),
+        kels_core::SadPointerKind::Icp,
         None,
         None,
         test_digest("kel-test-prefix"),
-        None,
         None,
     )
     .unwrap();

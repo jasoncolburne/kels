@@ -25,8 +25,8 @@ pub(crate) enum SadAnnouncement {
         /// The peer prefix that stored it.
         origin: cesr::Digest256,
         /// Whether this update is a repair of a previously divergent chain.
-        /// When true, the receiving node should use `?repair=true` to replace
-        /// its local divergent chain.
+        /// When true, the receiving node should fetch the full chain (not a delta)
+        /// since repair replaces from the divergence point.
         #[serde(default)]
         repair: bool,
     },

@@ -59,29 +59,21 @@ pub(crate) async fn cmd_sad_get(cli: &Cli, said: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cmd_sad_submit(cli: &Cli, file: &PathBuf, repair: bool) -> Result<()> {
+pub(crate) async fn cmd_sad_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
     let data = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
     let records: Vec<kels_core::SadPointer> =
         serde_json::from_str(&data).context("Failed to parse SadPointer JSON")?;
 
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    if repair {
-        client
-            .repair_sad_pointer(&records)
-            .await
-            .context("Failed to submit SAD repair")?;
-    } else {
-        client
-            .submit_sad_pointer(&records)
-            .await
-            .context("Failed to submit SAD records")?;
-    }
+    client
+        .submit_sad_pointer(&records)
+        .await
+        .context("Failed to submit SAD records")?;
 
-    let label = if repair { "repaired" } else { "submitted" };
     println!(
         "{}",
-        format!("{} SAD record(s) {}", records.len(), label).green()
+        format!("{} SAD record(s) submitted", records.len()).green()
     );
     Ok(())
 }

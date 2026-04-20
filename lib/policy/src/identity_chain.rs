@@ -6,7 +6,7 @@
 //! - Chain prefix: the stable identity reference
 //! - `write_policy`: the current policy's SAID (self-governing)
 
-use kels_core::{SadPointer, SadPointerVerification, compute_sad_pointer_prefix};
+use kels_core::{SadPointer, SadPointerKind, SadPointerVerification, compute_sad_pointer_prefix};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{Policy, error::PolicyError};
@@ -25,10 +25,10 @@ pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
 
     SadPointer::create(
         IDENTITY_CHAIN_TOPIC.to_string(),
+        SadPointerKind::Icp,
         None,
         None,
         initial_policy.said,
-        None,
         None,
     )
     .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity pointer: {e}")))
@@ -73,6 +73,7 @@ pub fn advance(
     let mut pointer = verification.current_record().clone();
     pointer.content = None;
     pointer.custody = None;
+    pointer.kind = SadPointerKind::Upd;
     pointer.write_policy = new_policy.said;
     pointer
         .increment()
@@ -155,9 +156,10 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
-    /// Declare checkpoint_policy on a pointer (declaration only, no is_checkpoint).
+    /// Declare checkpoint_policy on a pointer (Est kind).
     fn add_checkpoint_declaration(pointer: &mut SadPointer) {
         let cp_policy = test_policy("checkpoint");
+        pointer.kind = SadPointerKind::Est;
         pointer.checkpoint_policy = Some(cp_policy.said);
     }
 
@@ -200,11 +202,11 @@ mod tests {
         let cp_policy = test_policy("checkpoint");
         let v0 = SadPointer::create(
             "kels/sad/v1/keys/mlkem".to_string(),
+            SadPointerKind::Icp,
             None,
             None,
             policy.said,
             Some(cp_policy.said),
-            None,
         )
         .unwrap();
 

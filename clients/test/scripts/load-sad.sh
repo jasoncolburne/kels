@@ -125,7 +125,7 @@ create_group() {
     # v0: deterministic inception record (no content for v0)
     local v0_json
     v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$policy_said" \
-        '{said: $p, prefix: $p, version: 0, topic: $t, writePolicy: $wp}')
+        '{said: $p, prefix: $p, version: 0, topic: $t, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp}')
     local v0_prefix
     v0_prefix=$(compute_prefix "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg pfx "$v0_prefix" '.prefix = $pfx')
@@ -153,15 +153,15 @@ create_group() {
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         if [ "$i" -eq 1 ]; then
-            # v1: checkpoint_policy declaration (no is_checkpoint — first declaration only)
+            # v1: Est (checkpoint_policy declaration)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
                 --arg cp "$chain_cp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp, checkpointPolicy: $cp}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/est", content: $cs, writePolicy: $wp, checkpointPolicy: $cp}')
         else
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, content: $cs, writePolicy: $wp}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/upd", content: $cs, writePolicy: $wp}')
         fi
         local vi_said
         vi_said=$(compute_said "$vi_json")

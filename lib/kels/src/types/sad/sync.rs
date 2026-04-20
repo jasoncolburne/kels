@@ -101,30 +101,19 @@ impl PagedSadSource for HttpSadSource {
 /// HTTP-based sink that submits SAD pointers to a SADStore service.
 pub struct HttpSadSink {
     base_url: String,
-    repair: bool,
     client: reqwest::Client,
 }
 
 impl HttpSadSink {
-    fn build(base_url: &str, repair: bool) -> Result<Self, KelsError> {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            repair,
             client,
         })
-    }
-
-    pub fn new(base_url: &str) -> Result<Self, KelsError> {
-        Self::build(base_url, false)
-    }
-
-    /// Create a repair sink that submits with `?repair=true`.
-    pub fn new_repair(base_url: &str) -> Result<Self, KelsError> {
-        Self::build(base_url, true)
     }
 }
 
@@ -135,11 +124,7 @@ impl PagedSadSink for HttpSadSink {
             return Ok(());
         }
 
-        let url = if self.repair {
-            format!("{}/api/v1/sad/pointers?repair=true", self.base_url)
-        } else {
-            format!("{}/api/v1/sad/pointers", self.base_url)
-        };
+        let url = format!("{}/api/v1/sad/pointers", self.base_url);
         let resp = self.client.post(&url).json(pointers).send().await?;
 
         if resp.status().is_success() {
@@ -406,6 +391,7 @@ pub async fn forward_sad_pointer(
 mod tests {
     use verifiable_storage::Chained;
 
+    use super::super::pointer::SadPointerKind;
     use super::*;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
@@ -474,8 +460,15 @@ mod tests {
         let cp = test_digest(b"checkpoint-policy");
 
         // Build a chain: v0 (declares checkpoint_policy), v1, then two records at v2 (divergence)
-        let v0 =
-            SadPointer::create("kels/test".to_string(), None, None, wp, Some(cp), None).unwrap();
+        let v0 = SadPointer::create(
+            "kels/test".to_string(),
+            SadPointerKind::Icp,
+            None,
+            None,
+            wp,
+            Some(cp),
+        )
+        .unwrap();
 
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
