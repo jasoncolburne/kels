@@ -471,6 +471,7 @@ mod tests {
         .unwrap();
 
         let mut v1 = v0.clone();
+        v1.kind = SadPointerKind::Upd;
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
 

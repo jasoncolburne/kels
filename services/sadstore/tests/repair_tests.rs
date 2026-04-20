@@ -153,6 +153,7 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
     .unwrap();
     pointers.push(pointer.clone());
 
+    pointer.kind = kels_core::SadPointerKind::Upd;
     for i in 1..count {
         pointer.content = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),

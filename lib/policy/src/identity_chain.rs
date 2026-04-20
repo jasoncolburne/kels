@@ -74,6 +74,7 @@ pub fn advance(
     pointer.content = None;
     pointer.custody = None;
     pointer.kind = SadPointerKind::Upd;
+    pointer.checkpoint_policy = None;
     pointer.write_policy = new_policy.said;
     pointer
         .increment()
