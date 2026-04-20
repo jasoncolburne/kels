@@ -245,7 +245,7 @@ impl<'a> SadChainVerifier<'a> {
                         )));
                     }
                     self.establishment_version = Some(1);
-                    (record.checkpoint_policy, 0)
+                    (record.checkpoint_policy, 1)
                 }
                 kind if kind.evaluates_checkpoint() => {
                     // Evl or Rpr: evaluate against tracked checkpoint_policy
@@ -663,10 +663,10 @@ mod tests {
         current.increment().unwrap();
         records.push(current.clone());
 
-        // v2..v64: 63 Upd records — within bound (1 Est + 63 Upd = 64 non-checkpoint)
+        // v2..v63: 62 Upd records — within bound (1 Est + 62 Upd = 63 non-checkpoint)
         current.kind = SadPointerKind::Upd;
         current.checkpoint_policy = None;
-        for _ in 2..=64 {
+        for _ in 2..=63 {
             current.content = Some(test_digest(
                 format!("content_{}", current.version + 1).as_bytes(),
             ));
@@ -674,8 +674,8 @@ mod tests {
             records.push(current.clone());
         }
 
-        // v65 — should be rejected (overdue: 64 non-checkpoint records, max is 63)
-        current.content = Some(test_digest(b"content_65"));
+        // v64 — should be rejected (overdue: 63 non-checkpoint records, max is 63)
+        current.content = Some(test_digest(b"content_64"));
         current.increment().unwrap();
         records.push(current.clone());
 
