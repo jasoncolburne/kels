@@ -10,7 +10,7 @@
 
 ## Code Style
 
-**Imports**: three groups (std, external, local), nested, sorted, blank-line separated. Fix when touching a file.
+**Imports**: three groups (std, external, local), nested, blank-line separated. `rustfmt` handles sorting within groups. Fix grouping when touching a file.
 
 ```rust
 use std::{collections::HashMap, sync::Arc};

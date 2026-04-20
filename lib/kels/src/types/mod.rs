@@ -1428,6 +1428,22 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_structure_sad_icp_forbids_content() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.content = Some(cesr::Digest256::blake3_256(b"content"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have content"));
+    }
+
+    #[test]
+    fn test_validate_structure_sad_icp_forbids_previous() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have previous"));
+    }
+
+    #[test]
     fn test_validate_structure_est_valid() {
         let mut pointer = make_valid_icp_pointer();
         pointer.kind = SadPointerKind::Est;

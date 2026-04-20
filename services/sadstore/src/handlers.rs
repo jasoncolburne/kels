@@ -1165,15 +1165,6 @@ pub async fn submit_sad_pointer(
             .into_response();
     }
 
-    // Per-chain-prefix daily rate limit (check before, accrue after)
-    if let Err(msg) = check_prefix_rate_limit(
-        &state.prefix_rate_limits,
-        chain_prefix,
-        records.len() as u32,
-    ) {
-        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-    }
-
     // Verify SAID integrity for all records
     for r in &records {
         if r.verify_said().is_err() {
@@ -1294,6 +1285,16 @@ pub async fn submit_sad_pointer(
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
+        // Per-chain-prefix daily rate limit (check before, accrue after dedup)
+        if let Err(msg) = check_prefix_rate_limit(
+            &state.prefix_rate_limits,
+            chain_prefix,
+            new_records.len() as u32,
+        ) {
+            let _ = tx.rollback().await;
+            return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+        }
+
         // Detect repair from post-dedup records — only genuinely new Rpr records trigger repair.
         is_repair = new_records.iter().any(|r| r.kind.is_repair());
 
@@ -1347,7 +1348,7 @@ pub async fn submit_sad_pointer(
             // Repair must include a checkpoint at or after the divergence point —
             // an attacker who can only satisfy write_policy cannot repair
             // (checkpoint_policy is a higher bar).
-            if !records
+            if !new_records
                 .iter()
                 .any(|r| r.version >= from_version && r.kind.evaluates_checkpoint())
             {
@@ -1406,7 +1407,7 @@ pub async fn submit_sad_pointer(
                     .into_response();
             }
 
-            new_record_count = records.len() as u32;
+            new_record_count = new_records.len() as u32;
             should_publish = true;
         } else {
             // Normal path: verify existing chain + new records, then save.

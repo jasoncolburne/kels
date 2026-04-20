@@ -152,14 +152,6 @@ impl<'a> SadChainVerifier<'a> {
             }
 
             let record = &records[0];
-
-            if version != 0 {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} has version {} but expected 0",
-                    record.said, version
-                )));
-            }
-
             record.verify_prefix()?;
 
             // Policy check: v0 must self-satisfy
@@ -1048,5 +1040,28 @@ mod tests {
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_record().version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_policy_evaluation_failure() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_checkpoint(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Evl;
+        v1.checkpoint_policy = None;
+        v1.increment().unwrap();
+
+        // RejectingChecker returns Ok(false) for all satisfies calls —
+        // checkpoint_policy evaluation is a hard error (unlike write_policy which is soft).
+        let checker = RejectingChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("checkpoint policy not satisfied"),
+            "Expected checkpoint policy error, got: {}",
+            err
+        );
     }
 }
