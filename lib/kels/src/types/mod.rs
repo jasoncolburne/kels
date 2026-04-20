@@ -25,25 +25,25 @@ mod tests {
 
     #[test]
     fn test_event_kind_serialization() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/events/v1/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/events/v1/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/events/v1/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/events/v1/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/events/v1/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/events/v1/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/events/v1/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/events/v1/cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/kel/v1/events/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/kel/v1/events/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/kel/v1/events/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/kel/v1/events/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/kel/v1/events/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/kel/v1/events/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
     }
 
     #[test]
     fn test_event_kind_parsing() {
         use std::str::FromStr;
         assert_eq!(
-            EventKind::from_str("kels/events/v1/icp").unwrap(),
+            EventKind::from_str("kels/kel/v1/events/icp").unwrap(),
             EventKind::Icp
         );
         assert_eq!(
-            EventKind::from_str("kels/events/v1/cnt").unwrap(),
+            EventKind::from_str("kels/kel/v1/events/cnt").unwrap(),
             EventKind::Cnt
         );
         // Rejects uppercase
@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn test_event_kind_json() {
         let json = serde_json::to_string(&EventKind::Icp).unwrap();
-        assert_eq!(json, "\"kels/events/v1/icp\"");
-        let parsed: EventKind = serde_json::from_str("\"kels/events/v1/rec\"").unwrap();
+        assert_eq!(json, "\"kels/kel/v1/events/icp\"");
+        let parsed: EventKind = serde_json::from_str("\"kels/kel/v1/events/rec\"").unwrap();
         assert_eq!(parsed, EventKind::Rec);
         // Short form rejected
         assert!(serde_json::from_str::<EventKind>("\"icp\"").is_err());
@@ -570,54 +570,54 @@ mod tests {
 
     #[test]
     fn test_event_kind_as_str() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/events/v1/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/events/v1/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/events/v1/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/events/v1/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/events/v1/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/events/v1/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/events/v1/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/events/v1/cnt");
+        assert_eq!(EventKind::Icp.as_str(), "kels/kel/v1/events/icp");
+        assert_eq!(EventKind::Dip.as_str(), "kels/kel/v1/events/dip");
+        assert_eq!(EventKind::Rot.as_str(), "kels/kel/v1/events/rot");
+        assert_eq!(EventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
+        assert_eq!(EventKind::Rec.as_str(), "kels/kel/v1/events/rec");
+        assert_eq!(EventKind::Ror.as_str(), "kels/kel/v1/events/ror");
+        assert_eq!(EventKind::Dec.as_str(), "kels/kel/v1/events/dec");
+        assert_eq!(EventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
     }
 
     #[test]
     fn test_event_kind_display() {
-        assert_eq!(format!("{}", EventKind::Icp), "kels/events/v1/icp");
-        assert_eq!(format!("{}", EventKind::Cnt), "kels/events/v1/cnt");
+        assert_eq!(format!("{}", EventKind::Icp), "kels/kel/v1/events/icp");
+        assert_eq!(format!("{}", EventKind::Cnt), "kels/kel/v1/events/cnt");
     }
 
     #[test]
     fn test_event_kind_from_str() {
         assert_eq!(
-            "kels/events/v1/icp".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/icp".parse::<EventKind>().unwrap(),
             EventKind::Icp
         );
         assert_eq!(
-            "kels/events/v1/dip".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/dip".parse::<EventKind>().unwrap(),
             EventKind::Dip
         );
         assert_eq!(
-            "kels/events/v1/rot".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/rot".parse::<EventKind>().unwrap(),
             EventKind::Rot
         );
         assert_eq!(
-            "kels/events/v1/ixn".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/ixn".parse::<EventKind>().unwrap(),
             EventKind::Ixn
         );
         assert_eq!(
-            "kels/events/v1/rec".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/rec".parse::<EventKind>().unwrap(),
             EventKind::Rec
         );
         assert_eq!(
-            "kels/events/v1/ror".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/ror".parse::<EventKind>().unwrap(),
             EventKind::Ror
         );
         assert_eq!(
-            "kels/events/v1/dec".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/dec".parse::<EventKind>().unwrap(),
             EventKind::Dec
         );
         assert_eq!(
-            "kels/events/v1/cnt".parse::<EventKind>().unwrap(),
+            "kels/kel/v1/events/cnt".parse::<EventKind>().unwrap(),
             EventKind::Cnt
         );
     }
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_event_kind_from_short_name_rejects_versioned() {
-        assert!(EventKind::from_short_name("kels/events/v1/icp").is_err());
+        assert!(EventKind::from_short_name("kels/kel/v1/events/icp").is_err());
     }
 
     #[test]

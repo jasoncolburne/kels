@@ -656,7 +656,7 @@ KELS uses standard software engineering naming conventions with full English wor
   "prefix": "E...",
   "previous": "E...",
   "serial": 3,
-  "kind": "kels/events/v1/rot",
+  "kind": "kels/kel/v1/events/rot",
   "publicKey": "D...",
   "rotationHash": "E...",
   "recoveryKey": "D...",

@@ -151,7 +151,7 @@ The handler uses `policy_satisfied()` to decide authorization (403 on failure) a
 ### Exchange key publication
 
 ```
-v0  [icp]  write_policy=endorse(kel_prefix), topic=kels/exchange/v1/keys/mlkem
+v0  [icp]  write_policy=endorse(kel_prefix), topic=kels/sad/v1/keys/mlkem
 v1  [est]  checkpoint_policy=endorse(kel_prefix), content=key_publication_said
 v2  [upd]  content=rotated_key_said
 v3  [chk]  is_checkpoint=true, content=another_key_said
@@ -160,7 +160,7 @@ v3  [chk]  is_checkpoint=true, content=another_key_said
 ### Identity chain
 
 ```
-v0  [icp]  write_policy=policy_a_said, topic=kels/identity/v1/chain, content=None
+v0  [icp]  write_policy=policy_a_said, topic=kels/sad/v1/identity/chain, content=None
 v1  [est]  checkpoint_policy=policy_a_said, content=None
 v2  [upd]  write_policy=policy_b_said (policy evolution), content=None
 v3  [chk]  is_checkpoint=true, content=None

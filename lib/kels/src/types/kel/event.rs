@@ -15,35 +15,35 @@ use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
-    #[serde(rename = "kels/events/v1/icp")]
+    #[serde(rename = "kels/kel/v1/events/icp")]
     Icp, // Inception
-    #[serde(rename = "kels/events/v1/dip")]
+    #[serde(rename = "kels/kel/v1/events/dip")]
     Dip, // Delegated inception
-    #[serde(rename = "kels/events/v1/rot")]
+    #[serde(rename = "kels/kel/v1/events/rot")]
     Rot, // Rotation
-    #[serde(rename = "kels/events/v1/ixn")]
+    #[serde(rename = "kels/kel/v1/events/ixn")]
     Ixn, // Interaction (anchor)
-    #[serde(rename = "kels/events/v1/rec")]
+    #[serde(rename = "kels/kel/v1/events/rec")]
     Rec, // Recovery (dual-signed)
-    #[serde(rename = "kels/events/v1/ror")]
+    #[serde(rename = "kels/kel/v1/events/ror")]
     Ror, // Recovery rotation (dual-signed)
-    #[serde(rename = "kels/events/v1/dec")]
+    #[serde(rename = "kels/kel/v1/events/dec")]
     Dec, // Decommission (dual-signed)
-    #[serde(rename = "kels/events/v1/cnt")]
+    #[serde(rename = "kels/kel/v1/events/cnt")]
     Cnt, // Contest (dual-signed, freezes KEL)
 }
 
 impl EventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Icp => "kels/events/v1/icp",
-            Self::Dip => "kels/events/v1/dip",
-            Self::Rot => "kels/events/v1/rot",
-            Self::Ixn => "kels/events/v1/ixn",
-            Self::Rec => "kels/events/v1/rec",
-            Self::Ror => "kels/events/v1/ror",
-            Self::Dec => "kels/events/v1/dec",
-            Self::Cnt => "kels/events/v1/cnt",
+            Self::Icp => "kels/kel/v1/events/icp",
+            Self::Dip => "kels/kel/v1/events/dip",
+            Self::Rot => "kels/kel/v1/events/rot",
+            Self::Ixn => "kels/kel/v1/events/ixn",
+            Self::Rec => "kels/kel/v1/events/rec",
+            Self::Ror => "kels/kel/v1/events/ror",
+            Self::Dec => "kels/kel/v1/events/dec",
+            Self::Cnt => "kels/kel/v1/events/cnt",
         }
     }
 
@@ -171,14 +171,14 @@ impl FromStr for EventKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "kels/events/v1/icp" => Ok(Self::Icp),
-            "kels/events/v1/dip" => Ok(Self::Dip),
-            "kels/events/v1/rot" => Ok(Self::Rot),
-            "kels/events/v1/ixn" => Ok(Self::Ixn),
-            "kels/events/v1/rec" => Ok(Self::Rec),
-            "kels/events/v1/ror" => Ok(Self::Ror),
-            "kels/events/v1/dec" => Ok(Self::Dec),
-            "kels/events/v1/cnt" => Ok(Self::Cnt),
+            "kels/kel/v1/events/icp" => Ok(Self::Icp),
+            "kels/kel/v1/events/dip" => Ok(Self::Dip),
+            "kels/kel/v1/events/rot" => Ok(Self::Rot),
+            "kels/kel/v1/events/ixn" => Ok(Self::Ixn),
+            "kels/kel/v1/events/rec" => Ok(Self::Rec),
+            "kels/kel/v1/events/ror" => Ok(Self::Ror),
+            "kels/kel/v1/events/dec" => Ok(Self::Dec),
+            "kels/kel/v1/events/cnt" => Ok(Self::Cnt),
             _ => Err(KelsError::InvalidKeyEvent(format!(
                 "Unknown event kind: {}",
                 s

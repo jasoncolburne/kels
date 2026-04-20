@@ -269,7 +269,7 @@ enum SadCommands {
         /// The write policy SAID
         write_policy: String,
 
-        /// The topic (e.g., "kels/exchange/v1/keys/mlkem")
+        /// The topic (e.g., "kels/sad/v1/keys/mlkem")
         topic: String,
     },
 }

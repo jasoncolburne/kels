@@ -22,7 +22,7 @@ Fields:
 - `prefix` — Chain identifier (derived from inception content)
 - `previous` — SAID of previous record (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
-- `topic` — Record type (e.g., `kels/exchange/v1/keys/mlkem`)
+- `topic` — Record type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
 - `write_policy` — SAID of the write policy (denormalized from custody for chain keying, required)

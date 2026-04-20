@@ -9,7 +9,7 @@ The KELS protocol has no central authority. Security rests entirely on cryptogra
 **Assumptions:**
 - Clients hold private keys in hardware-backed storage (Secure Enclave, HSM)
 - All clients and infrastructure use ML-DSA-65 or ML-DSA-87 (FIPS 204) by default; clients may use P-256 as a fallback
-- Events are version-qualified (`kels/events/v1/icp`) for future protocol evolution
+- Events are version-qualified (`kels/kel/v1/events/icp`) for future protocol evolution
 
 ## Key Compromise
 

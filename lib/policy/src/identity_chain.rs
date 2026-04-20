@@ -1,7 +1,7 @@
 //! Identity chains — stable identity references via evolving policy pointer chains.
 //!
 //! An identity chain is a SAD pointer chain where:
-//! - Topic: `kels/identity/v1/chain`
+//! - Topic: `kels/sad/v1/identity/chain`
 //! - Content: `None` at every version (policy is carried in `write_policy`)
 //! - Chain prefix: the stable identity reference
 //! - `write_policy`: the current policy's SAID (self-governing)
@@ -12,7 +12,7 @@ use verifiable_storage::{Chained, SelfAddressed};
 use crate::{Policy, error::PolicyError};
 
 /// Well-known topic for identity chains.
-pub const IDENTITY_CHAIN_TOPIC: &str = "kels/identity/v1/chain";
+pub const IDENTITY_CHAIN_TOPIC: &str = "kels/sad/v1/identity/chain";
 
 /// Create a v0 inception pointer for an identity chain.
 ///
@@ -199,7 +199,7 @@ mod tests {
         let policy = test_policy("test");
         let cp_policy = test_policy("checkpoint");
         let v0 = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             policy.said,

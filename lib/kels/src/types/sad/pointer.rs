@@ -35,7 +35,7 @@ pub struct SadPointer {
     pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
-    /// The topic of this pointer chain (e.g., `"kels/exchange/v1/keys/mlkem"`).
+    /// The topic of this pointer chain (e.g., `"kels/sad/v1/keys/mlkem"`).
     pub topic: String,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,17 +155,17 @@ mod tests {
     #[test]
     fn test_compute_sad_pointer_prefix_deterministic() {
         let wp = test_digest(b"write-policy");
-        let prefix1 = compute_sad_pointer_prefix(wp, "kels/exchange/v1/keys/mlkem").unwrap();
-        let prefix2 = compute_sad_pointer_prefix(wp, "kels/exchange/v1/keys/mlkem").unwrap();
+        let prefix1 = compute_sad_pointer_prefix(wp, "kels/sad/v1/keys/mlkem").unwrap();
+        let prefix2 = compute_sad_pointer_prefix(wp, "kels/sad/v1/keys/mlkem").unwrap();
         assert_eq!(prefix1, prefix2);
     }
 
     #[test]
     fn test_compute_sad_pointer_prefix_different_inputs() {
         let prefix1 =
-            compute_sad_pointer_prefix(test_digest(b"wp1"), "kels/exchange/v1/keys/mlkem").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"wp1"), "kels/sad/v1/keys/mlkem").unwrap();
         let prefix2 =
-            compute_sad_pointer_prefix(test_digest(b"wp2"), "kels/exchange/v1/keys/mlkem").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"wp2"), "kels/sad/v1/keys/mlkem").unwrap();
         assert_ne!(prefix1, prefix2);
 
         let prefix3 =
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_sad_record_inception_no_content() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             test_digest(b"write-policy"),
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_sad_record_chain_increment() {
         let mut pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             test_digest(b"write-policy"),
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn test_sad_record_verify_said() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             test_digest(b"write-policy"),
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn test_sad_record_verify_prefix() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             test_digest(b"write-policy"),

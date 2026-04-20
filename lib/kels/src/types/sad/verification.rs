@@ -388,7 +388,7 @@ mod tests {
     fn create_v0_with_checkpoint(wp: cesr::Digest256) -> SadPointer {
         let cp = test_digest(b"checkpoint-policy");
         SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             wp,
@@ -401,7 +401,7 @@ mod tests {
     /// Create a v0 pointer without checkpoint (prefix stays deterministic).
     fn create_v0_no_checkpoint(wp: cesr::Digest256) -> SadPointer {
         SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             wp,
@@ -891,7 +891,7 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let cp = test_digest(b"checkpoint-policy");
         let v0 = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
             None,
             None,
             wp,

@@ -212,9 +212,9 @@ while IFS= read -r prefix; do
         # Determine behavioral state from event kinds and structure
         state=$(echo "$all_events" | jq -r '
             [.[].event.kind] as $kinds |
-            if ($kinds | any(. == "kels/events/v1/cnt")) then "contested"
-            elif ($kinds | any(. == "kels/events/v1/dec")) then "decommissioned"
-            elif ($kinds | any(. == "kels/events/v1/rec" or . == "kels/events/v1/ror")) then "recovered"
+            if ($kinds | any(. == "kels/kel/v1/events/cnt")) then "contested"
+            elif ($kinds | any(. == "kels/kel/v1/events/dec")) then "decommissioned"
+            elif ($kinds | any(. == "kels/kel/v1/events/rec" or . == "kels/kel/v1/events/ror")) then "recovered"
             elif ([.[].event.previous | select(. != null)] | group_by(.) | any(length > 1)) then "frozen"
             else "normal"
             end
