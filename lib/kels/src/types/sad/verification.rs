@@ -267,6 +267,7 @@ impl<'a> SadChainVerifier<'a> {
                         )));
                     }
                     self.establishment_version = Some(1);
+                    // tracked_write_policy unchanged — Est forbids write_policy (validate_structure)
                     (record.checkpoint_policy, 1, branch.tracked_write_policy)
                 }
                 kind if kind.evaluates_checkpoint() => {
@@ -317,6 +318,7 @@ impl<'a> SadChainVerifier<'a> {
                             crate::MAX_NON_CHECKPOINT_RECORDS,
                         )));
                     }
+                    // tracked_write_policy unchanged — Upd forbids write_policy (validate_structure)
                     (branch.checkpoint_policy, count, branch.tracked_write_policy)
                 }
                 _ => unreachable!("All SadPointerKind variants handled"),

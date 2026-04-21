@@ -18,6 +18,12 @@ pub const IDENTITY_CHAIN_TOPIC: &str = "kels/sad/v1/identity/chain";
 ///
 /// The returned pointer's `prefix` is the stable identity reference.
 /// `write_policy` is set to `initial_policy.said` — the identity is self-governing.
+///
+/// To enable `advance()` (policy rotation), follow the inception with an `Est`
+/// record at v1 declaring `checkpoint_policy`. Without it, `advance()` produces
+/// an `Evl` that the verifier rejects at submission (checkpoint_policy must be
+/// established on the branch). See `advance()` for the higher-threshold
+/// authorization rules that apply to rotation.
 pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
     initial_policy
         .verify_said()

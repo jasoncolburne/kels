@@ -315,6 +315,12 @@ impl SadPointerVerification {
     /// Never `None` — v0 always establishes it. Evolutions that fail the soft
     /// write_policy check do not advance this value (the soft failure is also
     /// recorded in `policy_satisfied()`).
+    ///
+    /// For divergent chains, this reflects only the tie-break winner's branch
+    /// state (higher version wins; equal versions break on lexicographically
+    /// greater SAID). Divergent branches may legitimately carry different
+    /// tracked policies, so callers that depend on chain-wide invariants
+    /// should detect divergence via `effective_said` before consulting this.
     pub fn write_policy(&self) -> &cesr::Digest256 {
         &self.tracked_write_policy
     }
