@@ -40,6 +40,17 @@ pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
 /// and a new policy. The new policy must differ from the current write_policy —
 /// an identity chain advance with an unchanged policy is meaningless (content is
 /// always None, custody is always None, there's nothing else to change).
+///
+/// The produced record is an `Evl` (was `Upd` before #131). This means the advance
+/// is evaluated against `checkpoint_policy` — a higher-threshold authorization bar
+/// than `write_policy`. Policy replacement now requires satisfying both the previous
+/// write_policy (the soft check on every v1+ record) and the checkpoint_policy (the
+/// hard check that gates Evl acceptance).
+///
+/// Precondition: the chain must have `checkpoint_policy` established (via a prior
+/// `Est` at v1 or a v0 declaration on the inception record). If not, the returned
+/// pointer will be rejected by `SadChainVerifier` at submission — `advance()` itself
+/// does not surface this error.
 pub fn advance(
     verification: &SadPointerVerification,
     new_policy: &Policy,
@@ -189,6 +200,24 @@ mod tests {
         assert_eq!(v2.kind, SadPointerKind::Evl);
         assert_eq!(v2.write_policy, Some(policy2.said));
         assert_eq!(v2.prefix, prefix);
+
+        // Close the loop: feed [v0, v1_cp, v2] back through a fresh verifier to
+        // prove the produced Evl record passes verifier evaluation (different
+        // code path than the Upd it replaced) and that tracked_write_policy
+        // advances to policy2.said.
+        let mut v1_cp_rebuilt = v0.clone();
+        add_checkpoint_declaration(&mut v1_cp_rebuilt);
+        v1_cp_rebuilt.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier
+            .verify_page(&[v0, v1_cp_rebuilt, v2])
+            .await
+            .unwrap();
+        let reverification = verifier.finish().await.unwrap();
+        assert!(reverification.policy_satisfied());
+        assert_eq!(reverification.write_policy(), &policy2.said);
     }
 
     #[test]
