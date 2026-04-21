@@ -171,6 +171,11 @@ pub fn compute_sad_pointer_prefix(
         Some(write_policy),
         None,
     )?;
+    // Future-proof: if Icp's structural rules grow new required fields,
+    // prefix derivation must not silently diverge from validate_structure.
+    pointer
+        .validate_structure()
+        .map_err(StorageError::StorageError)?;
     Ok(pointer.prefix)
 }
 
@@ -306,7 +311,10 @@ impl SadPointerVerification {
     /// The tracked (effective) write policy SAID for the verified chain.
     ///
     /// Seeded by v0 (Icp) and updated whenever an Evl record carries a new
-    /// write_policy. Never `None` — v0 always establishes it.
+    /// write_policy *and* the evolution was authorized by the previous policy.
+    /// Never `None` — v0 always establishes it. Evolutions that fail the soft
+    /// write_policy check do not advance this value (the soft failure is also
+    /// recorded in `policy_satisfied()`).
     pub fn write_policy(&self) -> &cesr::Digest256 {
         &self.tracked_write_policy
     }
