@@ -110,7 +110,8 @@ When a repair succeeds, SADStore publishes `{prefix}:{effective_said}:repair` to
 
 ### What the verifier tracks
 
-- Per-branch state: tip record, `checkpoint_policy`, `records_since_checkpoint`
+- Per-branch state: tip record, `tracked_write_policy`, `checkpoint_policy`, `records_since_checkpoint`
+- `tracked_write_policy` is seeded from v0 (Icp) and updated when an Evl record carries a new write_policy. Authorization checks on v1+ records use this, not the record's own field.
 - Global: `policy_satisfied` flag, `last_checkpoint_version`
 
 ### Verification token
@@ -161,6 +162,16 @@ kels/sad/v1/pointer/rpr  — Repair (resolves divergence, evaluates checkpoint_p
 
 `validate_structure()` enforces record-level invariants (version constraints, required/forbidden fields per kind). The verifier adds chain-state checks on top: Est rejected when checkpoint_policy already established from v0; Upd/Evl/Rpr rejected when no checkpoint_policy established.
 
+### write_policy per kind
+
+`write_policy` authorizes chain mutations but is only present on records that establish or change it:
+
+- `Icp`: **required** — seeds the chain prefix (prefix = Blake3 of v0 template with said+prefix blanked).
+- `Evl`: **optional** — present means "policy evolution" (evaluated against `checkpoint_policy`, a higher bar). Absent means "pure checkpoint, no policy change" — verifier inherits the tracked policy from branch state. Mirrors `checkpoint_policy` semantics on Evl.
+- `Est`, `Upd`, `Rpr`: **forbidden**. Est declares checkpoint_policy, not write_policy. Upd is a pure content append. Rpr resolves divergence; to evolve policy after repair, submit a separate Evl afterward.
+
+The verifier's `SadBranchState` tracks the effective `tracked_write_policy` — seeded from v0 (Icp always carries it) and updated whenever an Evl record carries a new write_policy. v1+ advances are authorized against `branch.tracked_write_policy`, not the record's own field. This prevents an adversary who satisfies the current write_policy from replacing the policy via a Upd-style record: policy replacement now requires satisfying the stricter `checkpoint_policy` too.
+
 Rpr carries checkpoint evaluation semantics implicitly — it evaluates against `checkpoint_policy` just like Evl, resets `records_since_checkpoint`, and updates `last_checkpoint_version`. Rpr forbids `checkpoint_policy` on the record; to both repair AND evolve checkpoint_policy, use Rpr to fix divergence, then Evl with the new checkpoint_policy afterward.
 
 ## Typical Chain Shapes
@@ -170,8 +181,8 @@ Rpr carries checkpoint evaluation semantics implicitly — it evaluates against 
 ```
 v0  kind=icp  write_policy=endorse(kel_prefix), topic=kels/sad/v1/keys/mlkem
 v1  kind=est  checkpoint_policy=endorse(kel_prefix), content=key_publication_said
-v2  kind=upd  content=rotated_key_said
-v3  kind=evl  content=another_key_said
+v2  kind=upd  content=rotated_key_said                  ← inherits write_policy
+v3  kind=evl  content=another_key_said                  ← pure checkpoint, no policy change
 ```
 
 ### Identity chain
@@ -179,8 +190,8 @@ v3  kind=evl  content=another_key_said
 ```
 v0  kind=icp  write_policy=policy_a_said, topic=kels/sad/v1/identity/chain, content=None
 v1  kind=est  checkpoint_policy=policy_a_said, content=None
-v2  kind=upd  write_policy=policy_b_said (policy evolution), content=None
-v3  kind=evl  content=None
+v2  kind=evl  write_policy=policy_b_said (policy evolution), content=None
+v3  kind=evl  content=None                              ← pure checkpoint, unchanged policy
 ```
 
 ### Divergence and repair

@@ -28,7 +28,7 @@ pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
         SadPointerKind::Icp,
         None,
         None,
-        initial_policy.said,
+        Some(initial_policy.said),
         None,
     )
     .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity pointer: {e}")))
@@ -62,7 +62,7 @@ pub fn advance(
         )));
     }
 
-    if new_policy.said == verification.current_record().write_policy {
+    if new_policy.said == *verification.write_policy() {
         return Err(PolicyError::InvalidPolicy(
             "Identity chain advance requires a different policy — \
              content and custody are always None, so unchanged write_policy is a no-op"
@@ -73,9 +73,9 @@ pub fn advance(
     let mut pointer = verification.current_record().clone();
     pointer.content = None;
     pointer.custody = None;
-    pointer.kind = SadPointerKind::Upd;
+    pointer.kind = SadPointerKind::Evl;
     pointer.checkpoint_policy = None;
-    pointer.write_policy = new_policy.said;
+    pointer.write_policy = Some(new_policy.said);
     pointer
         .increment()
         .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to increment pointer: {e}")))?;
@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(v0.version, 0);
         assert!(v0.content.is_none());
         assert!(v0.previous.is_none());
-        assert_eq!(v0.write_policy, policy.said);
+        assert_eq!(v0.write_policy, Some(policy.said));
         assert_eq!(v0.topic, IDENTITY_CHAIN_TOPIC);
     }
 
@@ -162,6 +162,8 @@ mod tests {
         let cp_policy = test_policy("checkpoint");
         pointer.kind = SadPointerKind::Est;
         pointer.checkpoint_policy = Some(cp_policy.said);
+        // Est forbids write_policy
+        pointer.write_policy = None;
     }
 
     #[tokio::test]
@@ -184,7 +186,8 @@ mod tests {
         let v2 = advance(&verification, &policy2).unwrap();
         assert_eq!(v2.version, 2);
         assert!(v2.content.is_none());
-        assert_eq!(v2.write_policy, policy2.said);
+        assert_eq!(v2.kind, SadPointerKind::Evl);
+        assert_eq!(v2.write_policy, Some(policy2.said));
         assert_eq!(v2.prefix, prefix);
     }
 
@@ -206,7 +209,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            policy.said,
+            Some(policy.said),
             Some(cp_policy.said),
         )
         .unwrap();

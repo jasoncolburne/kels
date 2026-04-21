@@ -13,8 +13,9 @@ use crate::KelsError;
 ///
 /// `SadChainVerifier` calls this at each generation:
 /// - v0: `self_satisfies(record)` — the inception must be authorized by its own write_policy
-/// - v1+: `satisfies(record, &branch_tip.write_policy)` — each advance must be authorized
-///   by the current write_policy (unconditionally, whether or not the policy changed)
+/// - v1+: `satisfies(record, &branch.tracked_write_policy)` — each advance must be authorized
+///   by the branch's currently-tracked write_policy (seeded by v0, updated when Evl carries
+///   a new write_policy). Called unconditionally, whether or not the policy changed.
 ///
 /// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
 /// calls `evaluate_anchored_policy` to check KEL anchoring).
@@ -43,6 +44,10 @@ pub trait PolicyChecker: Send + Sync {
 #[derive(Debug, Clone)]
 struct SadBranchState {
     tip: SadPointer,
+    /// The effective write_policy for this branch.
+    /// Seeded from v0 (Icp always has write_policy) and updated when an Evl
+    /// record carries a new write_policy. Used to authorize v1+ advances.
+    tracked_write_policy: cesr::Digest256,
     /// The checkpoint policy SAID tracked on this branch.
     /// `None` until the first checkpoint_policy is declared.
     checkpoint_policy: Option<cesr::Digest256>,
@@ -165,10 +170,18 @@ impl<'a> SadChainVerifier<'a> {
                 self.establishment_version = Some(0);
             }
 
+            // Seed tracked_write_policy from v0. validate_structure guarantees
+            // Icp has Some(write_policy).
+            #[allow(clippy::expect_used)]
+            let tracked_write_policy = record
+                .write_policy
+                .expect("Icp record must have write_policy per validate_structure");
+
             self.branches.insert(
                 record.said,
                 SadBranchState {
                     tip: record.clone(),
+                    tracked_write_policy,
                     checkpoint_policy,
                     records_since_checkpoint: 0,
                 },
@@ -210,10 +223,10 @@ impl<'a> SadChainVerifier<'a> {
                 )));
             }
 
-            // Policy check: every v1+ record must satisfy the branch tip's write_policy
+            // Policy check: every v1+ record must satisfy the branch's tracked write_policy
             if !self
                 .checker
-                .satisfies(record, &branch.tip.write_policy)
+                .satisfies(record, &branch.tracked_write_policy)
                 .await?
             {
                 self.policy_satisfied = false;
@@ -231,7 +244,9 @@ impl<'a> SadChainVerifier<'a> {
             }
 
             // Kind-specific chain-state logic
-            let (checkpoint_policy, records_since_checkpoint) = match record.kind {
+            let (checkpoint_policy, records_since_checkpoint, tracked_write_policy) = match record
+                .kind
+            {
                 SadPointerKind::Icp => {
                     // Icp at v1+ is rejected by validate_structure (version != 0)
                     unreachable!("Icp at v1+ should be rejected by validate_structure")
@@ -245,7 +260,7 @@ impl<'a> SadChainVerifier<'a> {
                         )));
                     }
                     self.establishment_version = Some(1);
-                    (record.checkpoint_policy, 1)
+                    (record.checkpoint_policy, 1, branch.tracked_write_policy)
                 }
                 kind if kind.evaluates_checkpoint() => {
                     // Evl or Rpr: evaluate against tracked checkpoint_policy
@@ -271,7 +286,10 @@ impl<'a> SadChainVerifier<'a> {
 
                     // Evl allows checkpoint_policy evolution; Rpr forbids it (validate_structure)
                     let new_cp = record.checkpoint_policy.or(Some(*tracked));
-                    (new_cp, 0)
+                    // Evl with Some(write_policy) = policy evolution. None = pure checkpoint.
+                    // Rpr forbids write_policy entirely (validate_structure).
+                    let new_wp = record.write_policy.unwrap_or(branch.tracked_write_policy);
+                    (new_cp, 0, new_wp)
                 }
                 SadPointerKind::Upd => {
                     // Normal record — increment counter, check bound
@@ -284,7 +302,7 @@ impl<'a> SadChainVerifier<'a> {
                             crate::MAX_NON_CHECKPOINT_RECORDS,
                         )));
                     }
-                    (branch.checkpoint_policy, count)
+                    (branch.checkpoint_policy, count, branch.tracked_write_policy)
                 }
                 _ => unreachable!("All SadPointerKind variants handled"),
             };
@@ -293,6 +311,7 @@ impl<'a> SadChainVerifier<'a> {
                 record.said,
                 SadBranchState {
                     tip: record.clone(),
+                    tracked_write_policy,
                     checkpoint_policy,
                     records_since_checkpoint,
                 },
@@ -360,15 +379,23 @@ impl<'a> SadChainVerifier<'a> {
             ));
         }
 
-        let tip = self
+        // Deterministic tie-break: higher version wins; equal versions break
+        // on lexicographically greater SAID. Matters for divergent chains so
+        // `verification.write_policy()` is reproducible across callers.
+        let winning_branch = self
             .branches
             .into_values()
-            .max_by_key(|b| b.tip.version)
-            .map(|b| b.tip)
+            .max_by(|a, b| {
+                a.tip
+                    .version
+                    .cmp(&b.tip.version)
+                    .then_with(|| a.tip.said.as_ref().cmp(b.tip.said.as_ref()))
+            })
             .ok_or_else(|| KelsError::VerificationFailed("No tip after verification".into()))?;
 
         Ok(super::pointer::SadPointerVerification::new(
-            tip,
+            winning_branch.tip,
+            winning_branch.tracked_write_policy,
             self.policy_satisfied,
             self.last_checkpoint_version,
             self.establishment_version,
@@ -396,7 +423,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            wp,
+            Some(wp),
             Some(cp),
         )
         .unwrap()
@@ -409,7 +436,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            wp,
+            Some(wp),
             None,
         )
         .unwrap()
@@ -420,12 +447,14 @@ mod tests {
         let cp = test_digest(b"checkpoint-policy");
         pointer.kind = SadPointerKind::Est;
         pointer.checkpoint_policy = Some(cp);
+        pointer.write_policy = None; // Est forbids write_policy
         pointer.increment().unwrap();
     }
 
-    /// Set Evl kind and increment (evaluated checkpoint).
+    /// Set Evl kind and increment (evaluated checkpoint, no policy evolution).
     fn add_checkpoint(pointer: &mut SadPointer) {
         pointer.kind = SadPointerKind::Evl;
+        pointer.write_policy = None; // pure checkpoint
         pointer.increment().unwrap();
     }
 
@@ -462,6 +491,30 @@ mod tests {
         }
     }
 
+    /// Accepts checkpoint_policy evaluations but rejects write_policy authorization.
+    ///
+    /// Distinguishes the two by the policy SAID passed to `satisfies`: callers
+    /// supply the checkpoint policy SAID via the provided `checkpoint_policy`
+    /// field, and the write_policy SAID otherwise. This lets tests exercise the
+    /// soft write_policy rejection path even when the record also triggers a
+    /// checkpoint evaluation.
+    struct AcceptCheckpointRejectWriteChecker {
+        checkpoint_policy: cesr::Digest256,
+    }
+    #[async_trait::async_trait]
+    impl PolicyChecker for AcceptCheckpointRejectWriteChecker {
+        async fn satisfies(
+            &self,
+            _: &SadPointer,
+            policy: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
+            Ok(*policy == self.checkpoint_policy)
+        }
+        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
     // ==================== Original tests (updated with kinds) ====================
 
     #[tokio::test]
@@ -471,6 +524,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
@@ -496,6 +550,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
         v1.version = 5;
@@ -519,6 +574,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
         let mut v2 = v1.clone();
@@ -541,6 +597,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
@@ -558,8 +615,8 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadPointerKind::Upd;
-        v1.write_policy = wp2;
+        v1.kind = SadPointerKind::Evl;
+        v1.write_policy = Some(wp2);
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
@@ -568,6 +625,8 @@ mod tests {
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(verification.policy_satisfied());
+        // Tracked write_policy updated from Evl
+        assert_eq!(verification.write_policy(), &wp2);
     }
 
     #[tokio::test]
@@ -577,16 +636,144 @@ mod tests {
         let v0 = create_v0_with_checkpoint(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadPointerKind::Upd;
-        v1.write_policy = wp2;
+        v1.kind = SadPointerKind::Evl;
+        v1.write_policy = Some(wp2);
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
+        // RejectingChecker rejects both write_policy and checkpoint_policy checks —
+        // checkpoint_policy rejection on Evl is a hard error.
         let checker = RejectingChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("checkpoint policy not satisfied"),
+            "Expected checkpoint policy error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_evl_without_write_policy_inherits_tracked() {
+        let wp1 = test_digest(b"write-policy-1");
+        let v0 = create_v0_with_checkpoint(wp1);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Evl;
+        v1.write_policy = None;
+        v1.checkpoint_policy = None;
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert!(!verification.policy_satisfied());
+        // Pure checkpoint — tracked write_policy inherited from v0
+        assert_eq!(verification.write_policy(), &wp1);
+    }
+
+    #[tokio::test]
+    async fn test_evl_evolution_rejected_by_previous_write_policy_soft_fails() {
+        // The core security claim: Evl that evolves write_policy must be
+        // authorized against the *previous* (tracked) write_policy, even
+        // though the checkpoint_policy evaluation may pass.
+        let wp1 = test_digest(b"write-policy-1");
+        let wp2 = test_digest(b"write-policy-2");
+        let cp = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
+        let v0 = create_v0_with_checkpoint(wp1);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Evl;
+        v1.write_policy = Some(wp2);
+        v1.checkpoint_policy = None;
+        v1.increment().unwrap();
+
+        // Accepts checkpoint_policy evaluation, rejects write_policy authorization.
+        let checker = AcceptCheckpointRejectWriteChecker {
+            checkpoint_policy: cp,
+        };
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(
+            !verification.policy_satisfied(),
+            "Expected policy_satisfied=false because the previous write_policy rejected the evolution"
+        );
+        // Even so, finish() succeeds (soft rejection), and the tracked policy did advance
+        // since the Evl record carried Some(wp2). Authorization is the caller's decision.
+        assert_eq!(verification.write_policy(), &wp2);
+    }
+
+    #[tokio::test]
+    async fn test_rpr_inherits_tracked_write_policy() {
+        // Rpr cannot carry write_policy (validate_structure forbids it).
+        // The verifier must leave tracked_write_policy unchanged across Rpr.
+        let wp1 = test_digest(b"write-policy-1");
+        let v0 = create_v0_with_checkpoint(wp1);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Rpr;
+        v1.write_policy = None;
+        v1.checkpoint_policy = None; // Rpr forbids checkpoint_policy
+        v1.increment().unwrap();
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        // Rpr inherits wp1 from branch state
+        assert_eq!(verification.write_policy(), &wp1);
+    }
+
+    #[tokio::test]
+    async fn test_divergent_branches_tracked_write_policy_tiebreak_deterministic() {
+        // Two divergent Evl branches at v1 carry different new write_policies.
+        // finish() must pick one deterministically regardless of input order.
+        let wp0 = test_digest(b"write-policy-0");
+        let wp_a = test_digest(b"write-policy-a");
+        let wp_b = test_digest(b"write-policy-b");
+        let v0 = create_v0_with_checkpoint(wp0);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadPointerKind::Evl;
+        v1_a.write_policy = Some(wp_a);
+        v1_a.checkpoint_policy = None;
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadPointerKind::Evl;
+        v1_b.write_policy = Some(wp_b);
+        v1_b.checkpoint_policy = None;
+        v1_b.increment().unwrap();
+
+        // Expected tie-break: higher version wins; equal versions break on
+        // lexicographically greater SAID bytes.
+        let expected_wp = if v1_a.said.as_ref() > v1_b.said.as_ref() {
+            wp_a
+        } else {
+            wp_b
+        };
+
+        // Order 1: a then b
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier
+            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
+            .await
+            .unwrap();
+        let v1 = verifier.finish().await.unwrap();
+        assert!(v1.policy_satisfied());
+        assert_eq!(v1.write_policy(), &expected_wp);
+
+        // Order 2: b then a — must return the same branch
+        let checker = AlwaysPassChecker;
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1_b, v1_a]).await.unwrap();
+        let v2 = verifier.finish().await.unwrap();
+        assert_eq!(v2.write_policy(), &expected_wp);
     }
 
     #[tokio::test]
@@ -596,6 +783,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.checkpoint_policy = None;
         v1.increment().unwrap();
 
@@ -659,6 +847,7 @@ mod tests {
         // v1: Est (checkpoint_policy declaration)
         current.content = Some(test_digest(b"content_1"));
         current.kind = SadPointerKind::Est;
+        current.write_policy = None;
         current.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
         current.increment().unwrap();
         records.push(current.clone());
@@ -705,6 +894,7 @@ mod tests {
 
         // v2..v63: 62 more Upd records (total 63 non-checkpoint: v1..v63)
         current.kind = SadPointerKind::Upd;
+        current.write_policy = None;
         current.checkpoint_policy = None;
         for i in 2..=63 {
             current.content = Some(test_digest(format!("content_{}", i).as_bytes()));
@@ -792,6 +982,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Est;
+        v1.write_policy = None;
         v1.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
         v1.increment().unwrap();
 
@@ -854,6 +1045,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Est;
+        v1.write_policy = None;
         v1.checkpoint_policy = Some(test_digest(b"another-checkpoint-policy"));
         v1.increment().unwrap();
 
@@ -879,6 +1071,7 @@ mod tests {
         let mut v2 = v1.clone();
         v2.content = Some(test_digest(b"content2"));
         v2.kind = SadPointerKind::Est;
+        v2.write_policy = None;
         v2.checkpoint_policy = Some(test_digest(b"another-cp"));
         v2.increment().unwrap();
 
@@ -900,6 +1093,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Upd;
+        v1.write_policy = None;
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -921,6 +1115,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Rpr;
+        v1.write_policy = None;
         v1.checkpoint_policy = None; // Rpr forbids checkpoint_policy
         v1.increment().unwrap();
 
@@ -938,6 +1133,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Rpr;
+        v1.write_policy = None;
         v1.checkpoint_policy = Some(test_digest(b"rpr-cp"));
         v1.increment().unwrap();
 
@@ -1002,7 +1198,7 @@ mod tests {
             kind: SadPointerKind::Evl,
             content: None,
             custody: None,
-            write_policy: wp,
+            write_policy: Some(wp),
             checkpoint_policy: Some(cp),
         };
         v0.derive_said().unwrap();
@@ -1026,6 +1222,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadPointerKind::Est;
+        v1.write_policy = None;
         v1.checkpoint_policy = Some(test_digest(b"checkpoint-policy"));
         v1.increment().unwrap();
 

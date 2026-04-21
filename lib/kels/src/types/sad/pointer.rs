@@ -127,7 +127,7 @@ pub struct SadPointer {
     #[prefix]
     pub prefix: cesr::Digest256,
     #[previous]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
@@ -136,18 +136,21 @@ pub struct SadPointer {
     /// The kind of this pointer record.
     pub kind: SadPointerKind,
     /// SAID of the content object in the SAD store (None for v0 inception).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub content: Option<cesr::Digest256>,
     /// SAID of the custody SAD (optional, controls readPolicy/nodes for the chain).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub custody: Option<cesr::Digest256>,
     /// SAID of the write policy (denormalized from custody for chain keying).
-    /// Required — a pointer without a write_policy has no chain identity.
-    pub write_policy: cesr::Digest256,
+    /// Required on `Icp` (prefix derivation) and optional on `Evl` (policy evolution).
+    /// Forbidden on `Est`, `Upd`, `Rpr`. Absence on `Evl` means "pure checkpoint,
+    /// no policy change" — verifier inherits the tracked policy from branch state.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub write_policy: Option<cesr::Digest256>,
     /// SAID of the checkpoint policy — a higher-threshold policy that bounds
     /// divergence. An attacker who satisfies write_policy but can't satisfy
     /// checkpoint_policy has their fork bounded to ≤63 records.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub checkpoint_policy: Option<cesr::Digest256>,
 }
 
@@ -165,7 +168,7 @@ pub fn compute_sad_pointer_prefix(
         SadPointerKind::Icp,
         None,
         None,
-        write_policy,
+        Some(write_policy),
         None,
     )?;
     Ok(pointer.prefix)
@@ -198,6 +201,7 @@ impl SadPointer {
                         self.version
                     ));
                 }
+                require("writePolicy", self.write_policy.is_some())?;
                 forbid("previous", self.previous.is_some())?;
                 forbid("content", self.content.is_some())?;
                 // checkpoint_policy is optional (non-discoverable chains may declare at v0)
@@ -211,6 +215,7 @@ impl SadPointer {
                 }
                 require("previous", self.previous.is_some())?;
                 require("checkpointPolicy", self.checkpoint_policy.is_some())?;
+                forbid("writePolicy", self.write_policy.is_some())?;
             }
             SadPointerKind::Upd => {
                 if self.version < 1 {
@@ -221,6 +226,7 @@ impl SadPointer {
                 }
                 require("previous", self.previous.is_some())?;
                 forbid("checkpointPolicy", self.checkpoint_policy.is_some())?;
+                forbid("writePolicy", self.write_policy.is_some())?;
             }
             SadPointerKind::Evl => {
                 if self.version < 1 {
@@ -230,6 +236,7 @@ impl SadPointer {
                     ));
                 }
                 require("previous", self.previous.is_some())?;
+                // write_policy optional — present = policy evolution, absent = pure checkpoint
                 // checkpoint_policy optional — allows policy evolution
             }
             SadPointerKind::Rpr => {
@@ -241,6 +248,7 @@ impl SadPointer {
                 }
                 require("previous", self.previous.is_some())?;
                 forbid("checkpointPolicy", self.checkpoint_policy.is_some())?;
+                forbid("writePolicy", self.write_policy.is_some())?;
             }
         }
 
@@ -256,6 +264,7 @@ impl SadPointer {
 #[derive(Debug, Clone)]
 pub struct SadPointerVerification {
     tip: SadPointer,
+    tracked_write_policy: cesr::Digest256,
     policy_satisfied: bool,
     last_checkpoint_version: Option<u64>,
     establishment_version: Option<u64>,
@@ -265,12 +274,14 @@ impl SadPointerVerification {
     /// Create a new verification token. Crate-internal only.
     pub(crate) fn new(
         tip: SadPointer,
+        tracked_write_policy: cesr::Digest256,
         policy_satisfied: bool,
         last_checkpoint_version: Option<u64>,
         establishment_version: Option<u64>,
     ) -> Self {
         Self {
             tip,
+            tracked_write_policy,
             policy_satisfied,
             last_checkpoint_version,
             establishment_version,
@@ -292,9 +303,12 @@ impl SadPointerVerification {
         &self.tip.prefix
     }
 
-    /// The write policy SAID.
+    /// The tracked (effective) write policy SAID for the verified chain.
+    ///
+    /// Seeded by v0 (Icp) and updated whenever an Evl record carries a new
+    /// write_policy. Never `None` — v0 always establishes it.
     pub fn write_policy(&self) -> &cesr::Digest256 {
-        &self.tip.write_policy
+        &self.tracked_write_policy
     }
 
     /// The pointer topic.
@@ -367,7 +381,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            test_digest(b"write-policy"),
+            Some(test_digest(b"write-policy")),
             None,
         )
         .unwrap();
@@ -384,7 +398,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            test_digest(b"write-policy"),
+            Some(test_digest(b"write-policy")),
             None,
         )
         .unwrap();
@@ -409,7 +423,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            test_digest(b"write-policy"),
+            Some(test_digest(b"write-policy")),
             None,
         )
         .unwrap();
@@ -428,7 +442,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            test_digest(b"write-policy"),
+            Some(test_digest(b"write-policy")),
             None,
         )
         .unwrap();
@@ -436,7 +450,7 @@ mod tests {
 
         // Tamper with write_policy
         let mut tampered = pointer;
-        tampered.write_policy = test_digest(b"tampered");
+        tampered.write_policy = Some(test_digest(b"tampered"));
         tampered.derive_said().unwrap();
         assert!(tampered.verify_prefix().is_err());
     }

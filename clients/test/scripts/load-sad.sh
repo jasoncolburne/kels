@@ -153,15 +153,16 @@ create_group() {
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         if [ "$i" -eq 1 ]; then
-            # v1: Est (checkpoint_policy declaration)
+            # v1: Est (checkpoint_policy declaration — Est forbids writePolicy)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
+                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
                 --arg cp "$chain_cp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/est", content: $cs, writePolicy: $wp, checkpointPolicy: $cp}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/est", content: $cs, checkpointPolicy: $cp}')
         else
+            # Upd forbids writePolicy
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" --arg wp "$policy_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/upd", content: $cs, writePolicy: $wp}')
+                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/upd", content: $cs}')
         fi
         local vi_said
         vi_said=$(compute_said "$vi_json")

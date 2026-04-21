@@ -10,14 +10,12 @@ CREATE TABLE IF NOT EXISTS sad_pointers (
     topic TEXT NOT NULL,
     content TEXT,
     custody TEXT,                    -- SAID of custody SAD
-    write_policy TEXT NOT NULL,      -- denormalized from custody for chain keying
+    write_policy TEXT,               -- required on Icp, optional on Evl, forbidden on Est/Upd/Rpr
     kind TEXT NOT NULL,              -- record kind (kels/sad/v1/pointer/{icp,upd,est,evl,rpr})
     checkpoint_policy TEXT           -- SAID of checkpoint policy (higher threshold than write_policy)
 );
 
 CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);
-CREATE INDEX IF NOT EXISTS sad_pointers_write_policy_topic_version_idx
-    ON sad_pointers(write_policy, topic, version DESC);
 
 -- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (

@@ -146,10 +146,10 @@ impl SadPointerRepository {
 
         let prefix = records[0].prefix;
 
-        // Note: no write_policy consistency check here — write_policy can evolve across
-        // versions, so repair records at v3+ may legitimately differ from v0's write_policy.
-        // Callers must verify policy satisfaction independently (the handler does this via
-        // SadChainVerifier + PolicyChecker after truncate_and_replace).
+        // Note: write_policy evolution is tracked by the verifier's branch state across
+        // versions; no consistency check at the repo layer — callers must verify via
+        // SadChainVerifier (the handler does this with PolicyChecker after
+        // truncate_and_replace).
 
         // Skip leading records that already exist locally
         let (new_records, from_version) = {

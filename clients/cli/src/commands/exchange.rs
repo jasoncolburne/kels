@@ -118,7 +118,7 @@ pub(crate) async fn cmd_exchange_publish_key(
         kels_core::SadPointerKind::Icp,
         None,
         None,
-        write_policy,
+        Some(write_policy),
         None,
     )
     .context("Failed to create inception pointer")?;
@@ -126,6 +126,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     let mut v1 = v0.clone();
     v1.content = Some(publication.said);
     v1.kind = kels_core::SadPointerKind::Est;
+    v1.write_policy = None; // Est forbids write_policy
     v1.checkpoint_policy = Some(write_policy); // first declaration, not evaluated
     v1.increment().context("Failed to increment pointer")?;
 
@@ -226,6 +227,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let mut next = tip.clone();
     next.content = Some(publication.said);
     next.kind = kels_core::SadPointerKind::Upd;
+    next.write_policy = None; // Upd forbids write_policy
     next.checkpoint_policy = None;
     next.increment().context("Failed to increment pointer")?;
 

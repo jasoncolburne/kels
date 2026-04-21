@@ -147,13 +147,14 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
         kels_core::SadPointerKind::Icp,
         None,
         None,
-        kel_digest,
+        Some(kel_digest),
         None,
     )
     .unwrap();
     pointers.push(pointer.clone());
 
     pointer.kind = kels_core::SadPointerKind::Upd;
+    pointer.write_policy = None; // Upd forbids write_policy
     for i in 1..count {
         pointer.content = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),
@@ -171,7 +172,6 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
 fn build_replacement(
     previous_said: &cesr::Digest256,
     prefix: &cesr::Digest256,
-    kel_prefix: &str,
     kind: &str,
     from_version: u64,
     count: usize,
@@ -179,7 +179,6 @@ fn build_replacement(
 ) -> Vec<SadPointer> {
     let mut pointers = Vec::with_capacity(count);
 
-    let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let mut pointer = SadPointer {
         said: cesr::Digest256::default(),
         prefix: *prefix,
@@ -190,7 +189,7 @@ fn build_replacement(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
         custody: None,
-        write_policy: kel_digest,
+        write_policy: None, // Rpr forbids write_policy
         kind: kels_core::SadPointerKind::Rpr,
         checkpoint_policy: None,
     };
@@ -256,15 +255,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Build replacement from v3 (replacing v3 and v4 with 2 new records)
     let previous_said = &chain[2].said; // v2 is the last kept record
-    let replacement = build_replacement(
-        previous_said,
-        &prefix,
-        kel_prefix,
-        kind,
-        3,
-        2,
-        "replacement",
-    );
+    let replacement = build_replacement(previous_said, &prefix, kind, 3, 2, "replacement");
 
     truncate_and_replace_txn(&repo, &replacement).await;
 
@@ -356,11 +347,11 @@ async fn test_get_repairs_pagination() {
     let prefix = chain[0].prefix;
 
     // First repair: replace from v4
-    let r1 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_a");
+    let r1 = build_replacement(&chain[3].said, &prefix, kind, 4, 1, "repair_a");
     truncate_and_replace_txn(&repo, &r1).await;
 
     // Second repair: replace from v4 again (replacing the first replacement)
-    let r2 = build_replacement(&chain[3].said, &prefix, kel_prefix, kind, 4, 1, "repair_b");
+    let r2 = build_replacement(&chain[3].said, &prefix, kind, 4, 1, "repair_b");
     truncate_and_replace_txn(&repo, &r2).await;
 
     // Paginate with limit=1
@@ -399,15 +390,7 @@ async fn test_get_repair_records_pagination() {
     save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
-    let replacement = build_replacement(
-        &chain[0].said,
-        &prefix,
-        kel_prefix,
-        kind,
-        1,
-        3,
-        "replacement",
-    );
+    let replacement = build_replacement(&chain[0].said, &prefix, kind, 1, 3, "replacement");
     truncate_and_replace_txn(&repo, &replacement).await;
 
     let (repairs, _) = repo
