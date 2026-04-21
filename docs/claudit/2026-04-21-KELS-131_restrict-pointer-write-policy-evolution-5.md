@@ -7,43 +7,52 @@ Fifth-pass audit. Diff unchanged in shape (~228+/68- across the 16 source/test/d
 | Priority | Open | Resolved |
 |----------|------|----------|
 | High     | 0    | 0        |
-| Medium   | 1    | 0        |
+| Medium   | 0    | 1        |
 | Low      | 0    | 0        |
 
 ---
 
 ## Medium Priority
 
-### 1. Branch `checkpoint_policy` and `last_checkpoint_version` still advance when a record soft-fails the write_policy check
+### ~~1. Branch `checkpoint_policy` and `last_checkpoint_version` still advance when a record soft-fails the write_policy check~~ — RESOLVED
 
 **File:** `lib/kels/src/types/sad/verification.rs:282-308`
 
-Round 2 added the defense-in-depth gate that *blocks* `tracked_write_policy` advancement when the soft wp check fails on an Evl/Rpr record. The same match arm has two other side effects that are not similarly gated:
+~~Round 2 added the defense-in-depth gate that *blocks* `tracked_write_policy` advancement when the soft wp check fails on an Evl/Rpr record. The same match arm has two other side effects that are not similarly gated:~~
 
-1. `self.last_checkpoint_version = ...` (line 290-293) is updated unconditionally whenever the hard cp check passes.
-2. `new_cp = record.checkpoint_policy.or(Some(*tracked))` (line 296) then becomes the branch's new `checkpoint_policy` unconditionally.
+1. ~~`self.last_checkpoint_version = ...` (line 290-293) is updated unconditionally whenever the hard cp check passes.~~
+2. ~~`new_cp = record.checkpoint_policy.or(Some(*tracked))` (line 296) then becomes the branch's new `checkpoint_policy` unconditionally.~~
 
-Scenario: a chain at v0 has `tracked_write_policy = wp1`, `checkpoint_policy = cp1`. An adversary who has compromised `cp1` endorsers but *not* `wp1` endorsers crafts `v1 = Evl(write_policy=Some(wp_attacker), checkpoint_policy=Some(cp_attacker))`. In the verifier:
+~~Scenario: a chain at v0 has `tracked_write_policy = wp1`, `checkpoint_policy = cp1`. An adversary who has compromised `cp1` endorsers but *not* `wp1` endorsers crafts `v1 = Evl(write_policy=Some(wp_attacker), checkpoint_policy=Some(cp_attacker))`. In the verifier:~~
 
-- Soft wp check: `satisfies(v1, wp1)` → `false` (attacker can't satisfy wp1). `policy_satisfied = false`, `write_policy_satisfied = false`.
-- Hard cp check: `satisfies(v1, cp1)` → `true` (attacker compromised cp1). No hard error.
-- `tracked_write_policy` stays at `wp1` (Round 2 gate holds).
-- `last_checkpoint_version` advances to `Some(1)`.
-- Branch `checkpoint_policy` advances to `cp_attacker`.
+- ~~Soft wp check: `satisfies(v1, wp1)` → `false` (attacker can't satisfy wp1). `policy_satisfied = false`, `write_policy_satisfied = false`.~~
+- ~~Hard cp check: `satisfies(v1, cp1)` → `true` (attacker compromised cp1). No hard error.~~
+- ~~`tracked_write_policy` stays at `wp1` (Round 2 gate holds).~~
+- ~~`last_checkpoint_version` advances to `Some(1)`.~~
+- ~~Branch `checkpoint_policy` advances to `cp_attacker`.~~
 
-In practice the handler short-circuits this via `if !verification.policy_satisfied() { return FORBIDDEN }` (both normal and repair paths in `services/sadstore/src/handlers.rs:1390,1449`), so the corrupt branch state never persists through a single submission. The exposure is purely the "belt-and-suspenders" case R2 was designed to protect against — a consumer that forgets to gate on `policy_satisfied()`.
+~~In practice the handler short-circuits this via `if !verification.policy_satisfied() { return FORBIDDEN }` (both normal and repair paths in `services/sadstore/src/handlers.rs:1390,1449`), so the corrupt branch state never persists through a single submission. The exposure is purely the "belt-and-suspenders" case R2 was designed to protect against — a consumer that forgets to gate on `policy_satisfied()`.~~
 
-The Round 2 rationale ("gives consumers multiple soft signals instead of relying on a single `policy_satisfied` flag being checked") applies symmetrically here. A consumer that bypasses `policy_satisfied()` would receive a verification token whose `write_policy()` is correctly frozen at `wp1` but whose *branch-state descendants* (used internally by the verifier for subsequent generations, and surfaced to callers via `last_checkpoint_version()`) reflect attacker-controlled values.
+~~The Round 2 rationale ("gives consumers multiple soft signals instead of relying on a single `policy_satisfied` flag being checked") applies symmetrically here.~~
 
-The counter-argument for the current behavior: cp advancement was authorized by *its own* hard cp check; gating it on the wp check couples two orthogonal authorization layers. This is defensible — but the same "orthogonal layers" argument could have been made against the R2 gate on `tracked_write_policy`, and wasn't.
+**Resolution (Option a — symmetric gating):** Both `last_checkpoint_version` and `new_cp` in the Evl/Rpr arm are now gated on `write_policy_satisfied`, mirroring the R2 gate on `tracked_write_policy`:
 
-**Suggested fix:** Decide one way or the other and document the choice. Either:
+```rust
+if write_policy_satisfied {
+    self.last_checkpoint_version = Some(match self.last_checkpoint_version {
+        Some(existing) => existing.min(record.version),
+        None => record.version,
+    });
+}
 
-(a) Gate both `last_checkpoint_version` and `new_cp` on `write_policy_satisfied`, mirroring the R2 gate on `tracked_write_policy` — the verifier's branch state then reflects only advances that were authorized by *every* applicable policy layer, and soft signals propagate symmetrically.
+let new_cp = if write_policy_satisfied {
+    record.checkpoint_policy.or(Some(*tracked))
+} else {
+    Some(*tracked)
+};
+```
 
-(b) Keep the current behavior and add a one-line comment next to the `last_checkpoint_version` update (~line 290) explaining *why* this is deliberately not gated on `write_policy_satisfied`: each authorization layer is independent, cp advancement was authorized by the cp check, and callers that ignore `policy_satisfied()` are already out of the guaranteed safety regime.
-
-The choice hinges on how much responsibility the verifier takes for consumers who bypass `policy_satisfied()`. R2 chose more; R5 leaves the other half ungated. Pick one posture.
+The comment block above these gates records the rationale ("each layer has its own authorization (cp passed its hard check above), but we treat a record that failed any applicable check as untrusted for state-advance purposes") so future editors see why the cp-advance is deliberately coupled to the wp check. Added `test_evl_rejected_wp_does_not_advance_checkpoint_policy` that proves the cp-advance gate holds by submitting a v2 Evl whose hard cp check would fail if the v1 wp-soft-fail had leaked `cp_attacker` into tracked cp. Extended `test_evl_evolution_rejected_does_not_advance_tracked_policy` to also assert `last_checkpoint_version() == None` after the soft-failed Evl.
 
 ---
 
