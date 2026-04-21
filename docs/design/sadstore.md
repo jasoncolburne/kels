@@ -25,7 +25,7 @@ Fields:
 - `topic` — Record type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
-- `write_policy` — SAID of the write policy (denormalized from custody for chain keying, required)
+- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Evl` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`. See `docs/design/sad-pointers.md` for the per-kind matrix.
 
 ### Deterministic Prefix
 
@@ -75,7 +75,7 @@ The chain owner repairs divergence by submitting a replacement batch with `?repa
 
 1. The batch starts at the divergent version
 2. `truncate_and_replace` deletes all records at and after that version
-3. Replacement records are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent write_policy/topic)
+3. Replacement records are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent topic). `write_policy` may legitimately evolve across versions via `Evl`, so it is not checked for invariance — the verifier tracks its evolution via branch state.
 
 Displaced records are archived to `sad_pointer_archives` (mirror table). A `sad_pointer_repairs` entry is created as an audit record, and `sad_pointer_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
 
@@ -87,9 +87,9 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_pointer()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent write_policy/topic. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_pointer()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`.
+Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever an `Evl` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip record's raw field.
 
 ## Policy Evaluation Modes
 

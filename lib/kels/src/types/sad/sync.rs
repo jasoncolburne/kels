@@ -465,7 +465,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            wp,
+            Some(wp),
             Some(cp),
         )
         .unwrap();

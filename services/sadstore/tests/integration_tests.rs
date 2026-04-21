@@ -422,7 +422,7 @@ async fn test_submit_record_invalid_said_rejected() {
         kels_core::SadPointerKind::Icp,
         None,
         None,
-        test_digest("kel-test-prefix"),
+        Some(test_digest("kel-test-prefix")),
         None,
     )
     .unwrap();

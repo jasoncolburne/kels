@@ -52,9 +52,14 @@ impl PolicyChecker for AnchoredPolicyChecker<'_> {
     }
 
     async fn self_satisfies(&self, record: &SadPointer) -> Result<bool, KelsError> {
+        let write_policy = record.write_policy.as_ref().ok_or_else(|| {
+            KelsError::VerificationFailed(
+                "Icp record missing write_policy — validate_structure should have rejected".into(),
+            )
+        })?;
         let policy = self
             .resolver
-            .resolve_policy(&record.write_policy)
+            .resolve_policy(write_policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
         match evaluate_anchored_policy(&policy, &record.said, self.kel_source, self.resolver).await

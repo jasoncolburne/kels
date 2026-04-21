@@ -1391,7 +1391,7 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            wp,
+            Some(wp),
             None,
         )
         .unwrap()
@@ -1412,11 +1412,22 @@ mod tests {
             SadPointerKind::Icp,
             None,
             None,
-            wp,
+            Some(wp),
             Some(cp),
         )
         .unwrap();
         assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_icp_missing_write_policy_rejected() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.write_policy = None;
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(
+            err.contains("requires writePolicy"),
+            "expected writePolicy required error, got: {err}"
+        );
     }
 
     #[test]
@@ -1450,6 +1461,7 @@ mod tests {
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        pointer.write_policy = None;
         assert!(pointer.validate_structure().is_ok());
     }
 
@@ -1460,6 +1472,7 @@ mod tests {
         pointer.version = 2;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        pointer.write_policy = None;
         let err = pointer.validate_structure().unwrap_err();
         assert!(err.contains("version 1"));
     }
@@ -1470,8 +1483,21 @@ mod tests {
         pointer.kind = SadPointerKind::Est;
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.write_policy = None;
         let err = pointer.validate_structure().unwrap_err();
         assert!(err.contains("requires checkpointPolicy"));
+    }
+
+    #[test]
+    fn test_validate_structure_est_forbids_write_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Est;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        // write_policy inherited from Icp helper — Est forbids it
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have writePolicy"));
     }
 
     #[test]
@@ -1481,6 +1507,7 @@ mod tests {
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         pointer.content = Some(cesr::Digest256::blake3_256(b"content"));
+        pointer.write_policy = None;
         assert!(pointer.validate_structure().is_ok());
     }
 
@@ -1491,16 +1518,40 @@ mod tests {
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        pointer.write_policy = None;
         let err = pointer.validate_structure().unwrap_err();
         assert!(err.contains("must not have checkpointPolicy"));
     }
 
     #[test]
-    fn test_validate_structure_evl_valid() {
+    fn test_validate_structure_upd_forbids_write_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Upd;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        // write_policy inherited from Icp helper — Upd forbids it
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have writePolicy"));
+    }
+
+    #[test]
+    fn test_validate_structure_evl_with_write_policy_valid() {
         let mut pointer = make_valid_icp_pointer();
         pointer.kind = SadPointerKind::Evl;
         pointer.version = 2;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        // write_policy Some — policy evolution
+        assert!(pointer.validate_structure().is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_evl_without_write_policy_valid() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Evl;
+        pointer.version = 2;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.write_policy = None;
+        // write_policy None — pure checkpoint
         assert!(pointer.validate_structure().is_ok());
     }
 
@@ -1520,6 +1571,7 @@ mod tests {
         pointer.kind = SadPointerKind::Rpr;
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        pointer.write_policy = None;
         assert!(pointer.validate_structure().is_ok());
     }
 
@@ -1530,7 +1582,19 @@ mod tests {
         pointer.version = 1;
         pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        pointer.write_policy = None;
         let err = pointer.validate_structure().unwrap_err();
         assert!(err.contains("must not have checkpointPolicy"));
+    }
+
+    #[test]
+    fn test_validate_structure_rpr_forbids_write_policy() {
+        let mut pointer = make_valid_icp_pointer();
+        pointer.kind = SadPointerKind::Rpr;
+        pointer.version = 1;
+        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        // write_policy inherited from Icp helper — Rpr forbids it
+        let err = pointer.validate_structure().unwrap_err();
+        assert!(err.contains("must not have writePolicy"));
     }
 }

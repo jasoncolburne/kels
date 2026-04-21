@@ -271,8 +271,8 @@ else
     # --- Build v1 pointer (declares checkpoint_policy) ---
     CHECKPOINT_POLICY_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
-        --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/est", writePolicy: $wp, checkpointPolicy: $cp}')
+        --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/est", checkpointPolicy: $cp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
 
@@ -404,8 +404,8 @@ else
 
     # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_a__________________________________", writePolicy: $wp}')
+        --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_a__________________________________"}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
@@ -417,8 +417,8 @@ else
 
     # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by checkpoint_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_b__________________________________", writePolicy: $wp}')
+        --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_b__________________________________"}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 
@@ -450,8 +450,8 @@ else
 
     # --- Repair: submit replacement v1 with Rpr kind ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/rpr", content: "Kcontent_repaired___________________________", writePolicy: $wp}')
+        --arg k "$DIV_KIND" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/rpr", content: "Kcontent_repaired___________________________"}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
 
