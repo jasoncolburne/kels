@@ -278,6 +278,11 @@ impl<'a> SadChainVerifier<'a> {
                     } else {
                         (self.establishment_version, branch.checkpoint_policy)
                     };
+                    // Chain-wide assignment (not per-branch): the handler's repair-floor
+                    // guard (services/sadstore/src/handlers.rs) relies on this being the
+                    // earliest establishment point across all branches. In divergent
+                    // scenarios this may not match the tie-break winner's branch state —
+                    // see `SadPointerVerification::establishment_version()` docstring.
                     self.establishment_version = new_est_version;
                     (new_cp, 1, branch.tracked_write_policy)
                 }
@@ -848,6 +853,87 @@ mod tests {
             verification.to_string().contains("no checkpoint_policy"),
             "Expected no-checkpoint error because the soft-failed Est did not establish cp, got: {}",
             verification
+        );
+    }
+
+    #[tokio::test]
+    async fn test_divergent_est_soft_fail_does_not_poison_other_branch() {
+        // Divergent Est at v1: branch A carries cp_legit and soft-passes the wp
+        // check; branch B carries cp_attacker and soft-fails. The R6 per-branch
+        // gate keeps branch B's `checkpoint_policy = None`, but `establishment_version`
+        // is chain-wide and advances to Some(1) via branch A. This pins the
+        // intentional chain-wide/per-branch asymmetry: consumers reading
+        // `establishment_version()` without gating on `policy_satisfied()` may
+        // see a value that doesn't match the tie-break winner's branch state.
+        let wp1 = test_digest(b"write-policy-1");
+        let cp_legit = test_digest(b"checkpoint-policy-legit");
+        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
+
+        let v0 = create_v0_no_checkpoint(wp1);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadPointerKind::Est;
+        v1_a.write_policy = None;
+        v1_a.checkpoint_policy = Some(cp_legit);
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadPointerKind::Est;
+        v1_b.write_policy = None;
+        v1_b.checkpoint_policy = Some(cp_attacker);
+        v1_b.increment().unwrap();
+
+        // Checker accepts the wp soft check only for records whose
+        // checkpoint_policy is cp_legit. Est doesn't trigger the cp hard check,
+        // so this is the only checker call path exercised per record.
+        struct AcceptLegitEstChecker {
+            legit_cp: cesr::Digest256,
+        }
+        #[async_trait::async_trait]
+        impl PolicyChecker for AcceptLegitEstChecker {
+            async fn satisfies(
+                &self,
+                record: &SadPointer,
+                _: &cesr::Digest256,
+            ) -> Result<bool, KelsError> {
+                Ok(record.checkpoint_policy == Some(self.legit_cp))
+            }
+            async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let checker = AcceptLegitEstChecker { legit_cp: cp_legit };
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier
+            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
+            .await
+            .unwrap();
+        let verification = verifier.finish().await.unwrap();
+
+        // Branch B soft-failed wp → chain-wide policy_satisfied is false.
+        assert!(
+            !verification.policy_satisfied(),
+            "Branch B soft-failed wp; policy_satisfied must be false"
+        );
+        // Chain-wide: set by branch A's successful Est, not reset by B's soft-fail.
+        assert_eq!(verification.establishment_version(), Some(1));
+        // Est doesn't evaluate, regardless of which branch tie-break picks.
+        assert_eq!(verification.last_checkpoint_version(), None);
+        // tracked_write_policy remains v0's wp (Est forbids wp evolution).
+        assert_eq!(verification.write_policy(), &wp1);
+
+        // Documenting the asymmetry: if tie-break selects branch B (whose per-branch
+        // cp stayed None because of the R6 gate), the token carries
+        // establishment_version=Some(1) alongside a tip whose branch had no cp.
+        // This is intentional; consumers that treat the accessor as branch-scoped
+        // must gate on policy_satisfied() first.
+        let winner_is_b = v1_b.said.as_ref() > v1_a.said.as_ref();
+        assert_eq!(
+            verification.current_record().said,
+            if winner_is_b { v1_b.said } else { v1_a.said }
         );
     }
 

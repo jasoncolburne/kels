@@ -343,6 +343,16 @@ impl SadPointerVerification {
 
     /// The version at which checkpoint_policy was established (v0 if Icp declared it, v1 if Est).
     /// Repair cannot truncate at or before this version.
+    ///
+    /// This value is **chain-wide**, representing the earliest establishment point across
+    /// all branches. It acts as the repair seal — no truncation at or before this version
+    /// regardless of which branch is being repaired.
+    ///
+    /// In divergent scenarios where some Est records soft-failed the write_policy check,
+    /// this value may not match the tie-break winner's branch state: the winning branch
+    /// may have `checkpoint_policy = None` while `establishment_version` is `Some` (because
+    /// another branch's Est did establish cp at that version). Consumers reading this as
+    /// branch-scoped must gate on `policy_satisfied()` first.
     pub fn establishment_version(&self) -> Option<u64> {
         self.establishment_version
     }
