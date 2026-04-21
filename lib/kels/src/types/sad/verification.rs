@@ -286,20 +286,32 @@ impl<'a> SadChainVerifier<'a> {
                         )));
                     }
 
-                    // Track the checkpoint version as a seal
-                    self.last_checkpoint_version = Some(match self.last_checkpoint_version {
-                        Some(existing) => existing.min(record.version),
-                        None => record.version,
-                    });
+                    // Defense-in-depth: all three branch-state advances driven by
+                    // this record (tracked_write_policy, tracked checkpoint_policy,
+                    // and last_checkpoint_version as the seal floor) are gated on
+                    // the soft write_policy check. On soft-fail, we keep every
+                    // previous value so subsequent records on this branch remain
+                    // authorized against the legitimate state, and any caller that
+                    // bypasses policy_satisfied() still sees unchanged seal/policy
+                    // state for an unauthorized record. Each layer has its own
+                    // authorization (cp passed its hard check above), but we treat
+                    // a record that failed any applicable check as untrusted for
+                    // state-advance purposes.
+                    if write_policy_satisfied {
+                        self.last_checkpoint_version = Some(match self.last_checkpoint_version {
+                            Some(existing) => existing.min(record.version),
+                            None => record.version,
+                        });
+                    }
 
-                    // Evl allows checkpoint_policy evolution; Rpr forbids it (validate_structure)
-                    let new_cp = record.checkpoint_policy.or(Some(*tracked));
+                    // Evl allows checkpoint_policy evolution; Rpr forbids it (validate_structure).
+                    let new_cp = if write_policy_satisfied {
+                        record.checkpoint_policy.or(Some(*tracked))
+                    } else {
+                        Some(*tracked)
+                    };
                     // Evl with Some(write_policy) = policy evolution. None = pure checkpoint.
                     // Rpr forbids write_policy entirely (validate_structure).
-                    //
-                    // Defense-in-depth: only advance tracked_write_policy when the
-                    // soft write_policy check above passed. On soft-fail, keep the
-                    // previous policy so subsequent records remain gated against it.
                     let new_wp = if write_policy_satisfied {
                         record.write_policy.unwrap_or(branch.tracked_write_policy)
                     } else {
@@ -706,7 +718,9 @@ mod tests {
         // policy rejects the advance, tracked_write_policy must remain at the
         // previous value. Any subsequent record on this branch will then be
         // checked against the legitimate previous policy, not the attacker's
-        // proposed replacement.
+        // proposed replacement. All three branch-state advances driven by the
+        // record (tracked_write_policy, tracked checkpoint_policy, and
+        // last_checkpoint_version) are gated on the same soft-pass flag.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
         let cp = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
@@ -731,6 +745,70 @@ mod tests {
         );
         // tracked_write_policy did NOT advance — advance is gated on the soft check.
         assert_eq!(verification.write_policy(), &wp1);
+        // last_checkpoint_version did NOT advance either — same gate.
+        assert_eq!(
+            verification.last_checkpoint_version(),
+            None,
+            "last_checkpoint_version must not advance when the record soft-failed the write_policy check"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_evl_rejected_wp_does_not_advance_checkpoint_policy() {
+        // Defense-in-depth: when an Evl soft-fails the write_policy check,
+        // the branch's tracked checkpoint_policy must stay at the previous
+        // value. We verify this indirectly by submitting a v2 Evl whose hard
+        // cp check only succeeds if tracked cp is still cp1 (not the attacker's
+        // cp_attacker that v1 proposed). AcceptCheckpointRejectWriteChecker only
+        // accepts checks against cp1, so if tracked cp had advanced to cp_attacker,
+        // v2's hard cp check would fail and abort verification.
+        let wp1 = test_digest(b"write-policy-1");
+        let wp_attacker = test_digest(b"write-policy-attacker");
+        let cp1 = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
+        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
+        let v0 = create_v0_with_checkpoint(wp1);
+
+        // v1: attacker-crafted Evl evolving both wp and cp.
+        // wp soft check (against tracked wp1): FAILS.
+        // cp hard check (against tracked cp1): PASSES.
+        // With the gate: tracked cp stays at cp1, last_checkpoint_version stays None.
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Evl;
+        v1.write_policy = Some(wp_attacker);
+        v1.checkpoint_policy = Some(cp_attacker);
+        v1.increment().unwrap();
+
+        // v2: a following Evl. wp stays attacker (inherited), cp unchanged.
+        // If the v1 cp advance was gated (fix): tracked cp is cp1, v2's hard
+        // cp check against cp1 passes → verification succeeds with
+        // policy_satisfied=false.
+        // If the v1 cp advance was NOT gated (pre-fix): tracked cp is cp_attacker,
+        // v2's hard cp check against cp_attacker fails → HARD ERROR.
+        let mut v2 = v1.clone();
+        v2.content = Some(test_digest(b"content2"));
+        v2.kind = SadPointerKind::Evl;
+        v2.write_policy = None;
+        v2.checkpoint_policy = None;
+        v2.increment().unwrap();
+
+        let checker = AcceptCheckpointRejectWriteChecker {
+            checkpoint_policy: cp1,
+        };
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
+        let verification = verifier
+            .finish()
+            .await
+            .expect("verification must succeed — tracked cp should still be cp1 on v2");
+        assert!(
+            !verification.policy_satisfied(),
+            "wp soft-failed on v1 and v2, policy_satisfied must be false"
+        );
+        assert_eq!(verification.write_policy(), &wp1);
+        // last_checkpoint_version stays None: v1's wp soft-fail blocked the seal
+        // advance, and v2's wp soft-fail blocks it again.
+        assert_eq!(verification.last_checkpoint_version(), None);
     }
 
     #[tokio::test]
