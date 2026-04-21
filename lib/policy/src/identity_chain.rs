@@ -130,11 +130,19 @@ mod tests {
         }
     }
 
+    /// Accepts the soft wp check for `Est` (so checkpoint_policy can establish)
+    /// but rejects it for every other kind — lets the test build a chain where
+    /// `policy_satisfied()` is false while the checkpoint_policy is still
+    /// established (required after the R6 Est-arm defense-in-depth gate).
     struct RejectAdvanceChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for RejectAdvanceChecker {
-        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
-            Ok(false)
+        async fn satisfies(
+            &self,
+            record: &SadPointer,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
+            Ok(record.kind == SadPointerKind::Est)
         }
         async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
             Ok(true)
@@ -285,15 +293,24 @@ mod tests {
         let policy2 = test_policy("policy-2");
         let v0 = create(&policy1).unwrap();
 
-        // Build a v1 with checkpoint so the checker can reject it
+        // v1: Est establishes checkpoint_policy (RejectAdvanceChecker accepts Est
+        // so the R6 Est-arm gate permits the cp advance).
         let mut v1 = v0.clone();
-        v1.content = Some(cesr::Digest256::blake3_256(b"content"));
         add_checkpoint_declaration(&mut v1);
         v1.increment().unwrap();
 
+        // v2: Upd that soft-fails the wp check under RejectAdvanceChecker —
+        // this is what makes policy_satisfied() false on the final verification.
+        let mut v2 = v1.clone();
+        v2.content = Some(cesr::Digest256::blake3_256(b"content"));
+        v2.kind = SadPointerKind::Upd;
+        v2.write_policy = None;
+        v2.checkpoint_policy = None;
+        v2.increment().unwrap();
+
         let checker = RejectAdvanceChecker;
         let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
+        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());
 

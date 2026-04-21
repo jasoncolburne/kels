@@ -16,7 +16,10 @@ use crate::KelsError;
 /// - v1+: `satisfies(record, &branch.tracked_write_policy)` — each advance must be authorized
 ///   by the branch's currently-tracked write_policy (seeded by v0, updated when Evl carries
 ///   a new write_policy *and* the evolution was authorized). Called unconditionally,
-///   whether or not the policy changed.
+///   whether or not the policy changed. The returned value also gates whether the verifier
+///   advances branch-state (tracked write_policy, tracked checkpoint_policy, establishment
+///   version, last checkpoint version); a returned `false` freezes all policy-related state
+///   on the branch for this record.
 ///
 /// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
 /// calls `evaluate_anchored_policy` to check KEL anchoring).
@@ -266,9 +269,17 @@ impl<'a> SadChainVerifier<'a> {
                             record.said,
                         )));
                     }
-                    self.establishment_version = Some(1);
-                    // tracked_write_policy unchanged — Est forbids write_policy (validate_structure)
-                    (record.checkpoint_policy, 1, branch.tracked_write_policy)
+                    // Defense-in-depth: skip state advances on soft wp-fail. See R5/R6 audit.
+                    // records_since_checkpoint = 1 stays unconditional — an unauthorized Est
+                    // still occupies a slot in the checkpoint window (same as an unauthorized Upd).
+                    // tracked_write_policy unchanged — Est forbids write_policy (validate_structure).
+                    let (new_est_version, new_cp) = if write_policy_satisfied {
+                        (Some(1), record.checkpoint_policy)
+                    } else {
+                        (self.establishment_version, branch.checkpoint_policy)
+                    };
+                    self.establishment_version = new_est_version;
+                    (new_cp, 1, branch.tracked_write_policy)
                 }
                 kind if kind.evaluates_checkpoint() => {
                     // Evl or Rpr: evaluate against tracked checkpoint_policy
@@ -286,17 +297,11 @@ impl<'a> SadChainVerifier<'a> {
                         )));
                     }
 
-                    // Defense-in-depth: all three branch-state advances driven by
-                    // this record (tracked_write_policy, tracked checkpoint_policy,
-                    // and last_checkpoint_version as the seal floor) are gated on
-                    // the soft write_policy check. On soft-fail, we keep every
-                    // previous value so subsequent records on this branch remain
-                    // authorized against the legitimate state, and any caller that
-                    // bypasses policy_satisfied() still sees unchanged seal/policy
-                    // state for an unauthorized record. Each layer has its own
-                    // authorization (cp passed its hard check above), but we treat
-                    // a record that failed any applicable check as untrusted for
-                    // state-advance purposes.
+                    // Defense-in-depth: when the soft write_policy check above failed,
+                    // skip all branch-state advances driven by this record — even those
+                    // authorized by the cp check that just passed. A consumer that bypasses
+                    // policy_satisfied() then sees unchanged seal/policy state for an
+                    // unauthorized record. (See R5/R6 audit for the rationale.)
                     if write_policy_satisfied {
                         self.last_checkpoint_version = Some(match self.last_checkpoint_version {
                             Some(existing) => existing.min(record.version),
@@ -809,6 +814,41 @@ mod tests {
         // last_checkpoint_version stays None: v1's wp soft-fail blocked the seal
         // advance, and v2's wp soft-fail blocks it again.
         assert_eq!(verification.last_checkpoint_version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_est_rejected_wp_does_not_establish_checkpoint_policy() {
+        // Defense-in-depth: when an Est soft-fails the write_policy check,
+        // establishment_version and branch.checkpoint_policy must NOT advance.
+        // Mirrors the R5/R6 gate on the Evl/Rpr arm for the Est arm.
+        let wp1 = test_digest(b"write-policy-1");
+        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
+        let cp_legit = test_digest(b"checkpoint-policy-legit");
+
+        let v0 = create_v0_no_checkpoint(wp1);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadPointerKind::Est;
+        v1.write_policy = None;
+        v1.checkpoint_policy = Some(cp_attacker);
+        v1.increment().unwrap();
+
+        // AcceptCheckpointRejectWriteChecker accepts only checks against cp_legit.
+        // The wp check (against tracked wp1) returns false → soft-fail.
+        let checker = AcceptCheckpointRejectWriteChecker {
+            checkpoint_policy: cp_legit,
+        };
+        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap_err();
+        // finish() rejects: the gate kept branch.checkpoint_policy = None, so
+        // "SAD chain has no checkpoint_policy" fires. This proves Est's cp
+        // advance was blocked by the soft wp-fail.
+        assert!(
+            verification.to_string().contains("no checkpoint_policy"),
+            "Expected no-checkpoint error because the soft-failed Est did not establish cp, got: {}",
+            verification
+        );
     }
 
     #[tokio::test]
