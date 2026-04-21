@@ -5,7 +5,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use kels_core::{EventKind, KelStore, KeyProvider};
+use kels_core::{KelStore, KeyEventKind, KeyProvider};
 
 use crate::{KelsContext, clear_last_error, set_last_error, to_c_string};
 
@@ -141,7 +141,7 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             let kind_str = token.trim_end_matches(|c: char| c.is_ascii_digit());
             let algo_suffix = &token[kind_str.len()..];
 
-            let kind = match EventKind::from_short_name(kind_str) {
+            let kind = match KeyEventKind::from_short_name(kind_str) {
                 Ok(k) => k,
                 Err(e) => {
                     set_last_error(&format!("{}", e));
@@ -150,14 +150,14 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
             };
 
             let result = match kind {
-                EventKind::Ixn => {
+                KeyEventKind::Ixn => {
                     let anchor = cesr::Digest256::blake3_256(
                         format!("adversary_anchor_{}", counter).as_bytes(),
                     );
                     counter += 1;
                     adversary_builder.interact(&anchor).await
                 }
-                EventKind::Rot | EventKind::Ror | EventKind::Rec => {
+                KeyEventKind::Rot | KeyEventKind::Ror | KeyEventKind::Rec => {
                     let chars: Vec<char> = algo_suffix.chars().collect();
                     if let Some(&d) = chars.first()
                         && let Some(algo) = algo_from_digit(d)
@@ -180,13 +180,13 @@ pub unsafe extern "C" fn kels_adversary_inject_events(
                         return -1;
                     }
                     match kind {
-                        EventKind::Rot => adversary_builder.rotate().await,
-                        EventKind::Ror => adversary_builder.rotate_recovery().await,
-                        EventKind::Rec => adversary_builder.recover(false).await,
+                        KeyEventKind::Rot => adversary_builder.rotate().await,
+                        KeyEventKind::Ror => adversary_builder.rotate_recovery().await,
+                        KeyEventKind::Rec => adversary_builder.recover(false).await,
                         _ => unreachable!(),
                     }
                 }
-                EventKind::Dec => adversary_builder.decommission().await,
+                KeyEventKind::Dec => adversary_builder.decommission().await,
                 other => {
                     set_last_error(&format!(
                         "Unsupported event type: {}. Valid: ixn, rot[0-2], rec[0-2][0-2], ror[0-2][0-2], dec",

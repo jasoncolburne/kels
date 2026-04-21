@@ -37,31 +37,28 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
         // Chain records (Layer 2 — Postgres)
         .route(
-            "/api/v1/sad/pointers/exists",
-            post(handlers::sad_pointer_exists),
+            "/api/v1/sad/events/exists",
+            post(handlers::sad_event_exists),
         )
-        .route("/api/v1/sad/pointers", post(handlers::submit_sad_pointer))
+        .route("/api/v1/sad/events", post(handlers::submit_sad_event))
+        .route("/api/v1/sad/events/fetch", post(handlers::get_sad_event))
         .route(
-            "/api/v1/sad/pointers/fetch",
-            post(handlers::get_sad_pointer),
-        )
-        .route(
-            "/api/v1/sad/pointers/effective-said",
-            post(handlers::get_sad_pointer_effective_said),
+            "/api/v1/sad/events/effective-said",
+            post(handlers::get_sad_event_effective_said),
         )
         // Chain repair history
         .route(
-            "/api/v1/sad/pointers/repairs",
-            post(handlers::get_sad_pointer_repairs),
+            "/api/v1/sad/events/repairs",
+            post(handlers::get_sad_event_repairs),
         )
         .route(
-            "/api/v1/sad/pointers/repairs/records",
-            post(handlers::get_sad_pointer_repair_records),
+            "/api/v1/sad/events/repairs/records",
+            post(handlers::get_sad_event_repair_records),
         )
         // Listing (authenticated — federation peers only)
         .route(
-            "/api/v1/sad/pointers/prefixes",
-            post(handlers::list_sad_pointer_prefixes),
+            "/api/v1/sad/events/prefixes",
+            post(handlers::list_sad_event_prefixes),
         );
 
     if *TEST_ENDPOINTS_ENABLED {
@@ -69,8 +66,8 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         router = router
             .route("/api/test/sad/saids", post(handlers::test_list_sad_objects))
             .route(
-                "/api/test/sad/pointers/prefixes",
-                post(handlers::test_list_sad_pointer_prefixes),
+                "/api/test/sad/events/prefixes",
+                post(handlers::test_list_sad_event_prefixes),
             );
     }
 

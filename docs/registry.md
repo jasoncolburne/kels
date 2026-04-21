@@ -57,7 +57,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 3. If peers exist:
    - Start listening for gossip updates
    - For each bootstrap peer (in parallel):
-     - Fetch prefix list: `POST /api/v1/kels/prefixes` (signed request)
+     - Fetch prefix kel list: `POST /api/v1/kels/prefixes` (signed request)
      - For each prefix not in local DB:
        - Fetch KEL via gossip request-response
        - Submit to local KELS
@@ -70,7 +70,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 3. Client tests readiness of each node via `/ready` endpoint
 4. Client tests latency to each Ready node via `/health` endpoint
 5. Client selects node with lowest latency
-6. Client caches node list with short TTL for retry resilience
+6. Client caches node kel list with short TTL for retry resilience
 
 ## Components
 
@@ -276,9 +276,9 @@ garden deploy --env=node-b      # Bootstrap syncs from node-a
 
 ### Client resilience
 
-- Clients cache node list locally with short TTL
-- On connection failure, try next node in list
-- Periodically refresh node list from registry
+- Clients cache node kel list locally with short TTL
+- On connection failure, try next node in kel list
+- Periodically refresh node kel list from registry
 
 ## Client Discovery
 
@@ -301,11 +301,11 @@ let client = KelsClient::with_discovery(registry_url).await?;
 
 ```bash
 # List registered nodes with latency
-kels-cli --registry http://registry:8092 list-nodes
+kels-cli --registry http://registry:8092 kel list-nodes
 
 # Auto-select fastest node for commands
-kels-cli --registry http://registry:8092 --auto-select incept
-kels-cli --registry http://registry:8092 --auto-select list
+kels-cli --registry http://registry:8092 --auto-select kel incept
+kels-cli --registry http://registry:8092 --auto-select kel list
 ```
 
 ### iOS Client
@@ -334,17 +334,17 @@ garden deploy --env=registry
 garden deploy --env=node-a
 
 # Create KELs on node-a
-kels-cli -u http://kels.node-a.kels incept
-kels-cli -u http://kels.node-a.kels incept
+kels-cli -u http://kels.node-a.kels kel incept
+kels-cli -u http://kels.node-a.kels kel incept
 
 # Deploy second node (bootstrap syncs from node-a)
 garden deploy --env=node-b
 
 # Verify node-b has the KELs
-kels-cli -u http://kels.node-b.kels list
+kels-cli -u http://kels.node-b.kels kel list
 
 # Test client discovery
-kels-cli --registry http://registry.kels-registry.kels list-nodes
+kels-cli --registry http://registry.kels-registry.kels kel list-nodes
 ```
 
 ### Integration tests
@@ -352,7 +352,7 @@ kels-cli --registry http://registry.kels-registry.kels list-nodes
 Test script: `clients/test/scripts/test-bootstrap.sh`
 
 - Registry health check
-- CLI node discovery (`list-nodes`)
+- CLI node discovery (`kel kel list-nodes`)
 - Prefix listing API with pagination
 - Bootstrap sync verification (KEL propagation between nodes)
 - Auto-select functionality

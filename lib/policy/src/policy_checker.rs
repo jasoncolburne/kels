@@ -3,7 +3,7 @@
 //! Evaluates write_policy satisfaction by checking that the endorsers required
 //! by the policy have anchored the record's SAID in their KELs.
 
-use kels_core::{KelsError, PagedKelSource, PolicyChecker, SadPointer};
+use kels_core::{KelsError, PagedKelSource, PolicyChecker, SadEvent};
 
 use crate::{evaluate_anchored_policy, resolver::PolicyResolver};
 
@@ -35,7 +35,7 @@ impl<'a> AnchoredPolicyChecker<'a> {
 impl PolicyChecker for AnchoredPolicyChecker<'_> {
     async fn satisfies(
         &self,
-        new_record: &SadPointer,
+        new_record: &SadEvent,
         previous_policy: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
         let policy = self
@@ -51,7 +51,7 @@ impl PolicyChecker for AnchoredPolicyChecker<'_> {
         }
     }
 
-    async fn self_satisfies(&self, record: &SadPointer) -> Result<bool, KelsError> {
+    async fn self_satisfies(&self, record: &SadEvent) -> Result<bool, KelsError> {
         let write_policy = record.write_policy.as_ref().ok_or_else(|| {
             KelsError::VerificationFailed(
                 "Icp record missing write_policy — validate_structure should have rejected".into(),

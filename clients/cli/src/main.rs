@@ -51,6 +51,43 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// KEL lifecycle commands
+    #[command(subcommand)]
+    Kel(KelCommands),
+
+    /// SAD Event Log (SEL) commands
+    #[command(subcommand)]
+    Sel(SelCommands),
+
+    /// SAD object store commands (self-addressed data)
+    #[command(subcommand)]
+    Sad(SadCommands),
+
+    /// ML-KEM encapsulation-key publication commands
+    #[command(subcommand)]
+    Exchange(ExchangeCommands),
+
+    /// ESSR messaging commands
+    #[command(subcommand)]
+    Mail(MailCommands),
+
+    /// Credential management commands
+    #[command(subcommand)]
+    Cred(CredCommands),
+
+    /// Development and testing commands
+    #[cfg(feature = "dev-tools")]
+    #[command(subcommand)]
+    Dev(DevCommands),
+
+    /// Adversary simulation commands (for testing divergence)
+    #[cfg(feature = "dev-tools")]
+    #[command(subcommand)]
+    Adversary(AdversaryCommands),
+}
+
+#[derive(Subcommand, Debug)]
+enum KelCommands {
     /// Create a new KEL (inception event)
     Incept {
         /// Signing key algorithm (ml-dsa-65, ml-dsa-87, or secp256r1)
@@ -173,28 +210,6 @@ enum Commands {
         /// Data to sign (raw string)
         data: String,
     },
-
-    /// SAD store commands (self-addressed data)
-    #[command(subcommand)]
-    Sad(SadCommands),
-
-    /// Exchange protocol commands (ESSR messaging + key publication)
-    #[command(subcommand)]
-    Exchange(ExchangeCommands),
-
-    /// Credential management commands
-    #[command(subcommand)]
-    Cred(CredCommands),
-
-    /// Development and testing commands
-    #[cfg(feature = "dev-tools")]
-    #[command(subcommand)]
-    Dev(DevCommands),
-
-    /// Adversary simulation commands (for testing divergence)
-    #[cfg(feature = "dev-tools")]
-    #[command(subcommand)]
-    Adversary(AdversaryCommands),
 }
 
 #[cfg(feature = "dev-tools")]
@@ -247,20 +262,23 @@ enum SadCommands {
         /// The SAID of the object to retrieve
         said: String,
     },
+}
 
-    /// Submit a signed SAD pointer to a chain
+#[derive(Subcommand, Debug)]
+enum SelCommands {
+    /// Submit a signed SAD event to a SEL
     Submit {
-        /// Path to JSON file containing SignedSadPointer(s)
+        /// Path to JSON file containing SignedSadEvent(s)
         file: PathBuf,
     },
 
-    /// Fetch and display a SAD pointer chain
-    Pointer {
-        /// The chain prefix to fetch
+    /// Fetch and display a SAD Event Log
+    Get {
+        /// The SEL prefix to fetch
         prefix: String,
     },
 
-    /// Compute a SAD pointer prefix from a write policy SAID and topic
+    /// Compute a SEL prefix from a write policy SAID and topic
     Prefix {
         /// The write policy SAID
         write_policy: String,
@@ -271,6 +289,7 @@ enum SadCommands {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::enum_variant_names)]
 enum ExchangeCommands {
     /// Publish an ML-KEM encapsulation key to the SADStore
     PublishKey {
@@ -283,7 +302,7 @@ enum ExchangeCommands {
         algorithm: Option<String>,
     },
 
-    /// Rotate the ML-KEM encapsulation key (appends new version to pointer chain)
+    /// Rotate the ML-KEM encapsulation key (appends new version to the SEL)
     RotateKey {
         /// KEL prefix whose key to rotate
         #[arg(long)]
@@ -299,7 +318,10 @@ enum ExchangeCommands {
         /// KEL prefix to look up
         prefix: String,
     },
+}
 
+#[derive(Subcommand, Debug)]
+enum MailCommands {
     /// Send an ESSR-encrypted message to a recipient via the mail service
     Send {
         /// Sender KEL prefix
@@ -439,70 +461,81 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&config_dir)?;
 
     match &cli.command {
-        Commands::Incept {
-            signing_algorithm,
-            recovery_algorithm,
-        } => {
-            let signing = parse_algorithm(signing_algorithm)?;
-            let recovery = match recovery_algorithm.as_deref() {
-                Some(a) => parse_algorithm(a)?,
-                None => signing,
-            };
-            commands::kel::cmd_incept(&cli, signing, recovery).await
-        }
-        Commands::Rotate { prefix, algorithm } => {
-            let algo = algorithm.as_deref().map(parse_algorithm).transpose()?;
-            commands::kel::cmd_rotate(&cli, prefix, algo).await
-        }
-        Commands::RotateRecovery {
-            prefix,
-            signing_algorithm,
-            recovery_algorithm,
-        } => {
-            let signing = signing_algorithm
-                .as_deref()
-                .map(parse_algorithm)
-                .transpose()?;
-            let recovery = recovery_algorithm
-                .as_deref()
-                .map(parse_algorithm)
-                .transpose()?;
-            commands::kel::cmd_rotate_recovery(&cli, prefix, signing, recovery).await
-        }
-        Commands::Sign { prefix, data } => commands::kel::cmd_sign(&cli, prefix, data).await,
-        Commands::Anchor { prefix, said } => commands::kel::cmd_anchor(&cli, prefix, said).await,
-        Commands::Recover {
-            prefix,
-            signing_algorithm,
-            recovery_algorithm,
-        } => {
-            commands::kel::cmd_recover(
-                &cli,
+        Commands::Kel(kel_cmd) => match kel_cmd {
+            KelCommands::Incept {
+                signing_algorithm,
+                recovery_algorithm,
+            } => {
+                let signing = parse_algorithm(signing_algorithm)?;
+                let recovery = match recovery_algorithm.as_deref() {
+                    Some(a) => parse_algorithm(a)?,
+                    None => signing,
+                };
+                commands::kel::cmd_incept(&cli, signing, recovery).await
+            }
+            KelCommands::Rotate { prefix, algorithm } => {
+                let algo = algorithm.as_deref().map(parse_algorithm).transpose()?;
+                commands::kel::cmd_rotate(&cli, prefix, algo).await
+            }
+            KelCommands::RotateRecovery {
                 prefix,
-                signing_algorithm.as_deref(),
-                recovery_algorithm.as_deref(),
-            )
-            .await
-        }
-        Commands::Contest { prefix } => commands::kel::cmd_contest(&cli, prefix).await,
-        Commands::Decommission { prefix } => commands::kel::cmd_decommission(&cli, prefix).await,
-        Commands::Get { prefix, audit } => commands::kel::cmd_get(&cli, prefix, *audit).await,
-        Commands::List => commands::kel::cmd_list(&cli).await,
-        Commands::ListNodes => commands::kel::cmd_list_nodes(&cli).await,
-        Commands::Status { prefix } => commands::kel::cmd_status(&cli, prefix).await,
-        Commands::Reset { prefix, yes } => {
-            commands::kel::cmd_reset(&cli, prefix.as_deref(), *yes).await
-        }
+                signing_algorithm,
+                recovery_algorithm,
+            } => {
+                let signing = signing_algorithm
+                    .as_deref()
+                    .map(parse_algorithm)
+                    .transpose()?;
+                let recovery = recovery_algorithm
+                    .as_deref()
+                    .map(parse_algorithm)
+                    .transpose()?;
+                commands::kel::cmd_rotate_recovery(&cli, prefix, signing, recovery).await
+            }
+            KelCommands::Sign { prefix, data } => commands::kel::cmd_sign(&cli, prefix, data).await,
+            KelCommands::Anchor { prefix, said } => {
+                commands::kel::cmd_anchor(&cli, prefix, said).await
+            }
+            KelCommands::Recover {
+                prefix,
+                signing_algorithm,
+                recovery_algorithm,
+            } => {
+                commands::kel::cmd_recover(
+                    &cli,
+                    prefix,
+                    signing_algorithm.as_deref(),
+                    recovery_algorithm.as_deref(),
+                )
+                .await
+            }
+            KelCommands::Contest { prefix } => commands::kel::cmd_contest(&cli, prefix).await,
+            KelCommands::Decommission { prefix } => {
+                commands::kel::cmd_decommission(&cli, prefix).await
+            }
+            KelCommands::Get { prefix, audit } => {
+                commands::kel::cmd_get(&cli, prefix, *audit).await
+            }
+            KelCommands::List => commands::kel::cmd_list(&cli).await,
+            KelCommands::ListNodes => commands::kel::cmd_list_nodes(&cli).await,
+            KelCommands::Status { prefix } => commands::kel::cmd_status(&cli, prefix).await,
+            KelCommands::Reset { prefix, yes } => {
+                commands::kel::cmd_reset(&cli, prefix.as_deref(), *yes).await
+            }
+        },
 
         Commands::Sad(sad_cmd) => match sad_cmd {
             SadCommands::Put { file } => commands::sad::cmd_sad_put(&cli, file).await,
             SadCommands::Get { said } => commands::sad::cmd_sad_get(&cli, said).await,
-            SadCommands::Submit { file } => commands::sad::cmd_sad_submit(&cli, file).await,
-            SadCommands::Pointer { prefix } => commands::sad::cmd_sad_chain(&cli, prefix).await,
-            SadCommands::Prefix {
+        },
+
+        Commands::Sel(sel_cmd) => match sel_cmd {
+            SelCommands::Submit { file } => commands::sel::cmd_sel_submit(&cli, file).await,
+            SelCommands::Get { prefix } => commands::sel::cmd_sel_get(&cli, prefix).await,
+            SelCommands::Prefix {
                 write_policy,
                 topic,
-            } => commands::sad::cmd_sad_prefix(write_policy, topic),
+            } => commands::sel::cmd_sel_prefix(write_policy, topic),
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {
@@ -517,22 +550,21 @@ async fn main() -> Result<()> {
             ExchangeCommands::LookupKey { prefix } => {
                 commands::exchange::cmd_exchange_lookup_key(&cli, prefix).await
             }
-            ExchangeCommands::Send {
+        },
+
+        Commands::Mail(mail_cmd) => match mail_cmd {
+            MailCommands::Send {
                 prefix,
                 recipient,
                 topic,
                 payload,
-            } => {
-                commands::exchange::cmd_exchange_send(&cli, prefix, recipient, topic, payload).await
+            } => commands::mail::cmd_mail_send(&cli, prefix, recipient, topic, payload).await,
+            MailCommands::Inbox { prefix } => commands::mail::cmd_mail_inbox(&cli, prefix).await,
+            MailCommands::Fetch { prefix, said } => {
+                commands::mail::cmd_mail_fetch(&cli, prefix, said).await
             }
-            ExchangeCommands::Inbox { prefix } => {
-                commands::exchange::cmd_exchange_inbox(&cli, prefix).await
-            }
-            ExchangeCommands::Fetch { prefix, said } => {
-                commands::exchange::cmd_exchange_fetch(&cli, prefix, said).await
-            }
-            ExchangeCommands::Ack { prefix, saids } => {
-                commands::exchange::cmd_exchange_ack(&cli, prefix, saids).await
+            MailCommands::Ack { prefix, saids } => {
+                commands::mail::cmd_mail_ack(&cli, prefix, saids).await
             }
         },
 

@@ -1,4 +1,4 @@
-//! Repository-level tests for SAD chain repair: truncate_and_replace,
+//! Repository-level tests for SAD Event Log repair: truncate_and_replace,
 //! get_repairs, get_repair_records, and save_batch.
 //!
 //! Uses a shared Postgres testcontainer (no MinIO or KELS service needed).
@@ -10,7 +10,7 @@ use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels_core::SadPointer;
+use kels_core::SadEvent;
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -108,12 +108,12 @@ async fn connect_repo() -> Option<SadStoreRepository> {
 // ==================== Helpers ====================
 
 /// Run `save_batch` in a self-managed transaction with advisory lock.
-async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u32 {
+async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadEvent]) -> u32 {
     let prefix = records[0].prefix;
-    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
+    let mut tx = repo.sad_events.pool.begin_transaction().await.unwrap();
     tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
     let result = repo
-        .sad_pointers
+        .sad_events
         .save_batch(&mut tx, records, None)
         .await
         .unwrap();
@@ -127,11 +127,11 @@ async fn save_batch_txn(repo: &SadStoreRepository, records: &[SadPointer]) -> u3
 }
 
 /// Run `truncate_and_replace` in a self-managed transaction with advisory lock.
-async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadPointer]) {
+async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadEvent]) {
     let prefix = records[0].prefix;
-    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
+    let mut tx = repo.sad_events.pool.begin_transaction().await.unwrap();
     tx.acquire_advisory_lock(prefix.as_ref()).await.unwrap();
-    repo.sad_pointers
+    repo.sad_events
         .truncate_and_replace(&mut tx, records)
         .await
         .unwrap();
@@ -139,31 +139,31 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadPoint
 }
 
 /// Build a chain of v0..v(count-1).
-fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
-    let mut pointers = Vec::with_capacity(count);
+fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadEvent> {
+    let mut events = Vec::with_capacity(count);
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut pointer = SadPointer::create(
+    let mut event = SadEvent::create(
         kind.to_string(),
-        kels_core::SadPointerKind::Icp,
+        kels_core::SadEventKind::Icp,
         None,
         None,
         Some(kel_digest),
         None,
     )
     .unwrap();
-    pointers.push(pointer.clone());
+    events.push(event.clone());
 
-    pointer.kind = kels_core::SadPointerKind::Upd;
-    pointer.write_policy = None; // Upd forbids write_policy
+    event.kind = kels_core::SadEventKind::Upd;
+    event.write_policy = None; // Upd forbids write_policy
     for i in 1..count {
-        pointer.content = Some(cesr::Digest256::blake3_256(
+        event.content = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),
         ));
-        pointer.increment().unwrap();
-        pointers.push(pointer.clone());
+        event.increment().unwrap();
+        events.push(event.clone());
     }
 
-    pointers
+    events
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
@@ -176,10 +176,10 @@ fn build_replacement(
     from_version: u64,
     count: usize,
     content_tag: &str,
-) -> Vec<SadPointer> {
-    let mut pointers = Vec::with_capacity(count);
+) -> Vec<SadEvent> {
+    let mut events = Vec::with_capacity(count);
 
-    let mut pointer = SadPointer {
+    let mut event = SadEvent {
         said: cesr::Digest256::default(),
         prefix: *prefix,
         previous: Some(*previous_said),
@@ -190,22 +190,22 @@ fn build_replacement(
         )),
         custody: None,
         write_policy: None, // Rpr forbids write_policy
-        kind: kels_core::SadPointerKind::Rpr,
-        checkpoint_policy: None,
+        kind: kels_core::SadEventKind::Rpr,
+        governance_policy: None,
     };
-    pointer.derive_said().unwrap();
-    pointers.push(pointer.clone());
+    event.derive_said().unwrap();
+    events.push(event.clone());
 
     for i in 1..count {
-        pointer.kind = kels_core::SadPointerKind::Upd;
-        pointer.content = Some(cesr::Digest256::blake3_256(
+        event.kind = kels_core::SadEventKind::Upd;
+        event.content = Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version + i as u64).as_bytes(),
         ));
-        pointer.increment().unwrap();
-        pointers.push(pointer.clone());
+        event.increment().unwrap();
+        events.push(event.clone());
     }
 
-    pointers
+    events
 }
 
 // ==================== Tests ====================
@@ -218,7 +218,7 @@ async fn test_get_repairs_empty() {
     };
 
     let (repairs, has_more) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs("Knonexistent_prefix_________________________", 10, 0)
         .await
         .unwrap();
@@ -245,7 +245,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify effective SAID is v4's SAID (non-divergent tip)
     let (effective, divergent) = repo
-        .sad_pointers
+        .sad_events
         .effective_said(&prefix)
         .await
         .unwrap()
@@ -261,7 +261,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify effective SAID is now the new v4's SAID
     let (effective, divergent) = repo
-        .sad_pointers
+        .sad_events
         .effective_said(&prefix)
         .await
         .unwrap()
@@ -271,7 +271,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify chain length is 5 (v0-v2 kept + v3-v4 replaced)
     let stored = repo
-        .sad_pointers
+        .sad_events
         .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
@@ -284,18 +284,18 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Verify repair audit record was created
     let (repairs, has_more) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
     assert_eq!(repairs.len(), 1);
     assert!(!has_more);
-    assert_eq!(repairs[0].pointer_prefix, prefix);
+    assert_eq!(repairs[0].event_prefix, prefix);
     assert_eq!(repairs[0].diverged_at_version, 3);
 
     // Verify archived records are accessible
     let (archived, has_more) = repo
-        .sad_pointers
+        .sad_events
         .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -314,20 +314,17 @@ async fn test_truncate_and_replace_empty_batch_fails() {
         return;
     };
 
-    let empty: Vec<SadPointer> = Vec::new();
+    let empty: Vec<SadEvent> = Vec::new();
 
     // Empty batch should fail — no prefix to lock on, use a dummy transaction
-    let mut tx = repo.sad_pointers.pool.begin_transaction().await.unwrap();
-    let result = repo
-        .sad_pointers
-        .truncate_and_replace(&mut tx, &empty)
-        .await;
+    let mut tx = repo.sad_events.pool.begin_transaction().await.unwrap();
+    let result = repo.sad_events.truncate_and_replace(&mut tx, &empty).await;
     assert!(result.is_err());
     let _ = tx.rollback().await;
 }
 
 // Note: the previous test_truncate_and_replace_bad_signature_rolls_back test
-// was removed because signatures are no longer part of the SadPointer model.
+// was removed because signatures are no longer part of the SadEvent model.
 // Authorization is now via the anchoring model (consumer-side).
 
 #[tokio::test]
@@ -356,7 +353,7 @@ async fn test_get_repairs_pagination() {
 
     // Paginate with limit=1
     let (page1, has_more1) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs(prefix.as_ref(), 1, 0)
         .await
         .unwrap();
@@ -364,7 +361,7 @@ async fn test_get_repairs_pagination() {
     assert!(has_more1);
 
     let (page2, has_more2) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs(prefix.as_ref(), 1, 1)
         .await
         .unwrap();
@@ -394,7 +391,7 @@ async fn test_get_repair_records_pagination() {
     truncate_and_replace_txn(&repo, &replacement).await;
 
     let (repairs, _) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -403,7 +400,7 @@ async fn test_get_repair_records_pagination() {
 
     // Paginate archived records: 3 total, limit=2
     let (page1, has_more1) = repo
-        .sad_pointers
+        .sad_events
         .get_repair_records(repair_said.as_ref(), 2, 0)
         .await
         .unwrap();
@@ -411,7 +408,7 @@ async fn test_get_repair_records_pagination() {
     assert!(has_more1);
 
     let (page2, has_more2) = repo
-        .sad_pointers
+        .sad_events
         .get_repair_records(repair_said.as_ref(), 2, 2)
         .await
         .unwrap();
@@ -427,7 +424,7 @@ async fn test_get_repair_records_nonexistent() {
     };
 
     let (records, has_more) = repo
-        .sad_pointers
+        .sad_events
         .get_repair_records("Knonexistent_repair_said____________________", 10, 0)
         .await
         .unwrap();
@@ -461,7 +458,7 @@ async fn test_truncate_and_replace_from_v0() {
 
     // Chain should now be 2 records
     let stored = repo
-        .sad_pointers
+        .sad_events
         .get_stored(prefix.as_ref(), None, None)
         .await
         .unwrap();
@@ -472,7 +469,7 @@ async fn test_truncate_and_replace_from_v0() {
     // Repair should show 1 archived record (v2) — v0 and v1 are identical
     // and deduped, so only the tail beyond the replacement chain gets archived.
     let (repairs, _) = repo
-        .sad_pointers
+        .sad_events
         .get_repairs(prefix.as_ref(), 10, 0)
         .await
         .unwrap();
@@ -480,7 +477,7 @@ async fn test_truncate_and_replace_from_v0() {
     assert_eq!(repairs[0].diverged_at_version, 2);
 
     let (archived, _) = repo
-        .sad_pointers
+        .sad_events
         .get_repair_records(repairs[0].said.as_ref(), 10, 0)
         .await
         .unwrap();

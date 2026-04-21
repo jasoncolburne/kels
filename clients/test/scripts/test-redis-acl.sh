@@ -195,8 +195,8 @@ run_test "sadstore can PUBLISH to sad_updates" bash -c '
     [ "$result" -ge 0 ]
 '
 
-run_test "sadstore can PUBLISH to sad_chain_updates" bash -c '
-    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH sad_chain_updates test_message)
+run_test "sadstore can PUBLISH to sel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH sel_updates test_message)
     echo "  Result: $result"
     [ "$result" -ge 0 ]
 '

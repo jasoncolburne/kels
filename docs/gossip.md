@@ -106,7 +106,7 @@ The gossip service also replicates SAD store data on a separate topic (`kels/sad
 
 Two Redis channels drive announcements:
 - `sad_updates` — new SAD objects (payload: `{said}`)
-- `sad_chain_updates` — chain updates (payload: `{chain_prefix}:{effective_said}` or `{chain_prefix}:{effective_said}:repair`)
+- `sel_updates` — chain updates (payload: `{chain_prefix}:{effective_said}` or `{chain_prefix}:{effective_said}:repair`)
 
 Message type:
 ```rust

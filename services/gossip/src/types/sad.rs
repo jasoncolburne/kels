@@ -16,11 +16,11 @@ pub(crate) enum SadAnnouncement {
         /// The peer prefix that stored it.
         origin: cesr::Digest256,
     },
-    /// A SAD pointer chain was updated.
-    Pointer {
+    /// A SAD Event Log was updated.
+    Event {
         /// The chain prefix that was updated.
         chain_prefix: cesr::Digest256,
-        /// The SAID of the latest chain pointer.
+        /// The SAID of the latest chain event.
         said: cesr::Digest256,
         /// The peer prefix that stored it.
         origin: cesr::Digest256,
@@ -49,7 +49,7 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, SadAnnouncement::Object { .. }));
 
-        let chain_msg = SadAnnouncement::Pointer {
+        let chain_msg = SadAnnouncement::Event {
             chain_prefix: test_digest("prefix"),
             said: test_digest("said456"),
             origin: test_digest("origin"),
@@ -59,11 +59,11 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Pointer { repair: false, .. }
+            SadAnnouncement::Event { repair: false, .. }
         ));
 
         // Repair messages round-trip correctly
-        let repair_msg = SadAnnouncement::Pointer {
+        let repair_msg = SadAnnouncement::Event {
             chain_prefix: test_digest("prefix"),
             said: test_digest("said789"),
             origin: test_digest("origin"),
@@ -73,11 +73,11 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Pointer { repair: true, .. }
+            SadAnnouncement::Event { repair: true, .. }
         ));
 
         // Backwards compatibility: messages without repair field default to false
-        let without_repair = serde_json::to_string(&SadAnnouncement::Pointer {
+        let without_repair = serde_json::to_string(&SadAnnouncement::Event {
             chain_prefix: test_digest("p"),
             said: test_digest("s"),
             origin: test_digest("o"),
@@ -88,7 +88,7 @@ mod tests {
         let parsed: SadAnnouncement = serde_json::from_str(&legacy_json).unwrap();
         assert!(matches!(
             parsed,
-            SadAnnouncement::Pointer { repair: false, .. }
+            SadAnnouncement::Event { repair: false, .. }
         ));
     }
 }

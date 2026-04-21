@@ -37,7 +37,7 @@ create_kel() {
     tmpdir=$(mktemp -d)
     # Create KEL with inception + interaction events
     local prefix incept_output
-    incept_output=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" incept --signing-algorithm "$ALGORITHM" 2>&1)
+    incept_output=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel incept --signing-algorithm "$ALGORITHM" 2>&1)
     prefix=$(echo "$incept_output" | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
     if [ -z "$prefix" ]; then
         echo "ERROR [kel $i]: KEL inception failed: $incept_output" >&2
@@ -47,7 +47,7 @@ create_kel() {
     for j in $(seq 1 "$EVENTS_PER_KEL"); do
         local anchor_said interact_output
         anchor_said=$(cesr_blake3 "load-test-${i}-${j}")
-        if ! interact_output=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$anchor_said" 2>&1); then
+        if ! interact_output=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel anchor --prefix "$prefix" --said "$anchor_said" 2>&1); then
             echo "ERROR [kel $i]: interaction event $j failed: $interact_output" >&2
             rm -rf "$tmpdir"
             return 1

@@ -16,8 +16,8 @@ use tracing::debug;
 use verifiable_storage::{Delete, Order, Query, SelfAddressed, TransactionExecutor};
 
 use crate::{
-    BranchTip, EventKind, EventSignature, KelMergeResult, KelRecoveryEvent, KelVerification,
-    KelVerifier, KelsError, KeyEvent, RecoveryRecord, SignedKeyEvent, completed_verification,
+    BranchTip, EventSignature, KelMergeResult, KelRecoveryEvent, KelVerification, KelVerifier,
+    KelsError, KeyEvent, KeyEventKind, RecoveryRecord, SignedKeyEvent, completed_verification,
     load_signed_history, repository::zip_events_with_signatures, types::PageLoader,
 };
 
@@ -139,7 +139,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             .eq("prefix", &self.prefix)
             .gte("serial", since_serial)
             .order_by("serial", Order::Asc)
-            .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
+            .order_by_case("kind", &KeyEventKind::sort_priority_mapping(), Order::Asc)
             .order_by("said", Order::Asc)
             .limit(clamped_limit + 1);
         let mut events: Vec<KeyEvent> = self.tx.fetch(query).await?;
@@ -200,7 +200,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .lte("serial", serial)
-            .r#in("kind", EventKind::establishment_kinds())
+            .r#in("kind", KeyEventKind::establishment_kinds())
             .order_by("serial", Order::Desc)
             .limit(1);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
@@ -249,7 +249,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         let query = Query::<KeyEvent>::for_table(self.events_table)
             .eq("prefix", &self.prefix)
             .gte("serial", since_serial)
-            .r#in("kind", EventKind::recovery_revealing_kinds())
+            .r#in("kind", KeyEventKind::recovery_revealing_kinds())
             .limit(1);
         let events: Vec<KeyEvent> = self.tx.fetch(query).await?;
         Ok(!events.is_empty())
@@ -812,7 +812,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
 
             let first_serial = new_events[0].event.serial;
             let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
-                KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
+                KelsError::InvalidKeyEvent("Event has no previous event".to_string())
             })?;
 
             let anchor_event = self
@@ -876,7 +876,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
             }
 
             let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
-                KelsError::InvalidKeyEvent("Event has no previous pointer".to_string())
+                KelsError::InvalidKeyEvent("Event has no previous event".to_string())
             })?;
 
             let anchor_event = self
@@ -1224,7 +1224,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
         Ok(())
     }
 
-    /// Walk backward from `start_said` following `previous` pointers until finding
+    /// Walk backward from `start_said` following `previous` events until finding
     /// an establishment event.
     async fn trace_establishment_backward(
         &mut self,

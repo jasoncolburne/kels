@@ -1,12 +1,12 @@
-//! Identity chains — stable identity references via evolving policy pointer chains.
+//! Identity chains — stable identity references via evolving policy event chains.
 //!
-//! An identity chain is a SAD pointer chain where:
+//! An identity chain is a SAD Event Log where:
 //! - Topic: `kels/sad/v1/identity/chain`
 //! - Content: `None` at every version (policy is carried in `write_policy`)
 //! - Chain prefix: the stable identity reference
 //! - `write_policy`: the current policy's SAID (self-governing)
 
-use kels_core::{SadPointer, SadPointerKind, SadPointerVerification, compute_sad_pointer_prefix};
+use kels_core::{SadEvent, SadEventKind, SadEventVerification, compute_sad_event_prefix};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{Policy, error::PolicyError};
@@ -14,53 +14,53 @@ use crate::{Policy, error::PolicyError};
 /// Well-known topic for identity chains.
 pub const IDENTITY_CHAIN_TOPIC: &str = "kels/sad/v1/identity/chain";
 
-/// Create a v0 inception pointer for an identity chain.
+/// Create a v0 inception event for an identity chain.
 ///
-/// The returned pointer's `prefix` is the stable identity reference.
+/// The returned event's `prefix` is the stable identity reference.
 /// `write_policy` is set to `initial_policy.said` — the identity is self-governing.
 ///
 /// To enable `advance()` (policy rotation), follow the inception with an `Est`
-/// record at v1 declaring `checkpoint_policy`. Without it, `advance()` produces
-/// an `Evl` that the verifier rejects at submission (checkpoint_policy must be
+/// record at v1 declaring `governance_policy`. Without it, `advance()` produces
+/// an `Evl` that the verifier rejects at submission (governance_policy must be
 /// established on the branch). See `advance()` for the higher-threshold
 /// authorization rules that apply to rotation.
-pub fn create(initial_policy: &Policy) -> Result<SadPointer, PolicyError> {
+pub fn create(initial_policy: &Policy) -> Result<SadEvent, PolicyError> {
     initial_policy
         .verify_said()
         .map_err(|e| PolicyError::InvalidPolicy(format!("Policy SAID verification failed: {e}")))?;
 
-    SadPointer::create(
+    SadEvent::create(
         IDENTITY_CHAIN_TOPIC.to_string(),
-        SadPointerKind::Icp,
+        SadEventKind::Icp,
         None,
         None,
         Some(initial_policy.said),
         None,
     )
-    .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity pointer: {e}")))
+    .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity event: {e}")))
 }
 
 /// Create the next version of an identity chain with an updated policy.
 ///
-/// Takes a `SadPointerVerification` token (chain must be verified before advancing)
+/// Takes a `SadEventVerification` token (chain must be verified before advancing)
 /// and a new policy. The new policy must differ from the current write_policy —
 /// an identity chain advance with an unchanged policy is meaningless (content is
 /// always None, custody is always None, there's nothing else to change).
 ///
 /// The produced record is an `Evl` (was `Upd` before #131). This means the advance
-/// is evaluated against `checkpoint_policy` — a higher-threshold authorization bar
+/// is evaluated against `governance_policy` — a higher-threshold authorization bar
 /// than `write_policy`. Policy replacement now requires satisfying both the previous
-/// write_policy (the soft check on every v1+ record) and the checkpoint_policy (the
+/// write_policy (the soft check on every v1+ record) and the governance_policy (the
 /// hard check that gates Evl acceptance).
 ///
-/// Precondition: the chain must have `checkpoint_policy` established (via a prior
+/// Precondition: the chain must have `governance_policy` established (via a prior
 /// `Est` at v1 or a v0 declaration on the inception record). If not, the returned
-/// pointer will be rejected by `SadChainVerifier` at submission — `advance()` itself
+/// event will be rejected by `SelVerifier` at submission — `advance()` itself
 /// does not surface this error.
 pub fn advance(
-    verification: &SadPointerVerification,
+    verification: &SadEventVerification,
     new_policy: &Policy,
-) -> Result<SadPointer, PolicyError> {
+) -> Result<SadEvent, PolicyError> {
     if !verification.policy_satisfied() {
         return Err(PolicyError::InvalidPolicy(
             "Cannot advance — chain policy not satisfied".to_string(),
@@ -87,17 +87,17 @@ pub fn advance(
         ));
     }
 
-    let mut pointer = verification.current_record().clone();
-    pointer.content = None;
-    pointer.custody = None;
-    pointer.kind = SadPointerKind::Evl;
-    pointer.checkpoint_policy = None;
-    pointer.write_policy = Some(new_policy.said);
-    pointer
+    let mut event = verification.current_record().clone();
+    event.content = None;
+    event.custody = None;
+    event.kind = SadEventKind::Evl;
+    event.governance_policy = None;
+    event.write_policy = Some(new_policy.said);
+    event
         .increment()
-        .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to increment pointer: {e}")))?;
+        .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to increment event: {e}")))?;
 
-    Ok(pointer)
+    Ok(event)
 }
 
 /// Compute the identity chain prefix for a given initial policy.
@@ -108,43 +108,43 @@ pub fn compute_identity_prefix(initial_policy: &Policy) -> Result<cesr::Digest25
         .verify_said()
         .map_err(|e| PolicyError::InvalidPolicy(format!("Policy SAID verification failed: {e}")))?;
 
-    compute_sad_pointer_prefix(initial_policy.said, IDENTITY_CHAIN_TOPIC)
+    compute_sad_event_prefix(initial_policy.said, IDENTITY_CHAIN_TOPIC)
         .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to compute prefix: {e}")))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)]
 mod tests {
-    use kels_core::{KelsError, PolicyChecker, SadChainVerifier};
+    use kels_core::{KelsError, PolicyChecker, SelVerifier};
 
     use super::*;
 
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn satisfies(&self, _: &SadPointer, _: &cesr::Digest256) -> Result<bool, KelsError> {
+        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
-        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
 
-    /// Accepts the soft wp check for `Est` (so checkpoint_policy can establish)
+    /// Accepts the soft wp check for `Est` (so governance_policy can establish)
     /// but rejects it for every other kind — lets the test build a chain where
-    /// `policy_satisfied()` is false while the checkpoint_policy is still
+    /// `policy_satisfied()` is false while the governance_policy is still
     /// established (required after the R6 Est-arm defense-in-depth gate).
     struct RejectAdvanceChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for RejectAdvanceChecker {
         async fn satisfies(
             &self,
-            record: &SadPointer,
+            record: &SadEvent,
             _: &cesr::Digest256,
         ) -> Result<bool, KelsError> {
-            Ok(record.kind == SadPointerKind::Est)
+            Ok(record.kind == SadEventKind::Est)
         }
-        async fn self_satisfies(&self, _: &SadPointer) -> Result<bool, KelsError> {
+        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
@@ -182,13 +182,13 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
-    /// Declare checkpoint_policy on a pointer (Est kind).
-    fn add_checkpoint_declaration(pointer: &mut SadPointer) {
+    /// Declare governance_policy on a event (Est kind).
+    fn add_governance_declaration(event: &mut SadEvent) {
         let cp_policy = test_policy("checkpoint");
-        pointer.kind = SadPointerKind::Est;
-        pointer.checkpoint_policy = Some(cp_policy.said);
+        event.kind = SadEventKind::Est;
+        event.governance_policy = Some(cp_policy.said);
         // Est forbids write_policy
-        pointer.write_policy = None;
+        event.write_policy = None;
     }
 
     #[tokio::test]
@@ -200,18 +200,18 @@ mod tests {
 
         // Create a v1 with checkpoint so the chain passes verification
         let mut v1_cp = v0.clone();
-        add_checkpoint_declaration(&mut v1_cp);
+        add_governance_declaration(&mut v1_cp);
         v1_cp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
-        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0.clone(), v1_cp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         let v2 = advance(&verification, &policy2).unwrap();
         assert_eq!(v2.version, 2);
         assert!(v2.content.is_none());
-        assert_eq!(v2.kind, SadPointerKind::Evl);
+        assert_eq!(v2.kind, SadEventKind::Evl);
         assert_eq!(v2.write_policy, Some(policy2.said));
         assert_eq!(v2.prefix, prefix);
 
@@ -220,11 +220,11 @@ mod tests {
         // code path than the Upd it replaced) and that tracked_write_policy
         // advances to policy2.said.
         let mut v1_cp_rebuilt = v0.clone();
-        add_checkpoint_declaration(&mut v1_cp_rebuilt);
+        add_governance_declaration(&mut v1_cp_rebuilt);
         v1_cp_rebuilt.increment().unwrap();
 
         let checker = AlwaysPassChecker;
-        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier
             .verify_page(&[v0, v1_cp_rebuilt, v2])
             .await
@@ -244,12 +244,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_rejects_wrong_topic() {
-        // Create a non-identity chain pointer with checkpoint_policy and verify it
+        // Create a non-identity chain event with governance_policy and verify it
         let policy = test_policy("test");
         let cp_policy = test_policy("checkpoint");
-        let v0 = SadPointer::create(
+        let v0 = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
-            SadPointerKind::Icp,
+            SadEventKind::Icp,
             None,
             None,
             Some(policy.said),
@@ -258,7 +258,7 @@ mod tests {
         .unwrap();
 
         let checker = AlwaysPassChecker;
-        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
@@ -274,11 +274,11 @@ mod tests {
 
         // Add a v1 with checkpoint so verification passes
         let mut v1_cp = v0.clone();
-        add_checkpoint_declaration(&mut v1_cp);
+        add_governance_declaration(&mut v1_cp);
         v1_cp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
-        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1_cp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
@@ -293,23 +293,23 @@ mod tests {
         let policy2 = test_policy("policy-2");
         let v0 = create(&policy1).unwrap();
 
-        // v1: Est establishes checkpoint_policy (RejectAdvanceChecker accepts Est
+        // v1: Est establishes governance_policy (RejectAdvanceChecker accepts Est
         // so the R6 Est-arm gate permits the cp advance).
         let mut v1 = v0.clone();
-        add_checkpoint_declaration(&mut v1);
+        add_governance_declaration(&mut v1);
         v1.increment().unwrap();
 
         // v2: Upd that soft-fails the wp check under RejectAdvanceChecker —
         // this is what makes policy_satisfied() false on the final verification.
         let mut v2 = v1.clone();
         v2.content = Some(cesr::Digest256::blake3_256(b"content"));
-        v2.kind = SadPointerKind::Upd;
+        v2.kind = SadEventKind::Upd;
         v2.write_policy = None;
-        v2.checkpoint_policy = None;
+        v2.governance_policy = None;
         v2.increment().unwrap();
 
         let checker = RejectAdvanceChecker;
-        let mut verifier = SadChainVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());

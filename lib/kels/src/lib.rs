@@ -90,27 +90,27 @@ pub use store::{
 };
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
-    CompletedProposalsResponse, Custody, CustodyContext, CustodyValidationError,
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, EventKind, EventSignature, FederationStatus,
-    HttpKelSink, HttpKelSource, HttpSadSink, HttpSadSource, IdentityKelPageRequest,
-    KelEffectiveSaidRequest, KelEventExistsRequest, KelMergeResult, KelPageRequest,
-    KelRecoveriesRequest, KelRecoveryEvent, KelRecoveryEventsRequest, KelVerification, KelVerifier,
-    KeyEvent, KeyEventSignature, NodeSet, PageLoader, PagedKelSink, PagedKelSource, PagedSadSink,
+    CompletedProposalsResponse, Custody, CustodyValidationError, EffectiveSaidResponse, ErrorCode,
+    ErrorResponse, EventSignature, FederationStatus, HttpKelSink, HttpKelSource, HttpSadSink,
+    HttpSadSource, IdentityKelPageRequest, KelEffectiveSaidRequest, KelEventExistsRequest,
+    KelMergeResult, KelPageRequest, KelRecoveriesRequest, KelRecoveryEvent,
+    KelRecoveryEventsRequest, KelVerification, KelVerifier, KeyEvent, KeyEventKind,
+    KeyEventSignature, NodeSet, PageLoader, PagedKelSink, PagedKelSource, PagedSadSink,
     PagedSadSource, PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory,
     PeerRemovalProposal, PeersResponse, PolicyChecker, PrefixListResponse, PrefixState, Proposal,
     ProposalHistory, ProposalRequest, ProposalResponse, ProposalStatus, ProposalWithVotes,
     ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
     RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory, RemovalWithVotes,
-    SadChainVerifier, SadFetchRequest, SadObjectEntry, SadObjectListResponse, SadPointer,
-    SadPointerEffectiveSaidRequest, SadPointerKind, SadPointerPage, SadPointerPageRequest,
-    SadPointerRepair, SadPointerRepairPage, SadPointerRepairRecord, SadPointerVerification,
-    SadRepairPageRequest, SadRepairsRequest, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
-    SignedSadFetchRequest, StoreKelSource, StorePageLoader, SubmitEventsResponse,
+    SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage,
+    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventRepairRecord,
+    SadEventVerification, SadFetchRequest, SadObjectEntry, SadObjectListResponse,
+    SadRepairPageRequest, SadRepairsRequest, SelVerifier, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, SignedSadFetchRequest, StoreKelSource, StorePageLoader, SubmitEventsResponse,
     SubmitPointersResponse, Vote, completed_verification, compute_approval_threshold,
-    compute_rotation_hash, compute_sad_pointer_prefix, forward_key_events, forward_sad_pointer,
+    compute_rotation_hash, compute_sad_event_prefix, forward_key_events, forward_sad_event,
     hash_effective_said, parse_and_validate_custody, single_signer, truncate_incomplete_generation,
     validate_timestamp, verify_key_events, verify_key_events_collecting_establishment_keys,
-    verify_key_events_with, verify_sad_pointer,
+    verify_key_events_with, verify_sad_event,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
@@ -131,9 +131,9 @@ pub const MINIMUM_PAGE_SIZE: usize = 64;
 /// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
 pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
 
-/// Maximum non-checkpoint records between checkpoint records on pointer chains.
+/// Maximum non-checkpoint records between checkpoint records on event chains.
 /// `MINIMUM_PAGE_SIZE - 1` leaves room for the checkpoint record in the page.
-/// Unlike KELs (which need 2 slots for rec+rot), pointer checkpoints need only 1 slot.
+/// Unlike KELs (which need 2 slots for rec+rot), event checkpoints need only 1 slot.
 pub const MAX_NON_CHECKPOINT_RECORDS: usize = MINIMUM_PAGE_SIZE - 1;
 
 /// Default page size for all KEL operations: submissions, queries, and responses.

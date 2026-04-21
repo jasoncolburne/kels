@@ -19,7 +19,7 @@ pub struct SignedSadFetchRequest {
     pub disclosure: Option<String>,
 }
 
-/// Request body for fetching or checking existence of a SAD object or pointer by SAID.
+/// Request body for fetching or checking existence of a SAD object or event by SAID.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadFetchRequest {
     pub said: cesr::Digest256,
@@ -27,21 +27,21 @@ pub struct SadFetchRequest {
     pub disclosure: Option<String>,
 }
 
-/// Request body for fetching a page of SAD pointer chain records.
+/// Request body for fetching a page of SAD Event Log records.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SadPointerPageRequest {
+pub struct SadEventPageRequest {
     pub prefix: cesr::Digest256,
     pub since: Option<cesr::Digest256>,
     pub limit: Option<usize>,
 }
 
-/// Request body for fetching the effective SAID of a SAD pointer chain.
+/// Request body for fetching the effective SAID of a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SadPointerEffectiveSaidRequest {
+pub struct SadEventEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
-/// Response from pointer chain submission.
+/// Response from event chain submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[must_use = "SubmitPointersResponse.applied must be checked — records may be rejected"]
@@ -51,7 +51,7 @@ pub struct SubmitPointersResponse {
     pub applied: bool,
 }
 
-/// Request body for listing repairs for a SAD pointer chain.
+/// Request body for listing repairs for a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairsRequest {
     pub prefix: cesr::Digest256,

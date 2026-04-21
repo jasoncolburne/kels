@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow, bail};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{EventKind, KelStore, ProviderConfig};
+use kels_core::{KelStore, KeyEventKind, ProviderConfig};
 
 use crate::Cli;
 use crate::helpers::*;
@@ -104,9 +104,9 @@ pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &s
     let key_provider = provider_config(cli, prefix)?.load_provider().await?;
 
     // Parse event types
-    let event_kinds: Vec<EventKind> = events_str
+    let event_kinds: Vec<KeyEventKind> = events_str
         .split(',')
-        .map(|s| EventKind::from_short_name(s.trim()))
+        .map(|s| KeyEventKind::from_short_name(s.trim()))
         .collect::<Result<_, _>>()?;
 
     let has_recovery = event_kinds.iter().any(|k| k.reveals_recovery_key());
@@ -127,7 +127,7 @@ pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &s
 
     for kind in &event_kinds {
         let signed = match kind {
-            EventKind::Ixn => {
+            KeyEventKind::Ixn => {
                 let nonce_qb64 = kels_core::generate_nonce().qb64();
                 let anchor_qb64 = format!("K{}", &nonce_qb64[1..]);
                 let anchor =
@@ -135,10 +135,10 @@ pub(crate) async fn cmd_adversary_inject(cli: &Cli, prefix: &str, events_str: &s
 
                 builder.interact(&anchor).await?
             }
-            EventKind::Rot => builder.rotate().await?,
-            EventKind::Rec => builder.recover(false).await?,
-            EventKind::Ror => builder.rotate_recovery().await?,
-            EventKind::Dec => builder.decommission().await?,
+            KeyEventKind::Rot => builder.rotate().await?,
+            KeyEventKind::Rec => builder.recover(false).await?,
+            KeyEventKind::Ror => builder.rotate_recovery().await?,
+            KeyEventKind::Dec => builder.decommission().await?,
             other => {
                 bail!(
                     "Unsupported adversary event type: {}. Valid types: ixn, rot, rec, ror, dec",

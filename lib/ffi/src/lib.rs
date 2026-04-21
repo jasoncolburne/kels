@@ -63,8 +63,8 @@ pub use credential::{
 
 // SAD operations
 pub use sad::{
-    kels_compute_sad_pointer_prefix, kels_sad_fetch_pointer, kels_sad_get_object,
-    kels_sad_post_object, kels_sad_submit_pointer,
+    kels_compute_sad_event_prefix, kels_sad_fetch_event, kels_sad_get_object, kels_sad_post_object,
+    kels_sad_submit_event,
 };
 
 // Registry operations

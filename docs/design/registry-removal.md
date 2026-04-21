@@ -19,7 +19,7 @@ Before removing a registry from the federation:
 The registry operator triggers decommission of the identity KEL by submitting a `dec` (decommission) event. This event requires dual signatures (both current key and recovery key), making it as secure as a recovery event.
 
 ```
-EventKind::Dec
+KeyEventKind::Dec
 ```
 
 The `dec` event signals a clean, intentional termination of the KEL.

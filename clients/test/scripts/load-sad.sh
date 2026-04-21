@@ -3,7 +3,7 @@
 #
 # For each group, creates a KEL, builds a single-endorser policy from its
 # prefix (using the policy SAID as write_policy), stores SAD objects, then
-# creates a pointer chain with a random number [1, MAX_CHAIN_VERSIONS] of
+# creates a event chain with a random number [1, MAX_CHAIN_VERSIONS] of
 # versions, each referencing a different SAD object as content.
 #
 # Usage: load-sad.sh [count] [concurrency]
@@ -56,7 +56,7 @@ create_group() {
 
     # 1. Create a KEL
     local prefix
-    prefix=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" incept --signing-algorithm "$ALGORITHM" 2>&1 | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
+    prefix=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel incept --signing-algorithm "$ALGORITHM" 2>&1 | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
     if [ -z "$prefix" ]; then
         echo "ERROR [group $group]: KEL inception failed" >&2
         rm -rf "$tmpdir"
@@ -109,9 +109,9 @@ create_group() {
     done
 
     # 3. Compute chain prefix (use kels-cli for correctness)
-    # kels-cli sad prefix takes (write_policy, topic) — we use the policy SAID as write_policy
+    # kels-cli sel prefix takes (write_policy, topic) — we use the policy SAID as write_policy
     local chain_prefix
-    chain_prefix=$(kels-cli sad prefix "$policy_said" "$KIND" 2>&1)
+    chain_prefix=$(kels-cli sel prefix "$policy_said" "$KIND" 2>&1)
     if [ -z "$chain_prefix" ]; then
         echo "ERROR [group $group]: chain prefix computation failed" >&2
         rm -rf "$tmpdir"
@@ -125,7 +125,7 @@ create_group() {
     # v0: deterministic inception record (no content for v0)
     local v0_json
     v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$policy_said" \
-        '{said: $p, prefix: $p, version: 0, topic: $t, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp}')
+        '{said: $p, prefix: $p, version: 0, topic: $t, kind: "kels/sad/v1/events/icp", writePolicy: $wp}')
     local v0_prefix
     v0_prefix=$(compute_prefix "$v0_json")
     v0_json=$(echo "$v0_json" | jq -c --arg pfx "$v0_prefix" '.prefix = $pfx')
@@ -134,7 +134,7 @@ create_group() {
     v0_json=$(echo "$v0_json" | jq -c --arg s "$v0_said" '.said = $s')
 
     # Anchor v0 SAID in the KEL (required for write_policy authorization)
-    if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$v0_said" >/dev/null 2>&1; then
+    if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel anchor --prefix "$prefix" --said "$v0_said" >/dev/null 2>&1; then
         echo "ERROR [group $group]: failed to anchor v0 SAID $v0_said" >&2
         rm -rf "$tmpdir"
         return 1
@@ -147,29 +147,29 @@ create_group() {
 
     # Build a checkpoint policy for this chain
     local chain_cp_said
-    chain_cp_said=$(build_checkpoint_policy "$SADSTORE_URL" "$prefix")
+    chain_cp_said=$(build_governance_policy "$SADSTORE_URL" "$prefix")
 
     for i in $(seq 1 "$n"); do
         local content_said="${object_saids[$((i-1))]}"
         local vi_json
         if [ "$i" -eq 1 ]; then
-            # v1: Est (checkpoint_policy declaration — Est forbids writePolicy)
+            # v1: Est (governance_policy declaration — Est forbids writePolicy)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
                 --arg cp "$chain_cp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/est", content: $cs, checkpointPolicy: $cp}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/est", content: $cs, governancePolicy: $cp}')
         else
             # Upd forbids writePolicy
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/pointer/upd", content: $cs}')
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/upd", content: $cs}')
         fi
         local vi_said
         vi_said=$(compute_said "$vi_json")
         vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')
 
         # Anchor each version's SAID in the KEL
-        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
+        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
             echo "ERROR [group $group]: failed to anchor v${i} SAID $vi_said" >&2
             rm -rf "$tmpdir"
             return 1
@@ -182,7 +182,7 @@ create_group() {
 
     # 6. Submit all records in one batch
     local submit_resp
-    submit_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad/pointers" \
+    submit_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad/events" \
         -H 'Content-Type: application/json' \
         -d "$records_json")
     local submit_code
@@ -197,7 +197,7 @@ create_group() {
     rm -rf "$tmpdir"
 }
 
-export -f create_group cesr_blake3 compute_said compute_prefix build_checkpoint_policy
+export -f create_group cesr_blake3 compute_said compute_prefix build_governance_policy
 export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)

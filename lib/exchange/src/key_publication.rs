@@ -1,17 +1,17 @@
-//! Encapsulation key publication — stored as a SAD object, referenced by SadPointer chains.
+//! Encapsulation key publication — stored as a SAD object, referenced by SadEvent chains.
 
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
-/// Well-known SadPointer kind for ML-KEM encapsulation key publication.
+/// Well-known SadEvent kind for ML-KEM encapsulation key publication.
 pub const ENCAP_KEY_KIND: &str = "kels/sad/v1/keys/mlkem";
 
 /// ML-KEM encapsulation key publication, stored as a SAD object in the SADStore.
 ///
-/// The owner publishes this by creating a `SadPointer` chain with kind
+/// The owner publishes this by creating a `SadEvent` chain with kind
 /// [`ENCAP_KEY_KIND`] and `content_said` pointing to this object's SAID.
-/// Anyone can discover the key by computing the deterministic pointer prefix:
-/// `compute_sad_pointer_prefix(kel_prefix, ENCAP_KEY_KIND)`.
+/// Anyone can discover the key by computing the deterministic event prefix:
+/// `compute_sad_event_prefix(kel_prefix, ENCAP_KEY_KIND)`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct EncapsulationKeyPublication {

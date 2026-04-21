@@ -65,28 +65,28 @@ sad_object_exists() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"said\":\"${said}\"}" "${url}/api/v1/sad/fetch")" = "200" ]
 }
 
-sad_chain_exists() {
+sel_exists() {
     local url="$1"
     local prefix="$2"
-    [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch")" = "200" ]
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/events/fetch")" = "200" ]
 }
 
 get_chain_tip_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq -r '.pointers[-1].said // empty'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/events/fetch" | jq -r '.events[-1].said // empty'
 }
 
 get_effective_said() {
     local url="$1"
     local prefix="$2"
-    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/effective-said" | jq -r '.said // empty'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/events/effective-said" | jq -r '.said // empty'
 }
 
 get_chain_length() {
     local url="$1"
     local prefix="$2"
-    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/pointers/fetch" | jq '.pointers | length'
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/sad/events/fetch" | jq '.events | length'
 }
 
 wait_for_sad_object_propagation() {
@@ -122,7 +122,7 @@ wait_for_chain_propagation() {
     return 1
 }
 
-wait_for_sad_pointer_divergence_convergence() {
+wait_for_sad_event_divergence_convergence() {
     local prefix="$1"
     local timeout="$2"
     local url_a="$3"
@@ -130,8 +130,8 @@ wait_for_sad_pointer_divergence_convergence() {
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local a_div b_div a_eff b_eff
-        a_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_a}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
-        b_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_b}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
+        a_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_a}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
+        b_div=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url_b}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
         a_eff=$(get_effective_said "$url_a" "$prefix")
         b_eff=$(get_effective_said "$url_b" "$prefix")
         if [ "$a_div" = "true" ] && [ "$b_div" = "true" ] && [ "$a_eff" = "$b_eff" ]; then
@@ -171,15 +171,15 @@ echo ""
 
 # GET non-existent chain
 run_test "GET non-existent chain returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Knonexistent________________________________') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/events/Knonexistent________________________________') = '404' ]"
 
 # Effective SAID non-existent
 run_test "Effective SAID non-existent returns 404" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/Knonexistent________________________________/effective-said') = '404' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/events/Knonexistent________________________________/effective-said') = '404' ]"
 
-# Submit pointer with tampered SAID
+# Submit event with tampered SAID
 run_test "Submit tampered SAID rejected" \
-    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/pointers' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"kind\":\"kels/sad/v1/pointer/icp\",\"writePolicy\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
+    bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/events' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"kind\":\"kels/sad/v1/events/icp\",\"writePolicy\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
 
 echo ""
 
@@ -189,14 +189,14 @@ echo ""
 echo -e "${CYAN}=== Scenario 3: Prefix Computation ===${NC}"
 echo ""
 
-PREFIX_A=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
-PREFIX_B=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_A=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_B=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
 run_test "Prefix is deterministic" [ "$PREFIX_A" = "$PREFIX_B" ]
 
-PREFIX_C=$(kels-cli sad prefix "Kkel_b______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_C=$(kels-cli sel prefix "Kkel_b______________________________________" "kels/v1/mlkem" 2>/dev/null)
 run_test "Different KEL prefix -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_C" ]
 
-PREFIX_D=$(kels-cli sad prefix "Kkel_a______________________________________" "kels/v1/other" 2>/dev/null)
+PREFIX_D=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/other" 2>/dev/null)
 run_test "Different kind -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
 
 echo ""
@@ -212,13 +212,13 @@ PREFIX_LISTING_BODY_LIMIT="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\"
 OBJECT_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"${MOCK_NONCE}\",\"cursor\":null,\"limit\":null},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
 
 run_test "List chain prefixes" \
-    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
 
 run_test "List SAD objects" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/saids' -H 'Content-Type: application/json' -d '${OBJECT_LISTING_BODY}' | jq -e '.saids != null'"
 
 run_test "List with pagination limit" \
-    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/pointers/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
 
 echo ""
 
@@ -226,13 +226,13 @@ echo ""
 # Scenario 5: Chain Record Submission via CLI
 # ========================================
 echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
-echo "Create a KEL, build chain pointers, submit via CLI, fetch via CLI"
+echo "Create a KEL, build chain events, submit via CLI, fetch via CLI"
 echo ""
 
 SAD_KIND="kels/v1/test-data"
 
 # Create a KEL on node-a to use as the chain owner
-KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 if [ -z "$KEL_PREFIX" ]; then
     echo -e "${RED}Failed to create KEL${NC}"
     TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -250,16 +250,16 @@ else
         bash -c "[ '$POLICY_CODE' = '201' ] || [ '$POLICY_CODE' = '200' ]"
 
     # Compute the chain prefix via CLI (using policy SAID, not KEL prefix)
-    CHAIN_PREFIX=$(kels-cli sad prefix "$POLICY_SAID" "$SAD_KIND" 2>/dev/null)
+    CHAIN_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_KIND" 2>/dev/null)
     echo "Chain prefix: $CHAIN_PREFIX"
     run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
 
     run_test "Chain does not exist yet" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/pointers/fetch') = '404' ]"
+        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/events/fetch') = '404' ]"
 
-    # --- Build v0 inception pointer ---
+    # --- Build v0 inception event ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp}')
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp}')
     V0_PREFIX=$(compute_prefix "$V0_JSON")
     V0_JSON=$(echo "$V0_JSON" | jq -c --arg pfx "$V0_PREFIX" '.prefix = $pfx')
     V0_SAID=$(compute_said "$V0_JSON")
@@ -268,30 +268,30 @@ else
     # Verify our prefix matches the CLI's
     run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
 
-    # --- Build v1 pointer (declares checkpoint_policy) ---
-    CHECKPOINT_POLICY_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
+    # --- Build v1 event (declares governance_policy) ---
+    CHECKPOINT_POLICY_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
         --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/est", checkpointPolicy: $cp}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/est", governancePolicy: $cp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
 
     # Anchor both SAIDs in the KEL (required for write_policy authorization)
     run_test "v0 SAID anchored in KEL" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$KEL_PREFIX" --said "$V0_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$V0_SAID"
     run_test "v1 SAID anchored in KEL" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$KEL_PREFIX" --said "$V1_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$V1_SAID"
 
-    # Submit [v0, v1] as inception batch (v1 declares checkpoint_policy)
+    # Submit [v0, v1] as inception batch (v1 declares governance_policy)
     echo "[$V0_JSON,$V1_JSON]" > "$TEMP_DIR/inception-submit.json"
 
-    run_test "Inception batch [v0, v1] submitted via CLI (sad submit)" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/inception-submit.json"
+    run_test "Inception batch [v0, v1] submitted via CLI (sel submit)" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/inception-submit.json"
 
-    # Fetch the chain via kels-cli sad pointer
-    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sad pointer "$CHAIN_PREFIX" 2>/dev/null)
-    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.pointers | length' 2>/dev/null)
-    run_test "Chain fetched via CLI (sad pointer) with 2 pointers" [ "$CHAIN_LEN" = "2" ]
+    # Fetch the chain via kels-cli sel get
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sel get "$CHAIN_PREFIX" 2>/dev/null)
+    CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.events | length' 2>/dev/null)
+    run_test "Chain fetched via CLI (sel get) with 2 events" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
     if [ "$FEDERATED" = "true" ]; then
@@ -349,14 +349,14 @@ if [ "$FEDERATED" = "true" ]; then
 # Scenario 7: Divergence Detection + Repair
 # ========================================
 echo -e "${CYAN}=== Scenario 7: Divergence Detection + Repair ===${NC}"
-echo "Create divergence by submitting conflicting pointers at the same version"
+echo "Create divergence by submitting conflicting events at the same version"
 echo "to different nodes, then repair the chain."
 echo ""
 
 DIV_KIND="kels/v1/test-diverge"
 
 # Create a KEL for the divergence test
-DIV_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+DIV_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 if [ -z "$DIV_KEL_PREFIX" ]; then
     echo -e "${RED}Failed to create KEL for divergence test${NC}"
     TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -372,106 +372,106 @@ else
         -H 'Content-Type: application/json' -d "$DIV_POLICY_JSON"
 
     # Build checkpoint policy before v0 so v0 can declare it
-    DIV_CP_SAID=$(build_checkpoint_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
+    DIV_CP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
 
-    # --- Build and submit v0 (with checkpoint_policy) to node-a ---
+    # --- Build and submit v0 (with governance_policy) to node-a ---
     D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
         --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/pointer/icp", writePolicy: $wp, checkpointPolicy: $cp}')
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $cp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
     D_V0_SAID=$(compute_said "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg s "$D_V0_SAID" '.said = $s')
 
-    # checkpoint_policy changes the prefix — use computed prefix, not CLI prefix
+    # governance_policy changes the prefix — use computed prefix, not CLI prefix
     DIV_PREFIX="$D_V0_PREFIX"
     echo "Chain prefix: $DIV_PREFIX"
 
     # Anchor v0 SAID in the KEL
     run_test "Divergence: v0 SAID anchored" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V0_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V0_SAID"
 
     echo "[$D_V0_JSON]" > "$TEMP_DIR/div-v0.json"
 
     run_test "Divergence: v0 submitted to node-a" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v0.json"
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/div-v0.json"
 
     # Wait for v0 to propagate to node-b
     run_test "Divergence: v0 propagated to node-b" \
         wait_for_chain_propagation "$DIV_PREFIX" "$D_V0_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 
-    # --- Build two conflicting v1 pointers ---
+    # --- Build two conflicting v1 events ---
 
     # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_a__________________________________"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_a__________________________________"}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
 
     # Anchor v1-a SAID in the KEL
     run_test "Divergence: v1-a SAID anchored" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1A_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1A_SAID"
 
     echo "[$D_V1A_JSON]" > "$TEMP_DIR/div-v1a.json"
 
-    # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by checkpoint_policy)
+    # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by governance_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/upd", content: "Kcontent_b__________________________________"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_b__________________________________"}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
 
     # Anchor v1-b SAID in the KEL
     run_test "Divergence: v1-b SAID anchored" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1B_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1B_SAID"
 
     echo "[$D_V1B_JSON]" > "$TEMP_DIR/div-v1b.json"
 
     run_test "Divergence: v1-a and v1-b have different SAIDs" [ "$D_V1A_SAID" != "$D_V1B_SAID" ]
 
-    # Submit conflicting pointers to different nodes
+    # Submit conflicting events to different nodes
     run_test "Divergence: v1-a submitted to node-a" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-v1a.json"
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/div-v1a.json"
 
     run_test "Divergence: v1-b submitted to node-b" \
-        kels-cli --sadstore-url "$NODE_B_SAD_URL" sad submit "$TEMP_DIR/div-v1b.json"
+        kels-cli --sadstore-url "$NODE_B_SAD_URL" sel submit "$TEMP_DIR/div-v1b.json"
 
     # Wait for both nodes to detect divergence and agree on effective SAID
     run_test "Divergence: both nodes converge on divergent state" \
-        wait_for_sad_pointer_divergence_convergence "$DIV_PREFIX" "$CONVERGENCE_TIMEOUT" "$NODE_A_SAD_URL" "$NODE_B_SAD_URL"
+        wait_for_sad_event_divergence_convergence "$DIV_PREFIX" "$CONVERGENCE_TIMEOUT" "$NODE_A_SAD_URL" "$NODE_B_SAD_URL"
 
     A_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     B_EFFECTIVE=$(get_effective_said "$NODE_B_SAD_URL" "$DIV_PREFIX")
-    A_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
-    B_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_B_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
+    A_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
+    B_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_B_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
     echo "Node-a effective: $A_EFFECTIVE (divergent: $A_DIVERGENT)"
     echo "Node-b effective: $B_EFFECTIVE (divergent: $B_DIVERGENT)"
 
     # --- Repair: submit replacement v1 with Rpr kind ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg k "$DIV_KIND" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/pointer/rpr", content: "Kcontent_repaired___________________________"}')
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/rpr", content: "Kcontent_repaired___________________________"}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')
 
     # Anchor repair SAID in the KEL
     run_test "Divergence: repair SAID anchored" \
-        kels-cli --kels-url "$NODE_A_KELS_URL" anchor --prefix "$DIV_KEL_PREFIX" --said "$D_REPAIR_SAID"
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_REPAIR_SAID"
 
     echo "[$D_REPAIR_JSON]" > "$TEMP_DIR/div-repair.json"
 
     run_test "Repair: submitted to node-a" \
-        kels-cli --sadstore-url "$NODE_A_SAD_URL" sad submit "$TEMP_DIR/div-repair.json"
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/div-repair.json"
 
     # Verify node-a is no longer divergent
-    A_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/effective-said" | jq -r '.divergent // false')
+    A_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
     A_POST_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     run_test "Repair: node-a no longer divergent" [ "$A_POST_DIVERGENT" = "false" ]
     run_test "Repair: node-a tip is repair record" [ "$A_POST_EFFECTIVE" = "$D_REPAIR_SAID" ]
 
     # Verify repair audit record exists
-    REPAIR_COUNT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/pointers/repairs" | jq '.repairs | length')
+    REPAIR_COUNT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/repairs" | jq '.repairs | length')
     run_test "Repair: audit record created" [ "$REPAIR_COUNT" -ge 1 ]
 
     # Wait for repair to propagate to node-b via gossip

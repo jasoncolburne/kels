@@ -220,14 +220,14 @@ mod tests {
     }
 
     fn make_event(prefix: &str, said: &str, serial: u64) -> SignedKeyEvent {
-        use crate::types::{EventKind, KeyEvent};
+        use crate::types::{KeyEvent, KeyEventKind};
         SignedKeyEvent {
             event: KeyEvent {
                 said: test_digest(said),
                 prefix: test_digest(prefix),
                 serial,
                 previous: None,
-                kind: EventKind::Icp,
+                kind: KeyEventKind::Icp,
                 public_key: None,
                 rotation_hash: None,
                 recovery_key: None,

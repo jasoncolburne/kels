@@ -642,7 +642,7 @@ KELS uses standard software engineering naming conventions with full English wor
 | `KelStore` | Trait for KEL persistence |
 | `KelTransaction` | Advisory-locked database transaction |
 | `BranchTip` | Verified chain endpoint |
-| `EventKind` | Enum of event types |
+| `KeyEventKind` | Enum of event types |
 | `KeyEventSignature` | Role label ("signing"/"recovery") + signature pair |
 | `MergeTransaction` | Verify-then-write for incoming events |
 | `Peer` | Network peer record |
@@ -747,7 +747,7 @@ let sig = KeyEventSignature {
 - Wire format bleeds into code — the single-letter event fields (`"i"`, `"s"`, `"t"`, `"d"`) appear directly in code, requiring constant mental translation.
 
 **KELS's approach:**
-- Self-documenting — type names, field names, and method names read as English descriptions of their purpose. A developer reading `KelVerifier::verify_chain_event()` or `EventKind::requires_dual_signature()` understands the operation without consulting a glossary.
+- Self-documenting — type names, field names, and method names read as English descriptions of their purpose. A developer reading `KelVerifier::verify_chain_event()` or `KeyEventKind::requires_dual_signature()` understands the operation without consulting a glossary.
 - Standard conventions — follows Rust community naming (traits named for capabilities, enums named for the domain, methods named as verb phrases). No project-specific lexicon to learn.
 - Explicit over compact — `rotation_hash` is longer than `"n"` but communicates its meaning without context. `recovery_key` is unambiguous where `"br"` requires documentation.
 - Wire format separated from code — Rust field names are `snake_case`, JSON serialization is `camelCase` via serde attributes. The wire format is a serialization concern, not a naming concern.

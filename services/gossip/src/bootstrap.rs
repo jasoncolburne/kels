@@ -240,7 +240,7 @@ impl BootstrapSync {
         }
 
         info!(
-            "Preloading SAD pointer chains from {} Ready peer(s)...",
+            "Preloading SAD Event Logs from {} Ready peer(s)...",
             ready_peers.len()
         );
 
@@ -254,7 +254,7 @@ impl BootstrapSync {
             let mut cursor: Option<cesr::Digest256> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_pointer_prefixes(
+                    .fetch_sad_event_prefixes(
                         self.signer.as_ref(),
                         cursor.as_ref(),
                         self.config.page_size,
@@ -271,7 +271,7 @@ impl BootstrapSync {
                 for state in &page.prefixes {
                     // Check if we already have this chain at the same state
                     let local_said = local_client
-                        .fetch_sad_pointer_effective_said(&state.prefix)
+                        .fetch_sad_event_effective_said(&state.prefix)
                         .await
                         .ok()
                         .flatten()
@@ -285,7 +285,7 @@ impl BootstrapSync {
                     let since_digest = local_said
                         .as_deref()
                         .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                    if let Err(e) = kels_core::forward_sad_pointer(
+                    if let Err(e) = kels_core::forward_sad_event(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,
@@ -296,7 +296,7 @@ impl BootstrapSync {
                     .await
                     {
                         warn!(
-                            "Failed to sync SAD chain {} from {} during bootstrap: {}",
+                            "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
                             state.prefix, peer.node_id, e
                         );
                     } else {
@@ -312,7 +312,7 @@ impl BootstrapSync {
         }
 
         info!(
-            "SAD pointer chain preload complete: {} chains synced",
+            "SAD Event Log preload complete: {} chains synced",
             synced_chains
         );
         Ok(())

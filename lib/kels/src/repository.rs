@@ -7,7 +7,7 @@ use cesr::Matter;
 use verifiable_storage::{Order, Query, TransactionExecutor};
 
 use crate::{
-    EventKind, EventSignature, KeyEvent, SignedKeyEvent, error::KelsError, merge::MergeOutcome,
+    EventSignature, KeyEvent, KeyEventKind, SignedKeyEvent, error::KelsError, merge::MergeOutcome,
 };
 
 /// Combine raw events with a pre-fetched signature map into `SignedKeyEvent`s.
@@ -47,7 +47,7 @@ pub async fn load_signed_history(
     let query = Query::<KeyEvent>::for_table(events_table)
         .eq("prefix", prefix.as_ref())
         .order_by("serial", Order::Asc)
-        .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Asc)
+        .order_by_case("kind", &KeyEventKind::sort_priority_mapping(), Order::Asc)
         .order_by("said", Order::Asc)
         .limit(clamped_limit + 1)
         .offset(offset);
@@ -87,7 +87,7 @@ pub async fn load_signed_history_tail(
     let query = Query::<KeyEvent>::for_table(events_table)
         .eq("prefix", prefix)
         .order_by("serial", Order::Desc)
-        .order_by_case("kind", &EventKind::sort_priority_mapping(), Order::Desc)
+        .order_by_case("kind", &KeyEventKind::sort_priority_mapping(), Order::Desc)
         .order_by("said", Order::Desc)
         .limit(limit);
     let mut events: Vec<KeyEvent> = tx.fetch(query).await?;

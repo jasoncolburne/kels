@@ -13,7 +13,7 @@ use verifiable_storage::{
     Chained, ChainedRepository, RepositoryConnection, SelfAddressed, StorageDatetime,
 };
 
-use kels_core::{EventKind, ManageKelOperation, ManageKelResponse, RotateMode};
+use kels_core::{KeyEventKind, ManageKelOperation, ManageKelResponse, RotateMode};
 
 use crate::{
     handlers::{self, AppState},
@@ -402,9 +402,9 @@ pub(crate) async fn perform_kel_operation(
             };
 
             let kind = if actual_mode == RotateMode::Recovery {
-                EventKind::Ror
+                KeyEventKind::Ror
             } else {
-                EventKind::Rot
+                KeyEventKind::Rot
             };
 
             (event, kind, Some(rotation_count + 1), true)
@@ -449,18 +449,18 @@ pub(crate) async fn perform_kel_operation(
                 true // Fail secure: no forward URL
             };
             let event = builder.recover(add_rot).await?;
-            (event, EventKind::Rec, None, true)
+            (event, KeyEventKind::Rec, None, true)
         }
         ManageKelOperation::Contest => {
             let event = builder.contest().await?;
-            (event, EventKind::Cnt, None, false)
+            (event, KeyEventKind::Cnt, None, false)
         }
         ManageKelOperation::Decommission => {
             if builder.is_decommissioned() {
                 return Err("Identity is already decommissioned".into());
             }
             let event = builder.decommission().await?;
-            (event, EventKind::Dec, None, false)
+            (event, KeyEventKind::Dec, None, false)
         }
     };
 
@@ -490,7 +490,7 @@ pub(crate) async fn perform_kel_operation(
         binding.signing_generation = builder.key_provider().signing_generation().await;
 
         // Recovery key changes on ROR and REC
-        if event_kind == EventKind::Ror || event_kind == EventKind::Rec {
+        if event_kind == KeyEventKind::Ror || event_kind == KeyEventKind::Rec {
             let recovery_handle = builder
                 .key_provider()
                 .recovery_handle()

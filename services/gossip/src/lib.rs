@@ -425,7 +425,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     warn!("SAD object preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_records().await {
-                    warn!("SAD pointer chain preload failed: {}", e);
+                    warn!("SEL preload failed: {}", e);
                 }
 
                 // Wait 5 minutes before checking again

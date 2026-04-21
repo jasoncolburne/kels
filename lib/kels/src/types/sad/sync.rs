@@ -1,26 +1,26 @@
-//! Paginated transfer infrastructure for SAD pointer chains
+//! Paginated transfer infrastructure for SAD Event Logs
 //!
 //! Mirrors the KEL `transfer_key_events` pattern: `PagedSadSource` / `PagedSadSink`
-//! traits abstract data movement, and `transfer_sad_pointer` is the core private
+//! traits abstract data movement, and `transfer_sad_event` is the core private
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_pointer` — structural + policy verification via `PolicyChecker`
-//! - `forward_sad_pointer` — forward without verification, supports delta via `since`
+//! - `verify_sad_event` — structural + policy verification via `PolicyChecker`
+//! - `forward_sad_event` — forward without verification, supports delta via `since`
 
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
-use super::pointer::{SadPointer, SadPointerPage, SadPointerVerification};
-use super::verification::SadChainVerifier;
+use super::event::{SadEvent, SadEventPage, SadEventVerification};
+use super::verification::SelVerifier;
 use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
 
-/// Source of paginated SAD pointers (e.g., HTTP client).
+/// Source of paginated SAD events (e.g., HTTP client).
 ///
-/// Implementations must return pointers in `version ASC, said ASC` order.
+/// Implementations must return events in `version ASC, said ASC` order.
 #[async_trait]
 pub trait PagedSadSource: Send + Sync {
     async fn fetch_page(
@@ -28,30 +28,30 @@ pub trait PagedSadSource: Send + Sync {
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
         limit: usize,
-    ) -> Result<(Vec<SadPointer>, bool), KelsError>;
+    ) -> Result<(Vec<SadEvent>, bool), KelsError>;
 }
 
-/// Destination for SAD pointers (e.g., local SADStore).
+/// Destination for SAD events (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
-    async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError>;
+    async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError>;
 }
 
 // ==================== Sink Implementations ====================
 
-/// No-op sink that discards pointers. Used for verify-only flows.
+/// No-op sink that discards events. Used for verify-only flows.
 struct NoOpSadSink;
 
 #[async_trait]
 impl PagedSadSink for NoOpSadSink {
-    async fn store_page(&self, _pointers: &[SadPointer]) -> Result<(), KelsError> {
+    async fn store_page(&self, _events: &[SadEvent]) -> Result<(), KelsError> {
         Ok(())
     }
 }
 
 // ==================== HTTP Source / Sink ====================
 
-/// HTTP-based source of paginated SAD pointers.
+/// HTTP-based source of paginated SAD events.
 pub struct HttpSadSource {
     base_url: String,
     client: reqwest::Client,
@@ -77,9 +77,9 @@ impl PagedSadSource for HttpSadSource {
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
         limit: usize,
-    ) -> Result<(Vec<SadPointer>, bool), KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
-        let body = crate::SadPointerPageRequest {
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        let url = format!("{}/api/v1/sad/events/fetch", self.base_url);
+        let body = crate::SadEventPageRequest {
             prefix: *prefix,
             since: since.copied(),
             limit: Some(limit),
@@ -87,8 +87,8 @@ impl PagedSadSource for HttpSadSource {
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
-            let page: SadPointerPage = resp.json().await?;
-            Ok((page.pointers, page.has_more))
+            let page: SadEventPage = resp.json().await?;
+            Ok((page.events, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
         } else {
@@ -98,7 +98,7 @@ impl PagedSadSource for HttpSadSource {
     }
 }
 
-/// HTTP-based sink that submits SAD pointers to a SADStore service.
+/// HTTP-based sink that submits SAD events to a SADStore service.
 pub struct HttpSadSink {
     base_url: String,
     client: reqwest::Client,
@@ -119,13 +119,13 @@ impl HttpSadSink {
 
 #[async_trait]
 impl PagedSadSink for HttpSadSink {
-    async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError> {
-        if pointers.is_empty() {
+    async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
+        if events.is_empty() {
             return Ok(());
         }
 
-        let url = format!("{}/api/v1/sad/pointers", self.base_url);
-        let resp = self.client.post(&url).json(pointers).send().await?;
+        let url = format!("{}/api/v1/sad/events", self.base_url);
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
             Ok(())
@@ -141,18 +141,18 @@ impl PagedSadSink for HttpSadSink {
 
 // ==================== Core Transfer Function ====================
 
-/// Page through a SAD chain from source to sink, optionally verifying.
+/// Page through a SAD Event Log from source to sink, optionally verifying.
 ///
 /// Mirrors the KEL `transfer_key_events` pattern: uses a held-back record
 /// strategy to detect divergence at page boundaries. When divergence is
 /// found (two records at the same version), switches to collection mode,
 /// accumulates all remaining records, then submits them via
-/// `send_divergent_sad_pointers` in an order the remote can accept.
-async fn transfer_sad_pointer<'a>(
+/// `send_divergent_sad_events` in an order the remote can accept.
+async fn transfer_sad_event<'a>(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
-    mut verifier: Option<&mut SadChainVerifier<'a>>,
+    mut verifier: Option<&mut SelVerifier<'a>>,
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
@@ -164,10 +164,10 @@ async fn transfer_sad_pointer<'a>(
     }
 
     let mut since: Option<cesr::Digest256> = since.cloned();
-    let mut held_back: Option<SadPointer> = None;
+    let mut held_back: Option<SadEvent> = None;
     let mut divergence_found = false;
-    let mut pre_divergence: Vec<SadPointer> = Vec::new();
-    let mut post_divergence: Vec<SadPointer> = Vec::new();
+    let mut pre_divergence: Vec<SadEvent> = Vec::new();
+    let mut post_divergence: Vec<SadEvent> = Vec::new();
 
     for _ in 0..max_pages {
         let (fetched, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
@@ -274,20 +274,20 @@ async fn transfer_sad_pointer<'a>(
         return Ok(());
     }
 
-    send_divergent_sad_pointers(sink, &pre_divergence, post_divergence, page_size).await
+    send_divergent_sad_events(sink, &pre_divergence, post_divergence, page_size).await
 }
 
 /// Separate post-divergence records into two branches by tracing `previous`
-/// pointers, then send to the sink in an order the remote can accept.
+/// events, then send to the sink in an order the remote can accept.
 ///
-/// Pointer chains have no recovery/contest — divergent chains just freeze.
+/// Event chains have no recovery/contest — divergent chains just freeze.
 /// Strategy:
 ///   1. Pre-divergence + longer branch (paged, non-divergent appends)
 ///   2. Fork record from shorter branch (creates divergence on remote)
-async fn send_divergent_sad_pointers(
+async fn send_divergent_sad_events(
     sink: &(dyn PagedSadSink + Sync),
-    pre_divergence: &[SadPointer],
-    post_divergence: Vec<SadPointer>,
+    pre_divergence: &[SadEvent],
+    post_divergence: Vec<SadEvent>,
     page_size: usize,
 ) -> Result<(), KelsError> {
     if post_divergence.len() < 2 {
@@ -296,7 +296,7 @@ async fn send_divergent_sad_pointers(
         ));
     }
 
-    // Trace previous pointers to separate into two branches
+    // Trace previous events to separate into two branches
     let mut chain_a_saids = std::collections::HashSet::new();
     let mut chain_b_saids = std::collections::HashSet::new();
     chain_a_saids.insert(post_divergence[0].said);
@@ -312,8 +312,8 @@ async fn send_divergent_sad_pointers(
         }
     }
 
-    let mut chain_a: Vec<SadPointer> = Vec::new();
-    let mut chain_b: Vec<SadPointer> = Vec::new();
+    let mut chain_a: Vec<SadEvent> = Vec::new();
+    let mut chain_b: Vec<SadEvent> = Vec::new();
     for record in post_divergence {
         if chain_a_saids.contains(&record.said) {
             chain_a.push(record);
@@ -348,19 +348,19 @@ async fn send_divergent_sad_pointers(
 
 // ==================== Public API ====================
 
-/// Verify a SAD pointer chain by paging through a source. Returns a verification token.
+/// Verify a SAD Event Log by paging through a source. Returns a verification token.
 ///
 /// Structural + policy verification. Verifies SAID, prefix, topic, chain linkage,
 /// and write_policy authorization via the provided `PolicyChecker`.
-pub async fn verify_sad_pointer(
+pub async fn verify_sad_event(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     checker: &(dyn super::verification::PolicyChecker + Sync),
     page_size: usize,
     max_pages: usize,
-) -> Result<SadPointerVerification, KelsError> {
-    let mut verifier = SadChainVerifier::new(prefix, checker);
-    transfer_sad_pointer(
+) -> Result<SadEventVerification, KelsError> {
+    let mut verifier = SelVerifier::new(prefix, checker);
+    transfer_sad_event(
         prefix,
         source,
         &NoOpSadSink,
@@ -374,8 +374,8 @@ pub async fn verify_sad_pointer(
     verifier.finish().await
 }
 
-/// Forward SAD pointers from source to sink without verification. Supports delta via `since`.
-pub async fn forward_sad_pointer(
+/// Forward SAD events from source to sink without verification. Supports delta via `since`.
+pub async fn forward_sad_event(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
@@ -383,7 +383,7 @@ pub async fn forward_sad_pointer(
     max_pages: usize,
     since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
-    transfer_sad_pointer(prefix, source, sink, None, page_size, max_pages, since).await
+    transfer_sad_event(prefix, source, sink, None, page_size, max_pages, since).await
 }
 
 #[cfg(test)]
@@ -391,7 +391,7 @@ pub async fn forward_sad_pointer(
 mod tests {
     use verifiable_storage::Chained;
 
-    use super::super::pointer::SadPointerKind;
+    use super::super::event::SadEventKind;
     use super::*;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
@@ -400,7 +400,7 @@ mod tests {
 
     /// In-memory source that serves records in pages, simulating page-boundary splits.
     struct VecSadSource {
-        records: Vec<SadPointer>,
+        records: Vec<SadEvent>,
         page_size: usize,
     }
 
@@ -411,7 +411,7 @@ mod tests {
             _prefix: &cesr::Digest256,
             since: Option<&cesr::Digest256>,
             limit: usize,
-        ) -> Result<(Vec<SadPointer>, bool), KelsError> {
+        ) -> Result<(Vec<SadEvent>, bool), KelsError> {
             let limit = limit.min(self.page_size);
             let start = if let Some(since_said) = since {
                 self.records
@@ -431,7 +431,7 @@ mod tests {
 
     /// Collecting sink that records all stored pages.
     struct CollectingSink {
-        pages: tokio::sync::Mutex<Vec<Vec<SadPointer>>>,
+        pages: tokio::sync::Mutex<Vec<Vec<SadEvent>>>,
     }
 
     impl CollectingSink {
@@ -441,15 +441,15 @@ mod tests {
             }
         }
 
-        async fn all_records(&self) -> Vec<SadPointer> {
+        async fn all_records(&self) -> Vec<SadEvent> {
             self.pages.lock().await.iter().flatten().cloned().collect()
         }
     }
 
     #[async_trait]
     impl PagedSadSink for CollectingSink {
-        async fn store_page(&self, pointers: &[SadPointer]) -> Result<(), KelsError> {
-            self.pages.lock().await.push(pointers.to_vec());
+        async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
+            self.pages.lock().await.push(events.to_vec());
             Ok(())
         }
     }
@@ -459,10 +459,10 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let cp = test_digest(b"checkpoint-policy");
 
-        // Build a chain: v0 (declares checkpoint_policy), v1, then two records at v2 (divergence)
-        let v0 = SadPointer::create(
+        // Build a chain: v0 (declares governance_policy), v1, then two records at v2 (divergence)
+        let v0 = SadEvent::create(
             "kels/test".to_string(),
-            SadPointerKind::Icp,
+            SadEventKind::Icp,
             None,
             None,
             Some(wp),
@@ -471,7 +471,7 @@ mod tests {
         .unwrap();
 
         let mut v1 = v0.clone();
-        v1.kind = SadPointerKind::Upd;
+        v1.kind = SadEventKind::Upd;
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
 
@@ -496,7 +496,7 @@ mod tests {
         };
         let sink = CollectingSink::new();
 
-        forward_sad_pointer(&prefix, &source, &sink, 3, 100, None)
+        forward_sad_event(&prefix, &source, &sink, 3, 100, None)
             .await
             .unwrap();
 

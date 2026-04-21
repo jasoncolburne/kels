@@ -7,13 +7,13 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **Pointer Chains** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
+- **Event Chains** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
 
 ## Data Model
 
-### SadPointer
+### SadEvent
 
-A chained, self-addressed pointer record. The v0 (inception) record has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ records.
+A chained, self-addressed event record. The v0 (inception) record has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ records.
 
 No `created_at` field — intentionally omitted so inception records produce deterministic prefixes.
 
@@ -25,14 +25,14 @@ Fields:
 - `topic` — Record type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
-- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Evl` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`. See `docs/design/sad-pointers.md` for the per-kind matrix.
+- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Evl` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`. See `docs/design/sad-events.md` for the per-kind matrix.
 
 ### Deterministic Prefix
 
 Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a chain prefix offline:
 
 ```rust
-let prefix = compute_sad_pointer_prefix(write_policy, topic)?;
+let prefix = compute_sad_event_prefix(write_policy, topic)?;
 ```
 
 This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
@@ -50,7 +50,7 @@ Fields:
 
 **Safety valve:** If the custody object contains any unrecognized fields (e.g., from a newer client), all server-side enforcement is disengaged. This ensures forward compatibility without blocking storage.
 
-**Context validation:** `ttl` and `once` are rejected on pointer records (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
+**Context validation:** `ttl` and `once` are rejected on event records (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
 
 ### NodeSet
 
@@ -77,7 +77,7 @@ The chain owner repairs divergence by submitting a replacement batch with `?repa
 2. `truncate_and_replace` deletes all records at and after that version
 3. Replacement records are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent topic). `write_policy` may legitimately evolve across versions via `Evl`, so it is not checked for invariance — the verifier tracks its evolution via branch state.
 
-Displaced records are archived to `sad_pointer_archives` (mirror table). A `sad_pointer_repairs` entry is created as an audit record, and `sad_pointer_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
+Displaced records are archived to `sad_event_archives` (mirror table). A `sad_event_repairs` entry is created as an audit record, and `sad_event_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
 
 ### Repair Propagation
 
@@ -87,7 +87,7 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadPointerVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_pointer()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SadEventVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_event()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
 
 Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever an `Evl` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip record's raw field.
 
@@ -130,20 +130,20 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/pointers` | Submit chain records; `?repair=true` to repair divergent chain |
-| `POST` | `/api/v1/sad/pointers/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
-| `POST` | `/api/v1/sad/pointers/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
-| `POST` | `/api/v1/sad/pointers/exists` | Check pointer existence (body: `{ "said": "..." }`) |
-| `POST` | `/api/v1/sad/pointers/prefixes` | List chain prefixes (authenticated, paginated) |
-| `POST` | `/api/v1/sad/pointers/repairs` | Paginated repair history (body: `{ "prefix": "...", "limit": N, "offset": N }`) |
-| `POST` | `/api/v1/sad/pointers/repairs/records` | Archived records for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
+| `POST` | `/api/v1/sad/events` | Submit chain records; `?repair=true` to repair divergent chain |
+| `POST` | `/api/v1/sad/events/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
+| `POST` | `/api/v1/sad/events/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
+| `POST` | `/api/v1/sad/events/exists` | Check event existence (body: `{ "said": "..." }`) |
+| `POST` | `/api/v1/sad/events/prefixes` | List chain prefixes (authenticated, paginated) |
+| `POST` | `/api/v1/sad/events/repairs` | Paginated repair history (body: `{ "prefix": "...", "limit": N, "offset": N }`) |
+| `POST` | `/api/v1/sad/events/repairs/records` | Archived records for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
 
 ### Client Workflow
 
 1. Create content object, derive its SAID
 2. `POST /api/v1/sad` — store content in SAD store
 3. Create chain record with `content` pointing to that SAID
-4. `POST /api/v1/sad/pointers` — submit the chain record
+4. `POST /api/v1/sad/events` — submit the chain record
 
 Authorization is consumer-side: endorsing parties anchor the record's SAID in their KELs. The SADStore does not verify signatures on submission.
 
@@ -173,7 +173,7 @@ When a custody specifies `nodes`, the gossip policy controls replication:
 
 ### Flow
 
-1. KELS SADStore publishes to Redis (`sad_updates` or `sad_chain_updates`)
+1. KELS SADStore publishes to Redis (`sad_updates` or `sel_updates`)
 2. Gossip service subscribes, broadcasts announcement on `kels/sad/v1` topic
 3. Peers receive announcement, fetch missing data from origin
 4. For objects: fetch blob and PUT locally
@@ -194,7 +194,7 @@ Environment variables:
 | `MINIO_ACCESS_KEY` | (required) | S3 access key |
 | `MINIO_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
-| `SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY` | `8` | Max chain records per prefix per day |
+| `SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY` | `8` | Max chain records per prefix per day |
 | `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `256` | Per-IP write rate (token bucket refill) |
 | `SADSTORE_IP_RATE_LIMIT_BURST` | `1024` | Per-IP token bucket burst size |
 | `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |
@@ -207,9 +207,9 @@ On the gossip service, `BASE_DOMAIN` env var derives both KELS and SADStore URLs
 ```
 kels-cli sad put <file>                          # Store a self-addressed object
 kels-cli sad get <said>                          # Retrieve object by SAID
-kels-cli sad submit <file> [--repair]            # Submit chain records (--repair for divergent chains)
-kels-cli sad chain <prefix>                      # Fetch pointer chain
-kels-cli sad prefix <write-policy> <topic>       # Compute prefix offline
+kels-cli sel submit <file>                       # Submit SEL events
+kels-cli sel get <prefix>                        # Fetch a SEL
+kels-cli sel prefix <write-policy> <topic>       # Compute SEL prefix offline
 ```
 
 ## Use Cases

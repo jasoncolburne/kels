@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # test-sad-consistency.sh - Deep SAD Consistency Verification
-# Compares all SAD chain prefixes, chain contents, and SAD objects across nodes.
+# Compares all SAD Event Log prefixes, chain contents, and SAD objects across nodes.
 #
 # For each node with test endpoints, fetches all chain prefixes and SAD object
 # SAIDs, then for each prefix/object compares across ALL nodes. Verifies:
 #   1. All nodes have the same set of chain prefixes
-#   2. All chains have the same number of pointers on each node
+#   2. All chains have the same number of events on each node
 #   3. A SHA-256 digest of each chain matches across all nodes
 #   4. All nodes have the same set of SAD objects
 #
@@ -87,7 +87,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
             body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:null,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         fi
 
-        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/pointers/prefixes" 2>/dev/null)
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/events/prefixes" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo -e "  node-${name}: ${RED}unreachable${NC}"
             reachable=false
@@ -230,8 +230,8 @@ fi
 
 echo
 
-# --- Step 3: For each prefix, compare pointer counts and chain digests across ALL nodes ---
-echo -e "${YELLOW}Comparing SAD chains across all nodes...${NC}"
+# --- Step 3: For each prefix, compare event counts and chain digests across ALL nodes ---
+echo -e "${YELLOW}Comparing SAD Event Logs across all nodes...${NC}"
 
 cat "$TEMP_DIR"/sad_prefixes_*.txt | sort -u > "$TEMP_DIR/all_sad_prefixes.txt"
 total_prefixes=$(wc -l < "$TEMP_DIR/all_sad_prefixes.txt" | tr -d ' ')
@@ -240,11 +240,11 @@ chain_mismatches=0
 count_mismatches=0
 divergent_consistent=0
 
-# Fetch all pointers for a SAD chain, paginating through all pages.
-fetch_all_sad_pointers() {
+# Fetch all events for a SAD Event Log, paginating through all pages.
+fetch_all_sad_events() {
     local url="$1"
     local prefix="$2"
-    local all_pointers="[]"
+    local all_events="[]"
     local since=""
 
     while true; do
@@ -254,26 +254,26 @@ fetch_all_sad_pointers() {
         fi
 
         local resp
-        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/v1/sad/pointers/fetch" 2>/dev/null) || break
+        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/v1/sad/events/fetch" 2>/dev/null) || break
 
-        local pointers has_more
-        pointers=$(echo "$resp" | jq '.pointers')
+        local events has_more
+        events=$(echo "$resp" | jq '.events')
         has_more=$(echo "$resp" | jq '.hasMore')
 
-        if [ "$(echo "$pointers" | jq 'length')" -eq 0 ]; then
+        if [ "$(echo "$events" | jq 'length')" -eq 0 ]; then
             break
         fi
 
-        all_pointers=$(printf '%s\n%s' "$all_pointers" "$pointers" | jq -s '.[0] + .[1]')
+        all_events=$(printf '%s\n%s' "$all_events" "$events" | jq -s '.[0] + .[1]')
 
         if [ "$has_more" != "true" ]; then
             break
         fi
 
-        since=$(echo "$pointers" | jq -r '.[-1].pointer.said')
+        since=$(echo "$events" | jq -r '.[-1].event.said')
     done
 
-    echo "$all_pointers"
+    echo "$all_events"
 }
 
 while IFS= read -r prefix; do
@@ -289,8 +289,8 @@ while IFS= read -r prefix; do
         name="${ALL_REACHABLE_NAMES[$i]}"
         url="${ALL_REACHABLE_URLS[$i]}"
 
-        all_pointers=$(fetch_all_sad_pointers "${url}" "${prefix}")
-        if [ "$(echo "$all_pointers" | jq 'length')" -eq 0 ]; then
+        all_events=$(fetch_all_sad_events "${url}" "${prefix}")
+        if [ "$(echo "$all_events" | jq 'length')" -eq 0 ]; then
             digests+=("MISSING")
             counts+=("0")
             states+=("missing")
@@ -298,16 +298,16 @@ while IFS= read -r prefix; do
             continue
         fi
 
-        pointer_count=$(echo "$all_pointers" | jq 'length' 2>/dev/null)
-        digest=$(echo "$all_pointers" | jq -cS '.' | sha256sum | awk '{print $1}')
+        event_count=$(echo "$all_events" | jq 'length' 2>/dev/null)
+        digest=$(echo "$all_events" | jq -cS '.' | sha256sum | awk '{print $1}')
 
-        # Check if divergent (multiple pointers at the same version)
-        state=$(echo "$all_pointers" | jq -r '
-            [.[].pointer.version] | group_by(.) | if any(length > 1) then "divergent" else "normal" end
+        # Check if divergent (multiple events at the same version)
+        state=$(echo "$all_events" | jq -r '
+            [.[].event.version] | group_by(.) | if any(length > 1) then "divergent" else "normal" end
         ' 2>/dev/null)
 
         digests+=("$digest")
-        counts+=("$pointer_count")
+        counts+=("$event_count")
         states+=("${state:-unknown}")
         digest_names+=("$name")
     done
@@ -329,7 +329,7 @@ while IFS= read -r prefix; do
             echo
             echo -e "  ${RED}RECORD COUNT MISMATCH for ${prefix}:${NC}"
             for j in "${!digest_names[@]}"; do
-                echo -e "    node-${digest_names[$j]}: ${counts[$j]} pointers"
+                echo -e "    node-${digest_names[$j]}: ${counts[$j]} events"
             done
             ((count_mismatches++))
             ((FAILURES++))
@@ -375,9 +375,9 @@ done < "$TEMP_DIR/all_sad_prefixes.txt"
 echo
 echo -e "  Checked ${total_prefixes} chain prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
 if [ "$count_mismatches" -eq 0 ] && [ "$chain_mismatches" -eq 0 ]; then
-    echo -e "  ${GREEN}All pointer counts and chain digests match${NC}"
+    echo -e "  ${GREEN}All event counts and chain digests match${NC}"
 else
-    [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} pointer count mismatches${NC}"
+    [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} event count mismatches${NC}"
     [ "$chain_mismatches" -gt 0 ] && echo -e "  ${RED}${chain_mismatches} chain digest mismatches${NC}"
     [ "$divergent_consistent" -gt 0 ] && echo -e "  ${YELLOW}${divergent_consistent} mismatched chain(s) with consistent divergent state${NC}"
 fi

@@ -267,7 +267,7 @@ pub fn derive_signed_events(input: TokenStream) -> TokenStream {
                     .eq("prefix", prefix.as_ref())
                     .gte_scalar_subquery("serial", subquery)
                     .order_by("serial", verifiable_storage_postgres::Order::Asc)
-                    .order_by_case("kind", &kels_core::EventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
+                    .order_by_case("kind", &kels_core::KeyEventKind::sort_priority_mapping(), verifiable_storage_postgres::Order::Asc)
                     .order_by("said", verifiable_storage_postgres::Order::Asc)
                     .limit(clamped_limit + 2);
                 let mut events: Vec<kels_core::KeyEvent> = self.pool.fetch(query).await?;

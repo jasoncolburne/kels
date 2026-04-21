@@ -12,6 +12,10 @@ Read these before starting:
 - [contracts/process.md](contracts/process.md) — commit, diff, and test discipline
 - [contracts/user.md](contracts/user.md) — working with the user
 
+## Memory
+
+If a plan cites a memory file by name, read the file before writing. The `MEMORY.md` index entry is a lookup label, not the guidance — citing without reading is a no-op.
+
 ## When done
 
 Report: files modified, functions added/changed, decisions not covered by the prompt, anything unexpected. The user relays this to the design agent for review.
