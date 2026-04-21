@@ -142,10 +142,18 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, records: &[SadPoint
 fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
     let mut pointers = Vec::with_capacity(count);
     let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut pointer =
-        SadPointer::create(kind.to_string(), None, None, kel_digest, None, None).unwrap();
+    let mut pointer = SadPointer::create(
+        kind.to_string(),
+        kels_core::SadPointerKind::Icp,
+        None,
+        None,
+        kel_digest,
+        None,
+    )
+    .unwrap();
     pointers.push(pointer.clone());
 
+    pointer.kind = kels_core::SadPointerKind::Upd;
     for i in 1..count {
         pointer.content = Some(cesr::Digest256::blake3_256(
             format!("content_{}", i).as_bytes(),
@@ -159,6 +167,7 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadPointer> {
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
 /// `content_tag` differentiates replacement chains so they produce unique SAIDs.
+/// The first record uses `Rpr` kind (repair), subsequent records use `Upd`.
 fn build_replacement(
     previous_said: &cesr::Digest256,
     prefix: &cesr::Digest256,
@@ -182,13 +191,14 @@ fn build_replacement(
         )),
         custody: None,
         write_policy: kel_digest,
+        kind: kels_core::SadPointerKind::Rpr,
         checkpoint_policy: None,
-        is_checkpoint: None,
     };
     pointer.derive_said().unwrap();
     pointers.push(pointer.clone());
 
     for i in 1..count {
+        pointer.kind = kels_core::SadPointerKind::Upd;
         pointer.content = Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version + i as u64).as_bytes(),
         ));

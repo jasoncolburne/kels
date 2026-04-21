@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
 /// Well-known SadPointer kind for ML-KEM encapsulation key publication.
-pub const ENCAP_KEY_KIND: &str = "kels/exchange/v1/keys/mlkem";
+pub const ENCAP_KEY_KIND: &str = "kels/sad/v1/keys/mlkem";
 
 /// ML-KEM encapsulation key publication, stored as a SAD object in the SADStore.
 ///

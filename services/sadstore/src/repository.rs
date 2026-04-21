@@ -276,7 +276,13 @@ impl SadPointerRepository {
     ) -> Result<Option<u64>, StorageError> {
         let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)
-            .filter(Filter::Eq("is_checkpoint".to_string(), Value::Bool(true)))
+            .r#in(
+                "kind",
+                vec![
+                    kels_core::SadPointerKind::Evl.as_str().to_string(),
+                    kels_core::SadPointerKind::Rpr.as_str().to_string(),
+                ],
+            )
             .order_by("version", verifiable_storage::Order::Desc)
             .limit(1);
         let records: Vec<SadPointer> = tx.fetch(query).await?;

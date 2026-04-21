@@ -478,7 +478,7 @@ pub unsafe extern "C" fn kels_essr_open_result_free(result: *mut KelsEssrOpenRes
 /// Return the ENCAP_KEY_KIND constant for SADStore pointer chain lookups.
 ///
 /// # Returns
-/// Static string "kels/exchange/v1/keys/mlkem". Do NOT free this string.
+/// Static string "kels/sad/v1/keys/mlkem". Do NOT free this string.
 #[unsafe(no_mangle)]
 pub extern "C" fn kels_encap_key_kind() -> *const c_char {
     // Static CString to ensure null-terminated lifetime
@@ -787,7 +787,7 @@ mod tests {
         assert!(!kind.is_null());
 
         let kind_str = crate::from_c_string(kind);
-        assert_eq!(kind_str, Some("kels/exchange/v1/keys/mlkem".to_string()));
+        assert_eq!(kind_str, Some("kels/sad/v1/keys/mlkem".to_string()));
         // Do NOT free -- it's a static string
     }
 

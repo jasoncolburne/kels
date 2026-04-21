@@ -9,8 +9,104 @@
 //! is fully deterministic: given the inception write_policy SAID and topic, anyone
 //! can compute the chain prefix offline. Write_policy can evolve across versions.
 
+use std::{fmt, str::FromStr};
+
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageError};
+
+use crate::error::KelsError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SadPointerKind {
+    #[serde(rename = "kels/sad/v1/pointer/icp")]
+    Icp, // Inception (v0)
+    #[serde(rename = "kels/sad/v1/pointer/upd")]
+    Upd, // Update
+    #[serde(rename = "kels/sad/v1/pointer/est")]
+    Est, // Establish (checkpoint_policy declaration, no evaluation)
+    #[serde(rename = "kels/sad/v1/pointer/evl")]
+    Evl, // Evaluate (evaluated against checkpoint_policy)
+    #[serde(rename = "kels/sad/v1/pointer/rpr")]
+    Rpr, // Repair (resolves divergence, evaluates checkpoint_policy)
+}
+
+impl SadPointerKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Icp => "kels/sad/v1/pointer/icp",
+            Self::Upd => "kels/sad/v1/pointer/upd",
+            Self::Est => "kels/sad/v1/pointer/est",
+            Self::Evl => "kels/sad/v1/pointer/evl",
+            Self::Rpr => "kels/sad/v1/pointer/rpr",
+        }
+    }
+
+    /// Short pointer kind name (e.g. "icp", "upd") as used by CLI tools and responses.
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            Self::Icp => "icp",
+            Self::Upd => "upd",
+            Self::Est => "est",
+            Self::Evl => "evl",
+            Self::Rpr => "rpr",
+        }
+    }
+
+    /// Parse a short pointer kind name (e.g. "icp", "upd") as used by CLI tools.
+    pub fn from_short_name(s: &str) -> Result<Self, KelsError> {
+        match s {
+            "icp" => Ok(Self::Icp),
+            "upd" => Ok(Self::Upd),
+            "est" => Ok(Self::Est),
+            "evl" => Ok(Self::Evl),
+            "rpr" => Ok(Self::Rpr),
+            _ => Err(KelsError::VerificationFailed(format!(
+                "Unknown pointer kind: {}",
+                s
+            ))),
+        }
+    }
+
+    /// True for kinds that evaluate checkpoint_policy (Evl, Rpr).
+    /// These reset records_since_checkpoint and update last_checkpoint_version.
+    pub fn evaluates_checkpoint(&self) -> bool {
+        matches!(self, Self::Evl | Self::Rpr)
+    }
+
+    /// True for repair records (Rpr only).
+    pub fn is_repair(&self) -> bool {
+        matches!(self, Self::Rpr)
+    }
+
+    /// True for inception records (Icp only).
+    pub fn is_inception(&self) -> bool {
+        matches!(self, Self::Icp)
+    }
+}
+
+impl fmt::Display for SadPointerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for SadPointerKind {
+    type Err = KelsError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "kels/sad/v1/pointer/icp" => Ok(Self::Icp),
+            "kels/sad/v1/pointer/upd" => Ok(Self::Upd),
+            "kels/sad/v1/pointer/est" => Ok(Self::Est),
+            "kels/sad/v1/pointer/evl" => Ok(Self::Evl),
+            "kels/sad/v1/pointer/rpr" => Ok(Self::Rpr),
+            _ => Err(KelsError::VerificationFailed(format!(
+                "Unknown pointer kind: {}",
+                s
+            ))),
+        }
+    }
+}
 
 /// A chained, self-addressed pointer in the SADStore.
 ///
@@ -35,8 +131,10 @@ pub struct SadPointer {
     pub previous: Option<cesr::Digest256>,
     #[version]
     pub version: u64,
-    /// The topic of this pointer chain (e.g., `"kels/exchange/v1/keys/mlkem"`).
+    /// The topic of this pointer chain (e.g., `"kels/sad/v1/keys/mlkem"`).
     pub topic: String,
+    /// The kind of this pointer record.
+    pub kind: SadPointerKind,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<cesr::Digest256>,
@@ -51,10 +149,6 @@ pub struct SadPointer {
     /// checkpoint_policy has their fork bounded to ≤63 records.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_policy: Option<cesr::Digest256>,
-    /// Signals this record is a checkpoint — the PolicyChecker evaluates it
-    /// against checkpoint_policy instead of (in addition to) write_policy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_checkpoint: Option<bool>,
 }
 
 /// Compute the SAD chain prefix for a given write policy SAID and topic.
@@ -66,8 +160,92 @@ pub fn compute_sad_pointer_prefix(
     write_policy: cesr::Digest256,
     topic: &str,
 ) -> Result<cesr::Digest256, StorageError> {
-    let pointer = SadPointer::create(topic.to_string(), None, None, write_policy, None, None)?;
+    let pointer = SadPointer::create(
+        topic.to_string(),
+        SadPointerKind::Icp,
+        None,
+        None,
+        write_policy,
+        None,
+    )?;
     Ok(pointer.prefix)
+}
+
+impl SadPointer {
+    /// Validates that the pointer has the correct fields for its kind.
+    /// Returns Ok(()) if valid, Err with description if invalid.
+    pub fn validate_structure(&self) -> Result<(), String> {
+        let require = |name: &str, present: bool| -> Result<(), String> {
+            if present {
+                Ok(())
+            } else {
+                Err(format!("{} pointer requires {}", self.kind, name))
+            }
+        };
+        let forbid = |name: &str, present: bool| -> Result<(), String> {
+            if present {
+                Err(format!("{} pointer must not have {}", self.kind, name))
+            } else {
+                Ok(())
+            }
+        };
+
+        match self.kind {
+            SadPointerKind::Icp => {
+                if self.version != 0 {
+                    return Err(format!(
+                        "Icp pointer must have version 0, got {}",
+                        self.version
+                    ));
+                }
+                forbid("previous", self.previous.is_some())?;
+                forbid("content", self.content.is_some())?;
+                // checkpoint_policy is optional (non-discoverable chains may declare at v0)
+            }
+            SadPointerKind::Est => {
+                if self.version != 1 {
+                    return Err(format!(
+                        "Est pointer must have version 1, got {}",
+                        self.version
+                    ));
+                }
+                require("previous", self.previous.is_some())?;
+                require("checkpointPolicy", self.checkpoint_policy.is_some())?;
+            }
+            SadPointerKind::Upd => {
+                if self.version < 1 {
+                    return Err(format!(
+                        "Upd pointer must have version >= 1, got {}",
+                        self.version
+                    ));
+                }
+                require("previous", self.previous.is_some())?;
+                forbid("checkpointPolicy", self.checkpoint_policy.is_some())?;
+            }
+            SadPointerKind::Evl => {
+                if self.version < 1 {
+                    return Err(format!(
+                        "Evl pointer must have version >= 1, got {}",
+                        self.version
+                    ));
+                }
+                require("previous", self.previous.is_some())?;
+                // checkpoint_policy optional — allows policy evolution
+            }
+            SadPointerKind::Rpr => {
+                if self.version < 1 {
+                    return Err(format!(
+                        "Rpr pointer must have version >= 1, got {}",
+                        self.version
+                    ));
+                }
+                require("previous", self.previous.is_some())?;
+                forbid("checkpointPolicy", self.checkpoint_policy.is_some())?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Proof-of-verification token for a SAD pointer chain.
@@ -80,6 +258,7 @@ pub struct SadPointerVerification {
     tip: SadPointer,
     policy_satisfied: bool,
     last_checkpoint_version: Option<u64>,
+    establishment_version: Option<u64>,
 }
 
 impl SadPointerVerification {
@@ -88,11 +267,13 @@ impl SadPointerVerification {
         tip: SadPointer,
         policy_satisfied: bool,
         last_checkpoint_version: Option<u64>,
+        establishment_version: Option<u64>,
     ) -> Self {
         Self {
             tip,
             policy_satisfied,
             last_checkpoint_version,
+            establishment_version,
         }
     }
 
@@ -131,6 +312,12 @@ impl SadPointerVerification {
     pub fn last_checkpoint_version(&self) -> Option<u64> {
         self.last_checkpoint_version
     }
+
+    /// The version at which checkpoint_policy was established (v0 if Icp declared it, v1 if Est).
+    /// Repair cannot truncate at or before this version.
+    pub fn establishment_version(&self) -> Option<u64> {
+        self.establishment_version
+    }
 }
 
 /// A page of stored SAD pointers returned by the chain API.
@@ -155,17 +342,17 @@ mod tests {
     #[test]
     fn test_compute_sad_pointer_prefix_deterministic() {
         let wp = test_digest(b"write-policy");
-        let prefix1 = compute_sad_pointer_prefix(wp, "kels/exchange/v1/keys/mlkem").unwrap();
-        let prefix2 = compute_sad_pointer_prefix(wp, "kels/exchange/v1/keys/mlkem").unwrap();
+        let prefix1 = compute_sad_pointer_prefix(wp, "kels/sad/v1/keys/mlkem").unwrap();
+        let prefix2 = compute_sad_pointer_prefix(wp, "kels/sad/v1/keys/mlkem").unwrap();
         assert_eq!(prefix1, prefix2);
     }
 
     #[test]
     fn test_compute_sad_pointer_prefix_different_inputs() {
         let prefix1 =
-            compute_sad_pointer_prefix(test_digest(b"wp1"), "kels/exchange/v1/keys/mlkem").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"wp1"), "kels/sad/v1/keys/mlkem").unwrap();
         let prefix2 =
-            compute_sad_pointer_prefix(test_digest(b"wp2"), "kels/exchange/v1/keys/mlkem").unwrap();
+            compute_sad_pointer_prefix(test_digest(b"wp2"), "kels/sad/v1/keys/mlkem").unwrap();
         assert_ne!(prefix1, prefix2);
 
         let prefix3 =
@@ -176,27 +363,28 @@ mod tests {
     #[test]
     fn test_sad_record_inception_no_content() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
+            SadPointerKind::Icp,
             None,
             None,
             test_digest(b"write-policy"),
-            None,
             None,
         )
         .unwrap();
         assert_eq!(pointer.version, 0);
         assert!(pointer.previous.is_none());
         assert!(pointer.content.is_none());
+        assert_eq!(pointer.kind, SadPointerKind::Icp);
     }
 
     #[test]
     fn test_sad_record_chain_increment() {
         let mut pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
+            SadPointerKind::Icp,
             None,
             None,
             test_digest(b"write-policy"),
-            None,
             None,
         )
         .unwrap();
@@ -205,6 +393,7 @@ mod tests {
         let prefix = pointer.prefix;
 
         pointer.content = Some(test_digest(b"content_abc"));
+        pointer.kind = SadPointerKind::Upd;
         pointer.increment().unwrap();
 
         assert_eq!(pointer.version, 1);
@@ -216,11 +405,11 @@ mod tests {
     #[test]
     fn test_sad_record_verify_said() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
+            SadPointerKind::Icp,
             None,
             None,
             test_digest(b"write-policy"),
-            None,
             None,
         )
         .unwrap();
@@ -235,11 +424,11 @@ mod tests {
     #[test]
     fn test_sad_record_verify_prefix() {
         let pointer = SadPointer::create(
-            "kels/exchange/v1/keys/mlkem".to_string(),
+            "kels/sad/v1/keys/mlkem".to_string(),
+            SadPointerKind::Icp,
             None,
             None,
             test_digest(b"write-policy"),
-            None,
             None,
         )
         .unwrap();

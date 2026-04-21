@@ -252,10 +252,6 @@ enum SadCommands {
     Submit {
         /// Path to JSON file containing SignedSadPointer(s)
         file: PathBuf,
-
-        /// Submit as a repair operation (truncates divergent records and replaces)
-        #[arg(long)]
-        repair: bool,
     },
 
     /// Fetch and display a SAD pointer chain
@@ -269,7 +265,7 @@ enum SadCommands {
         /// The write policy SAID
         write_policy: String,
 
-        /// The topic (e.g., "kels/exchange/v1/keys/mlkem")
+        /// The topic (e.g., "kels/sad/v1/keys/mlkem")
         topic: String,
     },
 }
@@ -501,9 +497,7 @@ async fn main() -> Result<()> {
         Commands::Sad(sad_cmd) => match sad_cmd {
             SadCommands::Put { file } => commands::sad::cmd_sad_put(&cli, file).await,
             SadCommands::Get { said } => commands::sad::cmd_sad_get(&cli, said).await,
-            SadCommands::Submit { file, repair } => {
-                commands::sad::cmd_sad_submit(&cli, file, *repair).await
-            }
+            SadCommands::Submit { file } => commands::sad::cmd_sad_submit(&cli, file).await,
             SadCommands::Pointer { prefix } => commands::sad::cmd_sad_chain(&cli, prefix).await,
             SadCommands::Prefix {
                 write_policy,

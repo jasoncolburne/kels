@@ -1,6 +1,6 @@
 # KELS Divergence Detection and Recovery
 
-> **Note**: Event kind values are version-qualified in serialized form (e.g. `kels/events/v1/icp`). This document uses short names for brevity.
+> **Note**: Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/events/icp`). This document uses short names for brevity.
 
 ## Problem Statement
 

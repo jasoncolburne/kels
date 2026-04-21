@@ -18,32 +18,29 @@ An adversary who compromises a chain's `write_policy` (e.g., gains access to eno
 
 ### Declaration
 
-A record declares `checkpoint_policy` by setting the field to a policy SAID. The first declaration is just a commitment — no evaluation occurs. The verifier records the policy on the branch state.
-
-**Rules:**
-- v0 (inception) may declare `checkpoint_policy`, but this changes the chain prefix (the prefix is derived from v0's content). Use only when the caller controls prefix computation. For discoverable chains (like exchange keys), v0 must NOT declare checkpoint_policy — it would break `compute_sad_pointer_prefix` determinism.
-- If v0 does not declare `checkpoint_policy`, v1 must.
-- The first submitted batch of records for a pointer prefix must contain a `checkpoint_policy`.
-- The declaring record must NOT set `is_checkpoint`. First declaration is not an evaluated checkpoint.
+Checkpoint policy is declared via record kind:
+- `Icp` (v0) may optionally carry `checkpoint_policy`, but this changes the chain prefix. Use only when the caller controls prefix computation. For discoverable chains (like exchange keys), v0 must NOT declare checkpoint_policy.
+- `Est` (v1 only) declares `checkpoint_policy` when v0 did not. Est is required at v1 if v0 omitted it.
+- The first submitted batch must contain a `checkpoint_policy` (either on v0 or v1).
 - `finish()` requires at least one branch to have `checkpoint_policy` established.
 
 ### Evaluation
 
-A subsequent record sets `is_checkpoint: true` to be evaluated against the branch's established `checkpoint_policy`. The `PolicyChecker` verifies the record satisfies the tracked policy. On success, `records_since_checkpoint` resets to zero.
+`Evl` and `Rpr` records evaluate against the branch's established `checkpoint_policy`. The `PolicyChecker` verifies the record satisfies the tracked policy. On success, `records_since_checkpoint` resets to zero.
 
 **Rules:**
-- `is_checkpoint` requires `checkpoint_policy` already established on the branch. Setting `is_checkpoint` on the declaring record is rejected.
-- Checkpoint policy evolution (changing `checkpoint_policy` on a checkpoint record) evaluates against the *previous* tracked policy. Failure is a structural error — the higher authority did not approve the transition.
-- Non-checkpoint records that change `checkpoint_policy` without `is_checkpoint` are rejected.
+- Evl/Rpr require `checkpoint_policy` already established on the branch.
+- Checkpoint policy evolution: Evl records may carry a new `checkpoint_policy` — evaluated against the *previous* tracked policy. Failure is a structural error. Rpr forbids `checkpoint_policy` (to evolve policy after repair, submit a separate Evl afterward).
+- `Upd` and `Rpr` must not set `checkpoint_policy` on the record.
 
 ### Checkpoint Bound
 
-`MAX_NON_CHECKPOINT_RECORDS = MINIMUM_PAGE_SIZE - 1 = 63`. After 63 non-checkpoint records, the next record must be a checkpoint. This bound ensures:
+`MAX_NON_CHECKPOINT_RECORDS = MINIMUM_PAGE_SIZE - 1 = 63`. After 63 non-checkpoint records, the next record must evaluate a checkpoint (Evl or Rpr). This bound ensures:
 
 - An adversary's fork is limited to 63 records before requiring a checkpoint they cannot produce
 - Page-by-page verification can always validate checkpoint compliance within a single page
 
-The declaration record (first `checkpoint_policy` without `is_checkpoint`) counts as a non-checkpoint record toward this bound.
+Est counts as a non-checkpoint record toward this bound.
 
 ## Divergence Model
 
@@ -73,7 +70,7 @@ A chain's gossip-visible identity:
 
 ## Repair
 
-The chain owner resolves divergence by submitting a replacement batch with `?repair=true` (to be replaced by a `Rep` record kind in #126).
+The chain owner resolves divergence by submitting a batch containing a `Rpr` record. The handler auto-detects Rpr records and takes the repair path.
 
 ### Mechanics
 
@@ -85,8 +82,9 @@ The chain owner resolves divergence by submitting a replacement batch with `?rep
 
 ### Authorization
 
-- The repair must include a checkpoint (`is_checkpoint: true`) at or after the divergence point (`from_version`). This proves the repairer can satisfy `checkpoint_policy` — a higher bar than `write_policy`.
-- The checkpoint seal applies to repairs: `from_version` must be after `last_checkpoint_version`. You cannot repair behind a seal.
+- The repair must include a record with `kind.evaluates_checkpoint()` (Evl or Rpr) at or after `from_version`. The Rpr record itself serves as the checkpoint proof — the repairer must satisfy `checkpoint_policy`, a higher bar than `write_policy`.
+- The checkpoint seal applies: `from_version` must be after `last_checkpoint_version`. You cannot repair behind a seal.
+- The establishment seal applies: `from_version` must be after `establishment_version`. The establishment record (v0 with checkpoint_policy or Est at v1) is the policy foundation — it cannot be truncated.
 - After truncation, the entire chain is re-verified from scratch.
 
 ### Archive and Audit
@@ -95,7 +93,7 @@ Displaced records are archived to `sad_pointer_archives`. A `sad_pointer_repairs
 
 ### Gossip Propagation
 
-When a repair succeeds, SADStore publishes `{prefix}:{effective_said}:repair` to Redis. Peer gossip nodes receive the announcement, fetch the full repaired chain (since=None), and submit with `?repair=true`. The receiving node's `truncate_and_replace` deduplicates leading records and only replaces from the divergence point.
+When a repair succeeds, SADStore publishes `{prefix}:{effective_said}:repair` to Redis. Peer gossip nodes receive the announcement, fetch the full repaired chain (since=None), and submit to the local SADStore. The handler auto-detects Rpr records and takes the repair path. `truncate_and_replace` deduplicates leading records and only replaces from the divergence point.
 
 ## Verification
 
@@ -137,55 +135,60 @@ The handler uses `policy_satisfied()` to decide authorization (403 on failure) a
 
 ### Repair submission
 
+Repair is auto-detected: the handler checks if any submitted record has `kind: Rpr`.
+
 1. Acquire advisory lock on chain prefix
 2. Query `last_checkpoint_version` from existing chain (pre-truncation)
 3. `truncate_and_replace` — dedup, archive, delete, insert
 4. Verify seal: `from_version > last_checkpoint_version`
-5. Verify checkpoint at divergence: batch contains `is_checkpoint` at `version >= from_version`
-6. Re-verify entire chain from scratch
-7. `finish()`, check `policy_satisfied()`
-8. Commit, publish to Redis with `:repair` suffix
+5. Verify checkpoint at divergence: batch contains a record with `kind.evaluates_checkpoint()` (Evl or Rpr) at `version >= from_version`
+6. Verify establishment seal: `from_version > establishment_version`
+7. Re-verify entire chain from scratch
+8. `finish()`, check `policy_satisfied()`
+9. Commit, publish to Redis with `:repair` suffix
+
+## Record Kinds
+
+Each `SadPointer` has an explicit `kind: SadPointerKind` field:
+
+```
+kels/sad/v1/pointer/icp  — Inception (v0 only)
+kels/sad/v1/pointer/est  — Establish (checkpoint_policy declaration, v1 only)
+kels/sad/v1/pointer/upd  — Update (normal record)
+kels/sad/v1/pointer/evl  — Evaluate (evaluated against checkpoint_policy)
+kels/sad/v1/pointer/rpr  — Repair (resolves divergence, evaluates checkpoint_policy)
+```
+
+`validate_structure()` enforces record-level invariants (version constraints, required/forbidden fields per kind). The verifier adds chain-state checks on top: Est rejected when checkpoint_policy already established from v0; Upd/Evl/Rpr rejected when no checkpoint_policy established.
+
+Rpr carries checkpoint evaluation semantics implicitly — it evaluates against `checkpoint_policy` just like Evl, resets `records_since_checkpoint`, and updates `last_checkpoint_version`. Rpr forbids `checkpoint_policy` on the record; to both repair AND evolve checkpoint_policy, use Rpr to fix divergence, then Evl with the new checkpoint_policy afterward.
 
 ## Typical Chain Shapes
 
 ### Exchange key publication
 
 ```
-v0  [icp]  write_policy=endorse(kel_prefix), topic=kels/exchange/v1/keys/mlkem
-v1  [est]  checkpoint_policy=endorse(kel_prefix), content=key_publication_said
-v2  [upd]  content=rotated_key_said
-v3  [chk]  is_checkpoint=true, content=another_key_said
+v0  kind=icp  write_policy=endorse(kel_prefix), topic=kels/sad/v1/keys/mlkem
+v1  kind=est  checkpoint_policy=endorse(kel_prefix), content=key_publication_said
+v2  kind=upd  content=rotated_key_said
+v3  kind=evl  content=another_key_said
 ```
 
 ### Identity chain
 
 ```
-v0  [icp]  write_policy=policy_a_said, topic=kels/identity/v1/chain, content=None
-v1  [est]  checkpoint_policy=policy_a_said, content=None
-v2  [upd]  write_policy=policy_b_said (policy evolution), content=None
-v3  [chk]  is_checkpoint=true, content=None
+v0  kind=icp  write_policy=policy_a_said, topic=kels/sad/v1/identity/chain, content=None
+v1  kind=est  checkpoint_policy=policy_a_said, content=None
+v2  kind=upd  write_policy=policy_b_said (policy evolution), content=None
+v3  kind=evl  content=None
 ```
 
 ### Divergence and repair
 
 ```
-v0  [icp]  checkpoint_policy=cp_said
-v1a [upd]  (node-a)                                ← fork
-v1b [upd]  (node-b)                                ← fork
+v0  kind=icp  checkpoint_policy=cp_said
+v1a kind=upd  (node-a)                            ← fork
+v1b kind=upd  (node-b)                            ← fork
     — chain frozen, divergent effective SAID —
-v1  [rep]  is_checkpoint=true, content=repaired    ← repair replaces v1a+v1b, seals
+v1  kind=rpr  content=repaired                    ← repair replaces v1a+v1b, evaluates checkpoint_policy
 ```
-
-## Future: Record Kinds (#126)
-
-The implicit record type detection (field combination checks, `?repair=true` query param) will be replaced with an explicit `kind` enum on `SadPointer`:
-
-```
-sad/pointer/v1/icp  — Inception
-sad/pointer/v1/upd  — Update
-sad/pointer/v1/est  — Establish (checkpoint_policy declaration)
-sad/pointer/v1/chk  — Checkpoint (evaluated)
-sad/pointer/v1/rep  — Repair
-```
-
-This makes chains self-documenting and simplifies both verification (match on kind) and the builder API (#126).

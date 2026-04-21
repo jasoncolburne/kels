@@ -17,7 +17,7 @@ use crate::{
 ///
 /// # Arguments
 /// * `write_policy` - The write policy SAID
-/// * `topic` - The pointer topic (e.g., "kels/exchange/v1/keys/mlkem")
+/// * `topic` - The pointer topic (e.g., "kels/sad/v1/keys/mlkem")
 ///
 /// # Returns
 /// The computed pointer prefix string, or NULL on error.
@@ -333,7 +333,7 @@ mod tests {
     fn test_compute_sad_pointer_prefix() {
         let digest = test_digest("test-prefix");
         let prefix = CString::new(digest.as_ref()).expect("cstring");
-        let kind = CString::new("kels/exchange/v1/keys/mlkem").expect("cstring");
+        let kind = CString::new("kels/sad/v1/keys/mlkem").expect("cstring");
 
         let result = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };
 

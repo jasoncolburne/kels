@@ -46,11 +46,6 @@ impl SadStoreClient {
         crate::HttpSadSink::new(&self.base_url)
     }
 
-    /// Create an `HttpSadSink` that submits with `?repair=true`.
-    pub fn as_sad_repair_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
-        crate::HttpSadSink::new_repair(&self.base_url)
-    }
-
     pub async fn health(&self) -> Result<String, KelsError> {
         let resp = self
             .client
@@ -201,22 +196,6 @@ impl SadStoreClient {
     /// Submit signed SAD records.
     pub async fn submit_sad_pointer(&self, records: &[crate::SadPointer]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/pointers", self.base_url);
-        let resp = self.client.post(&url).json(records).send().await?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
-        }
-    }
-
-    /// Submit signed SAD records as a repair operation.
-    ///
-    /// Truncates all records at version >= the first record's version, then inserts
-    /// the batch. Used to resolve divergent chains.
-    pub async fn repair_sad_pointer(&self, records: &[crate::SadPointer]) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/pointers?repair=true", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
         if resp.status().is_success() {

@@ -2,7 +2,7 @@
 
 Read `AGENTS.md` for the full set. The critical rules:
 
-- **Imports**: three groups (std, external, local), nested, sorted, blank-line separated. Fix imports when touching a file.
+- **Imports**: three groups (std, external, local), nested, blank-line separated. `rustfmt` handles sorting within groups. Fix grouping when touching a file.
 - **No `.unwrap()`**. Use `.expect("reason")` with `#[allow(clippy::expect_used)]` when truly infallible.
 - **No hardcoded kind strings** — use enum methods (`EventKind`, `SadPointerKind`, etc.).
 - **Sign the SAID's QB64 bytes**, never serialized payloads.
