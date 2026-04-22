@@ -134,7 +134,7 @@ async fn reap_expired_records(
     Ok(())
 }
 
-/// Max chain records per prefix per day. Low — chains represent stable state.
+/// Max SAD events per SEL prefix per day. Low — SELs represent stable state.
 fn max_records_per_prefix_per_day() -> u32 {
     kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY", 8) as u32
 }
@@ -1141,7 +1141,7 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
 /// When any submitted record has `kind: Rpr`, the handler takes the repair path:
 /// truncates all records at version >= the first record's version, then re-verifies
 /// the entire chain including the repair records.
-pub async fn submit_sad_event(
+pub async fn submit_sad_events(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(records): Json<Vec<kels_core::SadEvent>>,
@@ -1523,23 +1523,23 @@ pub async fn submit_sad_event(
                 .query_async::<()>(&mut conn)
                 .await
             {
-                warn!("Failed to publish chain update: {}", e);
+                warn!("Failed to publish SEL update: {}", e);
             } else {
                 debug!(
                     chain_prefix = %chain_prefix,
                     effective_said = %said,
-                    "Published chain update to Redis"
+                    "Published SEL update to Redis"
                 );
             }
         }
         (None, _) => {
-            debug!("Skipping chain publish: no Redis connection");
+            debug!("Skipping SEL publish: no Redis connection");
         }
         (_, None) => {
             debug!(
                 chain_prefix = %chain_prefix,
                 should_publish = should_publish,
-                "Skipping chain publish: no effective SAID"
+                "Skipping SEL publish: no effective SAID"
             );
         }
     }
@@ -1551,7 +1551,7 @@ pub async fn submit_sad_event(
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
-pub async fn get_sad_event(
+pub async fn get_sad_events(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadEventPageRequest>,
 ) -> impl IntoResponse {
@@ -1585,7 +1585,7 @@ pub async fn get_sad_event(
     }
 }
 
-pub async fn get_sad_event_effective_said(
+pub async fn get_sel_effective_said(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadEventEffectiveSaidRequest>,
 ) -> impl IntoResponse {
@@ -1676,7 +1676,7 @@ pub async fn list_sad_objects(
 }
 
 /// Authenticated SAD Event Log prefix listing. Federation peers only.
-pub async fn list_sad_event_prefixes(
+pub async fn list_sel_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
@@ -1707,7 +1707,7 @@ pub async fn list_sad_event_prefixes(
 
 // === Layer 2: Chain Repair History ===
 
-pub(crate) async fn get_sad_event_repairs(
+pub(crate) async fn get_sel_repairs(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRepairsRequest>,
 ) -> impl IntoResponse {
@@ -1733,7 +1733,7 @@ pub(crate) async fn get_sad_event_repairs(
     }
 }
 
-pub(crate) async fn get_sad_event_repair_records(
+pub(crate) async fn get_sel_repair_events(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRepairPageRequest>,
 ) -> impl IntoResponse {
@@ -1784,7 +1784,7 @@ pub async fn test_list_sad_objects(
 
 /// Unauthenticated test endpoint for listing SAD Event Log prefixes.
 /// Only available when `KELS_TEST_ENDPOINTS=true`.
-pub async fn test_list_sad_event_prefixes(
+pub async fn test_list_sel_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,

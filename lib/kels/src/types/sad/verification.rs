@@ -18,7 +18,7 @@ use crate::KelsError;
 ///   a new write_policy *and* the evolution was authorized). Called unconditionally,
 ///   whether or not the policy changed. The returned value also gates whether the verifier
 ///   advances branch-state (tracked write_policy, tracked governance_policy, establishment
-///   version, last checkpoint version); a returned `false` freezes all policy-related state
+///   version, last governance version); a returned `false` freezes all policy-related state
 ///   on the branch for this record.
 ///
 /// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`

@@ -568,7 +568,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Start SAD Redis subscriber (listens for SAD object and chain updates)
+    // Start SAD Redis subscriber (listens for SAD object and SEL updates)
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();

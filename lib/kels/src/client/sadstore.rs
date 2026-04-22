@@ -194,7 +194,7 @@ impl SadStoreClient {
     // === Layer 2: Chain Records ===
 
     /// Submit signed SAD records.
-    pub async fn submit_sad_event(&self, records: &[crate::SadEvent]) -> Result<(), KelsError> {
+    pub async fn submit_sad_events(&self, records: &[crate::SadEvent]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
 
@@ -211,7 +211,7 @@ impl SadStoreClient {
     /// `since` is an effective SAID cursor — returns records after this SAID's
     /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
     /// server returns the full chain.
-    pub async fn fetch_sad_event(
+    pub async fn fetch_sad_events(
         &self,
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
@@ -236,7 +236,7 @@ impl SadStoreClient {
 
     /// Get the effective SAID and divergence status for a chain prefix.
     /// Returns `(said, is_divergent)`. Used for sync comparison.
-    pub async fn fetch_sad_event_effective_said(
+    pub async fn fetch_sel_effective_said(
         &self,
         prefix: &cesr::Digest256,
     ) -> Result<Option<(String, bool)>, KelsError> {
@@ -267,7 +267,7 @@ impl SadStoreClient {
     }
 
     /// List SAD Event Log prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
-    pub async fn fetch_sad_event_prefixes(
+    pub async fn fetch_sel_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
         cursor: Option<&cesr::Digest256>,
@@ -295,7 +295,7 @@ impl SadStoreClient {
     }
 
     /// Fetch repairs for a chain prefix, paginated.
-    pub async fn fetch_sad_event_repairs(
+    pub async fn fetch_sel_repairs(
         &self,
         prefix: &cesr::Digest256,
         limit: usize,
@@ -320,7 +320,7 @@ impl SadStoreClient {
     }
 
     /// Fetch archived records for a specific repair, paginated.
-    pub async fn fetch_sad_event_repair_records(
+    pub async fn fetch_sel_repair_events(
         &self,
         prefix: &cesr::Digest256,
         repair_said: &cesr::Digest256,
@@ -351,12 +351,12 @@ impl SadStoreClient {
     /// Structural + policy verification: SAID, chain linkage, version
     /// monotonicity, topic consistency, and write_policy authorization via
     /// the provided `PolicyChecker`.
-    pub async fn verify_sad_event(
+    pub async fn verify_sad_events(
         &self,
         prefix: &cesr::Digest256,
         checker: &(dyn crate::PolicyChecker + Sync),
     ) -> Result<SadEventVerification, KelsError> {
-        crate::verify_sad_event(
+        crate::verify_sad_events(
             prefix,
             &self.as_sad_source()?,
             checker,

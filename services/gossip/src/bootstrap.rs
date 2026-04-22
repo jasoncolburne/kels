@@ -254,7 +254,7 @@ impl BootstrapSync {
             let mut cursor: Option<cesr::Digest256> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_event_prefixes(
+                    .fetch_sel_prefixes(
                         self.signer.as_ref(),
                         cursor.as_ref(),
                         self.config.page_size,
@@ -271,7 +271,7 @@ impl BootstrapSync {
                 for state in &page.prefixes {
                     // Check if we already have this chain at the same state
                     let local_said = local_client
-                        .fetch_sad_event_effective_said(&state.prefix)
+                        .fetch_sel_effective_said(&state.prefix)
                         .await
                         .ok()
                         .flatten()
@@ -285,7 +285,7 @@ impl BootstrapSync {
                     let since_digest = local_said
                         .as_deref()
                         .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                    if let Err(e) = kels_core::forward_sad_event(
+                    if let Err(e) = kels_core::forward_sad_events(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,

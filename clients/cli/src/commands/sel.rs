@@ -16,7 +16,7 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
 
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     client
-        .submit_sad_event(&records)
+        .submit_sad_events(&records)
         .await
         .context("Failed to submit SAD records")?;
 
@@ -31,7 +31,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, prefix: &str) -> Result<()> {
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = client
-        .fetch_sad_event(&prefix_digest, None)
+        .fetch_sad_events(&prefix_digest, None)
         .await
         .context("Failed to fetch SAD Event Log")?;
 

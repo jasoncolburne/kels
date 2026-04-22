@@ -30,7 +30,7 @@ pub(crate) async fn cmd_mail_send(
     let chain_prefix =
         kels_core::compute_sad_event_prefix(recipient_write_policy, kels_exchange::ENCAP_KEY_KIND)?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let page = sad_client.fetch_sad_event(&chain_prefix, None).await?;
+    let page = sad_client.fetch_sad_events(&chain_prefix, None).await?;
     let tip = page
         .events
         .last()

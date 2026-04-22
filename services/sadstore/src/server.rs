@@ -35,30 +35,30 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/fetch", post(handlers::fetch_sad_object))
         .route("/api/v1/sad/exists", post(handlers::sad_object_exists))
         .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
-        // Chain records (Layer 2 — Postgres)
+        // SAD Event Log records (Layer 2 — Postgres)
         .route(
             "/api/v1/sad/events/exists",
             post(handlers::sad_event_exists),
         )
-        .route("/api/v1/sad/events", post(handlers::submit_sad_event))
-        .route("/api/v1/sad/events/fetch", post(handlers::get_sad_event))
+        .route("/api/v1/sad/events", post(handlers::submit_sad_events))
+        .route("/api/v1/sad/events/fetch", post(handlers::get_sad_events))
         .route(
             "/api/v1/sad/events/effective-said",
-            post(handlers::get_sad_event_effective_said),
+            post(handlers::get_sel_effective_said),
         )
-        // Chain repair history
+        // SEL repair history
         .route(
             "/api/v1/sad/events/repairs",
-            post(handlers::get_sad_event_repairs),
+            post(handlers::get_sel_repairs),
         )
         .route(
             "/api/v1/sad/events/repairs/records",
-            post(handlers::get_sad_event_repair_records),
+            post(handlers::get_sel_repair_events),
         )
         // Listing (authenticated — federation peers only)
         .route(
             "/api/v1/sad/events/prefixes",
-            post(handlers::list_sad_event_prefixes),
+            post(handlers::list_sel_prefixes),
         );
 
     if *TEST_ENDPOINTS_ENABLED {
@@ -67,7 +67,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             .route("/api/test/sad/saids", post(handlers::test_list_sad_objects))
             .route(
                 "/api/test/sad/events/prefixes",
-                post(handlers::test_list_sad_event_prefixes),
+                post(handlers::test_list_sel_prefixes),
             );
     }
 

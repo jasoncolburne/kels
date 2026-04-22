@@ -134,7 +134,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     let records = vec![v0.clone(), v1];
 
     sad_client
-        .submit_sad_event(&records)
+        .submit_sad_events(&records)
         .await
         .context("Failed to submit event chain")?;
 
@@ -197,7 +197,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute event prefix")?;
     let page = sad_client
-        .fetch_sad_event(&chain_prefix, None)
+        .fetch_sad_events(&chain_prefix, None)
         .await
         .context("Failed to fetch current chain")?;
 
@@ -228,7 +228,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .await
         .context("Failed to anchor event SAID in KEL")?;
 
-    sad_client.submit_sad_event(&[next]).await?;
+    sad_client.submit_sad_events(&[next]).await?;
 
     println!("{}", "Key rotated!".green().bold());
     Ok(())
@@ -244,7 +244,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
-        .fetch_sad_event(&chain_prefix, None)
+        .fetch_sad_events(&chain_prefix, None)
         .await
         .context("Failed to fetch key chain")?;
 

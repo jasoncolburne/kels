@@ -87,7 +87,7 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadEventVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_event()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SadEventVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
 
 Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever an `Evl` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip record's raw field. See [sad-events.md](sad-events.md) for the semantics of the governance-related accessors (chain-wide vs. branch-scoped).
 
@@ -192,7 +192,7 @@ Environment variables:
 | `MINIO_ACCESS_KEY` | (required) | S3 access key |
 | `MINIO_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
-| `SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY` | `8` | Max chain records per prefix per day |
+| `SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY` | `8` | Max SAD events per SEL prefix per day |
 | `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `256` | Per-IP write rate (token bucket refill) |
 | `SADSTORE_IP_RATE_LIMIT_BURST` | `1024` | Per-IP token bucket burst size |
 | `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |

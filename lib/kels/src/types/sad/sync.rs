@@ -1,13 +1,13 @@
 //! Paginated transfer infrastructure for SAD Event Logs
 //!
 //! Mirrors the KEL `transfer_key_events` pattern: `PagedSadSource` / `PagedSadSink`
-//! traits abstract data movement, and `transfer_sad_event` is the core private
+//! traits abstract data movement, and `transfer_sad_events` is the core private
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
 //! Public functions:
-//! - `verify_sad_event` — structural + policy verification via `PolicyChecker`
-//! - `forward_sad_event` — forward without verification, supports delta via `since`
+//! - `verify_sad_events` — structural + policy verification via `PolicyChecker`
+//! - `forward_sad_events` — forward without verification, supports delta via `since`
 
 use async_trait::async_trait;
 
@@ -148,7 +148,7 @@ impl PagedSadSink for HttpSadSink {
 /// found (two records at the same version), switches to collection mode,
 /// accumulates all remaining records, then submits them via
 /// `send_divergent_sad_events` in an order the remote can accept.
-async fn transfer_sad_event<'a>(
+async fn transfer_sad_events<'a>(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
@@ -352,7 +352,7 @@ async fn send_divergent_sad_events(
 ///
 /// Structural + policy verification. Verifies SAID, prefix, topic, chain linkage,
 /// and write_policy authorization via the provided `PolicyChecker`.
-pub async fn verify_sad_event(
+pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     checker: &(dyn super::verification::PolicyChecker + Sync),
@@ -360,7 +360,7 @@ pub async fn verify_sad_event(
     max_pages: usize,
 ) -> Result<SadEventVerification, KelsError> {
     let mut verifier = SelVerifier::new(prefix, checker);
-    transfer_sad_event(
+    transfer_sad_events(
         prefix,
         source,
         &NoOpSadSink,
@@ -375,7 +375,7 @@ pub async fn verify_sad_event(
 }
 
 /// Forward SAD events from source to sink without verification. Supports delta via `since`.
-pub async fn forward_sad_event(
+pub async fn forward_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
@@ -383,7 +383,7 @@ pub async fn forward_sad_event(
     max_pages: usize,
     since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
-    transfer_sad_event(prefix, source, sink, None, page_size, max_pages, since).await
+    transfer_sad_events(prefix, source, sink, None, page_size, max_pages, since).await
 }
 
 #[cfg(test)]
@@ -496,7 +496,7 @@ mod tests {
         };
         let sink = CollectingSink::new();
 
-        forward_sad_event(&prefix, &source, &sink, 3, 100, None)
+        forward_sad_events(&prefix, &source, &sink, 3, 100, None)
             .await
             .unwrap();
 

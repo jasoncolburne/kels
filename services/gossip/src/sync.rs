@@ -460,10 +460,7 @@ impl SyncHandler {
         let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
-        let local_said = match local_client
-            .fetch_sad_event_effective_said(chain_prefix)
-            .await
-        {
+        let local_said = match local_client.fetch_sel_effective_said(chain_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
@@ -550,7 +547,7 @@ impl SyncHandler {
             "Fetching SAD Event Log from peer"
         );
 
-        match kels_core::forward_sad_event(
+        match kels_core::forward_sad_events(
             chain_prefix,
             &source,
             &sink,
@@ -1562,7 +1559,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let retries = entry.retries;
                 tasks.push(async move {
                     let (local_said, local_divergent) =
-                        match local.fetch_sad_event_effective_said(prefix).await {
+                        match local.fetch_sel_effective_said(prefix).await {
                             Ok(Some((said, div))) => (Some(said), div),
                             _ => (None, false),
                         };
@@ -1573,7 +1570,7 @@ pub async fn run_sad_anti_entropy_loop(
                             Err(_) => continue,
                         };
                         let (remote_said, remote_divergent) =
-                            match remote.fetch_sad_event_effective_said(prefix).await {
+                            match remote.fetch_sel_effective_said(prefix).await {
                                 Ok(Some((said, div))) => (Some(said), div),
                                 _ => (None, false),
                             };
@@ -1625,7 +1622,7 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            if kels_core::forward_sad_event(
+                            if kels_core::forward_sad_events(
                                 prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1663,7 +1660,7 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            if kels_core::forward_sad_event(
+                            if kels_core::forward_sad_events(
                                 prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1724,10 +1721,10 @@ pub async fn run_sad_anti_entropy_loop(
 
         let random_cursor = cesr::Digest256::blake3_256(&cesr::Nonce256::generate().to_bytes());
         let local_page = local_client
-            .fetch_sad_event_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .fetch_sel_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
         let remote_page = remote_client
-            .fetch_sad_event_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .fetch_sel_prefixes(signer.as_ref(), Some(&random_cursor), 100)
             .await;
 
         let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
@@ -1800,20 +1797,16 @@ pub async fn run_sad_anti_entropy_loop(
                 true
             };
 
-            let (local_said, local_divergent) = match local_client
-                .fetch_sad_event_effective_said(&prefix_digest)
-                .await
-            {
-                Ok(Some((said, div))) => (Some(said), div),
-                _ => (None, false),
-            };
-            let (remote_said, remote_divergent) = match remote_client
-                .fetch_sad_event_effective_said(&prefix_digest)
-                .await
-            {
-                Ok(Some((said, div))) => (Some(said), div),
-                _ => (None, false),
-            };
+            let (local_said, local_divergent) =
+                match local_client.fetch_sel_effective_said(&prefix_digest).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
+            let (remote_said, remote_divergent) =
+                match remote_client.fetch_sel_effective_said(&prefix_digest).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
 
             if we_have_remote {
                 // We're ahead — push to remote
@@ -1840,7 +1833,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix_d = prefix_digest;
                 let peer = peer_kel_prefix;
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_event(
+                    let result = kels_core::forward_sad_events(
                         &prefix_d,
                         &local_source,
                         &remote_sink,
@@ -1876,7 +1869,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix_d = prefix_digest;
                 let peer = peer_kel_prefix;
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_event(
+                    let result = kels_core::forward_sad_events(
                         &prefix_d,
                         &remote_source,
                         &local_sink,

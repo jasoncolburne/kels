@@ -194,7 +194,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
 /// # Safety
 /// - Both arguments must be valid C strings
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_sad_submit_event(
+pub unsafe extern "C" fn kels_sad_submit_events(
     sadstore_url: *const c_char,
     json_signed_records: *const c_char,
 ) -> KelsStatus {
@@ -231,7 +231,7 @@ pub unsafe extern "C" fn kels_sad_submit_event(
         }
     };
 
-    match runtime.block_on(client.submit_sad_event(&records)) {
+    match runtime.block_on(client.submit_sad_events(&records)) {
         Ok(()) => KelsStatus::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
@@ -255,7 +255,7 @@ pub unsafe extern "C" fn kels_sad_submit_event(
 /// - `sadstore_url` and `event_prefix` must be valid C strings
 /// - `since` may be NULL
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_sad_fetch_event(
+pub unsafe extern "C" fn kels_sad_fetch_events(
     sadstore_url: *const c_char,
     event_prefix: *const c_char,
     since: *const c_char,
@@ -304,7 +304,7 @@ pub unsafe extern "C" fn kels_sad_fetch_event(
         }
     };
 
-    match runtime.block_on(client.fetch_sad_event(&prefix, since_digest.as_ref())) {
+    match runtime.block_on(client.fetch_sad_events(&prefix, since_digest.as_ref())) {
         Ok(page) => match serde_json::to_string(&page) {
             Ok(json) => to_c_string(&json),
             Err(e) => {
@@ -375,33 +375,33 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_submit_event_null_url() {
+    fn test_sad_submit_events_null_url() {
         let records = CString::new("[]").expect("cstring");
-        let result = unsafe { kels_sad_submit_event(std::ptr::null(), records.as_ptr()) };
+        let result = unsafe { kels_sad_submit_events(std::ptr::null(), records.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
-    fn test_sad_submit_event_invalid_json() {
+    fn test_sad_submit_events_invalid_json() {
         let url = CString::new("http://localhost:9999").expect("cstring");
         let records = CString::new("not json").expect("cstring");
-        let result = unsafe { kels_sad_submit_event(url.as_ptr(), records.as_ptr()) };
+        let result = unsafe { kels_sad_submit_events(url.as_ptr(), records.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
-    fn test_sad_fetch_event_null_url() {
+    fn test_sad_fetch_events_null_url() {
         let prefix = CString::new("KTestPrefix0000000000000000000000000000000").expect("cstring");
         let result =
-            unsafe { kels_sad_fetch_event(std::ptr::null(), prefix.as_ptr(), std::ptr::null()) };
+            unsafe { kels_sad_fetch_events(std::ptr::null(), prefix.as_ptr(), std::ptr::null()) };
         assert!(result.is_null());
     }
 
     #[test]
-    fn test_sad_fetch_event_null_prefix() {
+    fn test_sad_fetch_events_null_prefix() {
         let url = CString::new("http://localhost:9999").expect("cstring");
         let result =
-            unsafe { kels_sad_fetch_event(url.as_ptr(), std::ptr::null(), std::ptr::null()) };
+            unsafe { kels_sad_fetch_events(url.as_ptr(), std::ptr::null(), std::ptr::null()) };
         assert!(result.is_null());
     }
 }
