@@ -83,7 +83,7 @@ services/gossip/
     ├── gossip_layer.rs # Custom gossip protocol wrapper (HyParView + PlumTree)
     ├── server.rs       # HTTP server for ready endpoint
     ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
-    ├── protocol.rs     # Message types (KelAnnouncement, SadGossipMessage)
+    ├── protocol.rs     # Message types (KelAnnouncement, SadAnnouncement)
     ├── allowlist.rs    # Connection filtering based on verified peer allowlist
     ├── bootstrap.rs    # Bootstrap sync from existing peers
     └── hsm_signer.rs   # HSM-backed request signing and peer verification
@@ -106,13 +106,13 @@ The gossip service also replicates SAD store data on a separate topic (`kels/sad
 
 Two Redis channels drive announcements:
 - `sad_updates` — new SAD objects (payload: `{said}`)
-- `sel_updates` — chain updates (payload: `{chain_prefix}:{effective_said}` or `{chain_prefix}:{effective_said}:repair`)
+- `sel_updates` — SEL updates (payload: `{prefix}:{effective_said}`)
 
 Message type:
 ```rust
-enum SadGossipMessage {
+enum SadAnnouncement {
     Object { said, origin },
-    Chain { chain_prefix, said, origin },
+    Event { prefix, said, origin },
 }
 ```
 

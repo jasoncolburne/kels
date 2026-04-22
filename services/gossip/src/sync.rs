@@ -489,8 +489,8 @@ impl SyncHandler {
         }
 
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
-        // The SADStore publishes {prefix}:{effective_said} (or with :repair suffix)
-        // to sel_updates. The subscriber strips :repair before checking.
+        // The SADStore publishes {prefix}:{effective_said} to sel_updates; repairs
+        // are auto-detected downstream from Rpr records, not flagged on the message.
         let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
         self.recently_stored
             .write()

@@ -266,9 +266,9 @@ enum SadCommands {
 
 #[derive(Subcommand, Debug)]
 enum SelCommands {
-    /// Submit a signed SAD event to a SEL
+    /// Submit a SAD event to a SEL
     Submit {
-        /// Path to JSON file containing SignedSadEvent(s)
+        /// Path to JSON file containing SadEvent(s)
         file: PathBuf,
     },
 

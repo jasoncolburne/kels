@@ -375,14 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_submit_pointer_null_url() {
+    fn test_sad_submit_event_null_url() {
         let records = CString::new("[]").expect("cstring");
         let result = unsafe { kels_sad_submit_event(std::ptr::null(), records.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
-    fn test_sad_submit_pointer_invalid_json() {
+    fn test_sad_submit_event_invalid_json() {
         let url = CString::new("http://localhost:9999").expect("cstring");
         let records = CString::new("not json").expect("cstring");
         let result = unsafe { kels_sad_submit_event(url.as_ptr(), records.as_ptr()) };

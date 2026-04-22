@@ -269,10 +269,10 @@ else
     run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
 
     # --- Build v1 event (declares governance_policy) ---
-    CHECKPOINT_POLICY_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
+    GOVERNANCE_POLICY_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
-        --arg k "$SAD_KIND" --arg cp "$CHECKPOINT_POLICY_SAID" \
-        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/est", governancePolicy: $cp}')
+        --arg k "$SAD_KIND" --arg gp "$GOVERNANCE_POLICY_SAID" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/est", governancePolicy: $gp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
 
@@ -372,12 +372,12 @@ else
         -H 'Content-Type: application/json' -d "$DIV_POLICY_JSON"
 
     # Build governance policy before v0 so v0 can declare it
-    DIV_CP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
+    DIV_GP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
 
     # --- Build and submit v0 (with governance_policy) to node-a ---
     D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
-        --arg cp "$DIV_CP_SAID" \
-        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $cp}')
+        --arg gp "$DIV_GP_SAID" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $gp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
     D_V0_JSON=$(echo "$D_V0_JSON" | jq -c --arg pfx "$D_V0_PREFIX" '.prefix = $pfx')
     D_V0_SAID=$(compute_said "$D_V0_JSON")
