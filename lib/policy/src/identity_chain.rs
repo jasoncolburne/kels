@@ -184,9 +184,9 @@ mod tests {
 
     /// Declare governance_policy on a event (Est kind).
     fn add_governance_declaration(event: &mut SadEvent) {
-        let cp_policy = test_policy("checkpoint");
+        let gp_policy = test_policy("governance");
         event.kind = SadEventKind::Est;
-        event.governance_policy = Some(cp_policy.said);
+        event.governance_policy = Some(gp_policy.said);
         // Est forbids write_policy
         event.write_policy = None;
     }
@@ -198,14 +198,14 @@ mod tests {
         let v0 = create(&policy1).unwrap();
         let prefix = v0.prefix;
 
-        // Create a v1 with checkpoint so the chain passes verification
-        let mut v1_cp = v0.clone();
-        add_governance_declaration(&mut v1_cp);
-        v1_cp.increment().unwrap();
+        // Create a v1 with governance_policy declared so the chain passes verification
+        let mut v1_gp = v0.clone();
+        add_governance_declaration(&mut v1_gp);
+        v1_gp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0.clone(), v1_cp]).await.unwrap();
+        verifier.verify_page(&[v0.clone(), v1_gp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         let v2 = advance(&verification, &policy2).unwrap();
@@ -215,18 +215,18 @@ mod tests {
         assert_eq!(v2.write_policy, Some(policy2.said));
         assert_eq!(v2.prefix, prefix);
 
-        // Close the loop: feed [v0, v1_cp, v2] back through a fresh verifier to
+        // Close the loop: feed [v0, v1_gp, v2] back through a fresh verifier to
         // prove the produced Evl record passes verifier evaluation (different
         // code path than the Upd it replaced) and that tracked_write_policy
         // advances to policy2.said.
-        let mut v1_cp_rebuilt = v0.clone();
-        add_governance_declaration(&mut v1_cp_rebuilt);
-        v1_cp_rebuilt.increment().unwrap();
+        let mut v1_gp_rebuilt = v0.clone();
+        add_governance_declaration(&mut v1_gp_rebuilt);
+        v1_gp_rebuilt.increment().unwrap();
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier
-            .verify_page(&[v0, v1_cp_rebuilt, v2])
+            .verify_page(&[v0, v1_gp_rebuilt, v2])
             .await
             .unwrap();
         let reverification = verifier.finish().await.unwrap();
@@ -246,14 +246,14 @@ mod tests {
     async fn test_advance_rejects_wrong_topic() {
         // Create a non-identity chain event with governance_policy and verify it
         let policy = test_policy("test");
-        let cp_policy = test_policy("checkpoint");
+        let gp_policy = test_policy("governance");
         let v0 = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
             None,
             None,
             Some(policy.said),
-            Some(cp_policy.said),
+            Some(gp_policy.said),
         )
         .unwrap();
 
@@ -272,14 +272,14 @@ mod tests {
         let policy = test_policy("test-identity");
         let v0 = create(&policy).unwrap();
 
-        // Add a v1 with checkpoint so verification passes
-        let mut v1_cp = v0.clone();
-        add_governance_declaration(&mut v1_cp);
-        v1_cp.increment().unwrap();
+        // Add a v1 with governance_policy declared so verification passes
+        let mut v1_gp = v0.clone();
+        add_governance_declaration(&mut v1_gp);
+        v1_gp.increment().unwrap();
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1_cp]).await.unwrap();
+        verifier.verify_page(&[v0, v1_gp]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         // Advance with the same policy — should fail

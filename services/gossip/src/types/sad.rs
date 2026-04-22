@@ -35,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sad_gossip_message_serialization() {
+    fn test_sad_announcement_serialization() {
         let object_msg = SadAnnouncement::Object {
             said: test_digest("said123"),
             origin: test_digest("origin"),

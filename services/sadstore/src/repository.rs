@@ -105,12 +105,12 @@ impl SadEventRepository {
             // Version collision creates divergence — insert this forking record then freeze
             if occupied_versions.contains(&record.version) {
                 // Reject fork at or before the last checkpoint — sealed by governance_policy
-                if let Some(cp_version) = last_governance_version
-                    && record.version <= cp_version
+                if let Some(gp_version) = last_governance_version
+                    && record.version <= gp_version
                 {
                     return Err(StorageError::StorageError(format!(
                         "Cannot fork at version {} — sealed by checkpoint at version {}",
-                        record.version, cp_version,
+                        record.version, gp_version,
                     )));
                 }
                 self.insert_in(tx, record.clone()).await?;

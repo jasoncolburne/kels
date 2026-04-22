@@ -146,8 +146,8 @@ create_group() {
     local prev_said="$v0_said"
 
     # Build a governance policy for this chain
-    local chain_cp_said
-    chain_cp_said=$(build_governance_policy "$SADSTORE_URL" "$prefix")
+    local chain_gp_said
+    chain_gp_said=$(build_governance_policy "$SADSTORE_URL" "$prefix")
 
     for i in $(seq 1 "$n"); do
         local content_said="${object_saids[$((i-1))]}"
@@ -156,8 +156,8 @@ create_group() {
             # v1: Est (governance_policy declaration — Est forbids writePolicy)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
                 --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
-                --arg cp "$chain_cp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/est", content: $cs, governancePolicy: $cp}')
+                --arg gp "$chain_gp_said" \
+                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/est", content: $cs, governancePolicy: $gp}')
         else
             # Upd forbids writePolicy
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \

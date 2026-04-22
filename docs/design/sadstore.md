@@ -71,7 +71,7 @@ The **effective SAID** for a chain represents its current state:
 
 ### Repair
 
-The chain owner repairs divergence by submitting a replacement batch with `?repair=true`:
+The chain owner repairs divergence by submitting a batch that includes a `Rpr` record. The handler auto-detects Rpr records and takes the repair path:
 
 1. The batch starts at the divergent version
 2. `truncate_and_replace` deletes all records at and after that version
@@ -81,7 +81,7 @@ Displaced records are archived to `sad_event_archives` (mirror table). A `sad_ev
 
 ### Repair Propagation
 
-When a repair succeeds, the SADStore publishes a gossip message with `repair: true`. Peer nodes that receive this announcement forward the repaired chain to their local SADStore with `?repair=true`, replacing their divergent state.
+When a repair succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects repair from `Rpr` records in the submitted batch and takes the repair path, replacing their divergent state.
 
 If a node misses the gossip repair message (e.g., it was offline), the owner submits the repair directly to that node.
 
@@ -130,7 +130,7 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/events` | Submit chain records; `?repair=true` to repair divergent chain |
+| `POST` | `/api/v1/sad/events` | Submit chain records (repair auto-detected from `Rpr` records in the batch) |
 | `POST` | `/api/v1/sad/events/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
 | `POST` | `/api/v1/sad/events/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
 | `POST` | `/api/v1/sad/events/exists` | Check event existence (body: `{ "said": "..." }`) |

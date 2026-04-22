@@ -24,7 +24,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_event_kind_serialization() {
+    fn test_key_event_kind_serialization() {
         assert_eq!(KeyEventKind::Icp.as_str(), "kels/kel/v1/events/icp");
         assert_eq!(KeyEventKind::Dip.as_str(), "kels/kel/v1/events/dip");
         assert_eq!(KeyEventKind::Rot.as_str(), "kels/kel/v1/events/rot");
@@ -36,7 +36,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_parsing() {
+    fn test_key_event_kind_parsing() {
         use std::str::FromStr;
         assert_eq!(
             KeyEventKind::from_str("kels/kel/v1/events/icp").unwrap(),
@@ -54,7 +54,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_properties() {
+    fn test_key_event_kind_properties() {
         assert!(KeyEventKind::Icp.is_inception());
         assert!(KeyEventKind::Dip.is_inception());
         assert!(!KeyEventKind::Rot.is_inception());
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_json() {
+    fn test_key_event_kind_json() {
         let json = serde_json::to_string(&KeyEventKind::Icp).unwrap();
         assert_eq!(json, "\"kels/kel/v1/events/icp\"");
         let parsed: KeyEventKind = serde_json::from_str("\"kels/kel/v1/events/rec\"").unwrap();
@@ -569,7 +569,7 @@ mod tests {
     // ==================== KeyEventKind tests ====================
 
     #[test]
-    fn test_event_kind_as_str() {
+    fn test_key_event_kind_as_str() {
         assert_eq!(KeyEventKind::Icp.as_str(), "kels/kel/v1/events/icp");
         assert_eq!(KeyEventKind::Dip.as_str(), "kels/kel/v1/events/dip");
         assert_eq!(KeyEventKind::Rot.as_str(), "kels/kel/v1/events/rot");
@@ -581,13 +581,13 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_display() {
+    fn test_key_event_kind_display() {
         assert_eq!(format!("{}", KeyEventKind::Icp), "kels/kel/v1/events/icp");
         assert_eq!(format!("{}", KeyEventKind::Cnt), "kels/kel/v1/events/cnt");
     }
 
     #[test]
-    fn test_event_kind_from_str() {
+    fn test_key_event_kind_from_str() {
         assert_eq!(
             "kels/kel/v1/events/icp".parse::<KeyEventKind>().unwrap(),
             KeyEventKind::Icp
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_from_str_rejects_short_names() {
+    fn test_key_event_kind_from_str_rejects_short_names() {
         assert!("icp".parse::<KeyEventKind>().is_err());
         assert!("rot".parse::<KeyEventKind>().is_err());
         assert!("ixn".parse::<KeyEventKind>().is_err());
@@ -631,19 +631,19 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_from_str_rejects_uppercase() {
+    fn test_key_event_kind_from_str_rejects_uppercase() {
         assert!("KELS/V1/ICP".parse::<KeyEventKind>().is_err());
         assert!("Kels/V1/Icp".parse::<KeyEventKind>().is_err());
     }
 
     #[test]
-    fn test_event_kind_from_str_invalid() {
+    fn test_key_event_kind_from_str_invalid() {
         let result = "invalid".parse::<KeyEventKind>();
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name() {
+    fn test_key_event_kind_from_short_name() {
         assert_eq!(
             KeyEventKind::from_short_name("icp").unwrap(),
             KeyEventKind::Icp
@@ -679,23 +679,23 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_uppercase() {
+    fn test_key_event_kind_from_short_name_rejects_uppercase() {
         assert!(KeyEventKind::from_short_name("ICP").is_err());
         assert!(KeyEventKind::from_short_name("ROT").is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_versioned() {
+    fn test_key_event_kind_from_short_name_rejects_versioned() {
         assert!(KeyEventKind::from_short_name("kels/kel/v1/events/icp").is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_invalid() {
+    fn test_key_event_kind_from_short_name_rejects_invalid() {
         assert!(KeyEventKind::from_short_name("invalid").is_err());
     }
 
     #[test]
-    fn test_event_kind_is_inception() {
+    fn test_key_event_kind_is_inception() {
         assert!(KeyEventKind::Icp.is_inception());
         assert!(KeyEventKind::Dip.is_inception());
         assert!(!KeyEventKind::Rot.is_inception());
@@ -703,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_decommissions() {
+    fn test_key_event_kind_decommissions() {
         assert!(KeyEventKind::Dec.decommissions());
         assert!(KeyEventKind::Cnt.decommissions());
         assert!(!KeyEventKind::Icp.decommissions());
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_reveals_rotation_key() {
+    fn test_key_event_kind_reveals_rotation_key() {
         assert!(KeyEventKind::Rot.reveals_rotation_key());
         assert!(KeyEventKind::Rec.reveals_rotation_key());
         assert!(KeyEventKind::Ror.reveals_rotation_key());
@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_kind_reveals_recovery_key() {
+    fn test_key_event_kind_reveals_recovery_key() {
         assert!(KeyEventKind::Rec.reveals_recovery_key());
         assert!(KeyEventKind::Ror.reveals_recovery_key());
         assert!(KeyEventKind::Dec.reveals_recovery_key());

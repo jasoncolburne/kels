@@ -93,7 +93,7 @@ Displaced records are archived to `sad_event_archives`. A `sad_event_repairs` au
 
 ### Gossip Propagation
 
-When a repair succeeds, SADStore publishes `{prefix}:{effective_said}:repair` to Redis. Peer gossip nodes receive the announcement, fetch the full repaired chain (since=None), and submit to the local SADStore. The handler auto-detects Rpr records and takes the repair path. `truncate_and_replace` deduplicates leading records and only replaces from the divergence point.
+When a repair succeeds, SADStore publishes `{prefix}:{effective_said}` to Redis. Peer gossip nodes receive the announcement, fetch the full repaired chain (since=None), and submit to the local SADStore. The handler auto-detects Rpr records and takes the repair path. `truncate_and_replace` deduplicates leading records and only replaces from the divergence point.
 
 ## Verification
 
@@ -146,7 +146,7 @@ Repair is auto-detected: the handler checks if any submitted record has `kind: R
 6. Verify establishment seal: `from_version > establishment_version`
 7. Re-verify entire chain from scratch
 8. `finish()`, check `policy_satisfied()`
-9. Commit, publish to Redis with `:repair` suffix
+9. Commit, publish to Redis
 
 ## Record Kinds
 
@@ -197,7 +197,7 @@ v3  kind=evl  content=None                              ← pure checkpoint, unc
 ### Divergence and repair
 
 ```
-v0  kind=icp  governance_policy=cp_said
+v0  kind=icp  governance_policy=gp_said
 v1a kind=upd  (node-a)                            ← fork
 v1b kind=upd  (node-b)                            ← fork
     — chain frozen, divergent effective SAID —

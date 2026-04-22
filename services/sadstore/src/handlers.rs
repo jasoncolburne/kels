@@ -1299,7 +1299,7 @@ pub async fn submit_sad_event(
 
         if is_repair {
             // Query the checkpoint seal before truncation — reject repairs behind the seal.
-            let last_cp_version = match state
+            let last_gp_version = match state
                 .repo
                 .sad_events
                 .last_governance_version(&mut tx, chain_prefix)
@@ -1307,7 +1307,7 @@ pub async fn submit_sad_event(
             {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to query last checkpoint version: {}", e);
+                    warn!("Failed to query last governance version: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
@@ -1330,15 +1330,15 @@ pub async fn submit_sad_event(
             };
 
             // Repair must not truncate behind the checkpoint seal
-            if let Some(cp_version) = last_cp_version
-                && from_version <= cp_version
+            if let Some(gp_version) = last_gp_version
+                && from_version <= gp_version
             {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
                         "Cannot repair at version {} — sealed by checkpoint at version {}",
-                        from_version, cp_version
+                        from_version, gp_version
                     ),
                 )
                     .into_response();
