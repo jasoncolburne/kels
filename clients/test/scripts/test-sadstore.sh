@@ -189,15 +189,15 @@ echo ""
 echo -e "${CYAN}=== Scenario 3: Prefix Computation ===${NC}"
 echo ""
 
-PREFIX_A=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
-PREFIX_B=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_A=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/sad/v1/test-mlkem" 2>/dev/null)
+PREFIX_B=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/sad/v1/test-mlkem" 2>/dev/null)
 run_test "Prefix is deterministic" [ "$PREFIX_A" = "$PREFIX_B" ]
 
-PREFIX_C=$(kels-cli sel prefix "Kkel_b______________________________________" "kels/v1/mlkem" 2>/dev/null)
+PREFIX_C=$(kels-cli sel prefix "Kkel_b______________________________________" "kels/sad/v1/test-mlkem" 2>/dev/null)
 run_test "Different KEL prefix -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_C" ]
 
-PREFIX_D=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/v1/other" 2>/dev/null)
-run_test "Different kind -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
+PREFIX_D=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/sad/v1/test-other" 2>/dev/null)
+run_test "Different topic -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
 
 echo ""
 
@@ -229,7 +229,7 @@ echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
 echo "Create a KEL, build chain events, submit via CLI, fetch via CLI"
 echo ""
 
-SAD_KIND="kels/v1/test-data"
+SAD_TOPIC="kels/sad/v1/test-data"
 
 # Create a KEL on node-a to use as the chain owner
 KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
@@ -250,7 +250,7 @@ else
         bash -c "[ '$POLICY_CODE' = '201' ] || [ '$POLICY_CODE' = '200' ]"
 
     # Compute the chain prefix via CLI (using policy SAID, not KEL prefix)
-    CHAIN_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_KIND" 2>/dev/null)
+    CHAIN_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_TOPIC" 2>/dev/null)
     echo "Chain prefix: $CHAIN_PREFIX"
     run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
 
@@ -258,7 +258,7 @@ else
         bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/events/fetch') = '404' ]"
 
     # --- Build v0 inception event ---
-    V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$POLICY_SAID" --arg k "$SAD_KIND" \
+    V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$POLICY_SAID" --arg k "$SAD_TOPIC" \
         '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp}')
     V0_PREFIX=$(compute_prefix "$V0_JSON")
     V0_JSON=$(echo "$V0_JSON" | jq -c --arg pfx "$V0_PREFIX" '.prefix = $pfx')
@@ -271,7 +271,7 @@ else
     # --- Build v1 event (declares governance_policy) ---
     GOVERNANCE_POLICY_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
     V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
-        --arg k "$SAD_KIND" --arg gp "$GOVERNANCE_POLICY_SAID" \
+        --arg k "$SAD_TOPIC" --arg gp "$GOVERNANCE_POLICY_SAID" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/est", governancePolicy: $gp}')
     V1_SAID=$(compute_said "$V1_JSON")
     V1_JSON=$(echo "$V1_JSON" | jq -c --arg s "$V1_SAID" '.said = $s')
@@ -353,7 +353,7 @@ echo "Create divergence by submitting conflicting events at the same version"
 echo "to different nodes, then repair the chain."
 echo ""
 
-DIV_KIND="kels/v1/test-diverge"
+DIV_TOPIC="kels/sad/v1/test-diverge"
 
 # Create a KEL for the divergence test
 DIV_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
@@ -375,7 +375,7 @@ else
     DIV_GP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
 
     # --- Build and submit v0 (with governance_policy) to node-a ---
-    D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_KIND" \
+    D_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$DIV_POLICY_SAID" --arg k "$DIV_TOPIC" \
         --arg gp "$DIV_GP_SAID" \
         '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $gp}')
     D_V0_PREFIX=$(compute_prefix "$D_V0_JSON")
@@ -404,7 +404,7 @@ else
 
     # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg k "$DIV_KIND" \
+        --arg k "$DIV_TOPIC" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_a__________________________________"}')
     D_V1A_SAID=$(compute_said "$D_V1A_JSON")
     D_V1A_JSON=$(echo "$D_V1A_JSON" | jq -c --arg s "$D_V1A_SAID" '.said = $s')
@@ -417,7 +417,7 @@ else
 
     # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by governance_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg k "$DIV_KIND" \
+        --arg k "$DIV_TOPIC" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_b__________________________________"}')
     D_V1B_SAID=$(compute_said "$D_V1B_JSON")
     D_V1B_JSON=$(echo "$D_V1B_JSON" | jq -c --arg s "$D_V1B_SAID" '.said = $s')
@@ -450,7 +450,7 @@ else
 
     # --- Repair: submit replacement v1 with Rpr kind ---
     D_REPAIR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
-        --arg k "$DIV_KIND" \
+        --arg k "$DIV_TOPIC" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/rpr", content: "Kcontent_repaired___________________________"}')
     D_REPAIR_SAID=$(compute_said "$D_REPAIR_JSON")
     D_REPAIR_JSON=$(echo "$D_REPAIR_JSON" | jq -c --arg s "$D_REPAIR_SAID" '.said = $s')

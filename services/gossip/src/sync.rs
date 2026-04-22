@@ -443,9 +443,9 @@ impl SyncHandler {
 
     /// Handle a SAD Event Log announcement — fetch the chain if our tip differs.
     ///
-    /// When `repair` is true, the origin node repaired a divergent chain. The full
-    /// chain is fetched (no delta) since repair replaces from the divergence point.
-    /// The handler auto-detects Rpr records and takes the repair path.
+    /// Delta fetch when the remote effective SAID is a real event; full fetch
+    /// when it's synthetic (divergent). The receiving SADStore handler auto-detects
+    /// repair from any `Rpr` records in the submitted batch.
     async fn handle_sel_announcement(
         &self,
         chain_prefix: &cesr::Digest256,

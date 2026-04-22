@@ -25,7 +25,7 @@ TEST_SADSTORE_PORT="${TEST_SADSTORE_PORT:-80}"
 SADSTORE_URL="http://${TEST_SADSTORE_HOST}:${TEST_SADSTORE_PORT}"
 
 ALGORITHM="${ALGORITHM:-ml-dsa-65}"
-KIND="${KIND:-kels/v1/test-data}"
+TOPIC="${TOPIC:-kels/sad/v1/test-data}"
 
 MAX_CHAIN_VERSIONS="${MAX_CHAIN_VERSIONS:-7}"
 COUNT=${1:-900}
@@ -46,7 +46,7 @@ echo "Concurrency:  $CONCURRENCY"
 echo "KELS URL:     $KELS_URL"
 echo "SADStore URL: $SADSTORE_URL"
 echo "Algorithm:    $ALGORITHM"
-echo "Kind:         $KIND"
+echo "Topic:        $TOPIC"
 echo "========================================="
 
 create_group() {
@@ -111,7 +111,7 @@ create_group() {
     # 3. Compute chain prefix (use kels-cli for correctness)
     # kels-cli sel prefix takes (write_policy, topic) — we use the policy SAID as write_policy
     local chain_prefix
-    chain_prefix=$(kels-cli sel prefix "$policy_said" "$KIND" 2>&1)
+    chain_prefix=$(kels-cli sel prefix "$policy_said" "$TOPIC" 2>&1)
     if [ -z "$chain_prefix" ]; then
         echo "ERROR [group $group]: chain prefix computation failed" >&2
         rm -rf "$tmpdir"
@@ -124,7 +124,7 @@ create_group() {
     # 5. Build chain records: v0 (inception, no content) then v1..vN
     # v0: deterministic inception record (no content for v0)
     local v0_json
-    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$KIND" --arg wp "$policy_said" \
+    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$TOPIC" --arg wp "$policy_said" \
         '{said: $p, prefix: $p, version: 0, topic: $t, kind: "kels/sad/v1/events/icp", writePolicy: $wp}')
     local v0_prefix
     v0_prefix=$(compute_prefix "$v0_json")
@@ -155,13 +155,13 @@ create_group() {
         if [ "$i" -eq 1 ]; then
             # v1: Est (governance_policy declaration — Est forbids writePolicy)
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
+                --argjson ver "$i" --arg t "$TOPIC" --arg cs "$content_said" \
                 --arg gp "$chain_gp_said" \
                 '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/est", content: $cs, governancePolicy: $gp}')
         else
             # Upd forbids writePolicy
             vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$KIND" --arg cs "$content_said" \
+                --argjson ver "$i" --arg t "$TOPIC" --arg cs "$content_said" \
                 '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/upd", content: $cs}')
         fi
         local vi_said
@@ -198,7 +198,7 @@ create_group() {
 }
 
 export -f create_group cesr_blake3 compute_said compute_prefix build_governance_policy
-export KELS_URL SADSTORE_URL ALGORITHM KIND PLACEHOLDER MAX_CHAIN_VERSIONS
+export KELS_URL SADSTORE_URL ALGORITHM TOPIC PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)
 seq 1 "$GROUP_COUNT" | xargs -P "$CONCURRENCY" -I {} bash -c 'create_group {}'

@@ -88,7 +88,7 @@ ML-KEM encapsulation keys are published as SADStore event chains with kind `kels
 3. Create `EncapsulationKeyPublication` SAD object, upload to SADStore
 4. Create `SadEvent` chain (v0 inception + v1 with content_said), submit signed
 
-**Discovery:** Anyone computes the event prefix offline via `compute_sad_event_prefix(kel_prefix, "kels/sad/v1/keys/mlkem")`, then queries any SADStore node for the latest record.
+**Discovery:** Anyone computes the event prefix offline: derive `write_policy = endorse(kel_prefix).said`, then call `compute_sad_event_prefix(write_policy, "kels/sad/v1/keys/mlkem")`. Query any SADStore node for the latest record.
 
 **Rotation:** Append a new version to the event chain with updated content_said. The tip record is always the current key.
 
