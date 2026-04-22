@@ -53,7 +53,7 @@ struct SadBranchState {
     /// record carries a new write_policy *and* the evolution was authorized
     /// by the previous policy. Used to authorize v1+ advances.
     tracked_write_policy: cesr::Digest256,
-    /// The checkpoint policy SAID tracked on this branch.
+    /// The governance policy SAID tracked on this branch.
     /// `None` until the first governance_policy is declared.
     governance_policy: Option<cesr::Digest256>,
     /// Number of records since the last checkpoint (or since chain start).
@@ -297,7 +297,7 @@ impl<'a> SelVerifier<'a> {
 
                     if !self.checker.satisfies(record, tracked).await? {
                         return Err(KelsError::VerificationFailed(format!(
-                            "SAD record {} checkpoint policy not satisfied",
+                            "SAD record {} governance policy not satisfied",
                             record.said,
                         )));
                     }
@@ -407,14 +407,14 @@ impl<'a> SelVerifier<'a> {
             ));
         }
 
-        // Global invariant: at least one branch must have a checkpoint policy established
+        // Global invariant: at least one branch must have a governance policy established
         if !self
             .branches
             .values()
             .any(|b| b.governance_policy.is_some())
         {
             return Err(KelsError::VerificationFailed(
-                "SAD Event Log has no governance_policy — at least one checkpoint is required"
+                "SAD Event Log has no governance_policy established — Icp or Est must declare one"
                     .into(),
             ));
         }
@@ -1120,7 +1120,7 @@ mod tests {
         assert!(!verification.policy_satisfied());
     }
 
-    // ==================== Checkpoint policy tests ====================
+    // ==================== Governance policy tests ====================
 
     #[tokio::test]
     async fn test_v0_with_governance_policy_valid() {
@@ -1569,8 +1569,8 @@ mod tests {
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            err.to_string().contains("checkpoint policy not satisfied"),
-            "Expected checkpoint policy error, got: {}",
+            err.to_string().contains("governance policy not satisfied"),
+            "Expected governance policy error, got: {}",
             err
         );
     }

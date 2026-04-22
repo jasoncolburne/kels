@@ -371,7 +371,7 @@ else
     curl -s -o /dev/null -X POST "${NODE_A_SAD_URL}/api/v1/sad" \
         -H 'Content-Type: application/json' -d "$DIV_POLICY_JSON"
 
-    # Build checkpoint policy before v0 so v0 can declare it
+    # Build governance policy before v0 so v0 can declare it
     DIV_CP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX")
 
     # --- Build and submit v0 (with governance_policy) to node-a ---

@@ -1,7 +1,5 @@
 //! Exchange protocol command handlers.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
@@ -11,18 +9,7 @@ use verifiable_storage::{Chained, SelfAddressed};
 use crate::Cli;
 use crate::helpers::*;
 
-/// Build the write_policy for exchange key publication.
-/// Creates a single-endorser policy from the KEL prefix.
-pub(crate) fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> Result<kels_policy::Policy> {
-    kels_policy::Policy::build(&format!("endorse({})", kel_prefix), None, false)
-        .context("Failed to build exchange write policy")
-}
-
-pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
-    Ok(config_dir(cli)?.join("keys").join(prefix).join("kem.key"))
-}
-
-pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey) -> Result<()> {
+fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey) -> Result<()> {
     std::fs::write(path, dk.qb64()).context("Failed to write decapsulation key")?;
 
     #[cfg(unix)]
@@ -35,12 +22,7 @@ pub(crate) fn save_decap_key(path: &std::path::Path, dk: &cesr::DecapsulationKey
     Ok(())
 }
 
-pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
-    let data = std::fs::read_to_string(path).context("Failed to read decapsulation key")?;
-    cesr::DecapsulationKey::from_qb64(data.trim()).context("Failed to parse decapsulation key")
-}
-
-pub(crate) fn parse_kem_algorithm(
+fn parse_kem_algorithm(
     algorithm: Option<&str>,
     signing_algorithm: VerificationKeyCode,
 ) -> Result<&'static str> {

@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS sad_events (
     custody TEXT,                    -- SAID of custody SAD
     write_policy TEXT,               -- required on Icp, optional on Evl, forbidden on Est/Upd/Rpr
     kind TEXT NOT NULL,              -- record kind (kels/sad/v1/events/{icp,upd,est,evl,rpr})
-    governance_policy TEXT           -- SAID of checkpoint policy (higher threshold than write_policy)
+    governance_policy TEXT           -- SAID of governance policy (higher threshold than write_policy)
 );
 
 CREATE INDEX IF NOT EXISTS sad_events_prefix_idx ON sad_events(prefix);

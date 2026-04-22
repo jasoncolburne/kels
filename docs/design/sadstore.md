@@ -154,13 +154,11 @@ SAD data replicates via the existing gossip infrastructure on a separate topic (
 ### Message Types
 
 ```rust
-enum SadGossipMessage {
+enum SadAnnouncement {
     Object { said, origin },
-    Chain { chain_prefix, said, origin, repair },
+    Event { prefix, said, origin },
 }
 ```
-
-The `repair` flag (default `false`) signals that a divergent chain was repaired. Receiving nodes use `?repair=true` to replace their local divergent state.
 
 ### Gossip Policy
 

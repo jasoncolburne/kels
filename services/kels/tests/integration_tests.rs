@@ -11,8 +11,8 @@ use std::{collections::HashMap, net::TcpListener, sync::OnceLock, time::Duration
 use cesr::{Digest256, test_digest, test_signature};
 use ctor::dtor;
 use kels_core::{
-    KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider, SubmitEventsResponse,
-    VerificationKeyCode,
+    KeyEventBuilder, SignedKeyEvent, SignedKeyEventPage, SoftwareKeyProvider,
+    SubmitKeyEventsResponse, VerificationKeyCode,
 };
 use reqwest::Client;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
@@ -292,7 +292,7 @@ async fn test_submit_and_get_kel() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -336,7 +336,7 @@ async fn test_submit_multiple_events() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Retrieve and verify
@@ -432,7 +432,7 @@ async fn test_idempotent_submit() {
             .unwrap();
 
         assert_eq!(response.status(), 200);
-        let result: SubmitEventsResponse = response.json().await.unwrap();
+        let result: SubmitKeyEventsResponse = response.json().await.unwrap();
         assert!(result.applied);
     }
 
@@ -465,7 +465,7 @@ async fn test_submit_empty_events() {
         .expect("Failed to submit events");
 
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 }
 
@@ -637,7 +637,7 @@ async fn test_submit_rotation_event() {
         .expect("Failed to submit rotation");
 
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Verify KEL now has 2 events
@@ -762,7 +762,7 @@ async fn test_submit_decommission_event() {
         .expect("Failed to submit decommission");
 
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // Verify KEL now has 2 events (icp + dec)
@@ -868,7 +868,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -887,7 +887,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -903,7 +903,7 @@ async fn test_divergence_creation() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 
@@ -967,7 +967,7 @@ async fn test_recovery_from_divergence() {
         .send()
         .await
         .unwrap();
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 
@@ -989,7 +989,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
 
     // GET KEL — should show the recovered chain
@@ -1016,7 +1016,7 @@ async fn test_recovery_from_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -1092,7 +1092,7 @@ async fn test_contest_freezes_kel() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_some());
 
@@ -1173,7 +1173,7 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -1189,7 +1189,7 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 
@@ -1217,7 +1217,7 @@ async fn test_contest_on_divergent_kel_with_cnt_serial_above_diverged_at() {
         200,
         "Contest should succeed — adversary ror at serial 3 reveals recovery key"
     );
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_some());
 
@@ -1282,7 +1282,7 @@ async fn test_contest_creates_divergence_on_linear_kel() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_none());
 
@@ -1307,7 +1307,7 @@ async fn test_contest_creates_divergence_on_linear_kel() {
         200,
         "Contest should create divergence + freeze on linear KEL with adversary ror"
     );
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert!(result.diverged_at.is_some());
 
@@ -1380,7 +1380,7 @@ async fn test_overlap_submission_creates_divergence() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let result: SubmitEventsResponse = response.json().await.unwrap();
+    let result: SubmitKeyEventsResponse = response.json().await.unwrap();
     assert!(result.applied);
     assert_eq!(result.diverged_at, Some(3));
 

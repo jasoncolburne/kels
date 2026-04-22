@@ -44,8 +44,8 @@ pub struct SadEventEffectiveSaidRequest {
 /// Response from event chain submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "SubmitPointersResponse.applied must be checked — records may be rejected"]
-pub struct SubmitPointersResponse {
+#[must_use = "SubmitSadEventsResponse.applied must be checked — records may be rejected"]
+pub struct SubmitSadEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,

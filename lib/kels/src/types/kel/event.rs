@@ -671,8 +671,8 @@ impl SignedKeyEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "BatchSubmitResponse.applied must be checked - events may be rejected"]
-pub struct SubmitEventsResponse {
+#[must_use = "SubmitKeyEventsResponse.applied must be checked - events may be rejected"]
+pub struct SubmitKeyEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,

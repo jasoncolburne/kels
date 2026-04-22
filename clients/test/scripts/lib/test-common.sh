@@ -100,7 +100,7 @@ compute_prefix() {
     cesr_blake3 "$with_placeholders"
 }
 
-# Build a checkpoint policy and store it as a SAD object.
+# Build a governance policy and store it as a SAD object.
 # Echoes the policy SAID to stdout.
 # Usage: CP_SAID=$(build_governance_policy "$SAD_URL" "$KEL_PREFIX")
 # TODO: Production checkpoint policies should use higher thresholds than write_policy

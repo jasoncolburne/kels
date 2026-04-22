@@ -1,6 +1,6 @@
-# SAD Event Logs: Checkpoint Policy and Bounded Divergence
+# SAD Event Logs: Governance Policy and Bounded Divergence
 
-SAD Event Logs are append-only, versioned, policy-governed data chains stored in SADStore. This document covers the security model — checkpoint policy, divergence bounding, sealing, and repair.
+SAD Event Logs are append-only, versioned, policy-governed data chains stored in SADStore. This document covers the security model — governance policy, divergence bounding, sealing, and repair.
 
 For the storage layer, API, gossip replication, and custody model, see [sadstore.md](sadstore.md).
 
@@ -14,11 +14,11 @@ An adversary who compromises a chain's `write_policy` (e.g., gains access to eno
 
 `governance_policy` bounds all three. It is a higher-threshold policy that the adversary is assumed unable to satisfy. Checkpoints seal the chain at evaluated points, limiting where forks can occur and how far they can extend.
 
-## Checkpoint Policy Lifecycle
+## Governance Policy Lifecycle
 
 ### Declaration
 
-Checkpoint policy is declared via record kind:
+Governance policy is declared via record kind:
 - `Icp` (v0) may optionally carry `governance_policy`, but this changes the chain prefix. Use only when the caller controls prefix computation. For discoverable chains (like exchange keys), v0 must NOT declare governance_policy.
 - `Est` (v1 only) declares `governance_policy` when v0 did not. Est is required at v1 if v0 omitted it.
 - The first submitted batch must contain a `governance_policy` (either on v0 or v1).
@@ -30,7 +30,7 @@ Checkpoint policy is declared via record kind:
 
 **Rules:**
 - Evl/Rpr require `governance_policy` already established on the branch.
-- Checkpoint policy evolution: Evl records may carry a new `governance_policy` — evaluated against the *previous* tracked policy. Failure is a structural error. Rpr forbids `governance_policy` (to evolve policy after repair, submit a separate Evl afterward).
+- Governance policy evolution: Evl records may carry a new `governance_policy` — evaluated against the *previous* tracked policy. Failure is a structural error. Rpr forbids `governance_policy` (to evolve policy after repair, submit a separate Evl afterward).
 - `Upd` and `Rpr` must not set `governance_policy` on the record.
 
 ### Checkpoint Bound
@@ -106,7 +106,7 @@ When a repair succeeds, SADStore publishes `{prefix}:{effective_said}:repair` to
 - Chain linkage (`previous` points to a known branch tip)
 - Version monotonicity (each record's version = parent's version + 1)
 - `write_policy` authorization via `PolicyChecker` (every v1+ record)
-- Checkpoint policy lifecycle (declaration, evaluation, evolution, bound)
+- Governance policy lifecycle (declaration, evaluation, evolution, bound)
 
 ### What the verifier tracks
 
@@ -129,7 +129,7 @@ The handler uses `policy_satisfied()` to decide authorization (403 on failure) a
 3. If all duplicates, return early
 4. Verify existing chain via `verify_existing_chain`
 5. Verify new (deduped) records via `verify_page`
-6. `finish()` — checkpoint policy established, checkpoint bound
+6. `finish()` — governance policy established, checkpoint bound
 7. Check `policy_satisfied()`
 8. `save_batch` with `last_governance_version` as seal floor
 9. Commit, publish to Redis

@@ -13,7 +13,7 @@ use crate::{
     error::KelsError,
     types::{
         ErrorCode, ErrorResponse, RecoveryRecordPage, SignedKeyEvent, SignedKeyEventPage,
-        SubmitEventsResponse,
+        SubmitKeyEventsResponse,
     },
 };
 
@@ -140,11 +140,11 @@ impl KelsClient {
         &self,
         events: &[SignedKeyEvent],
         max_events: usize,
-    ) -> Result<SubmitEventsResponse, KelsError> {
+    ) -> Result<SubmitKeyEventsResponse, KelsError> {
         if events.len() <= max_events {
             return self.submit_events(events).await;
         }
-        let mut last_response = SubmitEventsResponse {
+        let mut last_response = SubmitKeyEventsResponse {
             diverged_at: None,
             applied: true,
         };
@@ -157,7 +157,7 @@ impl KelsClient {
     pub async fn submit_events(
         &self,
         events: &[SignedKeyEvent],
-    ) -> Result<SubmitEventsResponse, KelsError> {
+    ) -> Result<SubmitKeyEventsResponse, KelsError> {
         let url = format!("{}{}/events", self.base_url, self.path_prefix);
 
         let resp = self.client.post(&url).json(events).send().await?;
@@ -436,7 +436,7 @@ mod tests {
         use cesr::test_digest;
 
         use super::*;
-        use crate::types::{ErrorCode, ErrorResponse, SubmitEventsResponse};
+        use crate::types::{ErrorCode, ErrorResponse, SubmitKeyEventsResponse};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -495,7 +495,7 @@ mod tests {
         async fn test_submit_events_chunked_small_batch() {
             let mock_server = MockServer::start().await;
 
-            let response = SubmitEventsResponse {
+            let response = SubmitKeyEventsResponse {
                 applied: true,
                 diverged_at: None,
             };
@@ -528,7 +528,7 @@ mod tests {
         async fn test_submit_events_chunked_multiple_chunks() {
             let mock_server = MockServer::start().await;
 
-            let response = SubmitEventsResponse {
+            let response = SubmitKeyEventsResponse {
                 applied: true,
                 diverged_at: None,
             };
@@ -563,7 +563,7 @@ mod tests {
         async fn test_submit_events_success() {
             let mock_server = MockServer::start().await;
 
-            let response = SubmitEventsResponse {
+            let response = SubmitKeyEventsResponse {
                 applied: true,
                 diverged_at: None,
             };

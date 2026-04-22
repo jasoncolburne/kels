@@ -145,7 +145,7 @@ create_group() {
 
     local prev_said="$v0_said"
 
-    # Build a checkpoint policy for this chain
+    # Build a governance policy for this chain
     local chain_cp_said
     chain_cp_said=$(build_governance_policy "$SADSTORE_URL" "$prefix")
 

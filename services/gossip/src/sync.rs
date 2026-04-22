@@ -152,11 +152,7 @@ pub async fn run_sad_redis_subscriber(
             let cache_key = if channel == SAD_PUBSUB_CHANNEL {
                 format!("sad-object:{}", payload)
             } else {
-                // Chain updates: strip ":repair" suffix before checking, since
-                // the handler inserts without it. The SADStore publishes the
-                // effective SAID, which matches the handler's cache key.
-                let core = payload.strip_suffix(":repair").unwrap_or(&payload);
-                format!("sad-record:{}", core)
+                format!("sad-record:{}", payload)
             };
             if guard.contains_key(&cache_key) {
                 debug!(cache_key = %cache_key, "Skipping SAD Redis message (recently stored from gossip)");
@@ -178,19 +174,11 @@ pub async fn run_sad_redis_subscriber(
                 origin: local_kel_prefix,
             }
         } else if channel == SEL_PUBSUB_CHANNEL {
-            // Chain update: payload is "{chain_prefix}:{effective_said}" or with ":repair"
-            let repair = payload.ends_with(":repair");
-            let core = if repair {
-                &payload[..payload.len() - ":repair".len()]
-            } else {
-                &payload
-            };
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(core, &local_kel_prefix) {
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
                 SadAnnouncement::Event {
-                    chain_prefix: ann.prefix,
+                    prefix: ann.prefix,
                     said: ann.said,
                     origin: local_kel_prefix,
-                    repair,
                 }
             } else {
                 warn!(channel = %channel, payload = %payload, "Failed to parse SAD Event Log update");
@@ -385,12 +373,11 @@ impl SyncHandler {
                 self.handle_sad_object_announcement(&said, &origin).await;
             }
             SadAnnouncement::Event {
-                chain_prefix,
+                prefix: chain_prefix,
                 said,
                 origin,
-                repair,
             } => {
-                self.handle_sel_announcement(&chain_prefix, &said, &origin, repair)
+                self.handle_sel_announcement(&chain_prefix, &said, &origin)
                     .await;
             }
         }
@@ -464,7 +451,6 @@ impl SyncHandler {
         chain_prefix: &cesr::Digest256,
         remote_said: &cesr::Digest256,
         origin: &cesr::Digest256,
-        repair: bool,
     ) {
         let Some(sadstore_url) = self.get_peer_sadstore_url(origin).await else {
             debug!("No SADStore URL for origin peer {}", origin);
@@ -493,7 +479,6 @@ impl SyncHandler {
             chain_prefix = %chain_prefix,
             remote_said = %remote_said,
             local_said = ?local_said,
-            repair = repair,
             origin = %origin,
             "SAD Event Log announcement received"
         );
@@ -537,7 +522,7 @@ impl SyncHandler {
             .sad_event_exists(remote_said)
             .await
             .unwrap_or(false);
-        let since_digest = if repair || !remote_is_real_event {
+        let since_digest = if !remote_is_real_event {
             None
         } else {
             local_said
@@ -562,7 +547,6 @@ impl SyncHandler {
         debug!(
             chain_prefix = %chain_prefix,
             since = ?since_digest,
-            repair = repair,
             "Fetching SAD Event Log from peer"
         );
 

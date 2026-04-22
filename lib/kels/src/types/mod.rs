@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_batch_submit_response_applied() {
-        let response = SubmitEventsResponse {
+        let response = SubmitKeyEventsResponse {
             applied: true,
             diverged_at: None,
         };
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_batch_submit_response_diverged() {
-        let response = SubmitEventsResponse {
+        let response = SubmitKeyEventsResponse {
             applied: false,
             diverged_at: Some(5),
         };

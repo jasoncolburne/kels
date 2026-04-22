@@ -147,7 +147,7 @@ pub struct SadEvent {
     /// no policy change" — verifier inherits the tracked policy from branch state.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub write_policy: Option<cesr::Digest256>,
-    /// SAID of the checkpoint policy — a higher-threshold policy that bounds
+    /// SAID of the governance policy — a higher-threshold policy that bounds
     /// divergence. An attacker who satisfies write_policy but can't satisfy
     /// governance_policy has their fork bounded to ≤63 records.
     #[serde(skip_serializing_if = "Option::is_none", default)]

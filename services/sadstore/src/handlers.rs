@@ -1277,7 +1277,7 @@ pub async fn submit_sad_event(
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
-            let response = kels_core::SubmitPointersResponse {
+            let response = kels_core::SubmitSadEventsResponse {
                 diverged_at: None,
                 applied: false,
             };
@@ -1490,7 +1490,7 @@ pub async fn submit_sad_event(
         GossipPolicy::LocalOnly
     ) {
         debug!("Skipping event gossip: custody.nodes restricts to local/home-node");
-        let response = kels_core::SubmitPointersResponse {
+        let response = kels_core::SubmitSadEventsResponse {
             diverged_at: diverged_at_version,
             applied: new_record_count > 0,
         };
@@ -1516,11 +1516,7 @@ pub async fn submit_sad_event(
     match (&state.redis_conn, &effective_said) {
         (Some(conn), Some(said)) => {
             let mut conn = conn.clone();
-            let message = if is_repair {
-                format!("{}:{}:repair", chain_prefix, said)
-            } else {
-                format!("{}:{}", chain_prefix, said)
-            };
+            let message = format!("{}:{}", chain_prefix, said);
             if let Err(e) = redis::cmd("PUBLISH")
                 .arg("sel_updates")
                 .arg(&message)
@@ -1548,7 +1544,7 @@ pub async fn submit_sad_event(
         }
     }
 
-    let response = kels_core::SubmitPointersResponse {
+    let response = kels_core::SubmitSadEventsResponse {
         diverged_at: diverged_at_version,
         applied: new_record_count > 0,
     };

@@ -8,7 +8,6 @@ use colored::Colorize;
 use kels_core::{KelVerifier, ProviderConfig};
 
 use crate::Cli;
-use crate::commands::exchange::{exchange_write_policy, kem_key_path, load_decap_key};
 use crate::helpers::*;
 
 pub(crate) async fn cmd_mail_send(
