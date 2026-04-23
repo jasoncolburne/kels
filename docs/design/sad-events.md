@@ -19,7 +19,7 @@ An adversary who compromises a chain's `write_policy` (e.g., gains access to eno
 ### Declaration
 
 Governance policy is declared via record kind:
-- `Icp` (v0) may optionally carry `governance_policy`, but this changes the chain prefix. Use only when the caller controls prefix computation. For discoverable chains (like exchange keys), v0 must NOT declare governance_policy.
+- `Icp` (v0) may optionally carry `governance_policy`, but this changes the SEL prefix. Use only when the caller controls prefix computation. For discoverable chains (like exchange keys), v0 must NOT declare governance_policy.
 - `Est` (v1 only) declares `governance_policy` when v0 did not. Est is required at v1 if v0 omitted it.
 - The first submitted batch must contain a `governance_policy` (either on v0 or v1).
 - `finish()` requires at least one branch to have `governance_policy` established.
@@ -124,7 +124,7 @@ The handler uses `policy_satisfied()` to decide authorization (403 on failure) a
 
 ### Normal submission (non-repair)
 
-1. Acquire advisory lock on chain prefix
+1. Acquire advisory lock on SEL prefix
 2. Deduplicate submitted records against existing SAIDs (IN query on submitted batch only)
 3. If all duplicates, return early
 4. Verify existing chain via `verify_existing_chain`
@@ -138,7 +138,7 @@ The handler uses `policy_satisfied()` to decide authorization (403 on failure) a
 
 Repair is auto-detected: the handler checks if any submitted record has `kind: Rpr`.
 
-1. Acquire advisory lock on chain prefix
+1. Acquire advisory lock on SEL prefix
 2. Query `last_governance_version` from existing chain (pre-truncation)
 3. `truncate_and_replace` — dedup, archive, delete, insert
 4. Verify seal: `from_version > last_governance_version`
@@ -166,7 +166,7 @@ kels/sad/v1/events/rpr  — Repair (resolves divergence, evaluates governance_po
 
 `write_policy` authorizes chain mutations but is only present on records that establish or change it:
 
-- `Icp`: **required** — seeds the chain prefix (prefix = Blake3 of v0 template with said+prefix blanked).
+- `Icp`: **required** — seeds the SEL prefix (prefix = Blake3 of v0 template with said+prefix blanked).
 - `Evl`: **optional** — present means "policy evolution" (evaluated against `governance_policy`, a higher bar). Absent means "pure checkpoint, no policy change" — verifier inherits the tracked policy from branch state. Mirrors `governance_policy` semantics on Evl.
 - `Est`, `Upd`, `Rpr`: **forbidden**. Est declares governance_policy, not write_policy. Upd is a pure content append. Rpr resolves divergence; to evolve policy after repair, submit a separate Evl afterward.
 

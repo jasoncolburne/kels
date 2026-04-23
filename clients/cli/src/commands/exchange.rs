@@ -140,7 +140,7 @@ pub(crate) async fn cmd_exchange_publish_key(
 
     println!(
         "{}",
-        format!("Key published! Chain prefix: {}", records[0].prefix)
+        format!("Key published! SEL prefix: {}", records[0].prefix)
             .green()
             .bold()
     );

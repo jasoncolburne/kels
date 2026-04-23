@@ -32,7 +32,7 @@ pub struct SadEventRepository {
 impl SadEventRepository {
     /// Store a batch of event records within a caller-managed transaction.
     ///
-    /// Caller must hold an advisory lock on the chain prefix.
+    /// Caller must hold an advisory lock on the SEL prefix.
     ///
     /// If the chain is already divergent, returns an error. If a record in the
     /// batch collides at the same version as an existing record (creating
@@ -133,7 +133,7 @@ impl SadEventRepository {
     ///
     /// Used to repair divergent chains. Archives displaced records, creates a repair
     /// audit record, then inserts the replacements.
-    /// Caller must hold an advisory lock on the chain prefix.
+    /// Caller must hold an advisory lock on the SEL prefix.
     pub async fn truncate_and_replace<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
@@ -380,7 +380,7 @@ impl SadEventRepository {
         Ok(records)
     }
 
-    /// Get the effective SAID for a chain prefix.
+    /// Get the effective SAID for a SEL prefix.
     pub async fn effective_said(
         &self,
         prefix: &cesr::Digest256,
@@ -400,7 +400,7 @@ impl SadEventRepository {
 
     const ARCHIVED_RECORDS_TABLE: &'static str = "sad_event_archives";
 
-    /// Get repairs for a chain prefix, paginated.
+    /// Get repairs for a SEL prefix, paginated.
     pub async fn get_repairs(
         &self,
         prefix: &str,
@@ -453,7 +453,7 @@ impl SadEventRepository {
         Ok((records, has_more))
     }
 
-    /// List chain prefixes with their effective SAIDs, paginated.
+    /// List SEL prefixes with their effective SAIDs, paginated.
     pub async fn list_prefixes(
         &self,
         cursor: Option<&cesr::Digest256>,

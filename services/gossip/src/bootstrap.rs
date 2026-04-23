@@ -229,7 +229,7 @@ impl BootstrapSync {
 
     /// Preload SAD records from Ready peers.
     ///
-    /// Lists chain prefixes from each Ready peer's SADStore, compares with local
+    /// Lists SEL prefixes from each Ready peer's SADStore, compares with local
     /// state, and syncs any chains that are missing or behind.
     pub async fn preload_sad_records(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;

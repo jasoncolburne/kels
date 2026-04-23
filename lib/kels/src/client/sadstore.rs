@@ -191,7 +191,7 @@ impl SadStoreClient {
         }
     }
 
-    // === Layer 2: Chain Records ===
+    // === Layer 2: SAD Events ===
 
     /// Submit SAD events to the SADStore.
     ///
@@ -238,7 +238,7 @@ impl SadStoreClient {
         }
     }
 
-    /// Get the effective SAID and divergence status for a chain prefix.
+    /// Get the effective SAID and divergence status for a SEL prefix.
     /// Returns `(said, is_divergent)`. Used for sync comparison.
     pub async fn fetch_sel_effective_said(
         &self,
@@ -298,7 +298,7 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch repairs for a chain prefix, paginated.
+    /// Fetch repairs for a SEL prefix, paginated.
     pub async fn fetch_sel_repairs(
         &self,
         prefix: &cesr::Digest256,

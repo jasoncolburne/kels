@@ -1490,7 +1490,7 @@ pub async fn record_sad_stale_prefix(
 /// Periodically runs anti-entropy repair for SAD Event Log data.
 ///
 /// Two phases per cycle:
-/// - **Phase 1 (targeted):** Process known-stale chain prefixes from Redis hash.
+/// - **Phase 1 (targeted):** Process known-stale SEL prefixes from Redis hash.
 /// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a random peer.
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
@@ -1522,7 +1522,7 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         }
 
-        // Phase 1: Process known-stale chain prefixes
+        // Phase 1: Process known-stale SEL prefixes
         let stale_entries =
             match drain_due_stale_entries(redis.as_ref(), SEL_STALE_PREFIX_KEY).await {
                 Some(map) => map,
@@ -1534,7 +1534,7 @@ pub async fn run_sad_anti_entropy_loop(
 
         if !stale_entries.is_empty() {
             info!(
-                "SAD anti-entropy: processing {} stale chain prefixes",
+                "SAD anti-entropy: processing {} stale SEL prefixes",
                 stale_entries.len()
             );
 

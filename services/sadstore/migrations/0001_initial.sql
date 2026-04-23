@@ -46,10 +46,10 @@ CREATE TABLE IF NOT EXISTS policies (
     immune BOOLEAN
 );
 
--- Archive tables: copies of events for repaired chains
+-- Archive tables: copies of events displaced by SEL repair
 CREATE TABLE IF NOT EXISTS sad_event_archives (LIKE sad_events INCLUDING ALL);
 
--- Chain repair tracking: each repair is a first-class entity
+-- SEL repair tracking: each repair is a first-class entity
 CREATE TABLE IF NOT EXISTS sad_event_repairs (
     said TEXT PRIMARY KEY,
     event_prefix TEXT NOT NULL,

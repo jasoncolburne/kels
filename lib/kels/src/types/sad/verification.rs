@@ -117,7 +117,7 @@ impl<'a> SelVerifier<'a> {
 
         if record.prefix != self.prefix {
             return Err(KelsError::VerificationFailed(format!(
-                "SAD record {} prefix {} doesn't match chain prefix {}",
+                "SAD record {} prefix {} doesn't match SEL prefix {}",
                 record.said, record.prefix, self.prefix
             )));
         }
@@ -126,7 +126,7 @@ impl<'a> SelVerifier<'a> {
             && record.topic != *expected
         {
             return Err(KelsError::VerificationFailed(format!(
-                "SAD record {} topic {} doesn't match chain topic {}",
+                "SAD record {} topic {} doesn't match SEL topic {}",
                 record.said, record.topic, expected
             )));
         }

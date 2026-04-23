@@ -244,7 +244,7 @@ pub unsafe extern "C" fn kels_sad_submit_events(
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
-/// * `event_prefix` - The event chain prefix
+/// * `event_prefix` - The SEL prefix
 /// * `since` - Optional effective SAID cursor (NULL for first page)
 ///
 /// # Returns

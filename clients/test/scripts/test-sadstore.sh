@@ -194,10 +194,10 @@ PREFIX_B=$(kels-cli sel prefix "Kkel_a______________________________________" "k
 run_test "Prefix is deterministic" [ "$PREFIX_A" = "$PREFIX_B" ]
 
 PREFIX_C=$(kels-cli sel prefix "Kkel_b______________________________________" "kels/sad/v1/test-mlkem" 2>/dev/null)
-run_test "Different KEL prefix -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_C" ]
+run_test "Different KEL prefix -> different SEL prefix" [ "$PREFIX_A" != "$PREFIX_C" ]
 
 PREFIX_D=$(kels-cli sel prefix "Kkel_a______________________________________" "kels/sad/v1/test-other" 2>/dev/null)
-run_test "Different topic -> different chain prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
+run_test "Different topic -> different SEL prefix" [ "$PREFIX_A" != "$PREFIX_D" ]
 
 echo ""
 
@@ -211,7 +211,7 @@ PREFIX_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${M
 PREFIX_LISTING_BODY_LIMIT="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"${MOCK_NONCE}\",\"cursor\":null,\"limit\":5},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
 OBJECT_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${MOCK_CREATED_AT}\",\"nonce\":\"${MOCK_NONCE}\",\"cursor\":null,\"limit\":null},\"signatures\":{\"${MOCK_PREFIX}\":\"${MOCK_SIGNATURE}\"}}"
 
-run_test "List chain prefixes" \
+run_test "List SEL prefixes" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
 
 run_test "List SAD objects" \
@@ -249,10 +249,10 @@ else
     run_test "Policy uploaded" \
         bash -c "[ '$POLICY_CODE' = '201' ] || [ '$POLICY_CODE' = '200' ]"
 
-    # Compute the chain prefix via CLI (using policy SAID, not KEL prefix)
+    # Compute the SEL prefix via CLI (using policy SAID, not KEL prefix)
     CHAIN_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_TOPIC" 2>/dev/null)
-    echo "Chain prefix: $CHAIN_PREFIX"
-    run_test "Chain prefix computed" [ -n "$CHAIN_PREFIX" ]
+    echo "SEL prefix: $CHAIN_PREFIX"
+    run_test "SEL prefix computed" [ -n "$CHAIN_PREFIX" ]
 
     run_test "Chain does not exist yet" \
         bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/events/fetch') = '404' ]"
@@ -385,7 +385,7 @@ else
 
     # governance_policy changes the prefix — use computed prefix, not CLI prefix
     DIV_PREFIX="$D_V0_PREFIX"
-    echo "Chain prefix: $DIV_PREFIX"
+    echo "SEL prefix: $DIV_PREFIX"
 
     # Anchor v0 SAID in the KEL
     run_test "Divergence: v0 SAID anchored" \

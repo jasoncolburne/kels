@@ -7,7 +7,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **Event Chains** (PostgreSQL) — Versioned chains with deterministic prefix discovery and policy-based ownership. Chain metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and policy-based ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
 
 ## Data Model
 
@@ -29,7 +29,7 @@ Fields:
 
 ### Deterministic Prefix
 
-Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a chain prefix offline:
+Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a SEL prefix offline:
 
 ```rust
 let prefix = compute_sad_event_prefix(write_policy, topic)?;
@@ -134,7 +134,7 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 | `POST` | `/api/v1/sad/events/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
 | `POST` | `/api/v1/sad/events/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
 | `POST` | `/api/v1/sad/events/exists` | Check event existence (body: `{ "said": "..." }`) |
-| `POST` | `/api/v1/sad/events/prefixes` | List chain prefixes (authenticated, paginated) |
+| `POST` | `/api/v1/sad/events/prefixes` | List SEL prefixes (authenticated, paginated) |
 | `POST` | `/api/v1/sad/events/repairs` | Paginated repair history (body: `{ "prefix": "...", "limit": N, "offset": N }`) |
 | `POST` | `/api/v1/sad/events/repairs/records` | Archived records for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
 
@@ -212,7 +212,7 @@ kels-cli sel prefix <write-policy> <topic>       # Compute SEL prefix offline
 
 ## Use Cases
 
-- **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication chain prefix and look it up on any node.
+- **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
 - **Ephemeral records** — `once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `ttl` for auto-expiring records.
 - **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a policy.

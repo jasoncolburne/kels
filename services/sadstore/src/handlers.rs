@@ -154,7 +154,7 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-chain-prefix daily rate limit. Checks whether adding `record_count` new
+/// Per-SEL-prefix daily rate limit. Checks whether adding `record_count` new
 /// records would exceed the daily limit. Does NOT update the counter — call
 /// `accrue_prefix_rate_limit` after storage with the actual new record count.
 fn check_prefix_rate_limit(
@@ -172,7 +172,7 @@ fn check_prefix_rate_limit(
     }
 
     if entry.0 + record_count > max_records {
-        return Err("Too many records for this chain prefix".to_string());
+        return Err("Too many records for this SEL prefix".to_string());
     }
 
     Ok(())
@@ -1087,7 +1087,7 @@ pub async fn sad_event_exists(
     }
 }
 
-// === Layer 2: Chain Records (Postgres) ===
+// === Layer 2: SAD Events (Postgres) ===
 
 /// Page through existing SAD events in a transaction, feeding each page to the verifier.
 async fn verify_existing_chain<Tx: TransactionExecutor>(
@@ -1155,7 +1155,7 @@ pub async fn submit_sad_events(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // All records must be for the same chain prefix
+    // All records must be for the same SEL prefix
     let chain_prefix = &records[0].prefix;
     if records.iter().any(|r| r.prefix != *chain_prefix) {
         return (
@@ -1284,7 +1284,7 @@ pub async fn submit_sad_events(
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
-        // Per-chain-prefix daily rate limit (check before, accrue after dedup)
+        // Per-SEL-prefix daily rate limit (check before, accrue after dedup)
         if let Err(msg) = check_prefix_rate_limit(
             &state.prefix_rate_limits,
             chain_prefix,
@@ -1705,7 +1705,7 @@ pub async fn list_sel_prefixes(
     .into_response()
 }
 
-// === Layer 2: Chain Repair History ===
+// === Layer 2: SEL Repair History ===
 
 pub(crate) async fn get_sel_repairs(
     State(state): State<Arc<AppState>>,

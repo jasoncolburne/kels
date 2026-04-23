@@ -2,9 +2,9 @@
 # test-sad-consistency.sh - Deep SAD Consistency Verification
 # Compares all SAD Event Log prefixes, chain contents, and SAD objects across nodes.
 #
-# For each node with test endpoints, fetches all chain prefixes and SAD object
+# For each node with test endpoints, fetches all SEL prefixes and SAD object
 # SAIDs, then for each prefix/object compares across ALL nodes. Verifies:
-#   1. All nodes have the same set of chain prefixes
+#   1. All nodes have the same set of SEL prefixes
 #   2. All chains have the same number of events on each node
 #   3. A SHA-256 digest of each chain matches across all nodes
 #   4. All nodes have the same set of SAD objects
@@ -62,8 +62,8 @@ echo -e "${CYAN}  SAD Consistency Verification${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo
 
-# --- Step 1: Fetch all chain prefixes and SAD object SAIDs from test-endpoint nodes ---
-echo -e "${YELLOW}Fetching chain prefixes and SAD object SAIDs from test-endpoint nodes...${NC}"
+# --- Step 1: Fetch all SEL prefixes and SAD object SAIDs from test-endpoint nodes ---
+echo -e "${YELLOW}Fetching SEL prefixes and SAD object SAIDs from test-endpoint nodes...${NC}"
 
 declare -a REACHABLE_NAMES=()
 declare -a REACHABLE_URLS=()
@@ -77,7 +77,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     > "$prefix_file"
     > "$objects_file"
 
-    # Fetch chain prefixes
+    # Fetch SEL prefixes
     cursor=""
     reachable=true
     while true; do
@@ -133,7 +133,7 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
 
     prefix_count=$(wc -l < "$prefix_file" | tr -d ' ')
     object_count=$(wc -l < "$objects_file" | tr -d ' ')
-    echo -e "  node-${name}: ${GREEN}${prefix_count} chain prefixes, ${object_count} SAD objects${NC}"
+    echo -e "  node-${name}: ${GREEN}${prefix_count} SEL prefixes, ${object_count} SAD objects${NC}"
     REACHABLE_NAMES+=("$name")
     REACHABLE_URLS+=("$url")
 done
@@ -162,8 +162,8 @@ done
 echo -e "${YELLOW}${#ALL_REACHABLE_NAMES[@]} nodes reachable for comparison${NC}"
 echo
 
-# --- Step 2: Compare chain prefix sets ---
-echo -e "${YELLOW}Comparing chain prefix sets...${NC}"
+# --- Step 2: Compare SEL prefix sets ---
+echo -e "${YELLOW}Comparing SEL prefix sets...${NC}"
 
 reference_name="${REACHABLE_NAMES[0]}"
 reference_file="$TEMP_DIR/sad_prefixes_${reference_name}.txt"
@@ -191,7 +191,7 @@ done
 
 if $all_match; then
     total=$(wc -l < "$reference_file" | tr -d ' ')
-    echo -e "  ${GREEN}All ${#REACHABLE_NAMES[@]} nodes have the same ${total} chain prefixes${NC}"
+    echo -e "  ${GREEN}All ${#REACHABLE_NAMES[@]} nodes have the same ${total} SEL prefixes${NC}"
 fi
 
 echo
@@ -373,7 +373,7 @@ while IFS= read -r prefix; do
 done < "$TEMP_DIR/all_sad_prefixes.txt"
 
 echo
-echo -e "  Checked ${total_prefixes} chain prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
+echo -e "  Checked ${total_prefixes} SEL prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
 if [ "$count_mismatches" -eq 0 ] && [ "$chain_mismatches" -eq 0 ]; then
     echo -e "  ${GREEN}All event counts and chain digests match${NC}"
 else
