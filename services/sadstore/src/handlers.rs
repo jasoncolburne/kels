@@ -172,7 +172,7 @@ fn check_prefix_rate_limit(
     }
 
     if entry.0 + record_count > max_records {
-        return Err("Too many records for this SEL prefix".to_string());
+        return Err("Too many events for this SEL prefix".to_string());
     }
 
     Ok(())
@@ -1131,22 +1131,22 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     Ok(())
 }
 
-/// Submit SAD event records — unified endpoint for clients, gossip sync, and repair.
+/// Submit SAD events — unified endpoint for clients, gossip sync, and repair.
 ///
 /// Accepts `Vec<SadEvent>`. Validates structure (SAID, prefix consistency)
 /// and write_policy authorization via verify-then-extend: re-verifies the entire
-/// existing chain from scratch, then verifies new records in context. Rejects
+/// existing chain from scratch, then verifies new events in context. Rejects
 /// unauthorized write_policy advances with 403.
 ///
-/// When any submitted record has `kind: Rpr`, the handler takes the repair path:
-/// truncates all records at version >= the first record's version, then re-verifies
-/// the entire chain including the repair records.
+/// When any submitted event has `kind: Rpr`, the handler takes the repair path:
+/// truncates all events at version >= the first event's version, then re-verifies
+/// the entire chain including the repair events.
 pub async fn submit_sad_events(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels_core::SadEvent>>,
+    Json(events): Json<Vec<kels_core::SadEvent>>,
 ) -> impl IntoResponse {
-    if records.is_empty() {
+    if events.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
     }
 
@@ -1155,29 +1155,29 @@ pub async fn submit_sad_events(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // All records must be for the same SEL prefix
-    let sel_prefix = &records[0].prefix;
-    if records.iter().any(|r| r.prefix != *sel_prefix) {
+    // All events must be for the same SEL prefix
+    let sel_prefix = &events[0].prefix;
+    if events.iter().any(|r| r.prefix != *sel_prefix) {
         return (
             StatusCode::BAD_REQUEST,
-            "All records must have the same prefix",
+            "All events must have the same prefix",
         )
             .into_response();
     }
 
-    // Verify SAID integrity for all records
-    for r in &records {
+    // Verify SAID integrity for all events
+    for r in &events {
         if r.verify_said().is_err() {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Record SAID verification failed: {}", r.said),
+                format!("SAD event SAID verification failed: {}", r.said),
             )
                 .into_response();
         }
     }
 
     // Verify prefix derivation for v0 if present
-    if let Some(v0) = records.iter().find(|r| r.version == 0)
+    if let Some(v0) = events.iter().find(|r| r.version == 0)
         && v0.verify_prefix().is_err()
     {
         return (
@@ -1189,11 +1189,11 @@ pub async fn submit_sad_events(
 
     // Validate custody for event context — reject ttl/once (structurally
     // incompatible with chained data). This is a hard design requirement.
-    // Check every unique custody SAID in the batch, not just the first record.
+    // Check every unique custody SAID in the batch, not just the first event.
     {
         let mut validated_custodies = std::collections::HashSet::new();
-        for record in &records {
-            if let Some(custody_said) = record.custody
+        for event in &events {
+            if let Some(custody_said) = event.custody
                 && validated_custodies.insert(custody_said)
                 && let Err(response) = resolve_and_cache_custody_by_said(
                     &custody_said,
@@ -1244,11 +1244,11 @@ pub async fn submit_sad_events(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
 
-        // Dedup first: filter out records that already exist in the DB.
+        // Dedup first: filter out events that already exist in the DB.
         // This is a SAID existence check — no verification needed.
-        // Historical Rpr records dedup out; only genuinely new Rpr records trigger repair.
-        let new_records: Vec<kels_core::SadEvent> = {
-            let submitted_saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
+        // Historical Rpr events dedup out; only genuinely new Rpr events trigger repair.
+        let new_events: Vec<kels_core::SadEvent> = {
+            let submitted_saids: Vec<String> = events.iter().map(|r| r.said.to_string()).collect();
             let query =
                 verifiable_storage_postgres::Query::<kels_core::SadEvent>::for_table("sad_events")
                     .r#in("said", submitted_saids);
@@ -1265,14 +1265,14 @@ pub async fn submit_sad_events(
                             .into_response();
                     }
                 };
-            records
+            events
                 .iter()
                 .filter(|r| !existing_saids.contains(&r.said))
                 .cloned()
                 .collect()
         };
 
-        if new_records.is_empty() {
+        if new_events.is_empty() {
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
@@ -1288,14 +1288,14 @@ pub async fn submit_sad_events(
         if let Err(msg) = check_prefix_rate_limit(
             &state.prefix_rate_limits,
             sel_prefix,
-            new_records.len() as u32,
+            new_events.len() as u32,
         ) {
             let _ = tx.rollback().await;
             return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
         }
 
-        // Detect repair from post-dedup records — only genuinely new Rpr records trigger repair.
-        is_repair = new_records.iter().any(|r| r.kind.is_repair());
+        // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
+        is_repair = new_events.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
             // Query the checkpoint seal before truncation — reject repairs behind the seal.
@@ -1313,12 +1313,12 @@ pub async fn submit_sad_events(
                 }
             };
 
-            // Repair path: truncate/archive first, then verify remaining + repair records.
+            // Repair path: truncate/archive first, then verify remaining + repair events.
             // truncate_and_replace does the archival within this transaction.
             let from_version = match state
                 .repo
                 .sad_events
-                .truncate_and_replace(&mut tx, &records)
+                .truncate_and_replace(&mut tx, &events)
                 .await
             {
                 Ok(v) => v,
@@ -1347,7 +1347,7 @@ pub async fn submit_sad_events(
             // Repair must include a checkpoint at or after the divergence point —
             // an attacker who can only satisfy write_policy cannot repair
             // (governance_policy is a higher bar).
-            if !new_records
+            if !new_events
                 .iter()
                 .any(|r| r.version >= from_version && r.kind.evaluates_governance())
             {
@@ -1359,7 +1359,7 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            // Now verify the entire chain (post-truncation + repair records) from scratch.
+            // Now verify the entire chain (post-truncation + repair events) from scratch.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
             if let Err(response) =
@@ -1395,17 +1395,17 @@ pub async fn submit_sad_events(
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot repair at version {} — establishment record at version {}",
+                        "Cannot repair at version {} — establishment event at version {}",
                         from_version, est_version
                     ),
                 )
                     .into_response();
             }
 
-            new_record_count = new_records.len() as u32;
+            new_record_count = new_events.len() as u32;
             should_publish = true;
         } else {
-            // Normal path: verify existing chain + new records, then save.
+            // Normal path: verify existing chain + new events, then save.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
             let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
             if let Err(response) =
@@ -1416,11 +1416,11 @@ pub async fn submit_sad_events(
                 return response;
             }
 
-            if let Err(e) = verifier.verify_page(&new_records).await {
+            if let Err(e) = verifier.verify_page(&new_events).await {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
-                    format!("Record verification failed: {}", e),
+                    format!("SAD event verification failed: {}", e),
                 )
                     .into_response();
             }
@@ -1447,7 +1447,7 @@ pub async fn submit_sad_events(
                 .sad_events
                 .save_batch(
                     &mut tx,
-                    &new_records,
+                    &new_events,
                     verification.last_governance_version(),
                 )
                 .await
@@ -1467,7 +1467,7 @@ pub async fn submit_sad_events(
                     should_publish = count > 0;
                 }
                 Err(e) => {
-                    warn!("Failed to store records: {}", e);
+                    warn!("Failed to store events: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::CONFLICT, format!("{}", e)).into_response();
                 }
@@ -1480,11 +1480,11 @@ pub async fn submit_sad_events(
         }
     }
 
-    // Accrue only actual new records to prefix rate limit
+    // Accrue only actual new events to prefix rate limit
     accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_record_count);
 
     // Check nodes replication policy for gossip
-    let event_custody = records.first().and_then(|r| r.custody);
+    let event_custody = events.first().and_then(|r| r.custody);
     if matches!(
         resolve_gossip_policy(&event_custody, &state).await,
         GossipPolicy::LocalOnly
@@ -1563,20 +1563,17 @@ pub async fn get_sad_events(
         .get_stored(prefix.as_ref(), since_str, Some(limit + 1))
         .await
     {
-        Ok(records) if records.is_empty() => {
-            (StatusCode::NOT_FOUND, "Chain not found").into_response()
+        Ok(events) if events.is_empty() => {
+            (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response()
         }
         Ok(events) => {
             let has_more = events.len() as u64 > limit;
-            let records: Vec<_> = events.into_iter().take(limit as usize).collect();
-            let page = kels_core::SadEventPage {
-                has_more,
-                events: records,
-            };
+            let events: Vec<_> = events.into_iter().take(limit as usize).collect();
+            let page = kels_core::SadEventPage { has_more, events };
             (StatusCode::OK, Json(page)).into_response()
         }
         Err(e) => {
-            warn!("Failed to get chain: {}", e);
+            warn!("Failed to get SAD Event Log: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }
@@ -1592,7 +1589,7 @@ pub async fn get_sel_effective_said(
             Json(kels_core::EffectiveSaidResponse { said, divergent }),
         )
             .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
@@ -1744,16 +1741,13 @@ pub(crate) async fn get_sel_repair_events(
         .get_repair_records(request.said.as_ref(), limit, offset)
         .await
     {
-        Ok((records, has_more)) => (
+        Ok((events, has_more)) => (
             StatusCode::OK,
-            Json(kels_core::SadEventPage {
-                events: records,
-                has_more,
-            }),
+            Json(kels_core::SadEventPage { events, has_more }),
         )
             .into_response(),
         Err(e) => {
-            warn!("Failed to get repair records for {}: {}", request.said, e);
+            warn!("Failed to get repair events for {}: {}", request.said, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }

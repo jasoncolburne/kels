@@ -75,12 +75,12 @@ impl SadEventKind {
         matches!(self, Self::Evl | Self::Rpr)
     }
 
-    /// True for repair records (Rpr only).
+    /// True for repair events (Rpr only).
     pub fn is_repair(&self) -> bool {
         matches!(self, Self::Rpr)
     }
 
-    /// True for inception records (Icp only).
+    /// True for inception events (Icp only).
     pub fn is_inception(&self) -> bool {
         matches!(self, Self::Icp)
     }
@@ -135,7 +135,7 @@ pub struct SadEvent {
     pub version: u64,
     /// The topic of this event chain (e.g., `"kels/sad/v1/keys/mlkem"`).
     pub topic: String,
-    /// The kind of this event record.
+    /// The event kind.
     pub kind: SadEventKind,
     /// SAID of the content object in the SAD store (None for v0 inception).
     #[serde(skip_serializing_if = "Option::is_none", default)]
