@@ -3,7 +3,7 @@
 #
 # For each group, creates a KEL, builds a single-endorser policy from its
 # prefix (using the policy SAID as write_policy), stores SAD objects, then
-# creates a event chain with a random number [1, MAX_CHAIN_VERSIONS] of
+# creates an event chain with a random number [1, MAX_CHAIN_VERSIONS] of
 # versions, each referencing a different SAD object as content.
 #
 # Usage: load-sad.sh [count] [concurrency]

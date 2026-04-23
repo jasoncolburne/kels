@@ -482,7 +482,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Declare governance_policy on a event (Est kind) and increment.
+    /// Declare governance_policy on an event (Est kind) and increment.
     fn add_governance_declaration(event: &mut SadEvent) {
         let cp = test_digest(b"checkpoint-policy");
         event.kind = SadEventKind::Est;

@@ -10,7 +10,7 @@ use verifiable_storage::{
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
-/// Result of a `save_batch` operation on a event chain.
+/// Result of a `save_batch` operation on an event chain.
 #[derive(Debug)]
 pub enum SaveBatchResult {
     /// Records were accepted, chain remains non-divergent.
@@ -266,8 +266,8 @@ impl SadEventRepository {
         Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
-    /// Get the version of the most recent evaluated checkpoint for a chain.
-    /// Returns None if no checkpoint exists.
+    /// Get the version of the most recent governance evaluation for a chain.
+    /// Returns None if no governance evaluation has been recorded.
     pub async fn last_governance_version<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
@@ -288,7 +288,7 @@ impl SadEventRepository {
         Ok(records.first().map(|r| r.version))
     }
 
-    /// Check if a event with the given SAID exists.
+    /// Check if an event with the given SAID exists.
     pub async fn exists(&self, said: &cesr::Digest256) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 

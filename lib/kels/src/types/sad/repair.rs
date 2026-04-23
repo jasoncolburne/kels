@@ -14,7 +14,7 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 pub struct SadEventRepair {
     #[said]
     pub said: cesr::Digest256,
-    /// The chain prefix that was repaired.
+    /// The SEL prefix that was repaired.
     pub event_prefix: cesr::Digest256,
     /// The version at which divergence occurred.
     pub diverged_at_version: u64,

@@ -457,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn test_divergence_detection_at_page_boundary() {
         let wp = test_digest(b"write-policy");
-        let cp = test_digest(b"checkpoint-policy");
+        let gp = test_digest(b"governance-policy");
 
         // Build a chain: v0 (declares governance_policy), v1, then two records at v2 (divergence)
         let v0 = SadEvent::create(
@@ -466,7 +466,7 @@ mod tests {
             None,
             None,
             Some(wp),
-            Some(cp),
+            Some(gp),
         )
         .unwrap();
 

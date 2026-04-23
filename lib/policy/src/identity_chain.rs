@@ -182,7 +182,7 @@ mod tests {
         assert!(create(&policy).is_err());
     }
 
-    /// Declare governance_policy on a event (Est kind).
+    /// Declare governance_policy on an event (Est kind).
     fn add_governance_declaration(event: &mut SadEvent) {
         let gp_policy = test_policy("governance");
         event.kind = SadEventKind::Est;

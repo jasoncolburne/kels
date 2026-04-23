@@ -193,7 +193,11 @@ impl SadStoreClient {
 
     // === Layer 2: Chain Records ===
 
-    /// Submit signed SAD records.
+    /// Submit SAD events to the SADStore.
+    ///
+    /// Authorization is via KEL anchoring: each record's SAID must be anchored
+    /// via ixn by `write_policy` endorsers in their KELs. There are no per-record
+    /// signatures — the server validates anchoring against the endorsers' KELs.
     pub async fn submit_sad_events(&self, records: &[crate::SadEvent]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(records).send().await?;
@@ -255,7 +259,7 @@ impl SadStoreClient {
         }
     }
 
-    /// Check if a event with the given SAID exists on this SADStore.
+    /// Check if an event with the given SAID exists on this SADStore.
     pub async fn sad_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/events/exists", self.base_url);
         let body = crate::SadFetchRequest {
