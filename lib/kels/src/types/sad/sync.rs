@@ -143,10 +143,10 @@ impl PagedSadSink for HttpSadSink {
 
 /// Page through a SAD Event Log from source to sink, optionally verifying.
 ///
-/// Mirrors the KEL `transfer_key_events` pattern: uses a held-back record
+/// Mirrors the KEL `transfer_key_events` pattern: uses a held-back event
 /// strategy to detect divergence at page boundaries. When divergence is
-/// found (two records at the same version), switches to collection mode,
-/// accumulates all remaining records, then submits them via
+/// found (two events at the same version), switches to collection mode,
+/// accumulates all remaining events, then submits them via
 /// `send_divergent_sad_events` in an order the remote can accept.
 async fn transfer_sad_events<'a>(
     prefix: &cesr::Digest256,
@@ -172,8 +172,8 @@ async fn transfer_sad_events<'a>(
     for _ in 0..max_pages {
         let (fetched, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
 
-        // Prepend held-back record from previous page
-        let mut records = if let Some(held) = held_back.take() {
+        // Prepend held-back event from previous page
+        let mut events = if let Some(held) = held_back.take() {
             let mut v = vec![held];
             v.extend(fetched);
             v
@@ -181,24 +181,24 @@ async fn transfer_sad_events<'a>(
             fetched
         };
 
-        if records.is_empty() {
+        if events.is_empty() {
             break;
         }
 
         if divergence_found {
-            // Collection mode: accumulate post-divergence records
+            // Collection mode: accumulate post-divergence events
             if let Some(ref mut v) = verifier {
-                v.verify_page(&records).await?;
+                v.verify_page(&events).await?;
             }
-            since = records.last().map(|r| r.said);
-            post_divergence.extend(records);
+            since = events.last().map(|e| e.said);
+            post_divergence.extend(events);
         } else {
             // Phase 1: scan for divergence
-            if has_more || records.len() > page_size {
-                held_back = records.pop();
+            if has_more || events.len() > page_size {
+                held_back = events.pop();
             }
 
-            if records.is_empty() {
+            if events.is_empty() {
                 if !has_more {
                     break;
                 }
@@ -206,32 +206,32 @@ async fn transfer_sad_events<'a>(
             }
 
             if let Some(ref mut v) = verifier {
-                v.verify_page(&records).await?;
+                v.verify_page(&events).await?;
             }
 
-            // Detect divergence: two consecutive records at the same version
+            // Detect divergence: two consecutive events at the same version
             let mut divergence_idx: Option<usize> = None;
-            for i in 1..records.len() {
-                if records[i].version == records[i - 1].version {
+            for i in 1..events.len() {
+                if events[i].version == events[i - 1].version {
                     divergence_idx = Some(i - 1);
                     break;
                 }
             }
 
             if let Some(div_idx) = divergence_idx {
-                let div_version = records[div_idx].version;
+                let div_version = events[div_idx].version;
                 let same_version_count =
-                    records.iter().filter(|r| r.version == div_version).count();
+                    events.iter().filter(|e| e.version == div_version).count();
                 if same_version_count > 2 {
                     return Err(KelsError::InvalidKel(format!(
-                        "Generation at version {} has {} records, max 2 allowed",
+                        "Generation at version {} has {} events, max 2 allowed",
                         div_version, same_version_count
                     )));
                 }
 
                 divergence_found = true;
-                pre_divergence = records[..div_idx].to_vec();
-                post_divergence = records[div_idx..].to_vec();
+                pre_divergence = events[..div_idx].to_vec();
+                post_divergence = events[div_idx..].to_vec();
 
                 if let Some(held) = held_back.take() {
                     if let Some(ref mut v) = verifier {
@@ -240,12 +240,12 @@ async fn transfer_sad_events<'a>(
                     since = Some(held.said);
                     post_divergence.push(held);
                 } else {
-                    since = post_divergence.last().map(|r| r.said);
+                    since = post_divergence.last().map(|e| e.said);
                 }
             } else {
                 // No divergence on this page
-                sink.store_page(&records).await?;
-                since = records.last().map(|r| r.said);
+                sink.store_page(&events).await?;
+                since = events.last().map(|e| e.said);
             }
         }
 
@@ -258,7 +258,7 @@ async fn transfer_sad_events<'a>(
         }
     }
 
-    // Process final held-back record
+    // Process final held-back event
     if let Some(held) = held_back {
         if divergence_found {
             post_divergence.push(held);
@@ -277,13 +277,13 @@ async fn transfer_sad_events<'a>(
     send_divergent_sad_events(sink, &pre_divergence, post_divergence, page_size).await
 }
 
-/// Separate post-divergence records into two branches by tracing `previous`
+/// Separate post-divergence events into two branches by tracing `previous`
 /// events, then send to the sink in an order the remote can accept.
 ///
 /// Event chains have no recovery/contest — divergent chains just freeze.
 /// Strategy:
 ///   1. Pre-divergence + longer branch (paged, non-divergent appends)
-///   2. Fork record from shorter branch (creates divergence on remote)
+///   2. Fork event from shorter branch (creates divergence on remote)
 async fn send_divergent_sad_events(
     sink: &(dyn PagedSadSink + Sync),
     pre_divergence: &[SadEvent],
@@ -292,7 +292,7 @@ async fn send_divergent_sad_events(
 ) -> Result<(), KelsError> {
     if post_divergence.len() < 2 {
         return Err(KelsError::InvalidKel(
-            "Divergent chain must have at least 2 records at divergence point".to_string(),
+            "Divergent chain must have at least 2 events at divergence point".to_string(),
         ));
     }
 
@@ -302,27 +302,27 @@ async fn send_divergent_sad_events(
     chain_a_saids.insert(post_divergence[0].said);
     chain_b_saids.insert(post_divergence[1].said);
 
-    for record in &post_divergence[2..] {
-        if let Some(ref prev) = record.previous {
+    for event in &post_divergence[2..] {
+        if let Some(ref prev) = event.previous {
             if chain_a_saids.contains(prev) {
-                chain_a_saids.insert(record.said);
+                chain_a_saids.insert(event.said);
             } else if chain_b_saids.contains(prev) {
-                chain_b_saids.insert(record.said);
+                chain_b_saids.insert(event.said);
             }
         }
     }
 
     let mut chain_a: Vec<SadEvent> = Vec::new();
     let mut chain_b: Vec<SadEvent> = Vec::new();
-    for record in post_divergence {
-        if chain_a_saids.contains(&record.said) {
-            chain_a.push(record);
+    for event in post_divergence {
+        if chain_a_saids.contains(&event.said) {
+            chain_a.push(event);
         } else {
-            chain_b.push(record);
+            chain_b.push(event);
         }
     }
 
-    // Longer chain first as non-divergent appends, then fork record from shorter
+    // Longer chain first as non-divergent appends, then fork event from shorter
     let (longer, shorter) = if chain_a.len() >= chain_b.len() {
         (chain_a, chain_b)
     } else {
@@ -336,8 +336,8 @@ async fn send_divergent_sad_events(
         sink.store_page(chunk).await?;
     }
 
-    // Fork record from shorter chain (creates divergence).
-    // The shorter branch is always exactly one record — the batch truncation
+    // Fork event from shorter chain (creates divergence).
+    // The shorter branch is always exactly one event — the batch truncation
     // invariant prevents extensions past divergence.
     if let Some(fork) = shorter.first() {
         sink.store_page(std::slice::from_ref(fork)).await?;
@@ -398,9 +398,9 @@ mod tests {
         cesr::Digest256::blake3_256(label)
     }
 
-    /// In-memory source that serves records in pages, simulating page-boundary splits.
+    /// In-memory source that serves events in pages, simulating page-boundary splits.
     struct VecSadSource {
-        records: Vec<SadEvent>,
+        events: Vec<SadEvent>,
         page_size: usize,
     }
 
@@ -414,17 +414,17 @@ mod tests {
         ) -> Result<(Vec<SadEvent>, bool), KelsError> {
             let limit = limit.min(self.page_size);
             let start = if let Some(since_said) = since {
-                self.records
+                self.events
                     .iter()
-                    .position(|r| r.said == *since_said)
+                    .position(|e| e.said == *since_said)
                     .map(|i| i + 1)
                     .unwrap_or(0)
             } else {
                 0
             };
-            let end = (start + limit).min(self.records.len());
-            let page = self.records[start..end].to_vec();
-            let has_more = end < self.records.len();
+            let end = (start + limit).min(self.events.len());
+            let page = self.events[start..end].to_vec();
+            let has_more = end < self.events.len();
             Ok((page, has_more))
         }
     }
@@ -441,7 +441,7 @@ mod tests {
             }
         }
 
-        async fn all_records(&self) -> Vec<SadEvent> {
+        async fn all_events(&self) -> Vec<SadEvent> {
             self.pages.lock().await.iter().flatten().cloned().collect()
         }
     }
@@ -459,7 +459,7 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let gp = test_digest(b"governance-policy");
 
-        // Build a chain: v0 (declares governance_policy), v1, then two records at v2 (divergence)
+        // Build a chain: v0 (declares governance_policy), v1, then two events at v2 (divergence)
         let v0 = SadEvent::create(
             "kels/test".to_string(),
             SadEventKind::Icp,
@@ -475,7 +475,7 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         v1.increment().unwrap();
 
-        // Two conflicting v2 records (same previous = v1.said)
+        // Two conflicting v2 events (same previous = v1.said)
         let mut v2_a = v1.clone();
         v2_a.content = Some(test_digest(b"content2a"));
         v2_a.increment().unwrap();
@@ -491,7 +491,7 @@ mod tests {
         // Now test page_size=3: page 1 = [v0, v1, v2_a], held-back = v2_a,
         // page 2 starts with v2_b which has same version → divergence at boundary.
         let source = VecSadSource {
-            records: vec![v0, v1, v2_a.clone(), v2_b.clone()],
+            events: vec![v0, v1, v2_a.clone(), v2_b.clone()],
             page_size: 3,
         };
         let sink = CollectingSink::new();
@@ -500,25 +500,25 @@ mod tests {
             .await
             .unwrap();
 
-        let stored = sink.all_records().await;
+        let stored = sink.all_events().await;
 
-        // All 4 records should be forwarded (pre-divergence + both branches)
+        // All 4 events should be forwarded (pre-divergence + both branches)
         assert_eq!(
             stored.len(),
             4,
-            "Expected 4 records (including both divergent), got {}",
+            "Expected 4 events (including both divergent), got {}",
             stored.len()
         );
 
-        // Both v2 records present
-        let saids: std::collections::HashSet<_> = stored.iter().map(|r| r.said).collect();
+        // Both v2 events present
+        let saids: std::collections::HashSet<_> = stored.iter().map(|e| e.said).collect();
         assert!(
             saids.contains(&v2_a.said),
-            "v2_a missing from forwarded records"
+            "v2_a missing from forwarded events"
         );
         assert!(
             saids.contains(&v2_b.said),
-            "v2_b missing from forwarded records"
+            "v2_b missing from forwarded events"
         );
     }
 }

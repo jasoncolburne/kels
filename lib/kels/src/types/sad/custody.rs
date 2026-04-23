@@ -64,16 +64,16 @@ impl NodeSet {
 pub enum SadCustodyContext {
     /// Standalone SAD objects — all custody fields allowed.
     Object,
-    /// Chained event records — `ttl` and `once` are rejected.
+    /// Chained events — `ttl` and `once` are rejected.
     Event,
 }
 
 /// Errors from custody validation.
 #[derive(Debug, Clone)]
 pub enum CustodyValidationError {
-    /// `ttl` is structurally incompatible with chained event records.
+    /// `ttl` is structurally incompatible with chained events.
     TtlNotAllowedOnEvent,
-    /// `once` is structurally incompatible with chained event records.
+    /// `once` is structurally incompatible with chained events.
     OnceNotAllowedOnEvent,
     /// `once: true` requires `nodes` to be present for consistent delete semantics.
     OnceRequiresNodes,
@@ -87,13 +87,13 @@ impl std::fmt::Display for CustodyValidationError {
             Self::TtlNotAllowedOnEvent => {
                 write!(
                     f,
-                    "ttl is not allowed on event records — expiring a link in a chain breaks verification for descendants"
+                    "ttl is not allowed on events — expiring a link in a chain breaks verification for descendants"
                 )
             }
             Self::OnceNotAllowedOnEvent => {
                 write!(
                     f,
-                    "once is not allowed on event records — deleting a link in a chain breaks verification for descendants"
+                    "once is not allowed on events — deleting a link in a chain breaks verification for descendants"
                 )
             }
             Self::OnceRequiresNodes => {

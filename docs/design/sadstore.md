@@ -7,20 +7,20 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and policy-based ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the record's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and policy-based ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
 
 ### SadEvent
 
-A chained, self-addressed event record. The v0 (inception) record has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ records.
+A chained, self-addressed event. The v0 (inception) event has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ events.
 
-No `created_at` field — intentionally omitted so inception records produce deterministic prefixes.
+No `created_at` field — intentionally omitted so inception events produce deterministic prefixes.
 
 Fields:
 - `said` — Self-addressing identifier (content hash)
 - `prefix` — Chain identifier (derived from inception content)
-- `previous` — SAID of previous record (None for v0)
+- `previous` — SAID of previous event (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
 - `topic` — Record type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
@@ -50,7 +50,7 @@ Fields:
 
 **Safety valve:** If the custody object contains any unrecognized fields (e.g., from a newer client), all server-side enforcement is disengaged. This ensures forward compatibility without blocking storage.
 
-**Context validation:** `ttl` and `once` are rejected on event records (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
+**Context validation:** `ttl` and `once` are rejected on events (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
 
 ### NodeSet
 
@@ -59,7 +59,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **SAD events**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the record's SAID in their KELs. Consumers verify the anchoring when they use the data.
+- **SAD events**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the event's SAID in their KELs. Consumers verify the anchoring when they use the data.
 
 ## Divergence and Repair
 
@@ -145,7 +145,7 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 3. Create SAD event with `content` pointing to that SAID
 4. `POST /api/v1/sad/events` — submit the SAD event
 
-Authorization is consumer-side: endorsing parties anchor the record's SAID in their KELs. The SADStore does not verify signatures on submission.
+Authorization is consumer-side: endorsing parties anchor the event's SAID in their KELs. The SADStore does not verify signatures on submission.
 
 ## Gossip Replication
 

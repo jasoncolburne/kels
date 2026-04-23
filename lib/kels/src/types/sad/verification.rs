@@ -12,34 +12,34 @@ use crate::KelsError;
 /// Trait for checking policy satisfaction during chain verification.
 ///
 /// `SelVerifier` calls this at each generation:
-/// - v0: `self_satisfies(record)` — the inception must be authorized by its own write_policy
-/// - v1+: `satisfies(record, &branch.tracked_write_policy)` — each advance must be authorized
+/// - v0: `self_satisfies(event)` — the inception must be authorized by its own write_policy
+/// - v1+: `satisfies(event, &branch.tracked_write_policy)` — each advance must be authorized
 ///   by the branch's currently-tracked write_policy (seeded by v0, updated when Evl carries
 ///   a new write_policy *and* the evolution was authorized). Called unconditionally,
 ///   whether or not the policy changed. The returned value also gates whether the verifier
 ///   advances branch-state (tracked write_policy, tracked governance_policy, establishment
 ///   version, last governance version); a returned `false` freezes all policy-related state
-///   on the branch for this record.
+///   on the branch for this event.
 ///
 /// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
 /// calls `evaluate_anchored_policy` to check KEL anchoring).
 #[async_trait::async_trait]
 pub trait PolicyChecker: Send + Sync {
-    /// Check if the advance to `new_record` is authorized by `previous_policy`.
+    /// Check if the advance to `new_event` is authorized by `previous_policy`.
     ///
     /// Evaluates `previous_policy` via anchoring — the endorsers required by
-    /// `previous_policy` must have anchored `new_record.said` in their KELs.
+    /// `previous_policy` must have anchored `new_event.said` in their KELs.
     async fn satisfies(
         &self,
-        new_record: &SadEvent,
+        new_event: &SadEvent,
         previous_policy: &cesr::Digest256,
     ) -> Result<bool, KelsError>;
 
-    /// Check if v0 inception with this record is authorized.
+    /// Check if v0 inception with this event is authorized.
     ///
-    /// Evaluates `record.write_policy` via anchoring — endorsers must have
-    /// anchored `record.said` in their KELs.
-    async fn self_satisfies(&self, record: &SadEvent) -> Result<bool, KelsError>;
+    /// Evaluates `event.write_policy` via anchoring — endorsers must have
+    /// anchored `event.said` in their KELs.
+    async fn self_satisfies(&self, event: &SadEvent) -> Result<bool, KelsError>;
 }
 
 // ==================== Incremental Chain Verification ====================
@@ -50,7 +50,7 @@ struct SadBranchState {
     tip: SadEvent,
     /// The effective write_policy for this branch.
     /// Seeded from v0 (Icp always has write_policy) and updated when an Evl
-    /// record carries a new write_policy *and* the evolution was authorized
+    /// event carries a new write_policy *and* the evolution was authorized
     /// by the previous policy. Used to authorize v1+ advances.
     tracked_write_policy: cesr::Digest256,
     /// The governance policy SAID tracked on this branch.
@@ -76,7 +76,7 @@ pub struct SelVerifier<'a> {
     topic: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
     branches: HashMap<cesr::Digest256, SadBranchState>,
-    /// Records buffered for the current generation (same version).
+    /// Events buffered for the current generation (same version).
     generation_buffer: Vec<SadEvent>,
     /// The version of the current buffered generation.
     current_generation_version: Option<u64>,
@@ -111,66 +111,66 @@ impl<'a> SelVerifier<'a> {
         self.branches.len() > 1
     }
 
-    /// Verify a single record's SAID, prefix, and topic.
-    fn verify_record(&self, record: &SadEvent) -> Result<(), KelsError> {
-        record.verify_said()?;
+    /// Verify a single event's SAID, prefix, and topic.
+    fn verify_event(&self, event: &SadEvent) -> Result<(), KelsError> {
+        event.verify_said()?;
 
-        if record.prefix != self.prefix {
+        if event.prefix != self.prefix {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD event {} prefix {} doesn't match SEL prefix {}",
-                record.said, record.prefix, self.prefix
+                event.said, event.prefix, self.prefix
             )));
         }
 
         if let Some(ref expected) = self.topic
-            && record.topic != *expected
+            && event.topic != *expected
         {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD event {} topic {} doesn't match SEL topic {}",
-                record.said, record.topic, expected
+                event.said, event.topic, expected
             )));
         }
 
         Ok(())
     }
 
-    /// Process a complete generation (all records at the same version).
+    /// Process a complete generation (all events at the same version).
     async fn flush_generation(&mut self) -> Result<(), KelsError> {
-        let records = std::mem::take(&mut self.generation_buffer);
+        let events = std::mem::take(&mut self.generation_buffer);
         let version = match self.current_generation_version.take() {
             Some(v) => v,
             None => return Ok(()),
         };
 
-        if records.is_empty() {
+        if events.is_empty() {
             return Ok(());
         }
 
         // Structural validation first — before any chain state reasoning
-        for record in &records {
-            record
+        for event in &events {
+            event
                 .validate_structure()
                 .map_err(KelsError::VerificationFailed)?;
         }
 
         if self.branches.is_empty() {
             // First generation — inception (version 0)
-            if records.len() != 1 {
+            if events.len() != 1 {
                 return Err(KelsError::VerificationFailed(
-                    "Multiple records at version 0".into(),
+                    "Multiple events at version 0".into(),
                 ));
             }
 
-            let record = &records[0];
-            record.verify_prefix()?;
+            let event = &events[0];
+            event.verify_prefix()?;
 
             // Policy check: v0 must self-satisfy
-            if !self.checker.self_satisfies(record).await? {
+            if !self.checker.self_satisfies(event).await? {
                 self.policy_satisfied = false;
             }
 
             // Track governance_policy if declared on v0
-            let governance_policy = record.governance_policy;
+            let governance_policy = event.governance_policy;
             if governance_policy.is_some() {
                 self.establishment_version = Some(0);
             }
@@ -178,14 +178,14 @@ impl<'a> SelVerifier<'a> {
             // Seed tracked_write_policy from v0. validate_structure guarantees
             // Icp has Some(write_policy).
             #[allow(clippy::expect_used)]
-            let tracked_write_policy = record
+            let tracked_write_policy = event
                 .write_policy
-                .expect("Icp record must have write_policy per validate_structure");
+                .expect("Icp event must have write_policy per validate_structure");
 
             self.branches.insert(
-                record.said,
+                event.said,
                 SadBranchState {
-                    tip: record.clone(),
+                    tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
                     records_since_checkpoint: 0,
@@ -194,67 +194,67 @@ impl<'a> SelVerifier<'a> {
             return Ok(());
         }
 
-        // Max 2 records per generation (owner + adversary fork)
-        if records.len() > 2 {
+        // Max 2 events per generation (owner + adversary fork)
+        if events.len() > 2 {
             return Err(KelsError::VerificationFailed(format!(
-                "Generation at version {} has {} records, max 2 allowed",
+                "Generation at version {} has {} events, max 2 allowed",
                 version,
-                records.len()
+                events.len()
             )));
         }
 
         let mut new_branches: HashMap<cesr::Digest256, SadBranchState> = HashMap::new();
 
-        for record in &records {
-            let previous = record.previous.as_ref().ok_or_else(|| {
+        for event in &events {
+            let previous = event.previous.as_ref().ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
                     "Non-inception SAD event {} has no previous event",
-                    record.said,
+                    event.said,
                 ))
             })?;
 
             let branch = self.branches.get(previous).ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
                     "SAD event {} previous {} does not match any branch tip",
-                    record.said, previous,
+                    event.said, previous,
                 ))
             })?;
 
             let expected_version = branch.tip.version + 1;
-            if record.version != expected_version {
+            if event.version != expected_version {
                 return Err(KelsError::VerificationFailed(format!(
                     "SAD event {} has version {} but expected {} (branch tip version + 1)",
-                    record.said, record.version, expected_version
+                    event.said, event.version, expected_version
                 )));
             }
 
-            // Policy check: every v1+ record must satisfy the branch's tracked write_policy.
+            // Policy check: every v1+ event must satisfy the branch's tracked write_policy.
             // Defense-in-depth: when this check fails, we also refuse to advance
-            // `tracked_write_policy` below, so subsequent records on the same branch
+            // `tracked_write_policy` below, so subsequent events on the same branch
             // keep failing against the still-legitimate previous policy. This gives
             // consumers multiple soft signals instead of relying on a single
             // `policy_satisfied` flag being checked.
             let write_policy_satisfied = self
                 .checker
-                .satisfies(record, &branch.tracked_write_policy)
+                .satisfies(event, &branch.tracked_write_policy)
                 .await?;
             if !write_policy_satisfied {
                 self.policy_satisfied = false;
             }
 
             // Guard: all non-Icp/non-Est kinds require governance_policy established
-            if !record.kind.is_inception()
-                && record.kind != SadEventKind::Est
+            if !event.kind.is_inception()
+                && event.kind != SadEventKind::Est
                 && branch.governance_policy.is_none()
             {
                 return Err(KelsError::VerificationFailed(format!(
                     "SAD event {} kind {} requires governance_policy to be established",
-                    record.said, record.kind,
+                    event.said, event.kind,
                 )));
             }
 
             // Kind-specific chain-state logic
-            let (governance_policy, records_since_checkpoint, tracked_write_policy) = match record
+            let (governance_policy, records_since_checkpoint, tracked_write_policy) = match event
                 .kind
             {
                 SadEventKind::Icp => {
@@ -266,7 +266,7 @@ impl<'a> SelVerifier<'a> {
                     if branch.governance_policy.is_some() {
                         return Err(KelsError::VerificationFailed(format!(
                             "SAD event {} Est rejected — governance_policy already established from v0",
-                            record.said,
+                            event.said,
                         )));
                     }
                     // Defense-in-depth: skip state advances on soft wp-fail. See R5/R6 audit.
@@ -274,7 +274,7 @@ impl<'a> SelVerifier<'a> {
                     // still occupies a slot in the checkpoint window (same as an unauthorized Upd).
                     // tracked_write_policy unchanged — Est forbids write_policy (validate_structure).
                     let (new_est_version, new_cp) = if write_policy_satisfied {
-                        (Some(1), record.governance_policy)
+                        (Some(1), event.governance_policy)
                     } else {
                         (self.establishment_version, branch.governance_policy)
                     };
@@ -291,51 +291,51 @@ impl<'a> SelVerifier<'a> {
                     let tracked = branch.governance_policy.as_ref().ok_or_else(|| {
                         KelsError::VerificationFailed(format!(
                             "SAD event {} {} but no governance_policy established",
-                            record.said, record.kind,
+                            event.said, event.kind,
                         ))
                     })?;
 
-                    if !self.checker.satisfies(record, tracked).await? {
+                    if !self.checker.satisfies(event, tracked).await? {
                         return Err(KelsError::VerificationFailed(format!(
                             "SAD event {} governance policy not satisfied",
-                            record.said,
+                            event.said,
                         )));
                     }
 
                     // Defense-in-depth: when the soft write_policy check above failed,
-                    // skip all branch-state advances driven by this record — even those
+                    // skip all branch-state advances driven by this event — even those
                     // authorized by the cp check that just passed. A consumer that bypasses
                     // policy_satisfied() then sees unchanged seal/policy state for an
-                    // unauthorized record. (See R5/R6 audit for the rationale.)
+                    // unauthorized event. (See R5/R6 audit for the rationale.)
                     if write_policy_satisfied {
                         self.last_governance_version = Some(match self.last_governance_version {
-                            Some(existing) => existing.min(record.version),
-                            None => record.version,
+                            Some(existing) => existing.min(event.version),
+                            None => event.version,
                         });
                     }
 
                     // Evl allows governance_policy evolution; Rpr forbids it (validate_structure).
                     let new_cp = if write_policy_satisfied {
-                        record.governance_policy.or(Some(*tracked))
+                        event.governance_policy.or(Some(*tracked))
                     } else {
                         Some(*tracked)
                     };
                     // Evl with Some(write_policy) = policy evolution. None = pure checkpoint.
                     // Rpr forbids write_policy entirely (validate_structure).
                     let new_wp = if write_policy_satisfied {
-                        record.write_policy.unwrap_or(branch.tracked_write_policy)
+                        event.write_policy.unwrap_or(branch.tracked_write_policy)
                     } else {
                         branch.tracked_write_policy
                     };
                     (new_cp, 0, new_wp)
                 }
                 SadEventKind::Upd => {
-                    // Normal record — increment counter, check bound
+                    // Normal event — increment counter, check bound
                     let count = branch.records_since_checkpoint + 1;
                     if count > crate::MAX_NON_CHECKPOINT_RECORDS {
                         return Err(KelsError::VerificationFailed(format!(
                             "SAD event {} exceeds checkpoint bound ({} non-checkpoint records, max {})",
-                            record.said,
+                            event.said,
                             count,
                             crate::MAX_NON_CHECKPOINT_RECORDS,
                         )));
@@ -347,9 +347,9 @@ impl<'a> SelVerifier<'a> {
             };
 
             new_branches.insert(
-                record.said,
+                event.said,
                 SadBranchState {
-                    tip: record.clone(),
+                    tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
                     records_since_checkpoint,
@@ -359,7 +359,7 @@ impl<'a> SelVerifier<'a> {
 
         // Keep un-extended branches
         for (said, state) in &self.branches {
-            if !records.iter().any(|r| r.previous.as_ref() == Some(said)) {
+            if !events.iter().any(|e| e.previous.as_ref() == Some(said)) {
                 new_branches.insert(*said, state.clone());
             }
         }
@@ -368,25 +368,25 @@ impl<'a> SelVerifier<'a> {
         Ok(())
     }
 
-    /// Verify a page of records incrementally.
-    pub async fn verify_page(&mut self, records: &[SadEvent]) -> Result<(), KelsError> {
-        for record in records {
+    /// Verify a page of events incrementally.
+    pub async fn verify_page(&mut self, events: &[SadEvent]) -> Result<(), KelsError> {
+        for event in events {
             self.saw_any_records = true;
 
-            self.verify_record(record)?;
+            self.verify_event(event)?;
 
             if self.topic.is_none() {
-                self.topic = Some(record.topic.clone());
+                self.topic = Some(event.topic.clone());
             }
 
             if let Some(current_version) = self.current_generation_version
-                && record.version != current_version
+                && event.version != current_version
             {
                 self.flush_generation().await?;
             }
 
-            self.current_generation_version = Some(record.version);
-            self.generation_buffer.push(record.clone());
+            self.current_generation_version = Some(event.version);
+            self.generation_buffer.push(event.clone());
         }
 
         Ok(())
@@ -727,10 +727,10 @@ mod tests {
     async fn test_evl_evolution_rejected_does_not_advance_tracked_policy() {
         // Defense-in-depth: when Evl evolves write_policy but the previous
         // policy rejects the advance, tracked_write_policy must remain at the
-        // previous value. Any subsequent record on this branch will then be
+        // previous value. Any subsequent event on this branch will then be
         // checked against the legitimate previous policy, not the attacker's
         // proposed replacement. All three branch-state advances driven by the
-        // record (tracked_write_policy, tracked governance_policy, and
+        // event (tracked_write_policy, tracked governance_policy, and
         // last_governance_version) are gated on the same soft-pass flag.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(
             verification.last_governance_version(),
             None,
-            "last_governance_version must not advance when the record soft-failed the write_policy check"
+            "last_governance_version must not advance when the event soft-failed the write_policy check"
         );
     }
 
@@ -886,9 +886,9 @@ mod tests {
         v1_b.governance_policy = Some(cp_attacker);
         v1_b.increment().unwrap();
 
-        // Checker accepts the wp soft check only for records whose
+        // Checker accepts the wp soft check only for events whose
         // governance_policy is cp_legit. Est doesn't trigger the cp hard check,
-        // so this is the only checker call path exercised per record.
+        // so this is the only checker call path exercised per event.
         struct AcceptLegitEstChecker {
             legit_cp: cesr::Digest256,
         }
@@ -896,10 +896,10 @@ mod tests {
         impl PolicyChecker for AcceptLegitEstChecker {
             async fn satisfies(
                 &self,
-                record: &SadEvent,
+                event: &SadEvent,
                 _: &cesr::Digest256,
             ) -> Result<bool, KelsError> {
-                Ok(record.governance_policy == Some(self.legit_cp))
+                Ok(event.governance_policy == Some(self.legit_cp))
             }
             async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
                 Ok(true)
@@ -1156,7 +1156,7 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_no_checkpoint(wp);
 
-        let mut records = vec![v0.clone()];
+        let mut events = vec![v0.clone()];
         let mut current = v0.clone();
         // v1: Est (governance_policy declaration)
         current.content = Some(test_digest(b"content_1"));
@@ -1164,9 +1164,9 @@ mod tests {
         current.write_policy = None;
         current.governance_policy = Some(test_digest(b"checkpoint-policy"));
         current.increment().unwrap();
-        records.push(current.clone());
+        events.push(current.clone());
 
-        // v2..v63: 62 Upd records — within bound (1 Est + 62 Upd = 63 non-checkpoint)
+        // v2..v63: 62 Upd events — within bound (1 Est + 62 Upd = 63 non-checkpoint)
         current.kind = SadEventKind::Upd;
         current.governance_policy = None;
         for _ in 2..=63 {
@@ -1174,17 +1174,17 @@ mod tests {
                 format!("content_{}", current.version + 1).as_bytes(),
             ));
             current.increment().unwrap();
-            records.push(current.clone());
+            events.push(current.clone());
         }
 
         // v64 — should be rejected (overdue: 63 non-checkpoint records, max is 63)
         current.content = Some(test_digest(b"content_64"));
         current.increment().unwrap();
-        records.push(current.clone());
+        events.push(current.clone());
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&records).await.unwrap();
+        verifier.verify_page(&events).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
             err.to_string().contains("checkpoint bound"),
@@ -1198,32 +1198,32 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_no_checkpoint(wp);
 
-        let mut records = vec![v0.clone()];
+        let mut events = vec![v0.clone()];
         let mut current = v0.clone();
 
         // v1: Est (governance_policy declaration, counts as non-checkpoint)
         current.content = Some(test_digest(b"content_1"));
         add_governance_declaration(&mut current);
-        records.push(current.clone());
+        events.push(current.clone());
 
-        // v2..v63: 62 more Upd records (total 63 non-checkpoint: v1..v63)
+        // v2..v63: 62 more Upd events (total 63 non-checkpoint: v1..v63)
         current.kind = SadEventKind::Upd;
         current.write_policy = None;
         current.governance_policy = None;
         for i in 2..=63 {
             current.content = Some(test_digest(format!("content_{}", i).as_bytes()));
             current.increment().unwrap();
-            records.push(current.clone());
+            events.push(current.clone());
         }
 
         // v64: first evaluated checkpoint (resets counter)
         current.content = Some(test_digest(b"content_64"));
         add_governance_evaluation(&mut current);
-        records.push(current.clone());
+        events.push(current.clone());
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&records).await.unwrap();
+        verifier.verify_page(&events).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 64);
     }
@@ -1235,7 +1235,7 @@ mod tests {
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
-        // Change governance_policy on an Evl record — valid (policy evolution)
+        // Change governance_policy on an Evl event — valid (policy evolution)
         v1.governance_policy = Some(test_digest(b"new-checkpoint-policy"));
         v1.increment().unwrap();
 

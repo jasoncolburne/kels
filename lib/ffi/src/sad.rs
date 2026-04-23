@@ -182,7 +182,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
     }
 }
 
-/// Submit SAD event records to a SADStore.
+/// Submit SAD events to a SADStore.
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
@@ -205,15 +205,15 @@ pub unsafe extern "C" fn kels_sad_submit_events(
         return KelsStatus::Error;
     };
 
-    let Some(records_str) = from_c_string(json_signed_records) else {
-        set_last_error("Invalid records JSON");
+    let Some(events_str) = from_c_string(json_signed_records) else {
+        set_last_error("Invalid events JSON");
         return KelsStatus::Error;
     };
 
-    let records: Vec<kels_core::SadEvent> = match serde_json::from_str(&records_str) {
+    let events: Vec<kels_core::SadEvent> = match serde_json::from_str(&events_str) {
         Ok(r) => r,
         Err(e) => {
-            set_last_error(&format!("Invalid records JSON: {e}"));
+            set_last_error(&format!("Invalid events JSON: {e}"));
             return KelsStatus::Error;
         }
     };
@@ -231,7 +231,7 @@ pub unsafe extern "C" fn kels_sad_submit_events(
         }
     };
 
-    match runtime.block_on(client.submit_sad_events(&records)) {
+    match runtime.block_on(client.submit_sad_events(&events)) {
         Ok(()) => KelsStatus::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
@@ -240,7 +240,7 @@ pub unsafe extern "C" fn kels_sad_submit_events(
     }
 }
 
-/// Fetch a page of SAD event records from a SADStore.
+/// Fetch a page of SAD events from a SADStore.
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
