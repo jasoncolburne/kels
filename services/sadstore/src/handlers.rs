@@ -1156,8 +1156,8 @@ pub async fn submit_sad_events(
     }
 
     // All records must be for the same SEL prefix
-    let chain_prefix = &records[0].prefix;
-    if records.iter().any(|r| r.prefix != *chain_prefix) {
+    let sel_prefix = &records[0].prefix;
+    if records.iter().any(|r| r.prefix != *sel_prefix) {
         return (
             StatusCode::BAD_REQUEST,
             "All records must have the same prefix",
@@ -1239,7 +1239,7 @@ pub async fn submit_sad_events(
             }
         };
 
-        if let Err(e) = tx.acquire_advisory_lock(chain_prefix.as_ref()).await {
+        if let Err(e) = tx.acquire_advisory_lock(sel_prefix.as_ref()).await {
             warn!("Failed to acquire advisory lock: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
@@ -1287,7 +1287,7 @@ pub async fn submit_sad_events(
         // Per-SEL-prefix daily rate limit (check before, accrue after dedup)
         if let Err(msg) = check_prefix_rate_limit(
             &state.prefix_rate_limits,
-            chain_prefix,
+            sel_prefix,
             new_records.len() as u32,
         ) {
             let _ = tx.rollback().await;
@@ -1302,7 +1302,7 @@ pub async fn submit_sad_events(
             let last_gp_version = match state
                 .repo
                 .sad_events
-                .last_governance_version(&mut tx, chain_prefix)
+                .last_governance_version(&mut tx, sel_prefix)
                 .await
             {
                 Ok(v) => v,
@@ -1361,9 +1361,9 @@ pub async fn submit_sad_events(
 
             // Now verify the entire chain (post-truncation + repair records) from scratch.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(chain_prefix, &checker);
+            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
             if let Err(response) =
-                verify_existing_chain(&mut tx, &state.repo.sad_events, chain_prefix, &mut verifier)
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
             {
                 let _ = tx.rollback().await;
@@ -1407,9 +1407,9 @@ pub async fn submit_sad_events(
         } else {
             // Normal path: verify existing chain + new records, then save.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(chain_prefix, &checker);
+            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
             if let Err(response) =
-                verify_existing_chain(&mut tx, &state.repo.sad_events, chain_prefix, &mut verifier)
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
             {
                 let _ = tx.rollback().await;
@@ -1481,7 +1481,7 @@ pub async fn submit_sad_events(
     }
 
     // Accrue only actual new records to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_record_count);
 
     // Check nodes replication policy for gossip
     let event_custody = records.first().and_then(|r| r.custody);
@@ -1499,14 +1499,11 @@ pub async fn submit_sad_events(
 
     // Publish the effective SAID to Redis for gossip.
     let effective_said = if should_publish {
-        match state.repo.sad_events.effective_said(chain_prefix).await {
+        match state.repo.sad_events.effective_said(sel_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
-                warn!(
-                    "Failed to compute effective SAID for {}: {}",
-                    chain_prefix, e
-                );
+                warn!("Failed to compute effective SAID for {}: {}", sel_prefix, e);
                 None
             }
         }
@@ -1516,7 +1513,7 @@ pub async fn submit_sad_events(
     match (&state.redis_conn, &effective_said) {
         (Some(conn), Some(said)) => {
             let mut conn = conn.clone();
-            let message = format!("{}:{}", chain_prefix, said);
+            let message = format!("{}:{}", sel_prefix, said);
             if let Err(e) = redis::cmd("PUBLISH")
                 .arg("sel_updates")
                 .arg(&message)
@@ -1526,7 +1523,7 @@ pub async fn submit_sad_events(
                 warn!("Failed to publish SEL update: {}", e);
             } else {
                 debug!(
-                    chain_prefix = %chain_prefix,
+                    sel_prefix = %sel_prefix,
                     effective_said = %said,
                     "Published SEL update to Redis"
                 );
@@ -1537,7 +1534,7 @@ pub async fn submit_sad_events(
         }
         (_, None) => {
             debug!(
-                chain_prefix = %chain_prefix,
+                sel_prefix = %sel_prefix,
                 should_publish = should_publish,
                 "Skipping SEL publish: no effective SAID"
             );

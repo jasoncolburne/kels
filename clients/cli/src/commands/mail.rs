@@ -27,10 +27,10 @@ pub(crate) async fn cmd_mail_send(
         cesr::Digest256::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
     let recipient_policy = exchange_write_policy(&recipient_digest)?;
     let recipient_write_policy = recipient_policy.said;
-    let chain_prefix =
+    let sel_prefix =
         kels_core::compute_sad_event_prefix(recipient_write_policy, kels_exchange::ENCAP_KEY_KIND)?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    let page = sad_client.fetch_sad_events(&chain_prefix, None).await?;
+    let page = sad_client.fetch_sad_events(&sel_prefix, None).await?;
     let tip = page
         .events
         .last()

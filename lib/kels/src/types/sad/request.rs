@@ -41,7 +41,7 @@ pub struct SadEventEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
-/// Response from event chain submission.
+/// Response from SAD event submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[must_use = "SubmitSadEventsResponse.applied must be checked — records may be rejected"]

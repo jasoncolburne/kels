@@ -117,7 +117,7 @@ impl<'a> SelVerifier<'a> {
 
         if record.prefix != self.prefix {
             return Err(KelsError::VerificationFailed(format!(
-                "SAD record {} prefix {} doesn't match SEL prefix {}",
+                "SAD event {} prefix {} doesn't match SEL prefix {}",
                 record.said, record.prefix, self.prefix
             )));
         }
@@ -126,7 +126,7 @@ impl<'a> SelVerifier<'a> {
             && record.topic != *expected
         {
             return Err(KelsError::VerificationFailed(format!(
-                "SAD record {} topic {} doesn't match SEL topic {}",
+                "SAD event {} topic {} doesn't match SEL topic {}",
                 record.said, record.topic, expected
             )));
         }
@@ -208,14 +208,14 @@ impl<'a> SelVerifier<'a> {
         for record in &records {
             let previous = record.previous.as_ref().ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "Non-inception SAD record {} has no previous event",
+                    "Non-inception SAD event {} has no previous event",
                     record.said,
                 ))
             })?;
 
             let branch = self.branches.get(previous).ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "SAD record {} previous {} does not match any branch tip",
+                    "SAD event {} previous {} does not match any branch tip",
                     record.said, previous,
                 ))
             })?;
@@ -223,7 +223,7 @@ impl<'a> SelVerifier<'a> {
             let expected_version = branch.tip.version + 1;
             if record.version != expected_version {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} has version {} but expected {} (branch tip version + 1)",
+                    "SAD event {} has version {} but expected {} (branch tip version + 1)",
                     record.said, record.version, expected_version
                 )));
             }
@@ -248,7 +248,7 @@ impl<'a> SelVerifier<'a> {
                 && branch.governance_policy.is_none()
             {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SAD record {} kind {} requires governance_policy to be established",
+                    "SAD event {} kind {} requires governance_policy to be established",
                     record.said, record.kind,
                 )));
             }
@@ -265,7 +265,7 @@ impl<'a> SelVerifier<'a> {
                     // Est: governance_policy declaration — only valid when branch has none from v0
                     if branch.governance_policy.is_some() {
                         return Err(KelsError::VerificationFailed(format!(
-                            "SAD record {} Est rejected — governance_policy already established from v0",
+                            "SAD event {} Est rejected — governance_policy already established from v0",
                             record.said,
                         )));
                     }
@@ -290,14 +290,14 @@ impl<'a> SelVerifier<'a> {
                     // Evl or Rpr: evaluate against tracked governance_policy
                     let tracked = branch.governance_policy.as_ref().ok_or_else(|| {
                         KelsError::VerificationFailed(format!(
-                            "SAD record {} {} but no governance_policy established",
+                            "SAD event {} {} but no governance_policy established",
                             record.said, record.kind,
                         ))
                     })?;
 
                     if !self.checker.satisfies(record, tracked).await? {
                         return Err(KelsError::VerificationFailed(format!(
-                            "SAD record {} governance policy not satisfied",
+                            "SAD event {} governance policy not satisfied",
                             record.said,
                         )));
                     }
@@ -334,7 +334,7 @@ impl<'a> SelVerifier<'a> {
                     let count = branch.records_since_checkpoint + 1;
                     if count > crate::MAX_NON_CHECKPOINT_RECORDS {
                         return Err(KelsError::VerificationFailed(format!(
-                            "SAD record {} exceeds checkpoint bound ({} non-checkpoint records, max {})",
+                            "SAD event {} exceeds checkpoint bound ({} non-checkpoint records, max {})",
                             record.said,
                             count,
                             crate::MAX_NON_CHECKPOINT_RECORDS,
@@ -397,7 +397,7 @@ impl<'a> SelVerifier<'a> {
 
         if !self.saw_any_records {
             return Err(KelsError::VerificationFailed(
-                "Empty SAD record chain".into(),
+                "Empty SAD event chain".into(),
             ));
         }
 

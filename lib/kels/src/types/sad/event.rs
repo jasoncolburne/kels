@@ -360,7 +360,7 @@ impl SadEventVerification {
     }
 }
 
-/// A page of stored SAD events returned by the chain API.
+/// A page of stored SAD events returned by the SAD Event Log API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SadEventPage {

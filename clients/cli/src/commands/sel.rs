@@ -18,11 +18,11 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
     client
         .submit_sad_events(&records)
         .await
-        .context("Failed to submit SAD records")?;
+        .context("Failed to submit SAD events")?;
 
     println!(
         "{}",
-        format!("{} SAD record(s) submitted", records.len()).green()
+        format!("{} SAD event(s) submitted", records.len()).green()
     );
     Ok(())
 }
@@ -43,7 +43,7 @@ pub(crate) fn cmd_sel_prefix(write_policy: &str, topic: &str) -> Result<()> {
     let write_policy_digest =
         cesr::Digest256::from_qb64(write_policy).context("Invalid write policy CESR")?;
     let prefix = kels_core::compute_sad_event_prefix(write_policy_digest, topic)
-        .context("Failed to compute SAD prefix")?;
+        .context("Failed to compute SEL prefix")?;
     println!("{}", prefix);
     Ok(())
 }

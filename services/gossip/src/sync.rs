@@ -152,7 +152,7 @@ pub async fn run_sad_redis_subscriber(
             let cache_key = if channel == SAD_PUBSUB_CHANNEL {
                 format!("sad-object:{}", payload)
             } else {
-                format!("sad-record:{}", payload)
+                format!("sad-event:{}", payload)
             };
             if guard.contains_key(&cache_key) {
                 debug!(cache_key = %cache_key, "Skipping SAD Redis message (recently stored from gossip)");
@@ -373,11 +373,11 @@ impl SyncHandler {
                 self.handle_sad_object_announcement(&said, &origin).await;
             }
             SadAnnouncement::Event {
-                prefix: chain_prefix,
+                prefix: sel_prefix,
                 said,
                 origin,
             } => {
-                self.handle_sel_announcement(&chain_prefix, &said, &origin)
+                self.handle_sel_announcement(&sel_prefix, &said, &origin)
                     .await;
             }
         }
@@ -448,7 +448,7 @@ impl SyncHandler {
     /// repair from any `Rpr` records in the submitted batch.
     async fn handle_sel_announcement(
         &self,
-        chain_prefix: &cesr::Digest256,
+        sel_prefix: &cesr::Digest256,
         remote_said: &cesr::Digest256,
         origin: &cesr::Digest256,
     ) {
@@ -460,20 +460,20 @@ impl SyncHandler {
         let local_client = self.sadstore_client.clone();
 
         // Compare effective SAIDs
-        let local_said = match local_client.fetch_sel_effective_said(chain_prefix).await {
+        let local_said = match local_client.fetch_sel_effective_said(sel_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
                 warn!(
                     "Failed to get local effective SAID for {}: {}",
-                    chain_prefix, e
+                    sel_prefix, e
                 );
                 None
             }
         };
 
         debug!(
-            chain_prefix = %chain_prefix,
+            sel_prefix = %sel_prefix,
             remote_said = %remote_said,
             local_said = ?local_said,
             origin = %origin,
@@ -481,14 +481,14 @@ impl SyncHandler {
         );
 
         if local_said.as_deref() == Some(remote_said.as_ref()) {
-            debug!("SAD Event Log {} already in sync", chain_prefix);
+            debug!("SAD Event Log {} already in sync", sel_prefix);
             return;
         }
 
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
         // The SADStore publishes {prefix}:{effective_said} to sel_updates; repairs
         // are auto-detected downstream from Rpr records, not flagged on the message.
-        let cache_key = format!("sad-record:{}:{}", chain_prefix, remote_said);
+        let cache_key = format!("sad-event:{}:{}", sel_prefix, remote_said);
         self.recently_stored
             .write()
             .await
@@ -497,7 +497,7 @@ impl SyncHandler {
         let remote_client = match kels_core::SadStoreClient::new(&sadstore_url) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to build HTTP client for SAD record sync: {}", e);
+                warn!("Failed to build HTTP client for SAD event sync: {}", e);
                 return;
             }
         };
@@ -542,13 +542,13 @@ impl SyncHandler {
         };
 
         debug!(
-            chain_prefix = %chain_prefix,
+            sel_prefix = %sel_prefix,
             since = ?since_digest,
             "Fetching SAD Event Log from peer"
         );
 
         match kels_core::forward_sad_events(
-            chain_prefix,
+            sel_prefix,
             &source,
             &sink,
             kels_core::page_size(),
@@ -559,7 +559,7 @@ impl SyncHandler {
         {
             Ok(()) => {
                 debug!(
-                    chain_prefix = %chain_prefix,
+                    sel_prefix = %sel_prefix,
                     "SAD Event Log replicated successfully"
                 );
             }
@@ -567,7 +567,7 @@ impl SyncHandler {
                 self.recently_stored.write().await.remove(&cache_key);
                 warn!(
                     "Failed to replicate SAD Event Log {} from {}: {}",
-                    chain_prefix, origin, e
+                    sel_prefix, origin, e
                 );
             }
         }
@@ -1474,13 +1474,13 @@ const SEL_STALE_PREFIX_KEY: &str = "kels:anti_entropy:sel_stale";
 /// Record a SAD Event Log prefix as stale for anti-entropy repair (first occurrence).
 pub async fn record_sad_stale_prefix(
     redis: &redis::aio::ConnectionManager,
-    chain_prefix: &cesr::Digest256,
+    sel_prefix: &cesr::Digest256,
     source_node_prefix: &cesr::Digest256,
 ) {
     record_stale_entry(
         redis,
         SEL_STALE_PREFIX_KEY,
-        chain_prefix,
+        sel_prefix,
         source_node_prefix,
         0,
     )
@@ -1539,7 +1539,7 @@ pub async fn run_sad_anti_entropy_loop(
             );
 
             let mut tasks = Vec::new();
-            for (chain_prefix, entry) in &stale_entries {
+            for (sel_prefix, entry) in &stale_entries {
                 let mut ordered_peers: Vec<(cesr::Digest256, String)> = Vec::new();
                 if let Some(source) = peers.iter().find(|(pp, _)| *pp == entry.source) {
                     ordered_peers.push(source.clone());
@@ -1554,7 +1554,7 @@ pub async fn run_sad_anti_entropy_loop(
                 }
 
                 let local = local_client.clone();
-                let prefix = chain_prefix;
+                let prefix = sel_prefix;
                 let source = entry.source;
                 let retries = entry.retries;
                 tasks.push(async move {
@@ -1679,19 +1679,19 @@ pub async fn run_sad_anti_entropy_loop(
                 });
             }
 
-            for (chain_prefix, source_node_prefix, retries, success) in join_all(tasks).await {
+            for (sel_prefix, source_node_prefix, retries, success) in join_all(tasks).await {
                 if success {
-                    info!("SAD anti-entropy: repaired chain {}", chain_prefix);
+                    info!("SAD anti-entropy: repaired chain {}", sel_prefix);
                 } else {
                     warn!(
                         "SAD anti-entropy: re-queuing stale chain {} (retry {})",
-                        chain_prefix,
+                        sel_prefix,
                         retries + 1
                     );
                     requeue_stale_entry(
                         redis.as_ref(),
                         SEL_STALE_PREFIX_KEY,
-                        chain_prefix,
+                        sel_prefix,
                         &source_node_prefix,
                         retries,
                     )

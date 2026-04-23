@@ -133,7 +133,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 ## KELS SADStore Service
 
-Replicated self-addressed data store. Provides content-addressed object storage (MinIO) and authenticated chained records (PostgreSQL). See `docs/design/sadstore.md` for full design.
+Replicated self-addressed data store. Provides content-addressed object storage (MinIO) and authenticated SAD Event Logs (PostgreSQL). See `docs/design/sadstore.md` for full design.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|

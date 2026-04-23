@@ -110,9 +110,9 @@ create_group() {
 
     # 3. Compute SEL prefix (use kels-cli for correctness)
     # kels-cli sel prefix takes (write_policy, topic) — we use the policy SAID as write_policy
-    local chain_prefix
-    chain_prefix=$(kels-cli sel prefix "$policy_said" "$TOPIC" 2>&1)
-    if [ -z "$chain_prefix" ]; then
+    local sel_prefix
+    sel_prefix=$(kels-cli sel prefix "$policy_said" "$TOPIC" 2>&1)
+    if [ -z "$sel_prefix" ]; then
         echo "ERROR [group $group]: SEL prefix computation failed" >&2
         rm -rf "$tmpdir"
         return 1

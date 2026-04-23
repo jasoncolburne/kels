@@ -193,11 +193,11 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let policy_json = serde_json::to_value(&policy)?;
     sad_client.post_sad_object(&policy_json).await?;
     let write_policy = policy.said;
-    let chain_prefix =
+    let sel_prefix =
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute event prefix")?;
     let page = sad_client
-        .fetch_sad_events(&chain_prefix, None)
+        .fetch_sad_events(&sel_prefix, None)
         .await
         .context("Failed to fetch current chain")?;
 
@@ -238,13 +238,13 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     let kel_digest = cesr::Digest256::from_qb64(kel_prefix).context("Invalid KEL prefix CESR")?;
     let policy = exchange_write_policy(&kel_digest)?;
     let write_policy = policy.said;
-    let chain_prefix =
+    let sel_prefix =
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute event prefix")?;
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
-        .fetch_sad_events(&chain_prefix, None)
+        .fetch_sad_events(&sel_prefix, None)
         .await
         .context("Failed to fetch key chain")?;
 
@@ -270,7 +270,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     println!("  KEL Prefix:  {}", kel_prefix);
     println!("  Algorithm:   {}", publication.algorithm);
     println!("  Key SAID:    {}", publication.said);
-    println!("  Chain Prefix: {}", chain_prefix);
+    println!("  SEL Prefix:  {}", sel_prefix);
     let key_qb64 = publication.encapsulation_key.qb64();
     if key_qb64.len() > 30 {
         println!(
