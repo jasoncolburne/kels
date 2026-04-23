@@ -18,7 +18,7 @@ pub(crate) enum SadAnnouncement {
     },
     /// A SAD Event Log was updated.
     Event {
-        /// The event prefix that was updated.
+        /// The SEL prefix that was updated.
         prefix: cesr::Digest256,
         /// The SAID of the latest SAD event.
         said: cesr::Digest256,

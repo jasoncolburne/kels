@@ -366,10 +366,10 @@ async fn test_compute_sad_event_prefix_different_inputs() {
     assert_ne!(p1, p3);
 }
 
-// ==================== Chain Record Tests ====================
+// ==================== SEL Tests ====================
 
 #[tokio::test]
-async fn test_chain_fetch_not_found() {
+async fn test_sel_fetch_not_found() {
     let Some(harness) = get_harness().await else {
         return;
     };
@@ -411,7 +411,7 @@ async fn test_effective_said_not_found() {
 }
 
 #[tokio::test]
-async fn test_submit_record_invalid_said_rejected() {
+async fn test_submit_event_invalid_said_rejected() {
     let Some(harness) = get_harness().await else {
         return;
     };

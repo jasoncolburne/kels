@@ -142,22 +142,22 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | POST | `/api/v1/sad` | None | Store a self-addressed JSON object (idempotent, SAID verified from body) |
 | POST | `/api/v1/sad/fetch` | None | Retrieve a self-addressed object; `SadFetchRequest` body (`said`) |
 | POST | `/api/v1/sad/exists` | None | Check if a SAD object exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
-| POST | `/api/v1/sad/events` | **KEL anchoring** | Submit chain event(s) (`Vec<SadEvent>`) — each record's SAID must be anchored via ixn in its endorsers' KELs per `write_policy` |
-| POST | `/api/v1/sad/events/fetch` | None | Fetch chain; `SadEventPageRequest` body (`prefix`, `since`, `limit`); returns `SadEventPage` |
+| POST | `/api/v1/sad/events` | **KEL anchoring** | Submit SAD event(s) (`Vec<SadEvent>`) — each event's SAID must be anchored via ixn in its endorsers' KELs per `write_policy` |
+| POST | `/api/v1/sad/events/fetch` | None | Fetch SAD Event Log; `SadEventPageRequest` body (`prefix`, `since`, `limit`); returns `SadEventPage` |
 | POST | `/api/v1/sad/events/exists` | None | Check if an event exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/events/effective-said` | None | Tip SAID for sync comparison; `SadEventEffectiveSaidRequest` body (`prefix`) |
-| POST | `/api/v1/sad/events/repairs` | None | Get paginated repair records; `SadRepairsRequest` body (`prefix`, `limit`, `offset`); returns `SadEventRepairPage` |
-| POST | `/api/v1/sad/events/repairs/records` | None | Get archived records for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadEventPage` |
+| POST | `/api/v1/sad/events/repairs` | None | Get paginated SAD event repair entries; `SadRepairsRequest` body (`prefix`, `limit`, `offset`); returns `SadEventRepairPage` |
+| POST | `/api/v1/sad/events/repairs/records` | None | Get archived SAD events for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadEventPage` |
 | POST | `/api/v1/sad/saids` | Peer | List SAD object SAIDs (paginated, authenticated) |
 | POST | `/api/v1/sad/events/prefixes` | Peer | List SEL prefixes with tip SAIDs (paginated, authenticated) |
 
 **Notes:**
 - `POST sad`: SAID derived from body. HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Object size limited (default 1 MiB via `SADSTORE_MAX_OBJECT_SIZE`). Publishes to Redis `sad_updates` for gossip. Per-IP rate limited.
 - `POST sad/fetch`: Returns the SAD object bytes. Keeps the SAID out of URL path to prevent leakage via access logs, proxies, and intermediaries.
-- `POST sad/events`: Verifies event SAID, verifies `write_policy` via KEL-anchoring (endorsers required by the policy must have anchored the record's SAID in their KELs), stores events atomically with advisory lock and full chain verification. Repairs are auto-detected from `Rpr` records in the submitted batch. Per-SEL-prefix daily rate limited (default 16/day). Per-IP rate limited.
+- `POST sad/events`: Verifies event SAID, verifies `write_policy` via KEL-anchoring (endorsers required by the policy must have anchored the event's SAID in their KELs), stores events atomically with advisory lock and full chain verification. Repairs are auto-detected from `Rpr` records in the submitted batch. Per-SEL-prefix daily rate limited (default 16/day). Per-IP rate limited.
 - `POST sad/events/fetch`: Returns `SadEventPage { events: Vec<SadEvent>, hasMore }`.
 - `POST sad/saids`, `POST sad/events/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
-- Chain events reference content in MinIO via `content_said`. Client workflow: POST content first, then POST chain event.
+- SAD events reference content in MinIO via `content_said`. Client workflow: POST content first, then POST SAD event.
 - Bucket auto-created on startup if it doesn't exist.
 
 ## Authentication Methods Summary

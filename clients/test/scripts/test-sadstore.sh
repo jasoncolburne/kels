@@ -223,10 +223,10 @@ run_test "List with pagination limit" \
 echo ""
 
 # ========================================
-# Scenario 5: Chain Record Submission via CLI
+# Scenario 5: SAD Event Submission via CLI
 # ========================================
-echo -e "${CYAN}=== Scenario 5: Chain Record Submission via CLI ===${NC}"
-echo "Create a KEL, build chain events, submit via CLI, fetch via CLI"
+echo -e "${CYAN}=== Scenario 5: SAD Event Submission via CLI ===${NC}"
+echo "Create a KEL, build SAD events, submit via CLI, fetch via CLI"
 echo ""
 
 SAD_TOPIC="kels/sad/v1/test-data"
@@ -250,12 +250,12 @@ else
         bash -c "[ '$POLICY_CODE' = '201' ] || [ '$POLICY_CODE' = '200' ]"
 
     # Compute the SEL prefix via CLI (using policy SAID, not KEL prefix)
-    CHAIN_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_TOPIC" 2>/dev/null)
-    echo "SEL prefix: $CHAIN_PREFIX"
-    run_test "SEL prefix computed" [ -n "$CHAIN_PREFIX" ]
+    SEL_PREFIX=$(kels-cli sel prefix "$POLICY_SAID" "$SAD_TOPIC" 2>/dev/null)
+    echo "SEL prefix: $SEL_PREFIX"
+    run_test "SEL prefix computed" [ -n "$SEL_PREFIX" ]
 
     run_test "Chain does not exist yet" \
-        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${CHAIN_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/events/fetch') = '404' ]"
+        bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"prefix\":\"${SEL_PREFIX}\"}' '${NODE_A_SAD_URL}/api/v1/sad/events/fetch') = '404' ]"
 
     # --- Build v0 inception event ---
     V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$POLICY_SAID" --arg k "$SAD_TOPIC" \
@@ -266,11 +266,11 @@ else
     V0_JSON=$(echo "$V0_JSON" | jq -c --arg s "$V0_SAID" '.said = $s')
 
     # Verify our prefix matches the CLI's
-    run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$CHAIN_PREFIX" ]
+    run_test "Computed prefix matches CLI" [ "$V0_PREFIX" = "$SEL_PREFIX" ]
 
     # --- Build v1 event (declares governance_policy) ---
     GOVERNANCE_POLICY_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$KEL_PREFIX")
-    V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CHAIN_PREFIX" --arg prev "$V0_SAID" \
+    V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$SEL_PREFIX" --arg prev "$V0_SAID" \
         --arg k "$SAD_TOPIC" --arg gp "$GOVERNANCE_POLICY_SAID" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/est", governancePolicy: $gp}')
     V1_SAID=$(compute_said "$V1_JSON")
@@ -289,14 +289,14 @@ else
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/inception-submit.json"
 
     # Fetch the chain via kels-cli sel get
-    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sel get "$CHAIN_PREFIX" 2>/dev/null)
+    CHAIN_OUTPUT=$(kels-cli --sadstore-url "$NODE_A_SAD_URL" sel get "$SEL_PREFIX" 2>/dev/null)
     CHAIN_LEN=$(echo "$CHAIN_OUTPUT" | jq '.events | length' 2>/dev/null)
     run_test "Chain fetched via CLI (sel get) with 2 events" [ "$CHAIN_LEN" = "2" ]
 
     # Wait for gossip propagation and verify chain on node-b
     if [ "$FEDERATED" = "true" ]; then
         run_test "Chain propagated to node-b" \
-            wait_for_chain_propagation "$CHAIN_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+            wait_for_chain_propagation "$SEL_PREFIX" "$V1_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
     fi
 fi
 
