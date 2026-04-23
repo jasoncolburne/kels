@@ -574,7 +574,7 @@ mod tests {
         assert!(verifier.verify_page(&[v0.clone(), v1]).await.is_ok());
         assert!(!verifier.is_divergent());
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 1);
+        assert_eq!(verification.current_event().version, 1);
     }
 
     #[tokio::test]
@@ -628,7 +628,7 @@ mod tests {
         assert!(verifier.verify_page(&[v1, v2]).await.is_ok());
 
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 2);
+        assert_eq!(verification.current_event().version, 2);
     }
 
     #[tokio::test]
@@ -933,7 +933,7 @@ mod tests {
         // must gate on policy_satisfied() first.
         let winner_is_b = v1_b.said.as_ref() > v1_a.said.as_ref();
         assert_eq!(
-            verification.current_record().said,
+            verification.current_event().said,
             if winner_is_b { v1_b.said } else { v1_a.said }
         );
     }
@@ -1131,7 +1131,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 0);
+        assert_eq!(verification.current_event().version, 0);
         assert_eq!(verification.establishment_version(), Some(0));
     }
 
@@ -1147,7 +1147,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 1);
+        assert_eq!(verification.current_event().version, 1);
         assert_eq!(verification.establishment_version(), Some(1));
     }
 
@@ -1225,7 +1225,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&records).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 64);
+        assert_eq!(verification.current_event().version, 64);
     }
 
     #[tokio::test]
@@ -1243,7 +1243,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 1);
+        assert_eq!(verification.current_event().version, 1);
     }
 
     #[tokio::test]
@@ -1306,7 +1306,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 1);
+        assert_eq!(verification.current_event().version, 1);
     }
 
     #[tokio::test]
@@ -1348,7 +1348,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 1);
+        assert_eq!(verification.current_event().version, 1);
         assert_eq!(verification.establishment_version(), Some(1));
     }
 
@@ -1549,7 +1549,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_record().version, 2);
+        assert_eq!(verification.current_event().version, 2);
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-//! SAD Operations (event prefix computation, SAD object and event CRUD)
+//! SAD Operations (SEL prefix computation, SAD object and event CRUD)
 
 use std::os::raw::c_char;
 
@@ -20,7 +20,7 @@ use crate::{
 /// * `topic` - The event topic (e.g., "kels/sad/v1/keys/mlkem")
 ///
 /// # Returns
-/// The computed event prefix string, or NULL on error.
+/// The computed SEL prefix string, or NULL on error.
 /// Must be freed with kels_free_string().
 ///
 /// # Safety
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn kels_sad_fetch_events(
     };
 
     let Some(prefix_str) = from_c_string(event_prefix) else {
-        set_last_error("Invalid event prefix");
+        set_last_error("Invalid SEL prefix");
         return std::ptr::null_mut();
     };
 

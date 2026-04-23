@@ -136,7 +136,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     sad_client
         .submit_sad_events(&records)
         .await
-        .context("Failed to submit event chain")?;
+        .context("Failed to submit SAD events")?;
 
     println!(
         "{}",
@@ -195,7 +195,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let write_policy = policy.said;
     let sel_prefix =
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
-            .context("Failed to compute event prefix")?;
+            .context("Failed to compute SEL prefix")?;
     let page = sad_client
         .fetch_sad_events(&sel_prefix, None)
         .await
@@ -240,7 +240,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     let write_policy = policy.said;
     let sel_prefix =
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
-            .context("Failed to compute event prefix")?;
+            .context("Failed to compute SEL prefix")?;
 
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
@@ -256,7 +256,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
     let content_said = tip
         .content
         .as_ref()
-        .ok_or_else(|| anyhow!("Tip record has no content"))?;
+        .ok_or_else(|| anyhow!("Tip event has no content"))?;
 
     let value = sad_client
         .get_sad_object(content_said)

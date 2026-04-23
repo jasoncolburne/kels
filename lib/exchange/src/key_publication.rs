@@ -10,8 +10,9 @@ pub const ENCAP_KEY_KIND: &str = "kels/sad/v1/keys/mlkem";
 ///
 /// The owner publishes this by creating a `SadEvent` chain with kind
 /// [`ENCAP_KEY_KIND`] and `content_said` pointing to this object's SAID.
-/// Anyone can discover the key by computing the deterministic event prefix:
-/// `compute_sad_event_prefix(kel_prefix, ENCAP_KEY_KIND)`.
+/// Anyone can discover the key by computing the deterministic SEL prefix:
+/// derive `write_policy = endorse(kel_prefix).said`, then call
+/// `compute_sad_event_prefix(write_policy, ENCAP_KEY_KIND)`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct EncapsulationKeyPublication {

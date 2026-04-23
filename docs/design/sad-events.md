@@ -65,7 +65,7 @@ This means an adversary who compromises `write_policy` can only fork at versions
 ### Effective SAID
 
 A chain's gossip-visible identity:
-- Non-divergent: the tip record's SAID
+- Non-divergent: the tip event's SAID
 - Divergent: `hash_effective_said("divergent:{prefix}")` — synthetic, deterministic, so all nodes agree on the frozen state
 
 ## Repair
@@ -110,13 +110,13 @@ When a repair succeeds, SADStore publishes `{prefix}:{effective_said}` to Redis.
 
 ### What the verifier tracks
 
-- Per-branch state: tip record, `tracked_write_policy`, `governance_policy`, `records_since_checkpoint`
+- Per-branch state: tip event, `tracked_write_policy`, `governance_policy`, `records_since_checkpoint`
 - `tracked_write_policy` is seeded from v0 (Icp) and updated when an Evl record carries a new write_policy. Authorization checks on v1+ records use this, not the record's own field.
 - Global: `policy_satisfied` flag, `last_governance_version`
 
 ### Verification token
 
-`SadEventVerification` is the proof-of-verification token. It can only be obtained through the verifier. Accessors: `current_record()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. See [sadstore.md](sadstore.md#verification) for the same list in the SADStore layer doc.
+`SadEventVerification` is the proof-of-verification token. It can only be obtained through the verifier. Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. See [sadstore.md](sadstore.md#verification) for the same list in the SADStore layer doc.
 
 The handler uses `policy_satisfied()` to decide authorization (403 on failure) and `last_governance_version()` as the seal floor for `save_batch`.
 

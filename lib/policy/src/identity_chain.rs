@@ -87,7 +87,7 @@ pub fn advance(
         ));
     }
 
-    let mut event = verification.current_record().clone();
+    let mut event = verification.current_event().clone();
     event.content = None;
     event.custody = None;
     event.kind = SadEventKind::Evl;

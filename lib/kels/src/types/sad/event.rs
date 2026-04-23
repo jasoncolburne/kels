@@ -296,7 +296,7 @@ impl SadEventVerification {
     }
 
     /// The latest verified event in the chain.
-    pub fn current_record(&self) -> &SadEvent {
+    pub fn current_event(&self) -> &SadEvent {
         &self.tip
     }
 
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_record_inception_no_content() {
+    fn test_sad_event_inception_no_content() {
         let event = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_record_chain_increment() {
+    fn test_sad_event_chain_increment() {
         let mut event = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_record_verify_said() {
+    fn test_sad_event_verify_said() {
         let event = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_record_verify_prefix() {
+    fn test_sad_event_verify_prefix() {
         let event = SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
