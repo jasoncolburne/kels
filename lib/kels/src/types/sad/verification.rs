@@ -82,7 +82,7 @@ pub struct SelVerifier<'a> {
     current_generation_version: Option<u64>,
     saw_any_records: bool,
     policy_satisfied: bool,
-    /// The version of the most recent evaluated checkpoint across all branches.
+    /// The version of the most recent governance evaluation across all branches.
     /// For divergent chains, this is the minimum across branches (weakest seal).
     last_governance_version: Option<u64>,
     /// The version at which governance_policy was first established (v0 or v1).

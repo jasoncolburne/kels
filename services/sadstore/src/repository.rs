@@ -316,7 +316,7 @@ impl SadEventRepository {
         Ok(result)
     }
 
-    /// Get chain records within an existing transaction.
+    /// Get SAD events within an existing transaction.
     ///
     /// Same ordering as `get_stored`: `version ASC, said ASC`.
     pub async fn get_stored_in<Tx: TransactionExecutor>(

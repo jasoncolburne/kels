@@ -152,7 +152,7 @@ impl BootstrapSync {
     /// Preload SAD objects from Ready peers.
     ///
     /// Paginates through the remote object listing, checks local existence, and
-    /// fetches any missing objects. Runs before chain record sync so that
+    /// fetches any missing objects. Runs before SAD event sync so that
     /// content objects are available when chains reference them.
     pub async fn preload_sad_objects(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;

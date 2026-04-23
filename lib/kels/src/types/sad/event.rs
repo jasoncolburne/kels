@@ -2,12 +2,14 @@
 //!
 //! Two layers:
 //! - **SAD objects** — content-addressed JSON blobs stored/retrieved by SAID (MinIO).
-//! - **Chained records** — versioned chains with deterministic prefix discovery and
-//!   policy-based ownership. Each event references content in the SAD store via `content`.
+//! - **SAD events** — versioned event chains with deterministic prefix discovery
+//!   and policy-based ownership. Each non-inception event references content in
+//!   the SAD object store via `content`.
 //!
-//! Chain prefix is derived from v0's `(write_policy SAID, topic)`. Prefix derivation
-//! is fully deterministic: given the inception write_policy SAID and topic, anyone
-//! can compute the chain prefix offline. Write_policy can evolve across versions.
+//! The SEL prefix is derived from v0's `(write_policy SAID, topic)`. Prefix
+//! derivation is fully deterministic: given the inception write_policy SAID
+//! and topic, anyone can compute the SEL prefix offline. Write_policy can
+//! evolve across versions.
 
 use std::{fmt, str::FromStr};
 
@@ -303,7 +305,7 @@ impl SadEventVerification {
         self.tip.content.as_ref()
     }
 
-    /// The chain prefix.
+    /// The SEL prefix.
     pub fn prefix(&self) -> &cesr::Digest256 {
         &self.tip.prefix
     }
@@ -335,7 +337,7 @@ impl SadEventVerification {
         self.policy_satisfied
     }
 
-    /// The version of the most recent evaluated checkpoint, if any.
+    /// The version of the most recent governance evaluation, if any.
     /// Versions at or before this are sealed by governance_policy.
     pub fn last_governance_version(&self) -> Option<u64> {
         self.last_governance_version

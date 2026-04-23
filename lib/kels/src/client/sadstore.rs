@@ -1,7 +1,7 @@
 //! SADStore HTTP Client
 //!
 //! Client for the replicated SAD store service.
-//! Provides methods for both Layer 1 (SAD objects) and Layer 2 (chain records).
+//! Provides methods for both Layer 1 (SAD objects) and Layer 2 (SAD events).
 
 use std::time::Duration;
 
@@ -210,7 +210,7 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch a page of chain records by prefix.
+    /// Fetch a page of SAD events by prefix.
     ///
     /// `since` is an effective SAID cursor — returns records after this SAID's
     /// position. If the SAID is not found (e.g. synthetic divergent SAID), the

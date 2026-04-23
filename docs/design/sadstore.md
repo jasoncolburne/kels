@@ -59,7 +59,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **Chain records**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the record's SAID in their KELs. Consumers verify the anchoring when they use the data.
+- **SAD events**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the record's SAID in their KELs. Consumers verify the anchoring when they use the data.
 
 ## Divergence and Repair
 
@@ -126,11 +126,11 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 | `POST` | `/api/v1/sad/exists` | Check existence (body: `{ "said": "..." }`) |
 | `POST` | `/api/v1/sad/saids` | List SAD object SAIDs (authenticated, paginated) |
 
-### Chain Records (Layer 2)
+### SAD Events (Layer 2)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/events` | Submit chain records (repair auto-detected from `Rpr` records in the batch) |
+| `POST` | `/api/v1/sad/events` | Submit SAD events (repair auto-detected from `Rpr` records in the batch) |
 | `POST` | `/api/v1/sad/events/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
 | `POST` | `/api/v1/sad/events/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
 | `POST` | `/api/v1/sad/events/exists` | Check event existence (body: `{ "said": "..." }`) |
@@ -142,8 +142,8 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 
 1. Create content object, derive its SAID
 2. `POST /api/v1/sad` — store content in SAD store
-3. Create chain record with `content` pointing to that SAID
-4. `POST /api/v1/sad/events` — submit the chain record
+3. Create SAD event with `content` pointing to that SAID
+4. `POST /api/v1/sad/events` — submit the SAD event
 
 Authorization is consumer-side: endorsing parties anchor the record's SAID in their KELs. The SADStore does not verify signatures on submission.
 
@@ -175,7 +175,7 @@ When a custody specifies `nodes`, the gossip policy controls replication:
 2. Gossip service subscribes, broadcasts announcement on `kels/sad/v1` topic
 3. Peers receive announcement, fetch missing data from origin
 4. For objects: fetch blob and PUT locally
-5. For chains: fetch chain records + content, submit to local service
+5. For chains: fetch SAD events + content, submit to local service
 
 ## Configuration
 

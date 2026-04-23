@@ -1089,7 +1089,7 @@ pub async fn sad_event_exists(
 
 // === Layer 2: Chain Records (Postgres) ===
 
-/// Page through existing chain records in a transaction, feeding each page to the verifier.
+/// Page through existing SAD events in a transaction, feeding each page to the verifier.
 async fn verify_existing_chain<Tx: TransactionExecutor>(
     tx: &mut Tx,
     repo: &SadEventRepository,

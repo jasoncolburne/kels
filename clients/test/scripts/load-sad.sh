@@ -1,5 +1,5 @@
 #!/bin/bash
-# load-sad.sh - Populate a SADStore node with SAD objects and chain records
+# load-sad.sh - Populate a SADStore node with SAD objects and SAD events
 #
 # For each group, creates a KEL, builds a single-endorser policy from its
 # prefix (using the policy SAID as write_policy), stores SAD objects, then
@@ -121,7 +121,7 @@ create_group() {
     # 4. Pick random n from [1,9]
     local n=$(( (RANDOM % MAX_CHAIN_VERSIONS) + 1 ))
 
-    # 5. Build chain records: v0 (inception, no content) then v1..vN
+    # 5. Build SAD events: v0 (inception, no content) then v1..vN
     # v0: deterministic inception record (no content for v0)
     local v0_json
     v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$TOPIC" --arg wp "$policy_said" \
@@ -188,7 +188,7 @@ create_group() {
     local submit_code
     submit_code=$(echo "$submit_resp" | tail -1)
     if [ "$submit_code" != "201" ]; then
-        echo "ERROR [group $group]: chain record submit failed (HTTP $submit_code): $(echo "$submit_resp" | head -1)" >&2
+        echo "ERROR [group $group]: SAD event submit failed (HTTP $submit_code): $(echo "$submit_resp" | head -1)" >&2
         echo "  First record: $(echo "$records_json" | jq -c '.[0]')" >&2
         rm -rf "$tmpdir"
         return 1

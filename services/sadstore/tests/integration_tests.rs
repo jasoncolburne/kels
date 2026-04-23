@@ -1,7 +1,7 @@
 //! Integration tests for the KELS SADStore service.
 //!
 //! Shared server instance with Postgres + MinIO testcontainers.
-//! Tests cover: PUT/GET SAD objects, chain record submission/fetch,
+//! Tests cover: PUT/GET SAD objects, SAD event submission/fetch,
 //! prefix computation, chain integrity rejection, effective SAID.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
