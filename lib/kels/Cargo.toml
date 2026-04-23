@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["native"]
-native = ["tokio/full", "cesr/native", "reqwest/rustls-tls"]
+native = ["tokio/full", "cesr/native", "reqwest/rustls"]
 wasm = ["cesr/wasm", "wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
 secure-enclave = ["apple-cryptokit-rs"]
 redis = ["dep:redis"]
@@ -32,7 +32,7 @@ cacheable = { git = "https://github.com/jasoncolburne/cacheable", optional = tru
 tokio = { version = "1", optional = true }
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

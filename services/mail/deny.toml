@@ -10,13 +10,8 @@ feature-depth = 1
 
 [advisories]
 ignore = [
-    # lru unsoundness — transitive dependency via aws-sdk-s3, pinned at 0.12.x upstream
-    "RUSTSEC-2026-0002",
     # rand 0.8 unsoundness in ThreadRng — transitive dep via sqlx-postgres; we don't use ThreadRng
     "RUSTSEC-2026-0097",
-    # rustls-webpki 0.101.x name constraint bugs — transitive dep via aws-sdk-s3 → rustls 0.21; fix requires >=0.103.12 but AWS SDK pins 0.101.x
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
 ]
 
 [licenses]
