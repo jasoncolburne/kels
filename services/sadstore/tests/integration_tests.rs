@@ -416,7 +416,7 @@ async fn test_submit_event_invalid_said_rejected() {
         return;
     };
 
-    // Create a record but tamper with the SAID
+    // Create an event but tamper with the SAID
     let mut event = SadEvent::create(
         "kels/v1/test-kind".to_string(),
         kels_core::SadEventKind::Icp,
@@ -428,12 +428,12 @@ async fn test_submit_event_invalid_said_rejected() {
     .unwrap();
     event.topic = "tampered".to_string(); // Tamper after SAID computation
 
-    let records = vec![event];
+    let events = vec![event];
 
     let resp = harness
         .client()
         .post(harness.url("/api/v1/sad/events"))
-        .json(&records)
+        .json(&events)
         .send()
         .await
         .unwrap();

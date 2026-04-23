@@ -58,10 +58,10 @@ fn ttl_reaper_interval_secs() -> u64 {
     kels_core::env_usize("SADSTORE_TTL_REAPER_INTERVAL", 60) as u64
 }
 
-/// Max expired records to reap per cycle.
+/// Max expired objects to reap per cycle.
 const TTL_REAPER_BATCH_SIZE: usize = 100;
 
-/// Spawn a background task that periodically deletes TTL-expired records.
+/// Spawn a background task that periodically deletes TTL-expired objects.
 /// Queries custodies with TTL, then finds expired sad_objects for each,
 /// deletes from DB and MinIO.
 pub fn spawn_ttl_reaper(state: Arc<AppState>) {
@@ -69,7 +69,7 @@ pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            if let Err(e) = reap_expired_records(&state).await {
+            if let Err(e) = reap_expired_objects(&state).await {
                 warn!("TTL reaper error: {}", e);
             }
         }
@@ -77,7 +77,7 @@ pub fn spawn_ttl_reaper(state: Arc<AppState>) {
 }
 
 // TODO: periodic custody GC — delete custodies with zero references from sad_objects and events
-async fn reap_expired_records(
+async fn reap_expired_objects(
     state: &AppState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use verifiable_storage_postgres::QueryExecutor;
@@ -95,11 +95,11 @@ async fn reap_expired_records(
     for custody in &custodies {
         let Some(ttl) = custody.ttl else { continue };
 
-        // Compute the expiry threshold: records created before this time are expired
+        // Compute the expiry threshold: objects created before this time are expired
         let threshold: verifiable_storage::StorageDatetime =
             (*now.inner() - chrono::Duration::seconds(ttl as i64)).into();
 
-        // Find expired records for this custody
+        // Find expired objects for this custody
         let expired_query =
             verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
                 "sad_objects",
@@ -135,8 +135,8 @@ async fn reap_expired_records(
 }
 
 /// Max SAD events per SEL prefix per day. Low — SELs represent stable state.
-fn max_records_per_prefix_per_day() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY", 8) as u32
+fn max_events_per_prefix_per_day() -> u32 {
+    kels_core::env_usize("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", 8) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
@@ -154,16 +154,16 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-SEL-prefix daily rate limit. Checks whether adding `record_count` new
-/// records would exceed the daily limit. Does NOT update the counter — call
-/// `accrue_prefix_rate_limit` after storage with the actual new record count.
+/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` new
+/// events would exceed the daily limit. Does NOT update the counter — call
+/// `accrue_prefix_rate_limit` after storage with the actual new event count.
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
-    record_count: u32,
+    event_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
-    let max_records = max_records_per_prefix_per_day();
+    let max_events = max_events_per_prefix_per_day();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
@@ -171,18 +171,18 @@ fn check_prefix_rate_limit(
         entry.1 = now;
     }
 
-    if entry.0 + record_count > max_records {
+    if entry.0 + event_count > max_events {
         return Err("Too many events for this SEL prefix".to_string());
     }
 
     Ok(())
 }
 
-/// Accrue the actual number of new records after storage completes.
+/// Accrue the actual number of new events after storage completes.
 fn accrue_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
-    new_record_count: u32,
+    new_event_count: u32,
 ) {
     let now = Instant::now();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
@@ -190,7 +190,7 @@ fn accrue_prefix_rate_limit(
         entry.0 = 0;
         entry.1 = now;
     }
-    entry.0 += new_record_count;
+    entry.0 += new_event_count;
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -250,7 +250,7 @@ async fn get_verified_peer(
     .transpose()
 }
 
-/// Fetch verified peers from the registry and store records in Redis.
+/// Fetch verified peers from the registry and store entries in Redis.
 async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],
@@ -521,7 +521,7 @@ pub async fn post_sad_object(
     (StatusCode::CREATED, "stored").into_response()
 }
 
-/// Gossip replication decision for a record.
+/// Gossip replication decision for an object.
 enum GossipPolicy {
     /// No nodes restriction — broadcast to all peers (default).
     BroadcastAll,
@@ -534,7 +534,7 @@ enum GossipPolicy {
 /// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
 /// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
 /// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
-/// gossip not yet implemented — records are accepted but not replicated).
+/// gossip not yet implemented — objects are accepted but not replicated).
 ///
 /// Fails secure: if `nodes` is set but can't be resolved, skip gossip
 /// (LocalOnly) to avoid leaking restricted data to unauthorized peers.
@@ -579,7 +579,7 @@ async fn resolve_gossip_policy(
                 } else {
                     // TODO: selective multi-node gossip — resolve target peers
                     // from the NodeSet prefix list and forward only to them.
-                    // For now, skip gossip; the record is stored locally and
+                    // For now, skip gossip; the object is stored locally and
                     // will be available when selective replication is implemented.
                     debug!(
                         "NodeSet {} has {} prefixes — skipping gossip until selective multi-node replication is implemented",
@@ -792,7 +792,7 @@ pub async fn fetch_sad_object(
         return (StatusCode::BAD_REQUEST, format!("invalid disclosure: {e}")).into_response();
     }
 
-    // Look up the record in sad_objects to get custody info
+    // Look up the object in sad_objects to get custody info
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
         Ok(Some(entry)) => entry,
         Ok(None) => {
@@ -857,7 +857,7 @@ pub async fn fetch_sad_object(
         }
     }
 
-    // TTL check (per-record: sad_objects.created_at + custodies.ttl)
+    // TTL check (per-object: sad_objects.created_at + custodies.ttl)
     if let Some(ttl) = custody.ttl {
         let created = entry.created_at.inner().timestamp();
         let now = verifiable_storage::StorageDatetime::now()
@@ -878,8 +878,8 @@ pub async fn fetch_sad_object(
         {
             Ok(1) => {
                 // We consumed it — serve from MinIO. If MinIO fetch fails after
-                // the PG delete, the record becomes inaccessible. Acceptable for
-                // ephemeral records — that's the semantics of once.
+                // the PG delete, the object becomes inaccessible. Acceptable for
+                // ephemeral objects — that's the semantics of once.
                 let response =
                     serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
 
@@ -1209,7 +1209,7 @@ pub async fn submit_sad_events(
 
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
-    let new_record_count;
+    let new_event_count;
     let should_publish;
     let mut diverged_at_version: Option<u64> = None;
     let is_repair;
@@ -1298,7 +1298,7 @@ pub async fn submit_sad_events(
         is_repair = new_events.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
-            // Query the checkpoint seal before truncation — reject repairs behind the seal.
+            // Query the evaluation seal before truncation — reject repairs behind the seal.
             let last_gp_version = match state
                 .repo
                 .sad_events
@@ -1329,7 +1329,7 @@ pub async fn submit_sad_events(
                 }
             };
 
-            // Repair must not truncate behind the checkpoint seal
+            // Repair must not truncate behind the evaluation seal
             if let Some(gp_version) = last_gp_version
                 && from_version <= gp_version
             {
@@ -1337,14 +1337,14 @@ pub async fn submit_sad_events(
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot repair at version {} — sealed by checkpoint at version {}",
+                        "Cannot repair at version {} — sealed by evaluation at version {}",
                         from_version, gp_version
                     ),
                 )
                     .into_response();
             }
 
-            // Repair must include a checkpoint at or after the divergence point —
+            // Repair must include an evaluation at or after the divergence point —
             // an attacker who can only satisfy write_policy cannot repair
             // (governance_policy is a higher bar).
             if !new_events
@@ -1354,7 +1354,7 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
-                    "repair must include a checkpoint at or after the divergence point",
+                    "repair must include an evaluation at or after the divergence point",
                 )
                     .into_response();
             }
@@ -1402,7 +1402,7 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            new_record_count = new_events.len() as u32;
+            new_event_count = new_events.len() as u32;
             should_publish = true;
         } else {
             // Normal path: verify existing chain + new events, then save.
@@ -1445,11 +1445,7 @@ pub async fn submit_sad_events(
             match state
                 .repo
                 .sad_events
-                .save_batch(
-                    &mut tx,
-                    &new_events,
-                    verification.last_governance_version(),
-                )
+                .save_batch(&mut tx, &new_events, verification.last_governance_version())
                 .await
             {
                 Ok(result) => {
@@ -1463,7 +1459,7 @@ pub async fn submit_sad_events(
                             *new_count
                         }
                     };
-                    new_record_count = count;
+                    new_event_count = count;
                     should_publish = count > 0;
                 }
                 Err(e) => {
@@ -1481,7 +1477,7 @@ pub async fn submit_sad_events(
     }
 
     // Accrue only actual new events to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_record_count);
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
 
     // Check nodes replication policy for gossip
     let event_custody = events.first().and_then(|r| r.custody);
@@ -1492,7 +1488,7 @@ pub async fn submit_sad_events(
         debug!("Skipping event gossip: custody.nodes restricts to local/home-node");
         let response = kels_core::SubmitSadEventsResponse {
             diverged_at: diverged_at_version,
-            applied: new_record_count > 0,
+            applied: new_event_count > 0,
         };
         return (StatusCode::CREATED, Json(response)).into_response();
     }
@@ -1543,7 +1539,7 @@ pub async fn submit_sad_events(
 
     let response = kels_core::SubmitSadEventsResponse {
         diverged_at: diverged_at_version,
-        applied: new_record_count > 0,
+        applied: new_event_count > 0,
     };
     (StatusCode::CREATED, Json(response)).into_response()
 }
@@ -1738,7 +1734,7 @@ pub(crate) async fn get_sel_repair_events(
     match state
         .repo
         .sad_events
-        .get_repair_records(request.said.as_ref(), limit, offset)
+        .get_repair_events(request.said.as_ref(), limit, offset)
         .await
     {
         Ok((events, has_more)) => (

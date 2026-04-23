@@ -70,7 +70,7 @@ impl SadEventKind {
     }
 
     /// True for kinds that evaluate governance_policy (Evl, Rpr).
-    /// These reset records_since_checkpoint and update last_governance_version.
+    /// These reset events_since_evaluation and update last_governance_version.
     pub fn evaluates_governance(&self) -> bool {
         matches!(self, Self::Evl | Self::Rpr)
     }
@@ -115,11 +115,11 @@ impl FromStr for SadEventKind {
 /// The v0 (inception) event has `content: None` — this makes the prefix
 /// fully deterministic from `write_policy` + `topic` alone. Content is added in v1+.
 ///
-/// No `created_at` field — intentionally omitted so inception records are fully
+/// No `created_at` field — intentionally omitted so inception events are fully
 /// deterministic for prefix computation.
 ///
 /// Authorization is via the anchoring model: `write_policy` is consumer-side,
-/// endorsing parties anchor the record's SAID in their KELs.
+/// endorsing parties anchor the event's SAID in their KELs.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_events")]
 #[serde(rename_all = "camelCase")]
@@ -145,13 +145,13 @@ pub struct SadEvent {
     pub custody: Option<cesr::Digest256>,
     /// SAID of the write policy (denormalized from custody for chain keying).
     /// Required on `Icp` (prefix derivation) and optional on `Evl` (policy evolution).
-    /// Forbidden on `Est`, `Upd`, `Rpr`. Absence on `Evl` means "pure checkpoint,
+    /// Forbidden on `Est`, `Upd`, `Rpr`. Absence on `Evl` means "pure evaluation,
     /// no policy change" — verifier inherits the tracked policy from branch state.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub write_policy: Option<cesr::Digest256>,
     /// SAID of the governance policy — a higher-threshold policy that bounds
     /// divergence. An attacker who satisfies write_policy but can't satisfy
-    /// governance_policy has their fork bounded to ≤63 records.
+    /// governance_policy has their fork bounded to ≤63 events.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub governance_policy: Option<cesr::Digest256>,
 }
@@ -243,7 +243,7 @@ impl SadEvent {
                     ));
                 }
                 require("previous", self.previous.is_some())?;
-                // write_policy optional — present = policy evolution, absent = pure checkpoint
+                // write_policy optional — present = policy evolution, absent = pure evaluation
                 // governance_policy optional — allows policy evolution
             }
             SadEventKind::Rpr => {
@@ -312,7 +312,7 @@ impl SadEventVerification {
 
     /// The tracked (effective) write policy SAID for the verified chain.
     ///
-    /// Seeded by v0 (Icp) and updated whenever an Evl record carries a new
+    /// Seeded by v0 (Icp) and updated whenever an Evl event carries a new
     /// write_policy *and* the evolution was authorized by the previous policy.
     /// Never `None` — v0 always establishes it. Evolutions that fail the soft
     /// write_policy check do not advance this value (the soft failure is also
@@ -350,7 +350,7 @@ impl SadEventVerification {
     /// all branches. It acts as the repair seal — no truncation at or before this version
     /// regardless of which branch is being repaired.
     ///
-    /// In divergent scenarios where some Est records soft-failed the write_policy check,
+    /// In divergent scenarios where some Est events soft-failed the write_policy check,
     /// this value may not match the tie-break winner's branch state: the winning branch
     /// may have `governance_policy = None` while `establishment_version` is `Some` (because
     /// another branch's Est did establish cp at that version). Consumers reading this as

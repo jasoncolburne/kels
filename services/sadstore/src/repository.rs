@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use kels_core::{Custody, SadEvent, SadEventRepair, SadEventRepairRecord};
+use kels_core::{Custody, SadEvent, SadEventRepair, SelRepairEvent};
 use kels_policy::Policy;
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
@@ -104,12 +104,12 @@ impl SadEventRepository {
 
             // Version collision creates divergence — insert this forking event then freeze
             if occupied_versions.contains(&event.version) {
-                // Reject fork at or before the last checkpoint — sealed by governance_policy
+                // Reject fork at or before the last evaluation — sealed by governance_policy
                 if let Some(gp_version) = last_governance_version
                     && event.version <= gp_version
                 {
                     return Err(StorageError::StorageError(format!(
-                        "Cannot fork at version {} — sealed by checkpoint at version {}",
+                        "Cannot fork at version {} — sealed by evaluation at version {}",
                         event.version, gp_version,
                     )));
                 }
@@ -132,7 +132,7 @@ impl SadEventRepository {
     /// Truncate events at and after the first replacement's version and insert replacements.
     ///
     /// Used to repair divergent chains. Archives displaced events, creates a repair
-    /// audit record, then inserts the replacements.
+    /// audit event, then inserts the replacements.
     /// Caller must hold an advisory lock on the SEL prefix.
     pub async fn truncate_and_replace<Tx: TransactionExecutor>(
         &self,
@@ -210,7 +210,7 @@ impl SadEventRepository {
             let already_archived: HashSet<cesr::Digest256> = {
                 let page_saids: Vec<String> = page.iter().map(|e| e.said.to_string()).collect();
                 let archive_query = verifiable_storage_postgres::Query::<SadEvent>::for_table(
-                    Self::ARCHIVED_RECORDS_TABLE,
+                    Self::ARCHIVED_EVENTS_TABLE,
                 )
                 .r#in("said", page_saids);
                 tx.fetch(archive_query)
@@ -224,9 +224,9 @@ impl SadEventRepository {
                 if already_archived.contains(&event.said) {
                     continue;
                 }
-                tx.insert_with_table(event, Self::ARCHIVED_RECORDS_TABLE)
+                tx.insert_with_table(event, Self::ARCHIVED_EVENTS_TABLE)
                     .await?;
-                let repair_record = SadEventRepairRecord::create(*repair_said_ref, event.said)?;
+                let repair_record = SelRepairEvent::create(*repair_said_ref, event.said)?;
                 tx.insert(&repair_record).await?;
             }
 
@@ -398,7 +398,7 @@ impl SadEventRepository {
         Ok(Some((latest.said, false)))
     }
 
-    const ARCHIVED_RECORDS_TABLE: &'static str = "sad_event_archives";
+    const ARCHIVED_EVENTS_TABLE: &'static str = "sad_event_archives";
 
     /// Get repairs for a SEL prefix, paginated.
     pub async fn get_repairs(
@@ -422,7 +422,7 @@ impl SadEventRepository {
     }
 
     /// Get archived events for a specific repair, paginated.
-    pub async fn get_repair_records(
+    pub async fn get_repair_events(
         &self,
         repair_said: &str,
         limit: u64,
@@ -430,11 +430,11 @@ impl SadEventRepository {
     ) -> Result<(Vec<SadEvent>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let link_query = verifiable_storage_postgres::Query::<SadEventRepairRecord>::new()
+        let link_query = verifiable_storage_postgres::Query::<SelRepairEvent>::new()
             .eq("repair_said", repair_said)
             .offset(offset)
             .limit(limit + 1);
-        let mut links: Vec<SadEventRepairRecord> = self.pool.fetch(link_query).await?;
+        let mut links: Vec<SelRepairEvent> = self.pool.fetch(link_query).await?;
 
         let has_more = links.len() as u64 > limit;
         links.truncate(limit as usize);
@@ -446,7 +446,7 @@ impl SadEventRepository {
         let event_saids: Vec<String> = links.iter().map(|l| l.event_said.to_string()).collect();
 
         let events_query =
-            verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::ARCHIVED_RECORDS_TABLE)
+            verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::ARCHIVED_EVENTS_TABLE)
                 .r#in("said", event_saids);
         let events: Vec<SadEvent> = self.pool.fetch(events_query).await?;
 

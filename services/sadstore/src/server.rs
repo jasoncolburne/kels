@@ -35,7 +35,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/fetch", post(handlers::fetch_sad_object))
         .route("/api/v1/sad/exists", post(handlers::sad_object_exists))
         .route("/api/v1/sad/saids", post(handlers::list_sad_objects))
-        // SAD Event Log records (Layer 2 — Postgres)
+        // SAD Event Log events (Layer 2 — Postgres)
         .route(
             "/api/v1/sad/events/exists",
             post(handlers::sad_event_exists),
@@ -52,7 +52,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             post(handlers::get_sel_repairs),
         )
         .route(
-            "/api/v1/sad/events/repairs/records",
+            "/api/v1/sad/events/repairs/events",
             post(handlers::get_sel_repair_events),
         )
         // Listing (authenticated — federation peers only)

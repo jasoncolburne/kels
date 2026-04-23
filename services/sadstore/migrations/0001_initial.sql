@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS sad_events (
     content TEXT,
     custody TEXT,                    -- SAID of custody SAD
     write_policy TEXT,               -- required on Icp, optional on Evl, forbidden on Est/Upd/Rpr
-    kind TEXT NOT NULL,              -- record kind (kels/sad/v1/events/{icp,upd,est,evl,rpr})
+    kind TEXT NOT NULL,              -- event kind (kels/sad/v1/events/{icp,upd,est,evl,rpr})
     governance_policy TEXT           -- SAID of governance policy (higher threshold than write_policy)
 );
 
@@ -60,12 +60,12 @@ CREATE TABLE IF NOT EXISTS sad_event_repairs (
 CREATE INDEX IF NOT EXISTS sad_event_repairs_prefix_idx ON sad_event_repairs(event_prefix);
 
 -- Links a repair to the archived events it displaced
-CREATE TABLE IF NOT EXISTS sad_event_repair_records (
+CREATE TABLE IF NOT EXISTS sel_repair_events (
     said TEXT PRIMARY KEY,
     repair_said TEXT NOT NULL REFERENCES sad_event_repairs(said) ON DELETE CASCADE,
     event_said TEXT NOT NULL REFERENCES sad_event_archives(said) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS sad_event_repair_records_repair_idx ON sad_event_repair_records(repair_said);
+CREATE INDEX IF NOT EXISTS sel_repair_events_repair_idx ON sel_repair_events(repair_said);
 
 COMMIT;

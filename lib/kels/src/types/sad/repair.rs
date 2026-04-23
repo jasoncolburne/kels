@@ -7,7 +7,7 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 ///
 /// Each repair gets its own SAID. Multiple repairs to the same chain are
 /// distinguished by their `repaired_at` timestamp and unique SAID.
-/// The displaced records are linked via `SadEventRepairRecord`.
+/// The displaced events are linked via `SelRepairEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_event_repairs")]
 #[serde(rename_all = "camelCase")]
@@ -35,9 +35,9 @@ pub struct SadEventRepairPage {
 ///
 /// One entry per archived event, all sharing the same `repair_said`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
-#[storable(table = "sad_event_repair_records")]
+#[storable(table = "sel_repair_events")]
 #[serde(rename_all = "camelCase")]
-pub struct SadEventRepairRecord {
+pub struct SelRepairEvent {
     #[said]
     pub said: cesr::Digest256,
     /// The repair this event belongs to.

@@ -445,7 +445,7 @@ impl SyncHandler {
     ///
     /// Delta fetch when the remote effective SAID is a real event; full fetch
     /// when it's synthetic (divergent). The receiving SADStore handler auto-detects
-    /// repair from any `Rpr` records in the submitted batch.
+    /// repair from any `Rpr` events in the submitted batch.
     async fn handle_sel_announcement(
         &self,
         sel_prefix: &cesr::Digest256,
@@ -487,7 +487,7 @@ impl SyncHandler {
 
         // Mark as recently stored BEFORE forwarding to prevent Redis feedback loop.
         // The SADStore publishes {prefix}:{effective_said} to sel_updates; repairs
-        // are auto-detected downstream from Rpr records, not flagged on the message.
+        // are auto-detected downstream from Rpr events, not flagged on the message.
         let cache_key = format!("sad-event:{}:{}", sel_prefix, remote_said);
         self.recently_stored
             .write()
@@ -502,8 +502,8 @@ impl SyncHandler {
             }
         };
 
-        // For repair: fetch full chain — handler auto-detects Rpr records.
-        // The SADStore deduplicates leading records that already exist locally,
+        // For repair: fetch full chain — handler auto-detects Rpr events.
+        // The SADStore deduplicates leading events that already exist locally,
         // so sending the full chain is safe — only the divergent tail is replaced.
         // For normal: delta fetch from local tip — but if the remote's effective
         // SAID is not a real event (e.g., synthetic divergent hash), delta fetch

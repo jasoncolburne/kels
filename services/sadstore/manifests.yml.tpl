@@ -64,8 +64,8 @@ spec:
               value: "${var.minio.secretKey}"
             - name: KELS_SAD_BUCKET
               value: "${var.sadstore.bucket}"
-            - name: SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY
-              value: "${var.sadstore.maxRecordsPerEventLogPerDay}"
+            - name: SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY
+              value: "${var.sadstore.maxEventsPerEventLogPerDay}"
             - name: SADSTORE_MAX_WRITES_PER_IP_PER_SECOND
               value: "${var.sadstore.maxWritesPerIpPerSecond}"
             - name: SADSTORE_IP_RATE_LIMIT_BURST

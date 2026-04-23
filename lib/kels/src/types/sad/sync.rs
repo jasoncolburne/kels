@@ -220,8 +220,7 @@ async fn transfer_sad_events<'a>(
 
             if let Some(div_idx) = divergence_idx {
                 let div_version = events[div_idx].version;
-                let same_version_count =
-                    events.iter().filter(|e| e.version == div_version).count();
+                let same_version_count = events.iter().filter(|e| e.version == div_version).count();
                 if same_version_count > 2 {
                     return Err(KelsError::InvalidKel(format!(
                         "Generation at version {} has {} events, max 2 allowed",

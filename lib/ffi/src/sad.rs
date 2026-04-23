@@ -186,7 +186,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
-/// * `json_signed_records` - JSON string of `Vec<SadEvent>`
+/// * `json_signed_events` - JSON string of `Vec<SadEvent>`
 ///
 /// # Returns
 /// 0 on success, -1 on error
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn kels_sad_get_object(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kels_sad_submit_events(
     sadstore_url: *const c_char,
-    json_signed_records: *const c_char,
+    json_signed_events: *const c_char,
 ) -> KelsStatus {
     clear_last_error();
 
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn kels_sad_submit_events(
         return KelsStatus::Error;
     };
 
-    let Some(events_str) = from_c_string(json_signed_records) else {
+    let Some(events_str) = from_c_string(json_signed_events) else {
         set_last_error("Invalid events JSON");
         return KelsStatus::Error;
     };
@@ -376,16 +376,16 @@ mod tests {
 
     #[test]
     fn test_sad_submit_events_null_url() {
-        let records = CString::new("[]").expect("cstring");
-        let result = unsafe { kels_sad_submit_events(std::ptr::null(), records.as_ptr()) };
+        let events = CString::new("[]").expect("cstring");
+        let result = unsafe { kels_sad_submit_events(std::ptr::null(), events.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
     fn test_sad_submit_events_invalid_json() {
         let url = CString::new("http://localhost:9999").expect("cstring");
-        let records = CString::new("not json").expect("cstring");
-        let result = unsafe { kels_sad_submit_events(url.as_ptr(), records.as_ptr()) };
+        let events = CString::new("not json").expect("cstring");
+        let result = unsafe { kels_sad_submit_events(url.as_ptr(), events.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 

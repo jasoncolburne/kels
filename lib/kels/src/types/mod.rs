@@ -1569,7 +1569,7 @@ mod tests {
         event.version = 2;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         event.write_policy = None;
-        // write_policy None — pure checkpoint
+        // write_policy None — pure evaluation
         assert!(event.validate_structure().is_ok());
     }
 

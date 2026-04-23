@@ -4,8 +4,8 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 /// Authenticated fetch request for a SAD object.
 ///
 /// Used as `SignedRequest<SadFetchRequest>` for objects with `readPolicy`.
-/// The `object_said` binds the request to a specific record — the server knows
-/// the record's custody and evaluates the readPolicy directly.
+/// The `object_said` binds the request to a specific object — the server knows
+/// the object's custody and evaluates the readPolicy directly.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedSadFetchRequest {
@@ -27,7 +27,7 @@ pub struct SadFetchRequest {
     pub disclosure: Option<String>,
 }
 
-/// Request body for fetching a page of SAD Event Log records.
+/// Request body for fetching a page of SAD Event Log events.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadEventPageRequest {
     pub prefix: cesr::Digest256,
@@ -44,7 +44,7 @@ pub struct SadEventEffectiveSaidRequest {
 /// Response from SAD event submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "SubmitSadEventsResponse.applied must be checked — records may be rejected"]
+#[must_use = "SubmitSadEventsResponse.applied must be checked — events may be rejected"]
 pub struct SubmitSadEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
@@ -59,7 +59,7 @@ pub struct SadRepairsRequest {
     pub offset: Option<u64>,
 }
 
-/// Request body for fetching archived records of a specific repair.
+/// Request body for fetching archived events of a specific repair.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairPageRequest {
     pub prefix: cesr::Digest256,

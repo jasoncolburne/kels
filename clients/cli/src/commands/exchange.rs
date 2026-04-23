@@ -131,16 +131,16 @@ pub(crate) async fn cmd_exchange_publish_key(
         .await
         .context("Failed to anchor v1 SAID in KEL")?;
 
-    let records = vec![v0.clone(), v1];
+    let events = vec![v0.clone(), v1];
 
     sad_client
-        .submit_sad_events(&records)
+        .submit_sad_events(&events)
         .await
         .context("Failed to submit SAD events")?;
 
     println!(
         "{}",
-        format!("Key published! SEL prefix: {}", records[0].prefix)
+        format!("Key published! SEL prefix: {}", events[0].prefix)
             .green()
             .bold()
     );

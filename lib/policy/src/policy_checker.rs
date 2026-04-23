@@ -62,8 +62,7 @@ impl PolicyChecker for AnchoredPolicyChecker<'_> {
             .resolve_policy(write_policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, &event.said, self.kel_source, self.resolver).await
-        {
+        match evaluate_anchored_policy(&policy, &event.said, self.kel_source, self.resolver).await {
             Ok(v) => Ok(v.is_satisfied),
             Err(e) => Err(KelsError::VerificationFailed(e.to_string())),
         }

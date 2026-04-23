@@ -1,8 +1,8 @@
-//! Custody and node set SAD types for per-record storage policy.
+//! Custody and node set SAD types for per-SAD storage policy.
 //!
 //! `custody` is a reserved top-level key on any SAD. It is itself a SAD
 //! (with its own SAID), compacted and stored independently in MinIO,
-//! referenced by SAID in the parent record. The SAID covers all custody
+//! referenced by SAID in the parent SAD. The SAID covers all custody
 //! fields, making storage policy tamper-evident.
 
 use std::collections::HashSet;
@@ -10,12 +10,12 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
-/// Per-record storage policy.
+/// Per-SAD storage policy.
 ///
 /// Fields:
 /// - `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
 /// - `readPolicy` — SAID of a policy SAD controlling reads (SADStore fetch-time enforcement)
-/// - `ttl` — seconds until expiry (per-record: `sad_objects.created_at + ttl`)
+/// - `ttl` — seconds until expiry (per-object: `sad_objects.created_at + ttl`)
 /// - `once` — atomic delete on first successful retrieval
 /// - `nodes` — SAID of a `NodeSet` SAD for selective replication
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]

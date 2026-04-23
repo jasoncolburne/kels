@@ -56,8 +56,8 @@ struct SadBranchState {
     /// The governance policy SAID tracked on this branch.
     /// `None` until the first governance_policy is declared.
     governance_policy: Option<cesr::Digest256>,
-    /// Number of records since the last checkpoint (or since chain start).
-    records_since_checkpoint: usize,
+    /// Number of events since the last evaluation (or since chain start).
+    events_since_evaluation: usize,
 }
 
 /// Streaming structural + policy verifier for SAD Event Logs.
@@ -80,7 +80,7 @@ pub struct SelVerifier<'a> {
     generation_buffer: Vec<SadEvent>,
     /// The version of the current buffered generation.
     current_generation_version: Option<u64>,
-    saw_any_records: bool,
+    saw_any_events: bool,
     policy_satisfied: bool,
     /// The version of the most recent governance evaluation across all branches.
     /// For divergent chains, this is the minimum across branches (weakest seal).
@@ -99,7 +99,7 @@ impl<'a> SelVerifier<'a> {
             branches: HashMap::new(),
             generation_buffer: Vec::new(),
             current_generation_version: None,
-            saw_any_records: false,
+            saw_any_events: false,
             policy_satisfied: true,
             last_governance_version: None,
             establishment_version: None,
@@ -188,7 +188,7 @@ impl<'a> SelVerifier<'a> {
                     tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
-                    records_since_checkpoint: 0,
+                    events_since_evaluation: 0,
                 },
             );
             return Ok(());
@@ -254,7 +254,7 @@ impl<'a> SelVerifier<'a> {
             }
 
             // Kind-specific chain-state logic
-            let (governance_policy, records_since_checkpoint, tracked_write_policy) = match event
+            let (governance_policy, events_since_evaluation, tracked_write_policy) = match event
                 .kind
             {
                 SadEventKind::Icp => {
@@ -270,8 +270,8 @@ impl<'a> SelVerifier<'a> {
                         )));
                     }
                     // Defense-in-depth: skip state advances on soft wp-fail. See R5/R6 audit.
-                    // records_since_checkpoint = 1 stays unconditional — an unauthorized Est
-                    // still occupies a slot in the checkpoint window (same as an unauthorized Upd).
+                    // events_since_evaluation = 1 stays unconditional — an unauthorized Est
+                    // still occupies a slot in the evaluation window (same as an unauthorized Upd).
                     // tracked_write_policy unchanged — Est forbids write_policy (validate_structure).
                     let (new_est_version, new_cp) = if write_policy_satisfied {
                         (Some(1), event.governance_policy)
@@ -320,7 +320,7 @@ impl<'a> SelVerifier<'a> {
                     } else {
                         Some(*tracked)
                     };
-                    // Evl with Some(write_policy) = policy evolution. None = pure checkpoint.
+                    // Evl with Some(write_policy) = policy evolution. None = pure evaluation.
                     // Rpr forbids write_policy entirely (validate_structure).
                     let new_wp = if write_policy_satisfied {
                         event.write_policy.unwrap_or(branch.tracked_write_policy)
@@ -331,13 +331,13 @@ impl<'a> SelVerifier<'a> {
                 }
                 SadEventKind::Upd => {
                     // Normal event — increment counter, check bound
-                    let count = branch.records_since_checkpoint + 1;
-                    if count > crate::MAX_NON_CHECKPOINT_RECORDS {
+                    let count = branch.events_since_evaluation + 1;
+                    if count > crate::MAX_NON_EVALUATION_EVENTS {
                         return Err(KelsError::VerificationFailed(format!(
-                            "SAD event {} exceeds checkpoint bound ({} non-checkpoint records, max {})",
+                            "SAD event {} exceeds evaluation bound ({} non-evaluation events, max {})",
                             event.said,
                             count,
-                            crate::MAX_NON_CHECKPOINT_RECORDS,
+                            crate::MAX_NON_EVALUATION_EVENTS,
                         )));
                     }
                     // tracked_write_policy unchanged — Upd forbids write_policy (validate_structure)
@@ -352,7 +352,7 @@ impl<'a> SelVerifier<'a> {
                     tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
-                    records_since_checkpoint,
+                    events_since_evaluation,
                 },
             );
         }
@@ -371,7 +371,7 @@ impl<'a> SelVerifier<'a> {
     /// Verify a page of events incrementally.
     pub async fn verify_page(&mut self, events: &[SadEvent]) -> Result<(), KelsError> {
         for event in events {
-            self.saw_any_records = true;
+            self.saw_any_events = true;
 
             self.verify_event(event)?;
 
@@ -395,7 +395,7 @@ impl<'a> SelVerifier<'a> {
     pub async fn finish(mut self) -> Result<super::event::SadEventVerification, KelsError> {
         self.flush_generation().await?;
 
-        if !self.saw_any_records {
+        if !self.saw_any_events {
             return Err(KelsError::VerificationFailed(
                 "Empty SAD event chain".into(),
             ));
@@ -456,8 +456,8 @@ mod tests {
     }
 
     /// Create a v0 event with governance_policy declared.
-    fn create_v0_with_checkpoint(wp: cesr::Digest256) -> SadEvent {
-        let cp = test_digest(b"checkpoint-policy");
+    fn create_v0_with_evaluation(wp: cesr::Digest256) -> SadEvent {
+        let cp = test_digest(b"evaluation-policy");
         SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
@@ -469,8 +469,8 @@ mod tests {
         .unwrap()
     }
 
-    /// Create a v0 event without checkpoint (prefix stays deterministic).
-    fn create_v0_no_checkpoint(wp: cesr::Digest256) -> SadEvent {
+    /// Create a v0 event without evaluation (prefix stays deterministic).
+    fn create_v0_no_evaluation(wp: cesr::Digest256) -> SadEvent {
         SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
@@ -484,17 +484,17 @@ mod tests {
 
     /// Declare governance_policy on an event (Est kind) and increment.
     fn add_governance_declaration(event: &mut SadEvent) {
-        let cp = test_digest(b"checkpoint-policy");
+        let cp = test_digest(b"evaluation-policy");
         event.kind = SadEventKind::Est;
         event.governance_policy = Some(cp);
         event.write_policy = None; // Est forbids write_policy
         event.increment().unwrap();
     }
 
-    /// Set Evl kind and increment (evaluated checkpoint, no policy evolution).
+    /// Set Evl kind and increment (evaluation, no policy evolution).
     fn add_governance_evaluation(event: &mut SadEvent) {
         event.kind = SadEventKind::Evl;
-        event.write_policy = None; // pure checkpoint
+        event.write_policy = None; // pure evaluation
         event.increment().unwrap();
     }
 
@@ -539,11 +539,11 @@ mod tests {
     /// governance_policy in the same test** — both checks would then accept,
     /// masking write_policy rejection. Tests using distinct `test_digest(b"...")`
     /// labels are already safe.
-    struct AcceptCheckpointRejectWriteChecker {
+    struct AcceptEvaluationRejectWriteChecker {
         governance_policy: cesr::Digest256,
     }
     #[async_trait::async_trait]
-    impl PolicyChecker for AcceptCheckpointRejectWriteChecker {
+    impl PolicyChecker for AcceptEvaluationRejectWriteChecker {
         async fn satisfies(
             &self,
             _: &SadEvent,
@@ -561,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn test_sel_verifier_valid_chain() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -587,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn test_sel_verifier_wrong_version_fails() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -611,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn test_sel_verifier_multi_page() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -634,7 +634,7 @@ mod tests {
     #[tokio::test]
     async fn test_same_write_policy_authorized() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -653,7 +653,7 @@ mod tests {
     async fn test_evolving_write_policy_authorized() {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let v0 = create_v0_with_checkpoint(wp1);
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -673,14 +673,14 @@ mod tests {
     #[tokio::test]
     async fn test_rejected_write_policy_evolution() {
         // An Evl that evolves write_policy must be authorized against the
-        // *previous* write_policy. Use AcceptCheckpointRejectWriteChecker so
+        // *previous* write_policy. Use AcceptEvaluationRejectWriteChecker so
         // the governance_policy evaluation passes (no hard error) but the
         // write_policy evaluation fails (soft rejection). This cleanly isolates
         // the write_policy rejection path.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let cp = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
-        let v0 = create_v0_with_checkpoint(wp1);
+        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -688,7 +688,7 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AcceptCheckpointRejectWriteChecker {
+        let checker = AcceptEvaluationRejectWriteChecker {
             governance_policy: cp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -707,7 +707,7 @@ mod tests {
     #[tokio::test]
     async fn test_evl_without_write_policy_inherits_tracked() {
         let wp1 = test_digest(b"write-policy-1");
-        let v0 = create_v0_with_checkpoint(wp1);
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -719,7 +719,7 @@ mod tests {
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
-        // Pure checkpoint — tracked write_policy inherited from v0
+        // Pure evaluation — tracked write_policy inherited from v0
         assert_eq!(verification.write_policy(), &wp1);
     }
 
@@ -734,8 +734,8 @@ mod tests {
         // last_governance_version) are gated on the same soft-pass flag.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let cp = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
-        let v0 = create_v0_with_checkpoint(wp1);
+        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -744,7 +744,7 @@ mod tests {
         v1.increment().unwrap();
 
         // Accepts governance_policy evaluation, rejects write_policy authorization.
-        let checker = AcceptCheckpointRejectWriteChecker {
+        let checker = AcceptEvaluationRejectWriteChecker {
             governance_policy: cp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -770,14 +770,14 @@ mod tests {
         // the branch's tracked governance_policy must stay at the previous
         // value. We verify this indirectly by submitting a v2 Evl whose hard
         // cp check only succeeds if tracked cp is still cp1 (not the attacker's
-        // cp_attacker that v1 proposed). AcceptCheckpointRejectWriteChecker only
+        // cp_attacker that v1 proposed). AcceptEvaluationRejectWriteChecker only
         // accepts checks against cp1, so if tracked cp had advanced to cp_attacker,
         // v2's hard cp check would fail and abort verification.
         let wp1 = test_digest(b"write-policy-1");
         let wp_attacker = test_digest(b"write-policy-attacker");
-        let cp1 = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
-        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
-        let v0 = create_v0_with_checkpoint(wp1);
+        let cp1 = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let cp_attacker = test_digest(b"evaluation-policy-attacker");
+        let v0 = create_v0_with_evaluation(wp1);
 
         // v1: attacker-crafted Evl evolving both wp and cp.
         // wp soft check (against tracked wp1): FAILS.
@@ -803,7 +803,7 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = AcceptCheckpointRejectWriteChecker {
+        let checker = AcceptEvaluationRejectWriteChecker {
             governance_policy: cp1,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -828,10 +828,10 @@ mod tests {
         // establishment_version and branch.governance_policy must NOT advance.
         // Mirrors the R5/R6 gate on the Evl/Rpr arm for the Est arm.
         let wp1 = test_digest(b"write-policy-1");
-        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
-        let cp_legit = test_digest(b"checkpoint-policy-legit");
+        let cp_attacker = test_digest(b"evaluation-policy-attacker");
+        let cp_legit = test_digest(b"evaluation-policy-legit");
 
-        let v0 = create_v0_no_checkpoint(wp1);
+        let v0 = create_v0_no_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Est;
@@ -839,9 +839,9 @@ mod tests {
         v1.governance_policy = Some(cp_attacker);
         v1.increment().unwrap();
 
-        // AcceptCheckpointRejectWriteChecker accepts only checks against cp_legit.
+        // AcceptEvaluationRejectWriteChecker accepts only checks against cp_legit.
         // The wp check (against tracked wp1) returns false → soft-fail.
-        let checker = AcceptCheckpointRejectWriteChecker {
+        let checker = AcceptEvaluationRejectWriteChecker {
             governance_policy: cp_legit,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -852,7 +852,7 @@ mod tests {
         // advance was blocked by the soft wp-fail.
         assert!(
             verification.to_string().contains("no governance_policy"),
-            "Expected no-checkpoint error because the soft-failed Est did not establish cp, got: {}",
+            "Expected no-evaluation error because the soft-failed Est did not establish cp, got: {}",
             verification
         );
     }
@@ -867,10 +867,10 @@ mod tests {
         // `establishment_version()` without gating on `policy_satisfied()` may
         // see a value that doesn't match the tie-break winner's branch state.
         let wp1 = test_digest(b"write-policy-1");
-        let cp_legit = test_digest(b"checkpoint-policy-legit");
-        let cp_attacker = test_digest(b"checkpoint-policy-attacker");
+        let cp_legit = test_digest(b"evaluation-policy-legit");
+        let cp_attacker = test_digest(b"evaluation-policy-attacker");
 
-        let v0 = create_v0_no_checkpoint(wp1);
+        let v0 = create_v0_no_evaluation(wp1);
 
         let mut v1_a = v0.clone();
         v1_a.content = Some(test_digest(b"content_a"));
@@ -943,7 +943,7 @@ mod tests {
         // Rpr cannot carry write_policy (validate_structure forbids it).
         // The verifier must leave tracked_write_policy unchanged across Rpr.
         let wp1 = test_digest(b"write-policy-1");
-        let v0 = create_v0_with_checkpoint(wp1);
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Rpr;
@@ -968,7 +968,7 @@ mod tests {
         let wp2 = test_digest(b"write-policy-2");
         let wp3 = test_digest(b"write-policy-3");
 
-        let v0 = create_v0_no_checkpoint(wp1);
+        let v0 = create_v0_no_evaluation(wp1);
         let mut v1 = v0.clone();
         add_governance_declaration(&mut v1); // Est @ v1 establishes governance_policy
 
@@ -1009,9 +1009,9 @@ mod tests {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
         let wp3 = test_digest(b"write-policy-3");
-        let cp = test_digest(b"checkpoint-policy"); // matches create_v0_with_checkpoint
+        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
 
-        let v0 = create_v0_with_checkpoint(wp1);
+        let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -1026,7 +1026,7 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = AcceptCheckpointRejectWriteChecker {
+        let checker = AcceptEvaluationRejectWriteChecker {
             governance_policy: cp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -1047,7 +1047,7 @@ mod tests {
         let wp0 = test_digest(b"write-policy-0");
         let wp_a = test_digest(b"write-policy-a");
         let wp_b = test_digest(b"write-policy-b");
-        let v0 = create_v0_with_checkpoint(wp0);
+        let v0 = create_v0_with_evaluation(wp0);
 
         let mut v1_a = v0.clone();
         v1_a.content = Some(test_digest(b"content_a"));
@@ -1093,7 +1093,7 @@ mod tests {
     #[tokio::test]
     async fn test_rejected_same_write_policy() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -1111,7 +1111,7 @@ mod tests {
     #[tokio::test]
     async fn test_self_satisfies_failure() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
 
         let checker = RejectInceptionChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -1125,7 +1125,7 @@ mod tests {
     #[tokio::test]
     async fn test_v0_with_governance_policy_valid() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
@@ -1136,9 +1136,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_v0_no_checkpoint_v1_est_valid() {
+    async fn test_v0_no_evaluation_v1_est_valid() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
@@ -1152,9 +1152,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_checkpoint_overdue_at_64() {
+    async fn test_evaluation_overdue_at_64() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
 
         let mut events = vec![v0.clone()];
         let mut current = v0.clone();
@@ -1162,11 +1162,11 @@ mod tests {
         current.content = Some(test_digest(b"content_1"));
         current.kind = SadEventKind::Est;
         current.write_policy = None;
-        current.governance_policy = Some(test_digest(b"checkpoint-policy"));
+        current.governance_policy = Some(test_digest(b"evaluation-policy"));
         current.increment().unwrap();
         events.push(current.clone());
 
-        // v2..v63: 62 Upd events — within bound (1 Est + 62 Upd = 63 non-checkpoint)
+        // v2..v63: 62 Upd events — within bound (1 Est + 62 Upd = 63 non-evaluation)
         current.kind = SadEventKind::Upd;
         current.governance_policy = None;
         for _ in 2..=63 {
@@ -1177,7 +1177,7 @@ mod tests {
             events.push(current.clone());
         }
 
-        // v64 — should be rejected (overdue: 63 non-checkpoint records, max is 63)
+        // v64 — should be rejected (overdue: 63 non-evaluation events, max is 63)
         current.content = Some(test_digest(b"content_64"));
         current.increment().unwrap();
         events.push(current.clone());
@@ -1187,26 +1187,26 @@ mod tests {
         verifier.verify_page(&events).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            err.to_string().contains("checkpoint bound"),
-            "Expected checkpoint overdue error, got: {}",
+            err.to_string().contains("evaluation bound"),
+            "Expected evaluation overdue error, got: {}",
             err
         );
     }
 
     #[tokio::test]
-    async fn test_valid_checkpoint_cycle() {
+    async fn test_valid_evaluation_cycle() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
 
         let mut events = vec![v0.clone()];
         let mut current = v0.clone();
 
-        // v1: Est (governance_policy declaration, counts as non-checkpoint)
+        // v1: Est (governance_policy declaration, counts as non-evaluation)
         current.content = Some(test_digest(b"content_1"));
         add_governance_declaration(&mut current);
         events.push(current.clone());
 
-        // v2..v63: 62 more Upd events (total 63 non-checkpoint: v1..v63)
+        // v2..v63: 62 more Upd events (total 63 non-evaluation: v1..v63)
         current.kind = SadEventKind::Upd;
         current.write_policy = None;
         current.governance_policy = None;
@@ -1216,7 +1216,7 @@ mod tests {
             events.push(current.clone());
         }
 
-        // v64: first evaluated checkpoint (resets counter)
+        // v64: first evaluation (resets counter)
         current.content = Some(test_digest(b"content_64"));
         add_governance_evaluation(&mut current);
         events.push(current.clone());
@@ -1231,12 +1231,12 @@ mod tests {
     #[tokio::test]
     async fn test_governance_policy_evolution_on_evl_valid() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
         // Change governance_policy on an Evl event — valid (policy evolution)
-        v1.governance_policy = Some(test_digest(b"new-checkpoint-policy"));
+        v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -1249,12 +1249,12 @@ mod tests {
     #[tokio::test]
     async fn test_upd_with_governance_policy_rejected_by_validate_structure() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
         // Upd must not set governance_policy — validate_structure rejects
-        v1.governance_policy = Some(test_digest(b"new-checkpoint-policy"));
+        v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -1271,7 +1271,7 @@ mod tests {
     #[tokio::test]
     async fn test_evl_without_governance_policy_on_branch_rejected() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
@@ -1290,14 +1290,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chain_with_no_checkpoint_rejected_at_finish() {
+    async fn test_chain_with_no_evaluation_rejected_at_finish() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Est;
         v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"checkpoint-policy"));
+        v1.governance_policy = Some(test_digest(b"evaluation-policy"));
         v1.increment().unwrap();
 
         // Chain has governance_policy established but never evaluated — still passes finish
@@ -1312,7 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_with_no_governance_policy_at_all_rejected() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
 
         // v0 without governance_policy and no Est — finish should reject
         let checker = AlwaysPassChecker;
@@ -1329,17 +1329,17 @@ mod tests {
     #[tokio::test]
     async fn test_v0_with_governance_policy_changes_prefix() {
         let wp = test_digest(b"write-policy");
-        let v0_no_cp = create_v0_no_checkpoint(wp);
-        let v0_with_cp = create_v0_with_checkpoint(wp);
+        let v0_no_cp = create_v0_no_evaluation(wp);
+        let v0_with_cp = create_v0_with_evaluation(wp);
         assert_ne!(v0_no_cp.prefix, v0_with_cp.prefix);
     }
 
     // ==================== Kind-specific chain-state tests ====================
 
     #[tokio::test]
-    async fn test_est_at_v1_when_v0_had_no_checkpoint_accepted() {
+    async fn test_est_at_v1_when_v0_had_no_evaluation_accepted() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
@@ -1353,14 +1353,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_est_at_v1_when_v0_declared_checkpoint_rejected() {
+    async fn test_est_at_v1_when_v0_declared_evaluation_rejected() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Est;
         v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"another-checkpoint-policy"));
+        v1.governance_policy = Some(test_digest(b"another-evaluation-policy"));
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -1377,7 +1377,7 @@ mod tests {
     #[tokio::test]
     async fn test_est_at_v2_rejected_by_validate_structure() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
@@ -1401,9 +1401,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_upd_at_v1_when_v0_had_no_checkpoint_rejected() {
+    async fn test_upd_at_v1_when_v0_had_no_evaluation_rejected() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Upd;
@@ -1425,7 +1425,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpr_evaluates_governance_policy() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Rpr;
@@ -1443,7 +1443,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpr_with_governance_policy_rejected_by_validate_structure() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Rpr;
@@ -1462,12 +1462,12 @@ mod tests {
         );
     }
 
-    // ==================== Checkpoint tracking tests ====================
+    // ==================== Evaluation tracking tests ====================
 
     #[tokio::test]
     async fn test_last_governance_version_tracked() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
@@ -1484,9 +1484,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_last_governance_version_none_without_evaluated_checkpoint() {
+    async fn test_last_governance_version_none_without_evaluation() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
@@ -1501,7 +1501,7 @@ mod tests {
     #[tokio::test]
     async fn test_v0_non_icp_rejected_by_validate_structure() {
         let wp = test_digest(b"write-policy");
-        let cp = test_digest(b"checkpoint-policy");
+        let cp = test_digest(b"evaluation-policy");
         // Manually construct a v0 with Evl kind — should fail validate_structure
         let mut v0 = SadEvent {
             said: cesr::Digest256::default(),
@@ -1529,14 +1529,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_checkpoint_after_est_accepted() {
+    async fn test_evaluation_after_est_accepted() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_checkpoint(wp);
+        let v0 = create_v0_no_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Est;
         v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"checkpoint-policy"));
+        v1.governance_policy = Some(test_digest(b"evaluation-policy"));
         v1.increment().unwrap();
 
         let mut v2 = v1.clone();
@@ -1555,7 +1555,7 @@ mod tests {
     #[tokio::test]
     async fn test_governance_policy_evaluation_failure() {
         let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_checkpoint(wp);
+        let v0 = create_v0_with_evaluation(wp);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;

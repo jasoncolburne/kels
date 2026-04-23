@@ -102,15 +102,15 @@ pub use types::{
     ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
     RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory, RemovalWithVotes,
     SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage,
-    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventRepairRecord,
-    SadEventVerification, SadFetchRequest, SadObjectEntry, SadObjectListResponse,
-    SadRepairPageRequest, SadRepairsRequest, SelVerifier, SignedKeyEvent, SignedKeyEventPage,
-    SignedRequest, SignedSadFetchRequest, StoreKelSource, StorePageLoader, SubmitKeyEventsResponse,
-    SubmitSadEventsResponse, Vote, completed_verification, compute_approval_threshold,
-    compute_rotation_hash, compute_sad_event_prefix, forward_key_events, forward_sad_events,
-    hash_effective_said, parse_and_validate_custody, single_signer, truncate_incomplete_generation,
-    validate_timestamp, verify_key_events, verify_key_events_collecting_establishment_keys,
-    verify_key_events_with, verify_sad_events,
+    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventVerification, SadFetchRequest,
+    SadObjectEntry, SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SelRepairEvent,
+    SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest,
+    StoreKelSource, StorePageLoader, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
+    completed_verification, compute_approval_threshold, compute_rotation_hash,
+    compute_sad_event_prefix, forward_key_events, forward_sad_events, hash_effective_said,
+    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
+    verify_sad_events,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]
@@ -131,10 +131,10 @@ pub const MINIMUM_PAGE_SIZE: usize = 64;
 /// `MINIMUM_PAGE_SIZE - 2` leaves room for rec+rot in the recovery batch.
 pub const MAX_NON_REVEALING_EVENTS: usize = MINIMUM_PAGE_SIZE - 2;
 
-/// Maximum non-checkpoint records between checkpoint records on event chains.
-/// `MINIMUM_PAGE_SIZE - 1` leaves room for the checkpoint record in the page.
-/// Unlike KELs (which need 2 slots for rec+rot), event checkpoints need only 1 slot.
-pub const MAX_NON_CHECKPOINT_RECORDS: usize = MINIMUM_PAGE_SIZE - 1;
+/// Maximum non-evaluation events between evaluation events on event chains.
+/// `MINIMUM_PAGE_SIZE - 1` leaves room for the evaluation event in the page.
+/// Unlike KELs (which need 2 slots for rec+rot), event evaluations need only 1 slot.
+pub const MAX_NON_EVALUATION_EVENTS: usize = MINIMUM_PAGE_SIZE - 1;
 
 /// Default page size for all KEL operations: submissions, queries, and responses.
 /// Clamped to at least `MINIMUM_PAGE_SIZE` at parse time. Operators may increase

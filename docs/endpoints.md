@@ -147,7 +147,7 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | POST | `/api/v1/sad/events/exists` | None | Check if an event exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/events/effective-said` | None | Tip SAID for sync comparison; `SadEventEffectiveSaidRequest` body (`prefix`) |
 | POST | `/api/v1/sad/events/repairs` | None | Get paginated SAD event repair entries; `SadRepairsRequest` body (`prefix`, `limit`, `offset`); returns `SadEventRepairPage` |
-| POST | `/api/v1/sad/events/repairs/records` | None | Get archived SAD events for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadEventPage` |
+| POST | `/api/v1/sad/events/repairs/events` | None | Get archived SAD events for a specific repair; `SadRepairPageRequest` body (`prefix`, `said`, `limit`, `offset`); returns `SadEventPage` |
 | POST | `/api/v1/sad/saids` | Peer | List SAD object SAIDs (paginated, authenticated) |
 | POST | `/api/v1/sad/events/prefixes` | Peer | List SEL prefixes with tip SAIDs (paginated, authenticated) |
 

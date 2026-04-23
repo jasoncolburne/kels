@@ -41,7 +41,7 @@ impl SadStoreClient {
         crate::HttpSadSource::new(&self.base_url)
     }
 
-    /// Create an `HttpSadSink` for this client's records endpoint.
+    /// Create an `HttpSadSink` for this client's events endpoint.
     pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new(&self.base_url)
     }
@@ -195,12 +195,12 @@ impl SadStoreClient {
 
     /// Submit SAD events to the SADStore.
     ///
-    /// Authorization is via KEL anchoring: each record's SAID must be anchored
-    /// via ixn by `write_policy` endorsers in their KELs. There are no per-record
+    /// Authorization is via KEL anchoring: each event's SAID must be anchored
+    /// via ixn by `write_policy` endorsers in their KELs. There are no per-event
     /// signatures — the server validates anchoring against the endorsers' KELs.
-    pub async fn submit_sad_events(&self, records: &[crate::SadEvent]) -> Result<(), KelsError> {
+    pub async fn submit_sad_events(&self, events: &[crate::SadEvent]) -> Result<(), KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
-        let resp = self.client.post(&url).json(records).send().await?;
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
             Ok(())
@@ -212,7 +212,7 @@ impl SadStoreClient {
 
     /// Fetch a page of SAD events by prefix.
     ///
-    /// `since` is an effective SAID cursor — returns records after this SAID's
+    /// `since` is an effective SAID cursor — returns events after this SAID's
     /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
     /// server returns the full chain.
     pub async fn fetch_sad_events(
@@ -323,7 +323,7 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch archived records for a specific repair, paginated.
+    /// Fetch archived events for a specific repair, paginated.
     pub async fn fetch_sel_repair_events(
         &self,
         prefix: &cesr::Digest256,
@@ -331,7 +331,7 @@ impl SadStoreClient {
         limit: usize,
         offset: u64,
     ) -> Result<SadEventPage, KelsError> {
-        let url = format!("{}/api/v1/sad/events/repairs/records", self.base_url);
+        let url = format!("{}/api/v1/sad/events/repairs/events", self.base_url);
         let body = crate::SadRepairPageRequest {
             prefix: *prefix,
             said: *repair_said,

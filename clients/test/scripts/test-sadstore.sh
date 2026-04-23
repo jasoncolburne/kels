@@ -402,7 +402,7 @@ else
 
     # --- Build two conflicting v1 events ---
 
-    # v1-a: submitted to node-a (no checkpoint — allows fork at this version)
+    # v1-a: submitted to node-a (no evaluation — allows fork at this version)
     D_V1A_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg k "$DIV_TOPIC" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_a__________________________________"}')
@@ -415,7 +415,7 @@ else
 
     echo "[$D_V1A_JSON]" > "$TEMP_DIR/div-v1a.json"
 
-    # v1-b: submitted to node-b (adversary fork — no checkpoint, bounded by governance_policy)
+    # v1-b: submitted to node-b (adversary fork — no evaluation, bounded by governance_policy)
     D_V1B_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$DIV_PREFIX" --arg prev "$D_V0_SAID" \
         --arg k "$DIV_TOPIC" \
         '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kcontent_b__________________________________"}')

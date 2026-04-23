@@ -22,7 +22,7 @@ Fields:
 - `prefix` — Chain identifier (derived from inception content)
 - `previous` — SAID of previous event (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
-- `topic` — Record type (e.g., `kels/sad/v1/keys/mlkem`)
+- `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
 - `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Evl` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`. See `docs/design/sad-events.md` for the per-kind matrix.
@@ -35,16 +35,16 @@ Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a SEL prefi
 let prefix = compute_sad_event_prefix(write_policy, topic)?;
 ```
 
-This constructs the v0 inception record (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
+This constructs the v0 inception event (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
 
 ### Custody
 
-Per-record storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in MinIO, referenced by SAID in the parent record. The SAID covers all custody fields, making storage policy tamper-evident.
+Per-SAD storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in MinIO, referenced by SAID in the parent SAD. The SAID covers all custody fields, making storage policy tamper-evident.
 
 Fields:
 - `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
 - `readPolicy` — SAID of a policy SAD controlling reads (server-enforced at fetch time)
-- `ttl` — Seconds until expiry (per-record: `sad_objects.created_at + ttl`)
+- `ttl` — Seconds until expiry (per-object: `sad_objects.created_at + ttl`)
 - `once` — Atomic delete on first successful retrieval
 - `nodes` — SAID of a `NodeSet` SAD for selective replication
 
@@ -63,7 +63,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 
 ## Divergence and Repair
 
-When two conflicting records exist at the same version (e.g., from concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception records are fully deterministic).
+When two conflicting events exist at the same version (e.g., from concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception events are fully deterministic).
 
 The **effective SAID** for a chain represents its current state:
 - Non-divergent: the tip event's SAID
@@ -71,17 +71,17 @@ The **effective SAID** for a chain represents its current state:
 
 ### Repair
 
-The chain owner repairs divergence by submitting a batch that includes a `Rpr` record. The handler auto-detects Rpr records and takes the repair path:
+The chain owner repairs divergence by submitting a batch that includes a `Rpr` event. The handler auto-detects Rpr events and takes the repair path:
 
 1. The batch starts at the divergent version
-2. `truncate_and_replace` deletes all records at and after that version
-3. Replacement records are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent topic). `write_policy` may legitimately evolve across versions via `Evl`, so it is not checked for invariance — the verifier tracks its evolution via branch state.
+2. `truncate_and_replace` deletes all events at and after that version
+3. Replacement events are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent topic). `write_policy` may legitimately evolve across versions via `Evl`, so it is not checked for invariance — the verifier tracks its evolution via branch state.
 
-Displaced records are archived to `sad_event_archives` (mirror table). A `sad_event_repairs` entry is created as an audit record, and `sad_event_repair_records` links each repair to the archived records it displaced. Repair history and displaced records are queryable via the chain repair endpoints.
+Displaced events are archived to `sad_event_archives` (mirror table). A `sad_event_repairs` entry is created as an audit event, and `sel_repair_events` links each repair to the archived events it displaced. Repair history and displaced events are queryable via the chain repair endpoints.
 
 ### Repair Propagation
 
-When a repair succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects repair from `Rpr` records in the submitted batch and takes the repair path, replacing their divergent state.
+When a repair succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects repair from `Rpr` events in the submitted batch and takes the repair path, replacing their divergent state.
 
 If a node misses the gossip repair message (e.g., it was offline), the owner submits the repair directly to that node.
 
@@ -130,13 +130,13 @@ All endpoints use POST with JSON request bodies. Identifiers are never placed in
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/sad/events` | Submit SAD events (repair auto-detected from `Rpr` records in the batch) |
+| `POST` | `/api/v1/sad/events` | Submit SAD events (repair auto-detected from `Rpr` events in the batch) |
 | `POST` | `/api/v1/sad/events/fetch` | Fetch chain page (body: `{ "prefix": "...", "since": "...", "limit": N }`) |
 | `POST` | `/api/v1/sad/events/effective-said` | Effective SAID for sync comparison (body: `{ "prefix": "..." }`) |
 | `POST` | `/api/v1/sad/events/exists` | Check event existence (body: `{ "said": "..." }`) |
 | `POST` | `/api/v1/sad/events/prefixes` | List SEL prefixes (authenticated, paginated) |
 | `POST` | `/api/v1/sad/events/repairs` | Paginated repair history (body: `{ "prefix": "...", "limit": N, "offset": N }`) |
-| `POST` | `/api/v1/sad/events/repairs/records` | Archived records for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
+| `POST` | `/api/v1/sad/events/repairs/events` | Archived events for a repair (body: `{ "prefix": "...", "said": "...", "limit": N, "offset": N }`) |
 
 ### Client Workflow
 
@@ -192,7 +192,7 @@ Environment variables:
 | `MINIO_ACCESS_KEY` | (required) | S3 access key |
 | `MINIO_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
-| `SADSTORE_MAX_RECORDS_PER_EVENT_LOG_PER_DAY` | `8` | Max SAD events per SEL prefix per day |
+| `SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY` | `8` | Max SAD events per SEL prefix per day |
 | `SADSTORE_MAX_WRITES_PER_IP_PER_SECOND` | `256` | Per-IP write rate (token bucket refill) |
 | `SADSTORE_IP_RATE_LIMIT_BURST` | `1024` | Per-IP token bucket burst size |
 | `SADSTORE_MAX_OBJECT_SIZE` | `1048576` | Max SAD object size in bytes (1 MiB) |
@@ -214,5 +214,5 @@ kels-cli sel prefix <write-policy> <topic>       # Compute SEL prefix offline
 
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
-- **Ephemeral records** — `once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `ttl` for auto-expiring records.
+- **Ephemeral objects** — `once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `ttl` for auto-expiring objects.
 - **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a policy.
