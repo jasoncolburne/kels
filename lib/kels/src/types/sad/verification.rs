@@ -58,6 +58,11 @@ struct SadBranchState {
     governance_policy: Option<cesr::Digest256>,
     /// Number of events since the last evaluation (or since chain start).
     events_since_evaluation: usize,
+    /// Version of the most recent governance evaluation (Evl or Rpr) on this
+    /// branch that passed both the governance check and the soft write_policy
+    /// check. `None` until the first authorized evaluation. Monotonically
+    /// advances (max) within a branch.
+    last_governance_version: Option<u64>,
 }
 
 /// Streaming structural + policy verifier for SAD Event Logs.
@@ -82,9 +87,6 @@ pub struct SelVerifier<'a> {
     current_generation_version: Option<u64>,
     saw_any_events: bool,
     policy_satisfied: bool,
-    /// The version of the most recent governance evaluation across all branches.
-    /// For divergent chains, this is the minimum across branches (weakest seal).
-    last_governance_version: Option<u64>,
     /// The version at which governance_policy was first established (v0 or v1).
     /// Chain-wide, set once.
     establishment_version: Option<u64>,
@@ -101,7 +103,6 @@ impl<'a> SelVerifier<'a> {
             current_generation_version: None,
             saw_any_events: false,
             policy_satisfied: true,
-            last_governance_version: None,
             establishment_version: None,
             checker,
         }
@@ -189,6 +190,7 @@ impl<'a> SelVerifier<'a> {
                     tracked_write_policy,
                     governance_policy,
                     events_since_evaluation: 0,
+                    last_governance_version: None,
                 },
             );
             return Ok(());
@@ -254,9 +256,12 @@ impl<'a> SelVerifier<'a> {
             }
 
             // Kind-specific chain-state logic
-            let (governance_policy, events_since_evaluation, tracked_write_policy) = match event
-                .kind
-            {
+            let (
+                governance_policy,
+                events_since_evaluation,
+                tracked_write_policy,
+                last_governance_version,
+            ) = match event.kind {
                 SadEventKind::Icp => {
                     // Icp at v1+ is rejected by validate_structure (version != 0)
                     unreachable!("Icp at v1+ should be rejected by validate_structure")
@@ -273,7 +278,7 @@ impl<'a> SelVerifier<'a> {
                     // events_since_evaluation = 1 stays unconditional — an unauthorized Est
                     // still occupies a slot in the evaluation window (same as an unauthorized Upd).
                     // tracked_write_policy unchanged — Est forbids write_policy (validate_structure).
-                    let (new_est_version, new_cp) = if write_policy_satisfied {
+                    let (new_est_version, new_gp) = if write_policy_satisfied {
                         (Some(1), event.governance_policy)
                     } else {
                         (self.establishment_version, branch.governance_policy)
@@ -284,7 +289,12 @@ impl<'a> SelVerifier<'a> {
                     // scenarios this may not match the tie-break winner's branch state —
                     // see `SadEventVerification::establishment_version()` docstring.
                     self.establishment_version = new_est_version;
-                    (new_cp, 1, branch.tracked_write_policy)
+                    (
+                        new_gp,
+                        1,
+                        branch.tracked_write_policy,
+                        branch.last_governance_version,
+                    )
                 }
                 kind if kind.evaluates_governance() => {
                     // Evl or Rpr: evaluate against tracked governance_policy
@@ -304,18 +314,20 @@ impl<'a> SelVerifier<'a> {
 
                     // Defense-in-depth: when the soft write_policy check above failed,
                     // skip all branch-state advances driven by this event — even those
-                    // authorized by the cp check that just passed. A consumer that bypasses
-                    // policy_satisfied() then sees unchanged seal/policy state for an
-                    // unauthorized event. (See R5/R6 audit for the rationale.)
-                    if write_policy_satisfied {
-                        self.last_governance_version = Some(match self.last_governance_version {
-                            Some(existing) => existing.min(event.version),
+                    // authorized by the governance check that just passed. A consumer
+                    // that bypasses policy_satisfied() then sees unchanged seal/policy
+                    // state for an unauthorized event. (See R5/R6 audit for rationale.)
+                    let new_last_gov_version = if write_policy_satisfied {
+                        Some(match branch.last_governance_version {
+                            Some(existing) => existing.max(event.version),
                             None => event.version,
-                        });
-                    }
+                        })
+                    } else {
+                        branch.last_governance_version
+                    };
 
                     // Evl allows governance_policy evolution; Rpr forbids it (validate_structure).
-                    let new_cp = if write_policy_satisfied {
+                    let new_gp = if write_policy_satisfied {
                         event.governance_policy.or(Some(*tracked))
                     } else {
                         Some(*tracked)
@@ -327,7 +339,7 @@ impl<'a> SelVerifier<'a> {
                     } else {
                         branch.tracked_write_policy
                     };
-                    (new_cp, 0, new_wp)
+                    (new_gp, 0, new_wp, new_last_gov_version)
                 }
                 SadEventKind::Upd => {
                     // Normal event — increment counter, check bound
@@ -341,7 +353,12 @@ impl<'a> SelVerifier<'a> {
                         )));
                     }
                     // tracked_write_policy unchanged — Upd forbids write_policy (validate_structure)
-                    (branch.governance_policy, count, branch.tracked_write_policy)
+                    (
+                        branch.governance_policy,
+                        count,
+                        branch.tracked_write_policy,
+                        branch.last_governance_version,
+                    )
                 }
                 _ => unreachable!("All SadEventKind variants handled"),
             };
@@ -353,6 +370,7 @@ impl<'a> SelVerifier<'a> {
                     tracked_write_policy,
                     governance_policy,
                     events_since_evaluation,
+                    last_governance_version,
                 },
             );
         }
@@ -419,6 +437,21 @@ impl<'a> SelVerifier<'a> {
             ));
         }
 
+        // Chain-wide last_governance_version: min across tip branches' per-branch
+        // values. In divergent chains this is the weakest seal — if any branch
+        // has not advanced past version V, repair below V must still be allowed
+        // on that branch. `None` on any branch collapses the chain-wide value to
+        // `None` (no authorized evaluation on at least one branch).
+        let last_governance_version = self
+            .branches
+            .values()
+            .map(|b| b.last_governance_version)
+            .reduce(|acc, v| match (acc, v) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                _ => None,
+            })
+            .flatten();
+
         // Deterministic tie-break: higher version wins; equal versions break
         // on lexicographically greater SAID. Matters for divergent chains so
         // `verification.write_policy()` is reproducible across callers.
@@ -437,7 +470,7 @@ impl<'a> SelVerifier<'a> {
             winning_branch.tip,
             winning_branch.tracked_write_policy,
             self.policy_satisfied,
-            self.last_governance_version,
+            last_governance_version,
             self.establishment_version,
         ))
     }
@@ -457,14 +490,14 @@ mod tests {
 
     /// Create a v0 event with governance_policy declared.
     fn create_v0_with_evaluation(wp: cesr::Digest256) -> SadEvent {
-        let cp = test_digest(b"evaluation-policy");
+        let gp = test_digest(b"evaluation-policy");
         SadEvent::create(
             "kels/sad/v1/keys/mlkem".to_string(),
             SadEventKind::Icp,
             None,
             None,
             Some(wp),
-            Some(cp),
+            Some(gp),
         )
         .unwrap()
     }
@@ -484,9 +517,9 @@ mod tests {
 
     /// Declare governance_policy on an event (Est kind) and increment.
     fn add_governance_declaration(event: &mut SadEvent) {
-        let cp = test_digest(b"evaluation-policy");
+        let gp = test_digest(b"evaluation-policy");
         event.kind = SadEventKind::Est;
-        event.governance_policy = Some(cp);
+        event.governance_policy = Some(gp);
         event.write_policy = None; // Est forbids write_policy
         event.increment().unwrap();
     }
@@ -679,7 +712,7 @@ mod tests {
         // the write_policy rejection path.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
         let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
@@ -689,7 +722,7 @@ mod tests {
         v1.increment().unwrap();
 
         let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: cp,
+            governance_policy: gp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
@@ -734,7 +767,7 @@ mod tests {
         // last_governance_version) are gated on the same soft-pass flag.
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
-        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
         let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
@@ -745,7 +778,7 @@ mod tests {
 
         // Accepts governance_policy evaluation, rejects write_policy authorization.
         let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: cp,
+            governance_policy: gp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
@@ -769,33 +802,33 @@ mod tests {
         // Defense-in-depth: when an Evl soft-fails the write_policy check,
         // the branch's tracked governance_policy must stay at the previous
         // value. We verify this indirectly by submitting a v2 Evl whose hard
-        // cp check only succeeds if tracked cp is still cp1 (not the attacker's
-        // cp_attacker that v1 proposed). AcceptEvaluationRejectWriteChecker only
-        // accepts checks against cp1, so if tracked cp had advanced to cp_attacker,
-        // v2's hard cp check would fail and abort verification.
+        // governance check only succeeds if tracked gp is still gp1 (not the
+        // attacker's gp_attacker that v1 proposed). AcceptEvaluationRejectWriteChecker
+        // only accepts checks against gp1, so if tracked gp had advanced to
+        // gp_attacker, v2's hard governance check would fail and abort verification.
         let wp1 = test_digest(b"write-policy-1");
         let wp_attacker = test_digest(b"write-policy-attacker");
-        let cp1 = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
-        let cp_attacker = test_digest(b"evaluation-policy-attacker");
+        let gp1 = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let gp_attacker = test_digest(b"evaluation-policy-attacker");
         let v0 = create_v0_with_evaluation(wp1);
 
-        // v1: attacker-crafted Evl evolving both wp and cp.
+        // v1: attacker-crafted Evl evolving both wp and gp.
         // wp soft check (against tracked wp1): FAILS.
-        // cp hard check (against tracked cp1): PASSES.
-        // With the gate: tracked cp stays at cp1, last_governance_version stays None.
+        // governance hard check (against tracked gp1): PASSES.
+        // With the gate: tracked gp stays at gp1, last_governance_version stays None.
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Evl;
         v1.write_policy = Some(wp_attacker);
-        v1.governance_policy = Some(cp_attacker);
+        v1.governance_policy = Some(gp_attacker);
         v1.increment().unwrap();
 
-        // v2: a following Evl. wp stays attacker (inherited), cp unchanged.
-        // If the v1 cp advance was gated (fix): tracked cp is cp1, v2's hard
-        // cp check against cp1 passes → verification succeeds with
+        // v2: a following Evl. wp stays attacker (inherited), gp unchanged.
+        // If the v1 gp advance was gated (fix): tracked gp is gp1, v2's hard
+        // governance check against gp1 passes → verification succeeds with
         // policy_satisfied=false.
-        // If the v1 cp advance was NOT gated (pre-fix): tracked cp is cp_attacker,
-        // v2's hard cp check against cp_attacker fails → HARD ERROR.
+        // If the v1 gp advance was NOT gated (pre-fix): tracked gp is gp_attacker,
+        // v2's hard governance check against gp_attacker fails → HARD ERROR.
         let mut v2 = v1.clone();
         v2.content = Some(test_digest(b"content2"));
         v2.kind = SadEventKind::Evl;
@@ -804,14 +837,14 @@ mod tests {
         v2.increment().unwrap();
 
         let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: cp1,
+            governance_policy: gp1,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier
             .finish()
             .await
-            .expect("verification must succeed — tracked cp should still be cp1 on v2");
+            .expect("verification must succeed — tracked gp should still be gp1 on v2");
         assert!(
             !verification.policy_satisfied(),
             "wp soft-failed on v1 and v2, policy_satisfied must be false"
@@ -828,47 +861,47 @@ mod tests {
         // establishment_version and branch.governance_policy must NOT advance.
         // Mirrors the R5/R6 gate on the Evl/Rpr arm for the Est arm.
         let wp1 = test_digest(b"write-policy-1");
-        let cp_attacker = test_digest(b"evaluation-policy-attacker");
-        let cp_legit = test_digest(b"evaluation-policy-legit");
+        let gp_attacker = test_digest(b"evaluation-policy-attacker");
+        let gp_legit = test_digest(b"evaluation-policy-legit");
 
         let v0 = create_v0_no_evaluation(wp1);
         let mut v1 = v0.clone();
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Est;
         v1.write_policy = None;
-        v1.governance_policy = Some(cp_attacker);
+        v1.governance_policy = Some(gp_attacker);
         v1.increment().unwrap();
 
-        // AcceptEvaluationRejectWriteChecker accepts only checks against cp_legit.
+        // AcceptEvaluationRejectWriteChecker accepts only checks against gp_legit.
         // The wp check (against tracked wp1) returns false → soft-fail.
         let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: cp_legit,
+            governance_policy: gp_legit,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap_err();
         // finish() rejects: the gate kept branch.governance_policy = None, so
-        // "SAD Event Log has no governance_policy" fires. This proves Est's cp
-        // advance was blocked by the soft wp-fail.
+        // "SAD Event Log has no governance_policy" fires. This proves Est's
+        // governance_policy advance was blocked by the soft wp-fail.
         assert!(
             verification.to_string().contains("no governance_policy"),
-            "Expected no-evaluation error because the soft-failed Est did not establish cp, got: {}",
+            "Expected no-evaluation error because the soft-failed Est did not establish governance_policy, got: {}",
             verification
         );
     }
 
     #[tokio::test]
     async fn test_divergent_est_soft_fail_does_not_poison_other_branch() {
-        // Divergent Est at v1: branch A carries cp_legit and soft-passes the wp
-        // check; branch B carries cp_attacker and soft-fails. The R6 per-branch
+        // Divergent Est at v1: branch A carries gp_legit and soft-passes the wp
+        // check; branch B carries gp_attacker and soft-fails. The R6 per-branch
         // gate keeps branch B's `governance_policy = None`, but `establishment_version`
         // is chain-wide and advances to Some(1) via branch A. This pins the
         // intentional chain-wide/per-branch asymmetry: consumers reading
         // `establishment_version()` without gating on `policy_satisfied()` may
         // see a value that doesn't match the tie-break winner's branch state.
         let wp1 = test_digest(b"write-policy-1");
-        let cp_legit = test_digest(b"evaluation-policy-legit");
-        let cp_attacker = test_digest(b"evaluation-policy-attacker");
+        let gp_legit = test_digest(b"evaluation-policy-legit");
+        let gp_attacker = test_digest(b"evaluation-policy-attacker");
 
         let v0 = create_v0_no_evaluation(wp1);
 
@@ -876,21 +909,21 @@ mod tests {
         v1_a.content = Some(test_digest(b"content_a"));
         v1_a.kind = SadEventKind::Est;
         v1_a.write_policy = None;
-        v1_a.governance_policy = Some(cp_legit);
+        v1_a.governance_policy = Some(gp_legit);
         v1_a.increment().unwrap();
 
         let mut v1_b = v0.clone();
         v1_b.content = Some(test_digest(b"content_b"));
         v1_b.kind = SadEventKind::Est;
         v1_b.write_policy = None;
-        v1_b.governance_policy = Some(cp_attacker);
+        v1_b.governance_policy = Some(gp_attacker);
         v1_b.increment().unwrap();
 
         // Checker accepts the wp soft check only for events whose
-        // governance_policy is cp_legit. Est doesn't trigger the cp hard check,
-        // so this is the only checker call path exercised per event.
+        // governance_policy is gp_legit. Est doesn't trigger the governance hard
+        // check, so this is the only checker call path exercised per event.
         struct AcceptLegitEstChecker {
-            legit_cp: cesr::Digest256,
+            legit_gp: cesr::Digest256,
         }
         #[async_trait::async_trait]
         impl PolicyChecker for AcceptLegitEstChecker {
@@ -899,14 +932,14 @@ mod tests {
                 event: &SadEvent,
                 _: &cesr::Digest256,
             ) -> Result<bool, KelsError> {
-                Ok(event.governance_policy == Some(self.legit_cp))
+                Ok(event.governance_policy == Some(self.legit_gp))
             }
             async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
                 Ok(true)
             }
         }
 
-        let checker = AcceptLegitEstChecker { legit_cp: cp_legit };
+        let checker = AcceptLegitEstChecker { legit_gp: gp_legit };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier
             .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
@@ -927,8 +960,8 @@ mod tests {
         assert_eq!(verification.write_policy(), &wp1);
 
         // Documenting the asymmetry: if tie-break selects branch B (whose per-branch
-        // cp stayed None because of the R6 gate), the token carries
-        // establishment_version=Some(1) alongside a tip whose branch had no cp.
+        // governance_policy stayed None because of the R6 gate), the token carries
+        // establishment_version=Some(1) alongside a tip whose branch had no gp.
         // This is intentional; consumers that treat the accessor as branch-scoped
         // must gate on policy_satisfied() first.
         let winner_is_b = v1_b.said.as_ref() > v1_a.said.as_ref();
@@ -1009,7 +1042,7 @@ mod tests {
         let wp1 = test_digest(b"write-policy-1");
         let wp2 = test_digest(b"write-policy-2");
         let wp3 = test_digest(b"write-policy-3");
-        let cp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
+        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
 
         let v0 = create_v0_with_evaluation(wp1);
         let mut v1 = v0.clone();
@@ -1027,7 +1060,7 @@ mod tests {
         v2.increment().unwrap();
 
         let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: cp,
+            governance_policy: gp,
         };
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
@@ -1329,9 +1362,9 @@ mod tests {
     #[tokio::test]
     async fn test_v0_with_governance_policy_changes_prefix() {
         let wp = test_digest(b"write-policy");
-        let v0_no_cp = create_v0_no_evaluation(wp);
-        let v0_with_cp = create_v0_with_evaluation(wp);
-        assert_ne!(v0_no_cp.prefix, v0_with_cp.prefix);
+        let v0_no_gp = create_v0_no_evaluation(wp);
+        let v0_with_gp = create_v0_with_evaluation(wp);
+        assert_ne!(v0_no_gp.prefix, v0_with_gp.prefix);
     }
 
     // ==================== Kind-specific chain-state tests ====================
@@ -1386,7 +1419,7 @@ mod tests {
         v2.content = Some(test_digest(b"content2"));
         v2.kind = SadEventKind::Est;
         v2.write_policy = None;
-        v2.governance_policy = Some(test_digest(b"another-cp"));
+        v2.governance_policy = Some(test_digest(b"another-gp"));
         v2.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -1448,7 +1481,7 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         v1.kind = SadEventKind::Rpr;
         v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"rpr-cp"));
+        v1.governance_policy = Some(test_digest(b"rpr-gp"));
         v1.increment().unwrap();
 
         let checker = AlwaysPassChecker;
@@ -1484,6 +1517,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_last_governance_version_advances_past_first_evl_on_linear_chain() {
+        // Regression: pre-fix, the chain-wide min() logic pinned
+        // last_governance_version to the FIRST Evl's version and never advanced.
+        // Chain: v0 Icp → v1 Est → v2 Evl → v3 Upd → v4 Evl.
+        // Expected: last_governance_version == Some(4) (the most recent Evl).
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_no_evaluation(wp);
+
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        add_governance_declaration(&mut v1);
+
+        let mut v2 = v1.clone();
+        v2.content = Some(test_digest(b"content2"));
+        add_governance_evaluation(&mut v2);
+
+        let mut v3 = v2.clone();
+        v3.content = Some(test_digest(b"content3"));
+        v3.kind = SadEventKind::Upd;
+        v3.write_policy = None;
+        v3.governance_policy = None;
+        v3.increment().unwrap();
+
+        let mut v4 = v3.clone();
+        v4.content = Some(test_digest(b"content4"));
+        add_governance_evaluation(&mut v4);
+
+        let checker = AlwaysPassChecker;
+        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        verifier.verify_page(&[v0, v1, v2, v3, v4]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.last_governance_version(), Some(4));
+    }
+
+    #[tokio::test]
     async fn test_last_governance_version_none_without_evaluation() {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_no_evaluation(wp);
@@ -1501,7 +1569,7 @@ mod tests {
     #[tokio::test]
     async fn test_v0_non_icp_rejected_by_validate_structure() {
         let wp = test_digest(b"write-policy");
-        let cp = test_digest(b"evaluation-policy");
+        let gp = test_digest(b"evaluation-policy");
         // Manually construct a v0 with Evl kind — should fail validate_structure
         let mut v0 = SadEvent {
             said: cesr::Digest256::default(),
@@ -1513,7 +1581,7 @@ mod tests {
             content: None,
             custody: None,
             write_policy: Some(wp),
-            governance_policy: Some(cp),
+            governance_policy: Some(gp),
         };
         v0.derive_said().unwrap();
 

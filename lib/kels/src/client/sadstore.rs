@@ -36,7 +36,7 @@ impl SadStoreClient {
         &self.base_url
     }
 
-    /// Create an `HttpSadSource` for this client's chain endpoint.
+    /// Create an `HttpSadSource` for this client's events endpoint.
     pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
         crate::HttpSadSource::new(&self.base_url)
     }

@@ -353,8 +353,8 @@ impl SadEventVerification {
     /// In divergent scenarios where some Est events soft-failed the write_policy check,
     /// this value may not match the tie-break winner's branch state: the winning branch
     /// may have `governance_policy = None` while `establishment_version` is `Some` (because
-    /// another branch's Est did establish cp at that version). Consumers reading this as
-    /// branch-scoped must gate on `policy_satisfied()` first.
+    /// another branch's Est did establish governance_policy at that version). Consumers
+    /// reading this as branch-scoped must gate on `policy_satisfied()` first.
     pub fn establishment_version(&self) -> Option<u64> {
         self.establishment_version
     }

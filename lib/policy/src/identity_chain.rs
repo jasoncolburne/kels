@@ -20,7 +20,7 @@ pub const IDENTITY_CHAIN_TOPIC: &str = "kels/sad/v1/identity/chain";
 /// `write_policy` is set to `initial_policy.said` — the identity is self-governing.
 ///
 /// To enable `advance()` (policy rotation), follow the inception with an `Est`
-/// record at v1 declaring `governance_policy`. Without it, `advance()` produces
+/// event at v1 declaring `governance_policy`. Without it, `advance()` produces
 /// an `Evl` that the verifier rejects at submission (governance_policy must be
 /// established on the branch). See `advance()` for the higher-threshold
 /// authorization rules that apply to rotation.
@@ -47,14 +47,14 @@ pub fn create(initial_policy: &Policy) -> Result<SadEvent, PolicyError> {
 /// an identity chain advance with an unchanged policy is meaningless (content is
 /// always None, custody is always None, there's nothing else to change).
 ///
-/// The produced record is an `Evl` (was `Upd` before #131). This means the advance
+/// The produced event is an `Evl` (was `Upd` before #131). This means the advance
 /// is evaluated against `governance_policy` — a higher-threshold authorization bar
 /// than `write_policy`. Policy replacement now requires satisfying both the previous
-/// write_policy (the soft check on every v1+ record) and the governance_policy (the
+/// write_policy (the soft check on every v1+ event) and the governance_policy (the
 /// hard check that gates Evl acceptance).
 ///
 /// Precondition: the chain must have `governance_policy` established (via a prior
-/// `Est` at v1 or a v0 declaration on the inception record). If not, the returned
+/// `Est` at v1 or a v0 declaration on the inception event). If not, the returned
 /// event will be rejected by `SelVerifier` at submission — `advance()` itself
 /// does not surface this error.
 pub fn advance(
@@ -139,10 +139,10 @@ mod tests {
     impl PolicyChecker for RejectAdvanceChecker {
         async fn satisfies(
             &self,
-            record: &SadEvent,
+            event: &SadEvent,
             _: &cesr::Digest256,
         ) -> Result<bool, KelsError> {
-            Ok(record.kind == SadEventKind::Est)
+            Ok(event.kind == SadEventKind::Est)
         }
         async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
             Ok(true)
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(v2.prefix, prefix);
 
         // Close the loop: feed [v0, v1_gp, v2] back through a fresh verifier to
-        // prove the produced Evl record passes verifier evaluation (different
+        // prove the produced Evl event passes verifier evaluation (different
         // code path than the Upd it replaced) and that tracked_write_policy
         // advances to policy2.said.
         let mut v1_gp_rebuilt = v0.clone();
@@ -294,7 +294,7 @@ mod tests {
         let v0 = create(&policy1).unwrap();
 
         // v1: Est establishes governance_policy (RejectAdvanceChecker accepts Est
-        // so the R6 Est-arm gate permits the cp advance).
+        // so the R6 Est-arm gate permits the governance_policy advance).
         let mut v1 = v0.clone();
         add_governance_declaration(&mut v1);
         v1.increment().unwrap();

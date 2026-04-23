@@ -468,11 +468,11 @@ else
     A_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
     A_POST_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$DIV_PREFIX")
     run_test "Repair: node-a no longer divergent" [ "$A_POST_DIVERGENT" = "false" ]
-    run_test "Repair: node-a tip is repair record" [ "$A_POST_EFFECTIVE" = "$D_REPAIR_SAID" ]
+    run_test "Repair: node-a tip is repair event" [ "$A_POST_EFFECTIVE" = "$D_REPAIR_SAID" ]
 
-    # Verify repair audit record exists
+    # Verify repair audit entry exists
     REPAIR_COUNT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${DIV_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/repairs" | jq '.repairs | length')
-    run_test "Repair: audit record created" [ "$REPAIR_COUNT" -ge 1 ]
+    run_test "Repair: audit entry created" [ "$REPAIR_COUNT" -ge 1 ]
 
     # Wait for repair to propagate to node-b via gossip
     run_test "Repair: propagated to node-b" \
