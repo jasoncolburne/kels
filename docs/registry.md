@@ -57,7 +57,7 @@ See [Multi-Registry Federation](./federation.md) for detailed documentation.
 3. If peers exist:
    - Start listening for gossip updates
    - For each bootstrap peer (in parallel):
-     - Fetch prefix kel list: `POST /api/v1/kels/prefixes` (signed request)
+     - Fetch kel prefix list: `POST /api/v1/kels/prefixes` (signed request)
      - For each prefix not in local DB:
        - Fetch KEL via gossip request-response
        - Submit to local KELS
