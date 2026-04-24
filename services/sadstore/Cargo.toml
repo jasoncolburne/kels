@@ -64,9 +64,13 @@ chrono = "0.4"
 tokio-test = "0.4"
 testcontainers = "0.27"
 ctor = "0.4"
-testcontainers-modules = { version = "0.15", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serial_test = "3"
+# Full-stack integration tests: sad_builder_tests drives both services.
+# The package is named `kels` (services/kels/Cargo.toml); the library target
+# it exports is `kels_service`, which is what `use` statements reference.
+kels = { path = "../../services/kels" }
 
 [lints.clippy]
 unwrap_used = "deny"

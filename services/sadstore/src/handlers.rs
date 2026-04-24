@@ -445,12 +445,16 @@ pub async fn post_sad_object(
         }
     };
 
+    let said = value.get_said();
+
     // Derive canonical SAID on the fully compacted form
     if value.derive_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID derivation failed").into_response();
     }
 
-    let said = value.get_said();
+    if said != value.get_said() {
+        return (StatusCode::BAD_REQUEST, "SAID mismatch").into_response();
+    }
 
     // HEAD check — short-circuit if already exists (before any MinIO writes)
     match state.object_store.exists(&said).await {

@@ -110,11 +110,17 @@ lint-terminology:
 		exit 1; \
 	fi
 
+# Optional passthrough: set TEST_ARGS to forward flags to cargo test.
+# Examples:
+#   make test TEST_ARGS="--test sad_builder_tests"   # run one test binary
+#   make test TEST_ARGS="-p kels-core"               # run one package
+#   make test TEST_ARGS="some_test_name"             # filter by name
+# When unset, runs the full workspace suite as before.
 test:
-	cargo test --workspace --all-features
+	cargo test --workspace --all-features $(TEST_ARGS)
 
 test-verbose:
-	cargo test --workspace --all-features -- --nocapture
+	cargo test --workspace --all-features $(TEST_ARGS) -- --nocapture
 
 # Files excluded from coverage (can't be meaningfully unit tested):
 # - Binary mains (main.rs, admin.rs) - entry points only
