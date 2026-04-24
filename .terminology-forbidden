@@ -1,0 +1,60 @@
+# === KELS-133: Rust types ===
+\bSadPointer[A-Za-z0-9_]*
+\bsad_pointer[A-Za-z0-9_]*
+\bSadChainVerifier
+\bSadChainRepair
+\bSadGossipMessage
+\bCustodyContext\b
+NotAllowedOnPointer
+\bSubmitPointersResponse\b
+\bSubmitEventsResponse\b
+
+# === KELS-133: Enum rename (EventKind → KeyEventKind) ===
+# \b word boundaries alone exclude KeyEventKind — no lookbehind needed,
+# because there's no word boundary between 'y' and 'E' in the compound.
+\bEventKind\b
+
+# === KELS-133: Renamed field / method / const identifiers ===
+\bcheckpoint_policy\b
+\bcheckpointPolicy\b
+\bevaluates_checkpoint\b
+\blast_checkpoint_version\b
+\bbuild_checkpoint_policy\b
+\badd_checkpoint_declaration\b
+CHECKPOINT_POLICY_SAID
+SAD_CHAIN_PUBSUB_CHANNEL
+\bsad_chain_updates\b
+\bsad_chain_stale\b
+\bSAD_KIND\b
+\bDIV_KIND\b
+
+# === KELS-133: CLI handlers (old names, pre-restructure) ===
+\bcmd_sad_chain\b
+\bcmd_sad_submit\b
+\bcmd_sad_prefix\b
+\bhandle_sad_chain_announcement\b
+
+# === KELS-133: Function naming parity (singular → plural) ===
+\b(transfer|verify|forward)_sad_event\b
+
+# === KELS-133: Wire format ===
+/sad/pointers
+kels/sad/v1/pointer/
+"type"[[:space:]]*:[[:space:]]*"pointer"
+:repair\b
+\?repair=
+
+# === KELS-133: Phantom types (referenced in docs but never existed post-rename) ===
+\bSignedSadEvent\b
+\bSignedSadPointer\b
+
+# === KELS-133: Test identifiers ===
+test_sad_gossip_message
+test_event_kind_
+test_sad_chain_verifier_
+\bcp_said\b
+\bcp_version\b
+\bchain_cp_said\b
+
+# === Grammar: common slip introduced by in-place renames ===
+\ba event\b
