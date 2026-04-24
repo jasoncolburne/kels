@@ -3,6 +3,7 @@
 ## Build & Verify
 
 - `make` verifies changes (fmt, deny, clippy, test, build). Never use naked cargo commands.
+- When landing a rename, add retired tokens to `.terminology-forbidden` so `make lint-terminology` catches future regressions.
 - `make coverage` for per-file coverage. Individual targets: `make fmt`, `make clippy`, etc.
 - **`make` is slow (minutes). Run it ONCE and tee output to a file**, then grep/tail the file repeatedly instead of re-running: `make 2>&1 | tee /tmp/make.log`. Do not run `make | tail -N` then `make | grep foo` then `make | head -N` — you just burned 3× the time for one build.
 - Dependency crates at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`.

@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 LIBS_PACKAGES := kels-core kels-derive kels-creds kels-policy kels-exchange kels-ffi kels-mock-hsm
 LIBS_DIR := lib
 LIBS_SUBDIRS := kels derive creds policy exchange ffi mock-hsm
@@ -17,9 +19,9 @@ export TRUSTED_REGISTRY_PREFIXES
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
 
-.PHONY: all build check clean clean-docker clean-test-containers clippy clippy-fix coverage deny fmt fmt-check install-deny test ios-simulator redeploy-registries restart-gossip-services test-resync test-grow-federation test-shrink-federation test-peer-lifecycle test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
+.PHONY: all build check clean clean-docker clean-test-containers clippy clippy-fix coverage deny fmt fmt-check install-deny lint-terminology test ios-simulator redeploy-registries restart-gossip-services test-resync test-grow-federation test-shrink-federation test-peer-lifecycle test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
 
-all: fmt-check deny check clippy test build
+all: fmt-check lint-terminology deny check clippy test build
 
 benchmark: clean-garden
 	scripts/coredns.sh reset
@@ -97,6 +99,16 @@ fmt-check:
 
 install-deny:
 	cargo install cargo-deny
+
+lint-terminology:
+	@if git ls-files -z \
+			':!:docs/claudit' \
+			':!:.terminology-forbidden' \
+			':!:Makefile' \
+		| xargs -0 grep -nE -f <(grep -vE '^(#|$$)' .terminology-forbidden); then \
+		echo "ERROR: forbidden terminology found (see .terminology-forbidden)"; \
+		exit 1; \
+	fi
 
 test:
 	cargo test --workspace --all-features
