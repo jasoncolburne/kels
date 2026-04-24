@@ -414,9 +414,7 @@ impl<'a> SelVerifier<'a> {
         self.flush_generation().await?;
 
         if !self.saw_any_events {
-            return Err(KelsError::VerificationFailed(
-                "Empty SAD Event Log".into(),
-            ));
+            return Err(KelsError::VerificationFailed("Empty SAD Event Log".into()));
         }
 
         if self.branches.is_empty() {
