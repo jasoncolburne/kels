@@ -10,7 +10,7 @@ use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels_core::SadEvent;
+use kels_core::{SadEvent, SadEventBuilder};
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -138,32 +138,25 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, events: &[SadEvent]
     tx.commit().await.unwrap();
 }
 
-/// Build a chain of v0..v(count-1).
+/// Build a chain of `count` events using the standard "discoverable" shape:
+/// bare v0 `Icp` + v1 `Est` (governance declaration) + subsequent `Upd` events.
+/// Matches what real callers produce via `incept_deterministic`, so these
+/// repository tests exercise realistic chain layouts rather than
+/// governance-absent shapes the verifier would reject.
 fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadEvent> {
-    let mut events = Vec::with_capacity(count);
-    let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut event = SadEvent::create(
-        kind.to_string(),
-        kels_core::SadEventKind::Icp,
-        None,
-        None,
-        Some(kel_digest),
-        None,
-    )
-    .unwrap();
-    events.push(event.clone());
-
-    event.kind = kels_core::SadEventKind::Upd;
-    event.write_policy = None; // Upd forbids write_policy
-    for i in 1..count {
-        event.content = Some(cesr::Digest256::blake3_256(
-            format!("content_{}", i).as_bytes(),
-        ));
-        event.increment().unwrap();
-        events.push(event.clone());
+    assert!(
+        count >= 2,
+        "build_chain requires count >= 2 (v0 Icp + v1 Est)"
+    );
+    let wp = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
+    let gp = cesr::Digest256::blake3_256(format!("{}-gp", kel_prefix).as_bytes());
+    let mut builder = SadEventBuilder::new(None);
+    builder.incept_deterministic(kind, wp, gp, None).unwrap();
+    for i in 2..count {
+        let content = cesr::Digest256::blake3_256(format!("content_{}", i).as_bytes());
+        builder.update(content).unwrap();
     }
-
-    events
+    builder.pending_events().to_vec()
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.

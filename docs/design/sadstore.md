@@ -87,7 +87,7 @@ If a node misses the gossip repair message (e.g., it was offline), the owner sub
 
 ## Verification
 
-The `SadEventVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
 
 Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever an `Evl` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip event's raw field. See [sad-events.md](sad-events.md) for the semantics of the governance-related accessors (chain-wide vs. branch-scoped).
 

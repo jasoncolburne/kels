@@ -266,22 +266,26 @@ impl SadEvent {
 /// Proof-of-verification token for a SAD Event Log.
 ///
 /// Cannot be constructed outside this crate — only via `SelVerifier`.
-/// Having a `SadEventVerification` proves the chain was fully verified
+/// Having a `SelVerification` proves the chain was fully verified
 /// (structural integrity and policy authorization checked).
 #[derive(Debug, Clone)]
-pub struct SadEventVerification {
+pub struct SelVerification {
     tip: SadEvent,
     tracked_write_policy: cesr::Digest256,
+    governance_policy: Option<cesr::Digest256>,
+    events_since_evaluation: usize,
     policy_satisfied: bool,
     last_governance_version: Option<u64>,
     establishment_version: Option<u64>,
 }
 
-impl SadEventVerification {
+impl SelVerification {
     /// Create a new verification token. Crate-internal only.
     pub(crate) fn new(
         tip: SadEvent,
         tracked_write_policy: cesr::Digest256,
+        governance_policy: Option<cesr::Digest256>,
+        events_since_evaluation: usize,
         policy_satisfied: bool,
         last_governance_version: Option<u64>,
         establishment_version: Option<u64>,
@@ -289,6 +293,8 @@ impl SadEventVerification {
         Self {
             tip,
             tracked_write_policy,
+            governance_policy,
+            events_since_evaluation,
             policy_satisfied,
             last_governance_version,
             establishment_version,
@@ -330,6 +336,26 @@ impl SadEventVerification {
     /// The event topic.
     pub fn topic(&self) -> &str {
         &self.tip.topic
+    }
+
+    /// The tracked governance_policy SAID on the winning branch, if established.
+    ///
+    /// `None` until an `Icp` with governance_policy or an `Est` at v1 establishes it.
+    /// For divergent chains where branches legitimately carry different governance
+    /// policies, this reflects only the tie-break winner — gate on `policy_satisfied()`
+    /// before relying on a chain-wide interpretation.
+    pub fn governance_policy(&self) -> Option<&cesr::Digest256> {
+        self.governance_policy.as_ref()
+    }
+
+    /// Number of non-evaluation events on the winning branch since the last
+    /// governance evaluation (Evl or Rpr), or since chain start if none.
+    ///
+    /// Used by builder-side enforcement of `MAX_NON_EVALUATION_EVENTS` before
+    /// staging an `Upd`. Caller needs the bound-comparison value, not the
+    /// policy-level semantics.
+    pub fn events_since_evaluation(&self) -> usize {
+        self.events_since_evaluation
     }
 
     /// Whether all write_policy checks were satisfied during verification.

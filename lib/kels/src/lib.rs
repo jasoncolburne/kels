@@ -45,6 +45,7 @@ pub mod error;
 pub mod merge;
 pub mod repository;
 pub mod sad;
+pub mod sad_builder;
 pub mod serving;
 pub mod store;
 pub mod types;
@@ -83,6 +84,7 @@ pub use sad::{
     ExpansionState, MAX_EXPANSION_DEPTH, MAX_EXPANSIONS, compact_at_path, compact_children_only,
     compact_recursive, expand_at_path, navigate_to_value_mut,
 };
+pub use sad_builder::SadEventBuilder;
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
     FileKelStore, FileSadStore, InMemorySadStore, KelStore, KelStoreSink, RepositoryKelStore,
@@ -102,15 +104,15 @@ pub use types::{
     ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
     RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory, RemovalWithVotes,
     SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage,
-    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventVerification, SadFetchRequest,
-    SadObjectEntry, SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SelRepairEvent,
-    SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest,
-    StoreKelSource, StorePageLoader, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
-    completed_verification, compute_approval_threshold, compute_rotation_hash,
-    compute_sad_event_prefix, forward_key_events, forward_sad_events, hash_effective_said,
-    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
-    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
-    verify_sad_events,
+    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadFetchRequest, SadObjectEntry,
+    SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SelRepairEvent,
+    SelVerification, SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
+    SignedSadFetchRequest, StoreKelSource, StorePageLoader, SubmitKeyEventsResponse,
+    SubmitSadEventsResponse, Vote, completed_verification, compute_approval_threshold,
+    compute_rotation_hash, compute_sad_event_prefix, forward_key_events, forward_sad_events,
+    hash_effective_said, parse_and_validate_custody, single_signer, truncate_incomplete_generation,
+    validate_timestamp, verify_key_events, verify_key_events_collecting_establishment_keys,
+    verify_key_events_with, verify_sad_events,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

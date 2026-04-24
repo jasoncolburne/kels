@@ -287,7 +287,7 @@ impl<'a> SelVerifier<'a> {
                     // guard (services/sadstore/src/handlers.rs) relies on this being the
                     // earliest establishment point across all branches. In divergent
                     // scenarios this may not match the tie-break winner's branch state —
-                    // see `SadEventVerification::establishment_version()` docstring.
+                    // see `SelVerification::establishment_version()` docstring.
                     self.establishment_version = new_est_version;
                     (
                         new_gp,
@@ -410,7 +410,7 @@ impl<'a> SelVerifier<'a> {
         Ok(())
     }
 
-    pub async fn finish(mut self) -> Result<super::event::SadEventVerification, KelsError> {
+    pub async fn finish(mut self) -> Result<super::event::SelVerification, KelsError> {
         self.flush_generation().await?;
 
         if !self.saw_any_events {
@@ -464,23 +464,77 @@ impl<'a> SelVerifier<'a> {
             })
             .ok_or_else(|| KelsError::VerificationFailed("No tip after verification".into()))?;
 
-        Ok(super::event::SadEventVerification::new(
+        Ok(super::event::SelVerification::new(
             winning_branch.tip,
             winning_branch.tracked_write_policy,
+            winning_branch.governance_policy,
+            winning_branch.events_since_evaluation,
             self.policy_satisfied,
             last_governance_version,
             self.establishment_version,
         ))
     }
+
+    /// Resume a verifier from a prior verification token.
+    ///
+    /// Rehydrates single-branch state (`tip`, `tracked_write_policy`, `governance_policy`,
+    /// `events_since_evaluation`, `last_governance_version`) plus chain-wide
+    /// `establishment_version` and `policy_satisfied`, so subsequent `verify_page`
+    /// calls continue from where the prior verification left off instead of
+    /// re-verifying from inception.
+    ///
+    /// Parallel to `KelVerifier::resume`. Only supports non-divergent chains —
+    /// `SelVerification` carries a single tie-break winner, so a resumed verifier
+    /// cannot reconstruct two divergent branches. Callers that hold a verification
+    /// over a divergent chain must re-verify from inception.
+    pub fn resume(
+        prefix: &cesr::Digest256,
+        verification: &super::event::SelVerification,
+        checker: &'a dyn PolicyChecker,
+    ) -> Result<Self, KelsError> {
+        let tip = verification.current_event().clone();
+
+        let mut branches = HashMap::new();
+        branches.insert(
+            tip.said,
+            SadBranchState {
+                tip: tip.clone(),
+                tracked_write_policy: *verification.write_policy(),
+                governance_policy: verification.governance_policy().copied(),
+                events_since_evaluation: verification.events_since_evaluation(),
+                last_governance_version: verification.last_governance_version(),
+            },
+        );
+
+        Ok(Self {
+            prefix: *prefix,
+            topic: Some(tip.topic.clone()),
+            branches,
+            generation_buffer: Vec::new(),
+            current_generation_version: None,
+            saw_any_events: true,
+            policy_satisfied: verification.policy_satisfied(),
+            establishment_version: verification.establishment_version(),
+            checker,
+        })
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::panic)]
+// Happy-path fixtures delegate to `SadEventBuilder`. Fixtures below that
+// construct events directly — `create_v0_no_evaluation`, the `add_governance_*`
+// mutators, and the inline v0/v1 builds inside individual rejection tests —
+// do so because those tests exercise the verifier's integrity against shapes
+// the builder refuses by design (partial chains, wrong-version or wrong-kind
+// events, divergent branches, bound violations). Routing them through the
+// builder would defeat their purpose.
 mod tests {
     use verifiable_storage::{Chained, SelfAddressed};
 
     use super::super::event::{SadEvent, SadEventKind};
     use super::*;
+    use crate::sad_builder::SadEventBuilder;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
@@ -489,15 +543,15 @@ mod tests {
     /// Create a v0 event with governance_policy declared.
     fn create_v0_with_evaluation(wp: cesr::Digest256) -> SadEvent {
         let gp = test_digest(b"evaluation-policy");
-        SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap()
+        let mut builder = SadEventBuilder::new(None);
+        builder
+            .incept("kels/sad/v1/keys/mlkem", wp, gp)
+            .expect("incept produces a valid v0 with governance");
+        builder
+            .pending_events()
+            .first()
+            .expect("incept stages one event")
+            .clone()
     }
 
     /// Create a v0 event without evaluation (prefix stays deterministic).

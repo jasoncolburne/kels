@@ -6,7 +6,7 @@
 //! - Chain prefix: the stable identity reference
 //! - `write_policy`: the current policy's SAID (self-governing)
 
-use kels_core::{SadEvent, SadEventKind, SadEventVerification, compute_sad_event_prefix};
+use kels_core::{SadEvent, SadEventKind, SelVerification, compute_sad_event_prefix};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::{Policy, error::PolicyError};
@@ -42,7 +42,7 @@ pub fn create(initial_policy: &Policy) -> Result<SadEvent, PolicyError> {
 
 /// Create the next version of an identity chain with an updated policy.
 ///
-/// Takes a `SadEventVerification` token (chain must be verified before advancing)
+/// Takes a `SelVerification` token (chain must be verified before advancing)
 /// and a new policy. The new policy must differ from the current write_policy —
 /// an identity chain advance with an unchanged policy is meaningless (content is
 /// always None, custody is always None, there's nothing else to change).
@@ -58,7 +58,7 @@ pub fn create(initial_policy: &Policy) -> Result<SadEvent, PolicyError> {
 /// event will be rejected by `SelVerifier` at submission — `advance()` itself
 /// does not surface this error.
 pub fn advance(
-    verification: &SadEventVerification,
+    verification: &SelVerification,
     new_policy: &Policy,
 ) -> Result<SadEvent, PolicyError> {
     if !verification.policy_satisfied() {
@@ -114,8 +114,12 @@ pub fn compute_identity_prefix(initial_policy: &Policy) -> Result<cesr::Digest25
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)]
+// Happy-path tests stage setup chains via `SadEventBuilder::incept_deterministic`.
+// The `add_governance_declaration` helper and the non-identity-chain v0 in the
+// wrong-topic test stay hand-built: they produce intermediate partial states or
+// cross-topic shapes that the builder refuses by design.
 mod tests {
-    use kels_core::{KelsError, PolicyChecker, SelVerifier};
+    use kels_core::{KelsError, PolicyChecker, SadEventBuilder, SelVerifier};
 
     use super::*;
 
@@ -195,17 +199,21 @@ mod tests {
     async fn test_advance_identity_chain() {
         let policy1 = test_policy("policy-1");
         let policy2 = test_policy("policy-2");
-        let v0 = create(&policy1).unwrap();
-        let prefix = v0.prefix;
+        let gp = test_policy("governance");
 
-        // Create a v1 with governance_policy declared so the chain passes verification
-        let mut v1_gp = v0.clone();
-        add_governance_declaration(&mut v1_gp);
-        v1_gp.increment().unwrap();
+        // Stage v0 Icp + v1 Est via the builder. Identity chains are
+        // prefix-discoverable, so governance lives on v1 (Est), not v0.
+        let mut builder = SadEventBuilder::new(None);
+        builder
+            .incept_deterministic(IDENTITY_CHAIN_TOPIC, policy1.said, gp.said, None)
+            .unwrap();
+        let staged = builder.pending_events().to_vec();
+        let v0 = staged[0].clone();
+        let prefix = v0.prefix;
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0.clone(), v1_gp]).await.unwrap();
+        verifier.verify_page(&staged).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         let v2 = advance(&verification, &policy2).unwrap();
@@ -215,20 +223,16 @@ mod tests {
         assert_eq!(v2.write_policy, Some(policy2.said));
         assert_eq!(v2.prefix, prefix);
 
-        // Close the loop: feed [v0, v1_gp, v2] back through a fresh verifier to
-        // prove the produced Evl event passes verifier evaluation (different
-        // code path than the Upd it replaced) and that tracked_write_policy
-        // advances to policy2.said.
-        let mut v1_gp_rebuilt = v0.clone();
-        add_governance_declaration(&mut v1_gp_rebuilt);
-        v1_gp_rebuilt.increment().unwrap();
+        // Close the loop: feed the full chain [v0, v1, v2] back through a
+        // fresh verifier to prove the produced Evl passes verification (a
+        // different code path than the Upd it replaced) and that
+        // tracked_write_policy advances to policy2.said.
+        let mut full_chain = staged.clone();
+        full_chain.push(v2);
 
         let checker = AlwaysPassChecker;
         let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier
-            .verify_page(&[v0, v1_gp_rebuilt, v2])
-            .await
-            .unwrap();
+        verifier.verify_page(&full_chain).await.unwrap();
         let reverification = verifier.finish().await.unwrap();
         assert!(reverification.policy_satisfied());
         assert_eq!(reverification.write_policy(), &policy2.said);
@@ -270,16 +274,17 @@ mod tests {
     #[tokio::test]
     async fn test_advance_rejects_unchanged_policy() {
         let policy = test_policy("test-identity");
-        let v0 = create(&policy).unwrap();
+        let gp = test_policy("governance");
 
-        // Add a v1 with governance_policy declared so verification passes
-        let mut v1_gp = v0.clone();
-        add_governance_declaration(&mut v1_gp);
-        v1_gp.increment().unwrap();
+        let mut builder = SadEventBuilder::new(None);
+        builder
+            .incept_deterministic(IDENTITY_CHAIN_TOPIC, policy.said, gp.said, None)
+            .unwrap();
+        let staged = builder.pending_events().to_vec();
 
         let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1_gp]).await.unwrap();
+        let mut verifier = SelVerifier::new(&staged[0].prefix, &checker);
+        verifier.verify_page(&staged).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
         // Advance with the same policy — should fail

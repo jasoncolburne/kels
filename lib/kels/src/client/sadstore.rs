@@ -8,7 +8,7 @@ use std::time::Duration;
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadEventPage, SadEventRepairPage, SadEventVerification,
+    KelsError, SadEventPage, SadEventRepairPage, SelVerification,
     error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
@@ -359,7 +359,7 @@ impl SadStoreClient {
         &self,
         prefix: &cesr::Digest256,
         checker: &(dyn crate::PolicyChecker + Sync),
-    ) -> Result<SadEventVerification, KelsError> {
+    ) -> Result<SelVerification, KelsError> {
         crate::verify_sad_events(
             prefix,
             &self.as_sad_source()?,

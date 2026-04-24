@@ -116,7 +116,7 @@ When a repair succeeds, SADStore publishes `{prefix}:{effective_said}` to Redis.
 
 ### Verification token
 
-`SadEventVerification` is the proof-of-verification token. It can only be obtained through the verifier. Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. See [sadstore.md](sadstore.md#verification) for the same list in the SADStore layer doc.
+`SelVerification` is the proof-of-verification token. It can only be obtained through the verifier. Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. See [sadstore.md](sadstore.md#verification) for the same list in the SADStore layer doc.
 
 The handler uses `policy_satisfied()` to decide authorization (403 on failure) and `last_governance_version()` as the seal floor for `save_batch`.
 

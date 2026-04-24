@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
-use super::event::{SadEvent, SadEventPage, SadEventVerification};
+use super::event::{SadEvent, SadEventPage, SelVerification};
 use super::verification::SelVerifier;
 use crate::{KelsError, error::read_error_body};
 
@@ -357,7 +357,7 @@ pub async fn verify_sad_events(
     checker: &(dyn super::verification::PolicyChecker + Sync),
     page_size: usize,
     max_pages: usize,
-) -> Result<SadEventVerification, KelsError> {
+) -> Result<SelVerification, KelsError> {
     let mut verifier = SelVerifier::new(prefix, checker);
     transfer_sad_events(
         prefix,
@@ -387,6 +387,9 @@ pub async fn forward_sad_events(
 
 #[cfg(test)]
 #[allow(clippy::panic)]
+// The single test here stages a divergent chain to exercise
+// page-boundary divergence detection. `SadEventBuilder` is single-actor
+// and refuses divergent state by design, so the fixture is hand-built.
 mod tests {
     use verifiable_storage::Chained;
 

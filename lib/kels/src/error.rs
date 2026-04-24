@@ -149,6 +149,9 @@ pub enum KelsError {
 
     #[error("Invalid disclosure expression: {0}")]
     InvalidDisclosure(String),
+
+    #[error("Evaluation required: would exceed non-evaluation event bound")]
+    EvaluationRequired,
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -267,6 +270,7 @@ mod tests {
             KelsError::NoReadyNodes,
             KelsError::RegistryFailure("all failed".to_string()),
             KelsError::InvalidDisclosure("bad expression".to_string()),
+            KelsError::EvaluationRequired,
         ];
 
         for err in errors {
