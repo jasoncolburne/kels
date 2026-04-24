@@ -37,7 +37,7 @@ echo "Phase 1: Setup"
 echo "========================================="
 
 test_create_issuer_kel() {
-    ISSUER_PREFIX=$($CLI incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
+    ISSUER_PREFIX=$($CLI kel incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
     if [ -z "$ISSUER_PREFIX" ]; then
         echo "Failed to create issuer KEL"
         return 1

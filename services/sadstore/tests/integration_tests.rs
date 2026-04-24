@@ -1,7 +1,7 @@
 //! Integration tests for the KELS SADStore service.
 //!
 //! Shared server instance with Postgres + MinIO testcontainers.
-//! Tests cover: PUT/GET SAD objects, chain record submission/fetch,
+//! Tests cover: PUT/GET SAD objects, SAD event submission/fetch,
 //! prefix computation, chain integrity rejection, effective SAID.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -11,7 +11,7 @@ use tokio::{sync::OnceCell, time::sleep};
 
 use cesr::{test_digest, test_signature};
 use ctor::dtor;
-use kels_core::{SadPointer, compute_sad_pointer_prefix};
+use kels_core::{SadEvent, compute_sad_event_prefix};
 use reqwest::Client;
 use testcontainers::{
     ContainerAsync, GenericImage, Image,
@@ -347,42 +347,42 @@ async fn test_post_sad_object_invalid_json_rejected() {
 // ==================== Prefix Computation Tests ====================
 
 #[tokio::test]
-async fn test_compute_sad_pointer_prefix_deterministic() {
+async fn test_compute_sad_event_prefix_deterministic() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
+        compute_sad_event_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
+        compute_sad_event_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
     assert_eq!(p1, p2);
 }
 
 #[tokio::test]
-async fn test_compute_sad_pointer_prefix_different_inputs() {
+async fn test_compute_sad_event_prefix_different_inputs() {
     let p1 =
-        compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
+        compute_sad_event_prefix(test_digest("kel-prefix-a"), "kels/sad/v1/keys/mlkem").unwrap();
     let p2 =
-        compute_sad_pointer_prefix(test_digest("kel-prefix-b"), "kels/sad/v1/keys/mlkem").unwrap();
-    let p3 = compute_sad_pointer_prefix(test_digest("kel-prefix-a"), "kels/v1/other-kind").unwrap();
+        compute_sad_event_prefix(test_digest("kel-prefix-b"), "kels/sad/v1/keys/mlkem").unwrap();
+    let p3 = compute_sad_event_prefix(test_digest("kel-prefix-a"), "kels/v1/other-kind").unwrap();
     assert_ne!(p1, p2);
     assert_ne!(p1, p3);
 }
 
-// ==================== Chain Record Tests ====================
+// ==================== SEL Tests ====================
 
 #[tokio::test]
-async fn test_chain_fetch_not_found() {
+async fn test_sel_fetch_not_found() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
     let nonexistent = test_digest("nonexistent-chain-prefix");
-    let body = kels_core::SadPointerPageRequest {
+    let body = kels_core::SadEventPageRequest {
         prefix: nonexistent,
         since: None,
         limit: None,
     };
     let resp = harness
         .client()
-        .post(harness.url("/api/v1/sad/pointers/fetch"))
+        .post(harness.url("/api/v1/sad/events/fetch"))
         .json(&body)
         .send()
         .await
@@ -397,12 +397,12 @@ async fn test_effective_said_not_found() {
     };
 
     let nonexistent = test_digest("nonexistent-chain-prefix");
-    let body = kels_core::SadPointerEffectiveSaidRequest {
+    let body = kels_core::SadEventEffectiveSaidRequest {
         prefix: nonexistent,
     };
     let resp = harness
         .client()
-        .post(harness.url("/api/v1/sad/pointers/effective-said"))
+        .post(harness.url("/api/v1/sad/events/effective-said"))
         .json(&body)
         .send()
         .await
@@ -411,29 +411,29 @@ async fn test_effective_said_not_found() {
 }
 
 #[tokio::test]
-async fn test_submit_record_invalid_said_rejected() {
+async fn test_submit_event_invalid_said_rejected() {
     let Some(harness) = get_harness().await else {
         return;
     };
 
-    // Create a record but tamper with the SAID
-    let mut pointer = SadPointer::create(
+    // Create an event but tamper with the SAID
+    let mut event = SadEvent::create(
         "kels/v1/test-kind".to_string(),
-        kels_core::SadPointerKind::Icp,
+        kels_core::SadEventKind::Icp,
         None,
         None,
         Some(test_digest("kel-test-prefix")),
         None,
     )
     .unwrap();
-    pointer.topic = "tampered".to_string(); // Tamper after SAID computation
+    event.topic = "tampered".to_string(); // Tamper after SAID computation
 
-    let records = vec![pointer];
+    let events = vec![event];
 
     let resp = harness
         .client()
-        .post(harness.url("/api/v1/sad/pointers"))
-        .json(&records)
+        .post(harness.url("/api/v1/sad/events"))
+        .json(&events)
         .send()
         .await
         .unwrap();
@@ -460,7 +460,7 @@ async fn test_list_prefixes_empty() {
 
     let resp = harness
         .client()
-        .post(harness.url("/api/test/sad/pointers/prefixes"))
+        .post(harness.url("/api/test/sad/events/prefixes"))
         .json(&body)
         .send()
         .await

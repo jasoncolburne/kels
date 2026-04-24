@@ -68,7 +68,7 @@ Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/ev
 
 - **Credential framework** ([kels-creds](docs/design/creds.md)) — issuance, schema-aware compacted disclosure, and verification against KEL anchors
 - **Policy engine** ([kels-policy](docs/design/policy.md)) — composable trust policies with `endorse`, `delegate`, `threshold`, `weighted`, and nested `policy` references; soft/hard/immune poisoning
-- **Replicated self-addressed data store** ([sadstore](docs/design/sadstore.md)) — content-addressed objects (MinIO) + authenticated chained records (PostgreSQL), gossip-replicated
+- **Replicated self-addressed data store** ([sadstore](docs/design/sadstore.md)) — content-addressed objects (MinIO) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
 
 ### Encrypted Exchange
 

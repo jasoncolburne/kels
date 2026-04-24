@@ -4,8 +4,8 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 /// Authenticated fetch request for a SAD object.
 ///
 /// Used as `SignedRequest<SadFetchRequest>` for objects with `readPolicy`.
-/// The `object_said` binds the request to a specific record — the server knows
-/// the record's custody and evaluates the readPolicy directly.
+/// The `object_said` binds the request to a specific object — the server knows
+/// the object's custody and evaluates the readPolicy directly.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedSadFetchRequest {
@@ -19,7 +19,7 @@ pub struct SignedSadFetchRequest {
     pub disclosure: Option<String>,
 }
 
-/// Request body for fetching or checking existence of a SAD object or pointer by SAID.
+/// Request body for fetching or checking existence of a SAD object or event by SAID.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadFetchRequest {
     pub said: cesr::Digest256,
@@ -27,31 +27,31 @@ pub struct SadFetchRequest {
     pub disclosure: Option<String>,
 }
 
-/// Request body for fetching a page of SAD pointer chain records.
+/// Request body for fetching a page of SAD Event Log events.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SadPointerPageRequest {
+pub struct SadEventPageRequest {
     pub prefix: cesr::Digest256,
     pub since: Option<cesr::Digest256>,
     pub limit: Option<usize>,
 }
 
-/// Request body for fetching the effective SAID of a SAD pointer chain.
+/// Request body for fetching the effective SAID of a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SadPointerEffectiveSaidRequest {
+pub struct SadEventEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
-/// Response from pointer chain submission.
+/// Response from SAD event submission.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "SubmitPointersResponse.applied must be checked — records may be rejected"]
-pub struct SubmitPointersResponse {
+#[must_use = "SubmitSadEventsResponse.applied must be checked — events may be rejected"]
+pub struct SubmitSadEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,
 }
 
-/// Request body for listing repairs for a SAD pointer chain.
+/// Request body for listing repairs for a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairsRequest {
     pub prefix: cesr::Digest256,
@@ -59,7 +59,7 @@ pub struct SadRepairsRequest {
     pub offset: Option<u64>,
 }
 
-/// Request body for fetching archived records of a specific repair.
+/// Request body for fetching archived events of a specific repair.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairPageRequest {
     pub prefix: cesr::Digest256,

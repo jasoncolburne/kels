@@ -92,7 +92,7 @@ compute_said() {
     cesr_blake3 "$with_placeholder"
 }
 
-# Compute prefix for a v0 inception pointer (blanks both said AND prefix).
+# Compute prefix for a v0 inception event (blanks both said AND prefix).
 compute_prefix() {
     local json="$1"
     local with_placeholders
@@ -100,23 +100,23 @@ compute_prefix() {
     cesr_blake3 "$with_placeholders"
 }
 
-# Build a checkpoint policy and store it as a SAD object.
+# Build a governance policy and store it as a SAD object.
 # Echoes the policy SAID to stdout.
-# Usage: CP_SAID=$(build_checkpoint_policy "$SAD_URL" "$KEL_PREFIX")
-# TODO: Production checkpoint policies should use higher thresholds than write_policy
+# Usage: GP_SAID=$(build_governance_policy "$SAD_URL" "$KEL_PREFIX")
+# TODO: Production governance policies should use higher thresholds than write_policy
 # (e.g., threshold(3, [...]) vs threshold(2, [...])). Single-endorser is fine for tests.
-build_checkpoint_policy() {
+build_governance_policy() {
     local sad_url="$1"
     local kel_prefix="$2"
-    local cp_json
-    cp_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
+    local gp_json
+    gp_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
         '{said: $p, expression: $expr}')
-    local cp_said
-    cp_said=$(compute_said "$cp_json")
-    cp_json=$(echo "$cp_json" | jq -c --arg s "$cp_said" '.said = $s')
+    local gp_said
+    gp_said=$(compute_said "$gp_json")
+    gp_json=$(echo "$gp_json" | jq -c --arg s "$gp_said" '.said = $s')
     curl -s -o /dev/null -X POST "${sad_url}/api/v1/sad" \
-        -H 'Content-Type: application/json' -d "$cp_json"
-    echo "$cp_said"
+        -H 'Content-Type: application/json' -d "$gp_json"
+    echo "$gp_said"
 }
 
 # --- Setup helpers ---
@@ -377,12 +377,12 @@ wait_for_divergence_or_ror() {
     return 1
 }
 
-# Get KEL status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
+# Get KEL kel status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
 # Usage: get_kel_status URL PREFIX
 get_kel_status() {
     local url="$1"
     local prefix="$2"
-    kels-cli --kels-url "$url" get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}'
+    kels-cli --kels-url "$url" kel get "$prefix" 2>&1 | grep "Status:" | sed "s/$(printf '\033')\[[0-9;]*m//g" | awk '{print $2}'
 }
 
 # Poll until KEL reaches expected status (or timeout).

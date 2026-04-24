@@ -302,15 +302,15 @@ Returns a `SignedKeyEventPage` containing the archived adversary events displace
 ### Standard Operations
 
 ```bash
-kels-cli incept                              # Create new KEL
-kels-cli rotate --prefix <prefix>            # Rotate signing key
-kels-cli rotate-recovery --prefix <prefix>   # Rotate recovery key
-kels-cli anchor --prefix <prefix> --said <s> # Anchor SAID
-kels-cli recover --prefix <prefix>           # Recover from divergence
-kels-cli decommission --prefix <prefix>      # Decommission KEL
-kels-cli get <prefix>                        # Fetch KEL from server
-kels-cli status --prefix <prefix>            # Show local KEL status
-kels-cli list                                # List local KELs
+kels-cli kel incept                              # Create new KEL
+kels-cli kel rotate --prefix <prefix>            # Rotate signing key
+kels-cli kel rotate-recovery --prefix <prefix>   # Rotate recovery key
+kels-cli kel anchor --prefix <prefix> --said <s> # Anchor SAID
+kels-cli kel recover --prefix <prefix>           # Recover from divergence
+kels-cli kel decommission --prefix <prefix>      # Decommission KEL
+kels-cli kel get <prefix>                        # Fetch KEL from server
+kels-cli kel status --prefix <prefix>            # Show local KEL status
+kels-cli kel list                                # List local KELs
 ```
 
 ### Testing (dev-tools feature)

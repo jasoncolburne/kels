@@ -62,7 +62,7 @@ echo "Inject adv1 on node-d, adv2 on node-e, owner recovers on node-d, verify al
 echo ""
 
 # Create KEL on node-d
-PREFIX1=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX1=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX1"
 
 # Wait for KEL to exist on all nodes before injecting adversary events
@@ -79,7 +79,7 @@ echo "Adversary events injected on node-d and node-e"
 
 # Wait for divergence to propagate before recovering
 run_test "All nodes are DIVERGENT" wait_for_divergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
-run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX1"
+run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX1"
 
 # Poll until all nodes converge to the same recovered state
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
@@ -94,10 +94,10 @@ echo "Three adversary ixns on d/e/f cause unequal divergence pairs across nodes,
 echo ""
 
 # Create KEL on node-d with an anchor (gives us icp@0, ixn@1)
-PREFIX2=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX2=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX2"
 
-kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX2" --said "KPreAttackAnchor____________________________"
+kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX2" --said "KPreAttackAnchor____________________________"
 
 # Wait for KEL to propagate to all nodes before injecting
 run_test "KEL propagated to all nodes" wait_for_convergence "$PREFIX2" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
@@ -123,7 +123,7 @@ run_test "All nodes are DIVERGENT" wait_for_divergence "$PREFIX2" "$CONVERGENCE_
 
 # Owner recovers. The rec's previous points to the owner's ixn@1 which every node has,
 # so recovery resolves uniformly regardless of which adversary pair each node captured.
-run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX2"
+run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX2"
 
 # Poll until all nodes converge to the same recovered state
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX2" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
@@ -139,14 +139,14 @@ echo "Nodes end up with different divergence pairs; recovery must propagate to a
 echo ""
 
 # Create KEL on node-d
-PREFIX3=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX3=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX3"
 
 # Wait for KEL to propagate to all nodes
 run_test "KEL exists on all nodes" wait_for_propagation "$PREFIX3" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
 
 # Owner submits anchor on node-d while adversaries inject on node-e and node-f
-kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX3" --said "KOwnerAnchor________________________________" &
+kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX3" --said "KOwnerAnchor________________________________" &
 PID_OWNER=$!
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX3" --events ixn &
 PID_ADV1=$!
@@ -159,7 +159,7 @@ echo "Owner anchor + two adversary events submitted simultaneously"
 
 # Wait for divergence to propagate
 run_test "All nodes are DIVERGENT" wait_for_divergence "$PREFIX3" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
-run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX3"
+run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX3"
 
 # Poll until all nodes converge
 run_test "All nodes have matching KELs after recovery" wait_for_convergence "$PREFIX3" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
@@ -175,7 +175,7 @@ echo "Owner's ror propagates to frozen nodes (Recoverable), then rec recovers th
 echo ""
 
 # Create KEL on node-d
-PREFIX4=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX4=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX4"
 
 # Wait for KEL to propagate to all nodes
@@ -194,13 +194,13 @@ echo "Adversary events injected on node-e and node-f"
 # This creates a 3-way fork: adv_rot on node-e, adv_ixn on node-f, ror on node-d
 # Node-d's ror reveals recovery, so adversary events arriving at node-d are ContestRequired
 # Owner's ror propagates to frozen nodes as Recoverable (they accept it into the fork)
-run_test "Owner rotates recovery key on node-d" kels-cli --kels-url "$NODE_D_URL" rotate-recovery --prefix "$PREFIX4"
+run_test "Owner rotates recovery key on node-d" kels-cli --kels-url "$NODE_D_URL" kel rotate-recovery --prefix "$PREFIX4"
 
 # Wait for all nodes to be ready for recovery. Depending on event arrival order,
 # each node will either be DIVERGENT (got adversary events first) or have the
 # ror (which protected against divergence). Either state allows recovery.
 run_test "All nodes divergent or have ROR" wait_for_divergence_or_ror "$PREFIX4" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
-run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX4"
+run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX4"
 
 # Poll until all nodes converge to the same recovered state [icp, ror, rec]
 run_test "All nodes have matching KELs after ror+rec recovery" wait_for_convergence "$PREFIX4" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"

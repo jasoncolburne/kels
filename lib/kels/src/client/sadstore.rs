@@ -1,14 +1,14 @@
 //! SADStore HTTP Client
 //!
 //! Client for the replicated SAD store service.
-//! Provides methods for both Layer 1 (SAD objects) and Layer 2 (chain records).
+//! Provides methods for both Layer 1 (SAD objects) and Layer 2 (SAD events).
 
 use std::time::Duration;
 
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadPointerPage, SadPointerRepairPage, SadPointerVerification,
+    KelsError, SadEventPage, SadEventRepairPage, SadEventVerification,
     error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
@@ -36,12 +36,12 @@ impl SadStoreClient {
         &self.base_url
     }
 
-    /// Create an `HttpSadSource` for this client's chain endpoint.
+    /// Create an `HttpSadSource` for this client's events endpoint.
     pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
         crate::HttpSadSource::new(&self.base_url)
     }
 
-    /// Create an `HttpSadSink` for this client's records endpoint.
+    /// Create an `HttpSadSink` for this client's events endpoint.
     pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new(&self.base_url)
     }
@@ -191,12 +191,16 @@ impl SadStoreClient {
         }
     }
 
-    // === Layer 2: Chain Records ===
+    // === Layer 2: SAD Events ===
 
-    /// Submit signed SAD records.
-    pub async fn submit_sad_pointer(&self, records: &[crate::SadPointer]) -> Result<(), KelsError> {
-        let url = format!("{}/api/v1/sad/pointers", self.base_url);
-        let resp = self.client.post(&url).json(records).send().await?;
+    /// Submit SAD events to the SADStore.
+    ///
+    /// Authorization is via KEL anchoring: each event's SAID must be anchored
+    /// via ixn by `write_policy` endorsers in their KELs. There are no per-event
+    /// signatures — the server validates anchoring against the endorsers' KELs.
+    pub async fn submit_sad_events(&self, events: &[crate::SadEvent]) -> Result<(), KelsError> {
+        let url = format!("{}/api/v1/sad/events", self.base_url);
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
             Ok(())
@@ -206,18 +210,18 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch a page of chain records by prefix.
+    /// Fetch a page of SAD events by prefix.
     ///
-    /// `since` is an effective SAID cursor — returns records after this SAID's
+    /// `since` is an effective SAID cursor — returns events after this SAID's
     /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
     /// server returns the full chain.
-    pub async fn fetch_sad_pointer(
+    pub async fn fetch_sad_events(
         &self,
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
-    ) -> Result<SadPointerPage, KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/fetch", self.base_url);
-        let body = crate::SadPointerPageRequest {
+    ) -> Result<SadEventPage, KelsError> {
+        let url = format!("{}/api/v1/sad/events/fetch", self.base_url);
+        let body = crate::SadEventPageRequest {
             prefix: *prefix,
             since: since.copied(),
             limit: None,
@@ -234,14 +238,14 @@ impl SadStoreClient {
         }
     }
 
-    /// Get the effective SAID and divergence status for a chain prefix.
+    /// Get the effective SAID and divergence status for a SEL prefix.
     /// Returns `(said, is_divergent)`. Used for sync comparison.
-    pub async fn fetch_sad_pointer_effective_said(
+    pub async fn fetch_sel_effective_said(
         &self,
         prefix: &cesr::Digest256,
     ) -> Result<Option<(String, bool)>, KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/effective-said", self.base_url);
-        let body = crate::SadPointerEffectiveSaidRequest { prefix: *prefix };
+        let url = format!("{}/api/v1/sad/events/effective-said", self.base_url);
+        let body = crate::SadEventEffectiveSaidRequest { prefix: *prefix };
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {
@@ -255,9 +259,9 @@ impl SadStoreClient {
         }
     }
 
-    /// Check if a pointer with the given SAID exists on this SADStore.
-    pub async fn sad_pointer_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/exists", self.base_url);
+    /// Check if an event with the given SAID exists on this SADStore.
+    pub async fn sad_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
+        let url = format!("{}/api/v1/sad/events/exists", self.base_url);
         let body = crate::SadFetchRequest {
             said: *said,
             disclosure: None,
@@ -266,8 +270,8 @@ impl SadStoreClient {
         Ok(resp.status().is_success())
     }
 
-    /// List SAD chain prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
-    pub async fn fetch_sad_pointer_prefixes(
+    /// List SAD Event Log prefixes (paginated, authenticated). Used for bootstrap and anti-entropy.
+    pub async fn fetch_sel_prefixes(
         &self,
         signer: &dyn crate::PeerSigner,
         cursor: Option<&cesr::Digest256>,
@@ -281,7 +285,7 @@ impl SadStoreClient {
         let signed = crate::sign_request(signer, &request).await?;
         let resp = self
             .client
-            .post(format!("{}/api/v1/sad/pointers/prefixes", self.base_url))
+            .post(format!("{}/api/v1/sad/events/prefixes", self.base_url))
             .json(&signed)
             .send()
             .await?;
@@ -294,14 +298,14 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch repairs for a chain prefix, paginated.
-    pub async fn fetch_sad_pointer_repairs(
+    /// Fetch repairs for a SEL prefix, paginated.
+    pub async fn fetch_sel_repairs(
         &self,
         prefix: &cesr::Digest256,
         limit: usize,
         offset: u64,
-    ) -> Result<SadPointerRepairPage, KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/repairs", self.base_url);
+    ) -> Result<SadEventRepairPage, KelsError> {
+        let url = format!("{}/api/v1/sad/events/repairs", self.base_url);
         let body = crate::SadRepairsRequest {
             prefix: *prefix,
             limit: Some(limit),
@@ -319,15 +323,15 @@ impl SadStoreClient {
         }
     }
 
-    /// Fetch archived records for a specific repair, paginated.
-    pub async fn fetch_sad_pointer_repair_records(
+    /// Fetch archived events for a specific repair, paginated.
+    pub async fn fetch_sel_repair_events(
         &self,
         prefix: &cesr::Digest256,
         repair_said: &cesr::Digest256,
         limit: usize,
         offset: u64,
-    ) -> Result<SadPointerPage, KelsError> {
-        let url = format!("{}/api/v1/sad/pointers/repairs/records", self.base_url);
+    ) -> Result<SadEventPage, KelsError> {
+        let url = format!("{}/api/v1/sad/events/repairs/events", self.base_url);
         let body = crate::SadRepairPageRequest {
             prefix: *prefix,
             said: *repair_said,
@@ -346,17 +350,17 @@ impl SadStoreClient {
         }
     }
 
-    /// Verify a SAD pointer chain and return a verification token.
+    /// Verify a SAD Event Log and return a verification token.
     ///
     /// Structural + policy verification: SAID, chain linkage, version
     /// monotonicity, topic consistency, and write_policy authorization via
     /// the provided `PolicyChecker`.
-    pub async fn verify_sad_pointer(
+    pub async fn verify_sad_events(
         &self,
         prefix: &cesr::Digest256,
         checker: &(dyn crate::PolicyChecker + Sync),
-    ) -> Result<SadPointerVerification, KelsError> {
-        crate::verify_sad_pointer(
+    ) -> Result<SadEventVerification, KelsError> {
+        crate::verify_sad_events(
             prefix,
             &self.as_sad_source()?,
             checker,

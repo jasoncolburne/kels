@@ -3,4 +3,6 @@ pub(crate) mod cred;
 pub(crate) mod dev;
 pub(crate) mod exchange;
 pub(crate) mod kel;
+pub(crate) mod mail;
 pub(crate) mod sad;
+pub(crate) mod sel;

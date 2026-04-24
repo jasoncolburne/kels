@@ -24,60 +24,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_event_kind_serialization() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/kel/v1/events/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/kel/v1/events/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/kel/v1/events/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/kel/v1/events/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/kel/v1/events/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/kel/v1/events/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
+    fn test_key_event_kind_serialization() {
+        assert_eq!(KeyEventKind::Icp.as_str(), "kels/kel/v1/events/icp");
+        assert_eq!(KeyEventKind::Dip.as_str(), "kels/kel/v1/events/dip");
+        assert_eq!(KeyEventKind::Rot.as_str(), "kels/kel/v1/events/rot");
+        assert_eq!(KeyEventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
+        assert_eq!(KeyEventKind::Rec.as_str(), "kels/kel/v1/events/rec");
+        assert_eq!(KeyEventKind::Ror.as_str(), "kels/kel/v1/events/ror");
+        assert_eq!(KeyEventKind::Dec.as_str(), "kels/kel/v1/events/dec");
+        assert_eq!(KeyEventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
     }
 
     #[test]
-    fn test_event_kind_parsing() {
+    fn test_key_event_kind_parsing() {
         use std::str::FromStr;
         assert_eq!(
-            EventKind::from_str("kels/kel/v1/events/icp").unwrap(),
-            EventKind::Icp
+            KeyEventKind::from_str("kels/kel/v1/events/icp").unwrap(),
+            KeyEventKind::Icp
         );
         assert_eq!(
-            EventKind::from_str("kels/kel/v1/events/cnt").unwrap(),
-            EventKind::Cnt
+            KeyEventKind::from_str("kels/kel/v1/events/cnt").unwrap(),
+            KeyEventKind::Cnt
         );
         // Rejects uppercase
-        assert!(EventKind::from_str("KELS/V1/ICP").is_err());
+        assert!(KeyEventKind::from_str("KELS/V1/ICP").is_err());
         // Rejects short names
-        assert!(EventKind::from_str("icp").is_err());
-        assert!(EventKind::from_str("invalid").is_err());
+        assert!(KeyEventKind::from_str("icp").is_err());
+        assert!(KeyEventKind::from_str("invalid").is_err());
     }
 
     #[test]
-    fn test_event_kind_properties() {
-        assert!(EventKind::Icp.is_inception());
-        assert!(EventKind::Dip.is_inception());
-        assert!(!EventKind::Rot.is_inception());
-        assert!(EventKind::Icp.is_establishment());
-        assert!(!EventKind::Ixn.is_establishment());
-        assert!(EventKind::Rec.reveals_recovery_key());
-        assert!(EventKind::Ror.reveals_recovery_key());
-        assert!(EventKind::Dec.reveals_recovery_key());
-        assert!(EventKind::Cnt.reveals_recovery_key());
-        assert!(!EventKind::Rot.reveals_recovery_key());
-        assert!(EventKind::Dec.decommissions());
-        assert!(EventKind::Cnt.decommissions());
-        assert!(!EventKind::Rec.decommissions());
+    fn test_key_event_kind_properties() {
+        assert!(KeyEventKind::Icp.is_inception());
+        assert!(KeyEventKind::Dip.is_inception());
+        assert!(!KeyEventKind::Rot.is_inception());
+        assert!(KeyEventKind::Icp.is_establishment());
+        assert!(!KeyEventKind::Ixn.is_establishment());
+        assert!(KeyEventKind::Rec.reveals_recovery_key());
+        assert!(KeyEventKind::Ror.reveals_recovery_key());
+        assert!(KeyEventKind::Dec.reveals_recovery_key());
+        assert!(KeyEventKind::Cnt.reveals_recovery_key());
+        assert!(!KeyEventKind::Rot.reveals_recovery_key());
+        assert!(KeyEventKind::Dec.decommissions());
+        assert!(KeyEventKind::Cnt.decommissions());
+        assert!(!KeyEventKind::Rec.decommissions());
     }
 
     #[test]
-    fn test_event_kind_json() {
-        let json = serde_json::to_string(&EventKind::Icp).unwrap();
+    fn test_key_event_kind_json() {
+        let json = serde_json::to_string(&KeyEventKind::Icp).unwrap();
         assert_eq!(json, "\"kels/kel/v1/events/icp\"");
-        let parsed: EventKind = serde_json::from_str("\"kels/kel/v1/events/rec\"").unwrap();
-        assert_eq!(parsed, EventKind::Rec);
+        let parsed: KeyEventKind = serde_json::from_str("\"kels/kel/v1/events/rec\"").unwrap();
+        assert_eq!(parsed, KeyEventKind::Rec);
         // Short form rejected
-        assert!(serde_json::from_str::<EventKind>("\"icp\"").is_err());
+        assert!(serde_json::from_str::<KeyEventKind>("\"icp\"").is_err());
     }
 
     #[test]
@@ -142,7 +142,7 @@ mod tests {
 
     fn make_valid_icp() -> KeyEvent {
         KeyEvent {
-            kind: EventKind::Icp,
+            kind: KeyEventKind::Icp,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: None,
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_dip() {
         let mut event = make_valid_icp();
-        event.kind = EventKind::Dip;
+        event.kind = KeyEventKind::Dip;
         event.delegating_prefix = Some(make_blake3_digest("delegator"));
         assert!(event.validate_structure().is_ok());
     }
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn test_validate_structure_dip_requires_delegating_prefix() {
         let mut event = make_valid_icp();
-        event.kind = EventKind::Dip;
+        event.kind = KeyEventKind::Dip;
         // Missing delegating_prefix
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("requires delegatingPrefix"));
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_rot() {
         let event = KeyEvent {
-            kind: EventKind::Rot,
+            kind: KeyEventKind::Rot,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn test_validate_structure_rot_missing_previous() {
         let event = KeyEvent {
-            kind: EventKind::Rot,
+            kind: KeyEventKind::Rot,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: None,
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_ixn() {
         let event = KeyEvent {
-            kind: EventKind::Ixn,
+            kind: KeyEventKind::Ixn,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_validate_structure_ixn_forbids_public_key() {
         let event = KeyEvent {
-            kind: EventKind::Ixn,
+            kind: KeyEventKind::Ixn,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_rec() {
         let event = KeyEvent {
-            kind: EventKind::Rec,
+            kind: KeyEventKind::Rec,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn test_validate_structure_rec_missing_recovery_key() {
         let event = KeyEvent {
-            kind: EventKind::Rec,
+            kind: KeyEventKind::Rec,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_dec() {
         let event = KeyEvent {
-            kind: EventKind::Dec,
+            kind: KeyEventKind::Dec,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn test_validate_structure_dec_forbids_rotation_hash() {
         let event = KeyEvent {
-            kind: EventKind::Dec,
+            kind: KeyEventKind::Dec,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -381,7 +381,7 @@ mod tests {
     fn test_validate_structure_self_referencing_previous() {
         let said = make_blake3_digest("said");
         let event = KeyEvent {
-            kind: EventKind::Rot,
+            kind: KeyEventKind::Rot,
             said,
             prefix: make_blake3_digest("prefix"),
             previous: Some(said), // Same as said - circular!
@@ -487,28 +487,28 @@ mod tests {
     fn test_key_event_requires_dual_signature() {
         assert!(
             KeyEvent {
-                kind: EventKind::Rec,
+                kind: KeyEventKind::Rec,
                 ..make_valid_icp()
             }
             .requires_dual_signature()
         );
         assert!(
             KeyEvent {
-                kind: EventKind::Ror,
+                kind: KeyEventKind::Ror,
                 ..make_valid_icp()
             }
             .requires_dual_signature()
         );
         assert!(
             KeyEvent {
-                kind: EventKind::Dec,
+                kind: KeyEventKind::Dec,
                 ..make_valid_icp()
             }
             .requires_dual_signature()
         );
         assert!(
             KeyEvent {
-                kind: EventKind::Cnt,
+                kind: KeyEventKind::Cnt,
                 ..make_valid_icp()
             }
             .requires_dual_signature()
@@ -516,7 +516,7 @@ mod tests {
         assert!(!make_valid_icp().requires_dual_signature());
         assert!(
             !KeyEvent {
-                kind: EventKind::Rot,
+                kind: KeyEventKind::Rot,
                 ..make_valid_icp()
             }
             .requires_dual_signature()
@@ -528,7 +528,7 @@ mod tests {
         assert!(make_valid_icp().is_inception());
         assert!(
             !KeyEvent {
-                kind: EventKind::Rot,
+                kind: KeyEventKind::Rot,
                 ..make_valid_icp()
             }
             .is_inception()
@@ -539,7 +539,7 @@ mod tests {
     fn test_key_event_is_delegated_inception() {
         assert!(
             KeyEvent {
-                kind: EventKind::Dip,
+                kind: KeyEventKind::Dip,
                 ..make_valid_icp()
             }
             .is_delegated_inception()
@@ -552,157 +552,181 @@ mod tests {
         assert!(make_valid_icp().is_establishment());
         assert!(
             KeyEvent {
-                kind: EventKind::Rot,
+                kind: KeyEventKind::Rot,
                 ..make_valid_icp()
             }
             .is_establishment()
         );
         assert!(
             !KeyEvent {
-                kind: EventKind::Ixn,
+                kind: KeyEventKind::Ixn,
                 ..make_valid_icp()
             }
             .is_establishment()
         );
     }
 
-    // ==================== EventKind tests ====================
+    // ==================== KeyEventKind tests ====================
 
     #[test]
-    fn test_event_kind_as_str() {
-        assert_eq!(EventKind::Icp.as_str(), "kels/kel/v1/events/icp");
-        assert_eq!(EventKind::Dip.as_str(), "kels/kel/v1/events/dip");
-        assert_eq!(EventKind::Rot.as_str(), "kels/kel/v1/events/rot");
-        assert_eq!(EventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
-        assert_eq!(EventKind::Rec.as_str(), "kels/kel/v1/events/rec");
-        assert_eq!(EventKind::Ror.as_str(), "kels/kel/v1/events/ror");
-        assert_eq!(EventKind::Dec.as_str(), "kels/kel/v1/events/dec");
-        assert_eq!(EventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
+    fn test_key_event_kind_as_str() {
+        assert_eq!(KeyEventKind::Icp.as_str(), "kels/kel/v1/events/icp");
+        assert_eq!(KeyEventKind::Dip.as_str(), "kels/kel/v1/events/dip");
+        assert_eq!(KeyEventKind::Rot.as_str(), "kels/kel/v1/events/rot");
+        assert_eq!(KeyEventKind::Ixn.as_str(), "kels/kel/v1/events/ixn");
+        assert_eq!(KeyEventKind::Rec.as_str(), "kels/kel/v1/events/rec");
+        assert_eq!(KeyEventKind::Ror.as_str(), "kels/kel/v1/events/ror");
+        assert_eq!(KeyEventKind::Dec.as_str(), "kels/kel/v1/events/dec");
+        assert_eq!(KeyEventKind::Cnt.as_str(), "kels/kel/v1/events/cnt");
     }
 
     #[test]
-    fn test_event_kind_display() {
-        assert_eq!(format!("{}", EventKind::Icp), "kels/kel/v1/events/icp");
-        assert_eq!(format!("{}", EventKind::Cnt), "kels/kel/v1/events/cnt");
+    fn test_key_event_kind_display() {
+        assert_eq!(format!("{}", KeyEventKind::Icp), "kels/kel/v1/events/icp");
+        assert_eq!(format!("{}", KeyEventKind::Cnt), "kels/kel/v1/events/cnt");
     }
 
     #[test]
-    fn test_event_kind_from_str() {
+    fn test_key_event_kind_from_str() {
         assert_eq!(
-            "kels/kel/v1/events/icp".parse::<EventKind>().unwrap(),
-            EventKind::Icp
+            "kels/kel/v1/events/icp".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Icp
         );
         assert_eq!(
-            "kels/kel/v1/events/dip".parse::<EventKind>().unwrap(),
-            EventKind::Dip
+            "kels/kel/v1/events/dip".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Dip
         );
         assert_eq!(
-            "kels/kel/v1/events/rot".parse::<EventKind>().unwrap(),
-            EventKind::Rot
+            "kels/kel/v1/events/rot".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Rot
         );
         assert_eq!(
-            "kels/kel/v1/events/ixn".parse::<EventKind>().unwrap(),
-            EventKind::Ixn
+            "kels/kel/v1/events/ixn".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Ixn
         );
         assert_eq!(
-            "kels/kel/v1/events/rec".parse::<EventKind>().unwrap(),
-            EventKind::Rec
+            "kels/kel/v1/events/rec".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Rec
         );
         assert_eq!(
-            "kels/kel/v1/events/ror".parse::<EventKind>().unwrap(),
-            EventKind::Ror
+            "kels/kel/v1/events/ror".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Ror
         );
         assert_eq!(
-            "kels/kel/v1/events/dec".parse::<EventKind>().unwrap(),
-            EventKind::Dec
+            "kels/kel/v1/events/dec".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Dec
         );
         assert_eq!(
-            "kels/kel/v1/events/cnt".parse::<EventKind>().unwrap(),
-            EventKind::Cnt
+            "kels/kel/v1/events/cnt".parse::<KeyEventKind>().unwrap(),
+            KeyEventKind::Cnt
         );
     }
 
     #[test]
-    fn test_event_kind_from_str_rejects_short_names() {
-        assert!("icp".parse::<EventKind>().is_err());
-        assert!("rot".parse::<EventKind>().is_err());
-        assert!("ixn".parse::<EventKind>().is_err());
-        assert!("rec".parse::<EventKind>().is_err());
+    fn test_key_event_kind_from_str_rejects_short_names() {
+        assert!("icp".parse::<KeyEventKind>().is_err());
+        assert!("rot".parse::<KeyEventKind>().is_err());
+        assert!("ixn".parse::<KeyEventKind>().is_err());
+        assert!("rec".parse::<KeyEventKind>().is_err());
     }
 
     #[test]
-    fn test_event_kind_from_str_rejects_uppercase() {
-        assert!("KELS/V1/ICP".parse::<EventKind>().is_err());
-        assert!("Kels/V1/Icp".parse::<EventKind>().is_err());
+    fn test_key_event_kind_from_str_rejects_uppercase() {
+        assert!("KELS/V1/ICP".parse::<KeyEventKind>().is_err());
+        assert!("Kels/V1/Icp".parse::<KeyEventKind>().is_err());
     }
 
     #[test]
-    fn test_event_kind_from_str_invalid() {
-        let result = "invalid".parse::<EventKind>();
+    fn test_key_event_kind_from_str_invalid() {
+        let result = "invalid".parse::<KeyEventKind>();
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name() {
-        assert_eq!(EventKind::from_short_name("icp").unwrap(), EventKind::Icp);
-        assert_eq!(EventKind::from_short_name("dip").unwrap(), EventKind::Dip);
-        assert_eq!(EventKind::from_short_name("rot").unwrap(), EventKind::Rot);
-        assert_eq!(EventKind::from_short_name("ixn").unwrap(), EventKind::Ixn);
-        assert_eq!(EventKind::from_short_name("rec").unwrap(), EventKind::Rec);
-        assert_eq!(EventKind::from_short_name("ror").unwrap(), EventKind::Ror);
-        assert_eq!(EventKind::from_short_name("dec").unwrap(), EventKind::Dec);
-        assert_eq!(EventKind::from_short_name("cnt").unwrap(), EventKind::Cnt);
+    fn test_key_event_kind_from_short_name() {
+        assert_eq!(
+            KeyEventKind::from_short_name("icp").unwrap(),
+            KeyEventKind::Icp
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("dip").unwrap(),
+            KeyEventKind::Dip
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("rot").unwrap(),
+            KeyEventKind::Rot
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("ixn").unwrap(),
+            KeyEventKind::Ixn
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("rec").unwrap(),
+            KeyEventKind::Rec
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("ror").unwrap(),
+            KeyEventKind::Ror
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("dec").unwrap(),
+            KeyEventKind::Dec
+        );
+        assert_eq!(
+            KeyEventKind::from_short_name("cnt").unwrap(),
+            KeyEventKind::Cnt
+        );
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_uppercase() {
-        assert!(EventKind::from_short_name("ICP").is_err());
-        assert!(EventKind::from_short_name("ROT").is_err());
+    fn test_key_event_kind_from_short_name_rejects_uppercase() {
+        assert!(KeyEventKind::from_short_name("ICP").is_err());
+        assert!(KeyEventKind::from_short_name("ROT").is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_versioned() {
-        assert!(EventKind::from_short_name("kels/kel/v1/events/icp").is_err());
+    fn test_key_event_kind_from_short_name_rejects_versioned() {
+        assert!(KeyEventKind::from_short_name("kels/kel/v1/events/icp").is_err());
     }
 
     #[test]
-    fn test_event_kind_from_short_name_rejects_invalid() {
-        assert!(EventKind::from_short_name("invalid").is_err());
+    fn test_key_event_kind_from_short_name_rejects_invalid() {
+        assert!(KeyEventKind::from_short_name("invalid").is_err());
     }
 
     #[test]
-    fn test_event_kind_is_inception() {
-        assert!(EventKind::Icp.is_inception());
-        assert!(EventKind::Dip.is_inception());
-        assert!(!EventKind::Rot.is_inception());
-        assert!(!EventKind::Ixn.is_inception());
+    fn test_key_event_kind_is_inception() {
+        assert!(KeyEventKind::Icp.is_inception());
+        assert!(KeyEventKind::Dip.is_inception());
+        assert!(!KeyEventKind::Rot.is_inception());
+        assert!(!KeyEventKind::Ixn.is_inception());
     }
 
     #[test]
-    fn test_event_kind_decommissions() {
-        assert!(EventKind::Dec.decommissions());
-        assert!(EventKind::Cnt.decommissions());
-        assert!(!EventKind::Icp.decommissions());
-        assert!(!EventKind::Rec.decommissions());
+    fn test_key_event_kind_decommissions() {
+        assert!(KeyEventKind::Dec.decommissions());
+        assert!(KeyEventKind::Cnt.decommissions());
+        assert!(!KeyEventKind::Icp.decommissions());
+        assert!(!KeyEventKind::Rec.decommissions());
     }
 
     #[test]
-    fn test_event_kind_reveals_rotation_key() {
-        assert!(EventKind::Rot.reveals_rotation_key());
-        assert!(EventKind::Rec.reveals_rotation_key());
-        assert!(EventKind::Ror.reveals_rotation_key());
-        assert!(!EventKind::Icp.reveals_rotation_key());
-        assert!(!EventKind::Ixn.reveals_rotation_key());
+    fn test_key_event_kind_reveals_rotation_key() {
+        assert!(KeyEventKind::Rot.reveals_rotation_key());
+        assert!(KeyEventKind::Rec.reveals_rotation_key());
+        assert!(KeyEventKind::Ror.reveals_rotation_key());
+        assert!(!KeyEventKind::Icp.reveals_rotation_key());
+        assert!(!KeyEventKind::Ixn.reveals_rotation_key());
     }
 
     #[test]
-    fn test_event_kind_reveals_recovery_key() {
-        assert!(EventKind::Rec.reveals_recovery_key());
-        assert!(EventKind::Ror.reveals_recovery_key());
-        assert!(EventKind::Dec.reveals_recovery_key());
-        assert!(EventKind::Cnt.reveals_recovery_key());
-        assert!(!EventKind::Icp.reveals_recovery_key());
-        assert!(!EventKind::Rot.reveals_recovery_key());
+    fn test_key_event_kind_reveals_recovery_key() {
+        assert!(KeyEventKind::Rec.reveals_recovery_key());
+        assert!(KeyEventKind::Ror.reveals_recovery_key());
+        assert!(KeyEventKind::Dec.reveals_recovery_key());
+        assert!(KeyEventKind::Cnt.reveals_recovery_key());
+        assert!(!KeyEventKind::Icp.reveals_recovery_key());
+        assert!(!KeyEventKind::Rot.reveals_recovery_key());
     }
 
     // ==================== More KeyEvent predicate tests ====================
@@ -711,7 +735,7 @@ mod tests {
     fn test_key_event_is_rotation() {
         assert!(
             KeyEvent {
-                kind: EventKind::Rot,
+                kind: KeyEventKind::Rot,
                 ..make_valid_icp()
             }
             .is_rotation()
@@ -723,7 +747,7 @@ mod tests {
     fn test_key_event_is_recover() {
         assert!(
             KeyEvent {
-                kind: EventKind::Rec,
+                kind: KeyEventKind::Rec,
                 ..make_valid_icp()
             }
             .is_recover()
@@ -735,7 +759,7 @@ mod tests {
     fn test_key_event_is_recovery_rotation() {
         assert!(
             KeyEvent {
-                kind: EventKind::Ror,
+                kind: KeyEventKind::Ror,
                 ..make_valid_icp()
             }
             .is_recovery_rotation()
@@ -747,7 +771,7 @@ mod tests {
     fn test_key_event_is_decommission() {
         assert!(
             KeyEvent {
-                kind: EventKind::Dec,
+                kind: KeyEventKind::Dec,
                 ..make_valid_icp()
             }
             .is_decommission()
@@ -759,7 +783,7 @@ mod tests {
     fn test_key_event_is_contest() {
         assert!(
             KeyEvent {
-                kind: EventKind::Cnt,
+                kind: KeyEventKind::Cnt,
                 ..make_valid_icp()
             }
             .is_contest()
@@ -771,7 +795,7 @@ mod tests {
     fn test_key_event_is_interaction() {
         assert!(
             KeyEvent {
-                kind: EventKind::Ixn,
+                kind: KeyEventKind::Ixn,
                 ..make_valid_icp()
             }
             .is_interaction()
@@ -783,7 +807,7 @@ mod tests {
     fn test_key_event_reveals_rotation_key() {
         assert!(
             KeyEvent {
-                kind: EventKind::Rot,
+                kind: KeyEventKind::Rot,
                 ..make_valid_icp()
             }
             .reveals_rotation_key()
@@ -795,7 +819,7 @@ mod tests {
     fn test_key_event_reveals_recovery_key() {
         assert!(
             KeyEvent {
-                kind: EventKind::Rec,
+                kind: KeyEventKind::Rec,
                 ..make_valid_icp()
             }
             .reveals_recovery_key()
@@ -815,14 +839,14 @@ mod tests {
     fn test_key_event_decommissions() {
         assert!(
             KeyEvent {
-                kind: EventKind::Dec,
+                kind: KeyEventKind::Dec,
                 ..make_valid_icp()
             }
             .decommissions()
         );
         assert!(
             KeyEvent {
-                kind: EventKind::Cnt,
+                kind: KeyEventKind::Cnt,
                 ..make_valid_icp()
             }
             .decommissions()
@@ -938,7 +962,7 @@ mod tests {
     #[test]
     fn test_validate_structure_dip_complete() {
         let event = KeyEvent {
-            kind: EventKind::Dip,
+            kind: KeyEventKind::Dip,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: None,
@@ -956,7 +980,7 @@ mod tests {
     #[test]
     fn test_validate_structure_dip_missing_delegating_prefix() {
         let event = KeyEvent {
-            kind: EventKind::Dip,
+            kind: KeyEventKind::Dip,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: None,
@@ -975,7 +999,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_ror() {
         let event = KeyEvent {
-            kind: EventKind::Ror,
+            kind: KeyEventKind::Ror,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -993,7 +1017,7 @@ mod tests {
     #[test]
     fn test_validate_structure_valid_cnt() {
         let event = KeyEvent {
-            kind: EventKind::Cnt,
+            kind: KeyEventKind::Cnt,
             said: make_blake3_digest("said"),
             prefix: make_blake3_digest("prefix"),
             previous: Some(make_blake3_digest("prev")),
@@ -1012,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_batch_submit_response_applied() {
-        let response = SubmitEventsResponse {
+        let response = SubmitKeyEventsResponse {
             applied: true,
             diverged_at: None,
         };
@@ -1022,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_batch_submit_response_diverged() {
-        let response = SubmitEventsResponse {
+        let response = SubmitKeyEventsResponse {
             applied: false,
             diverged_at: Some(5),
         };
@@ -1274,121 +1298,115 @@ mod tests {
         assert_eq!(parsed.entries_json, audit.entries_json);
     }
 
-    // ==================== SadPointerKind tests ====================
+    // ==================== SadEventKind tests ====================
 
     #[test]
-    fn test_sad_pointer_kind_as_str() {
-        assert_eq!(SadPointerKind::Icp.as_str(), "kels/sad/v1/pointer/icp");
-        assert_eq!(SadPointerKind::Upd.as_str(), "kels/sad/v1/pointer/upd");
-        assert_eq!(SadPointerKind::Est.as_str(), "kels/sad/v1/pointer/est");
-        assert_eq!(SadPointerKind::Evl.as_str(), "kels/sad/v1/pointer/evl");
-        assert_eq!(SadPointerKind::Rpr.as_str(), "kels/sad/v1/pointer/rpr");
+    fn test_sad_event_kind_as_str() {
+        assert_eq!(SadEventKind::Icp.as_str(), "kels/sad/v1/events/icp");
+        assert_eq!(SadEventKind::Upd.as_str(), "kels/sad/v1/events/upd");
+        assert_eq!(SadEventKind::Est.as_str(), "kels/sad/v1/events/est");
+        assert_eq!(SadEventKind::Evl.as_str(), "kels/sad/v1/events/evl");
+        assert_eq!(SadEventKind::Rpr.as_str(), "kels/sad/v1/events/rpr");
     }
 
     #[test]
-    fn test_sad_pointer_kind_display() {
-        assert_eq!(
-            format!("{}", SadPointerKind::Icp),
-            "kels/sad/v1/pointer/icp"
-        );
-        assert_eq!(
-            format!("{}", SadPointerKind::Rpr),
-            "kels/sad/v1/pointer/rpr"
-        );
+    fn test_sad_event_kind_display() {
+        assert_eq!(format!("{}", SadEventKind::Icp), "kels/sad/v1/events/icp");
+        assert_eq!(format!("{}", SadEventKind::Rpr), "kels/sad/v1/events/rpr");
     }
 
     #[test]
-    fn test_sad_pointer_kind_from_str() {
+    fn test_sad_event_kind_from_str() {
         assert_eq!(
-            "kels/sad/v1/pointer/icp".parse::<SadPointerKind>().unwrap(),
-            SadPointerKind::Icp
+            "kels/sad/v1/events/icp".parse::<SadEventKind>().unwrap(),
+            SadEventKind::Icp
         );
         assert_eq!(
-            "kels/sad/v1/pointer/upd".parse::<SadPointerKind>().unwrap(),
-            SadPointerKind::Upd
+            "kels/sad/v1/events/upd".parse::<SadEventKind>().unwrap(),
+            SadEventKind::Upd
         );
         assert_eq!(
-            "kels/sad/v1/pointer/est".parse::<SadPointerKind>().unwrap(),
-            SadPointerKind::Est
+            "kels/sad/v1/events/est".parse::<SadEventKind>().unwrap(),
+            SadEventKind::Est
         );
         assert_eq!(
-            "kels/sad/v1/pointer/evl".parse::<SadPointerKind>().unwrap(),
-            SadPointerKind::Evl
+            "kels/sad/v1/events/evl".parse::<SadEventKind>().unwrap(),
+            SadEventKind::Evl
         );
         assert_eq!(
-            "kels/sad/v1/pointer/rpr".parse::<SadPointerKind>().unwrap(),
-            SadPointerKind::Rpr
+            "kels/sad/v1/events/rpr".parse::<SadEventKind>().unwrap(),
+            SadEventKind::Rpr
         );
     }
 
     #[test]
-    fn test_sad_pointer_kind_from_str_rejects_invalid() {
-        assert!("invalid".parse::<SadPointerKind>().is_err());
-        assert!("icp".parse::<SadPointerKind>().is_err());
+    fn test_sad_event_kind_from_str_rejects_invalid() {
+        assert!("invalid".parse::<SadEventKind>().is_err());
+        assert!("icp".parse::<SadEventKind>().is_err());
     }
 
     #[test]
-    fn test_sad_pointer_kind_from_short_name() {
+    fn test_sad_event_kind_from_short_name() {
         assert_eq!(
-            SadPointerKind::from_short_name("icp").unwrap(),
-            SadPointerKind::Icp
+            SadEventKind::from_short_name("icp").unwrap(),
+            SadEventKind::Icp
         );
         assert_eq!(
-            SadPointerKind::from_short_name("upd").unwrap(),
-            SadPointerKind::Upd
+            SadEventKind::from_short_name("upd").unwrap(),
+            SadEventKind::Upd
         );
         assert_eq!(
-            SadPointerKind::from_short_name("est").unwrap(),
-            SadPointerKind::Est
+            SadEventKind::from_short_name("est").unwrap(),
+            SadEventKind::Est
         );
         assert_eq!(
-            SadPointerKind::from_short_name("evl").unwrap(),
-            SadPointerKind::Evl
+            SadEventKind::from_short_name("evl").unwrap(),
+            SadEventKind::Evl
         );
         assert_eq!(
-            SadPointerKind::from_short_name("rpr").unwrap(),
-            SadPointerKind::Rpr
+            SadEventKind::from_short_name("rpr").unwrap(),
+            SadEventKind::Rpr
         );
     }
 
     #[test]
-    fn test_sad_pointer_kind_from_short_name_rejects_invalid() {
-        assert!(SadPointerKind::from_short_name("invalid").is_err());
-        assert!(SadPointerKind::from_short_name("kels/sad/v1/pointer/icp").is_err());
+    fn test_sad_event_kind_from_short_name_rejects_invalid() {
+        assert!(SadEventKind::from_short_name("invalid").is_err());
+        assert!(SadEventKind::from_short_name("kels/sad/v1/events/icp").is_err());
     }
 
     #[test]
-    fn test_sad_pointer_kind_serde_roundtrip() {
-        let json = serde_json::to_string(&SadPointerKind::Icp).unwrap();
-        assert_eq!(json, "\"kels/sad/v1/pointer/icp\"");
-        let parsed: SadPointerKind = serde_json::from_str("\"kels/sad/v1/pointer/evl\"").unwrap();
-        assert_eq!(parsed, SadPointerKind::Evl);
+    fn test_sad_event_kind_serde_roundtrip() {
+        let json = serde_json::to_string(&SadEventKind::Icp).unwrap();
+        assert_eq!(json, "\"kels/sad/v1/events/icp\"");
+        let parsed: SadEventKind = serde_json::from_str("\"kels/sad/v1/events/evl\"").unwrap();
+        assert_eq!(parsed, SadEventKind::Evl);
         // Short form rejected
-        assert!(serde_json::from_str::<SadPointerKind>("\"icp\"").is_err());
+        assert!(serde_json::from_str::<SadEventKind>("\"icp\"").is_err());
     }
 
     #[test]
-    fn test_sad_pointer_kind_predicates() {
-        assert!(SadPointerKind::Icp.is_inception());
-        assert!(!SadPointerKind::Upd.is_inception());
+    fn test_sad_event_kind_predicates() {
+        assert!(SadEventKind::Icp.is_inception());
+        assert!(!SadEventKind::Upd.is_inception());
 
-        assert!(SadPointerKind::Rpr.is_repair());
-        assert!(!SadPointerKind::Evl.is_repair());
+        assert!(SadEventKind::Rpr.is_repair());
+        assert!(!SadEventKind::Evl.is_repair());
 
-        assert!(SadPointerKind::Evl.evaluates_checkpoint());
-        assert!(SadPointerKind::Rpr.evaluates_checkpoint());
-        assert!(!SadPointerKind::Upd.evaluates_checkpoint());
-        assert!(!SadPointerKind::Est.evaluates_checkpoint());
-        assert!(!SadPointerKind::Icp.evaluates_checkpoint());
+        assert!(SadEventKind::Evl.evaluates_governance());
+        assert!(SadEventKind::Rpr.evaluates_governance());
+        assert!(!SadEventKind::Upd.evaluates_governance());
+        assert!(!SadEventKind::Est.evaluates_governance());
+        assert!(!SadEventKind::Icp.evaluates_governance());
     }
 
-    // ==================== SadPointer::validate_structure tests ====================
+    // ==================== SadEvent::validate_structure tests ====================
 
-    fn make_valid_icp_pointer() -> SadPointer {
+    fn make_valid_icp_event() -> SadEvent {
         let wp = cesr::Digest256::blake3_256(b"wp");
-        SadPointer::create(
+        SadEvent::create(
             "test/topic".to_string(),
-            SadPointerKind::Icp,
+            SadEventKind::Icp,
             None,
             None,
             Some(wp),
@@ -1399,31 +1417,31 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_valid() {
-        let pointer = make_valid_icp_pointer();
-        assert!(pointer.validate_structure().is_ok());
+        let event = make_valid_icp_event();
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
-    fn test_validate_structure_icp_with_checkpoint_policy_valid() {
+    fn test_validate_structure_icp_with_governance_policy_valid() {
         let wp = cesr::Digest256::blake3_256(b"wp");
-        let cp = cesr::Digest256::blake3_256(b"cp");
-        let pointer = SadPointer::create(
+        let gp = cesr::Digest256::blake3_256(b"gp");
+        let event = SadEvent::create(
             "test/topic".to_string(),
-            SadPointerKind::Icp,
+            SadEventKind::Icp,
             None,
             None,
             Some(wp),
-            Some(cp),
+            Some(gp),
         )
         .unwrap();
-        assert!(pointer.validate_structure().is_ok());
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_icp_missing_write_policy_rejected() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.write_policy = None;
-        let err = pointer.validate_structure().unwrap_err();
+        let mut event = make_valid_icp_event();
+        event.write_policy = None;
+        let err = event.validate_structure().unwrap_err();
         assert!(
             err.contains("requires writePolicy"),
             "expected writePolicy required error, got: {err}"
@@ -1432,169 +1450,169 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_wrong_version() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.version = 1;
-        let err = pointer.validate_structure().unwrap_err();
+        let mut event = make_valid_icp_event();
+        event.version = 1;
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("version 0"));
     }
 
     #[test]
     fn test_validate_structure_sad_icp_forbids_content() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.content = Some(cesr::Digest256::blake3_256(b"content"));
-        let err = pointer.validate_structure().unwrap_err();
+        let mut event = make_valid_icp_event();
+        event.content = Some(cesr::Digest256::blake3_256(b"content"));
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have content"));
     }
 
     #[test]
     fn test_validate_structure_sad_icp_forbids_previous() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        let err = pointer.validate_structure().unwrap_err();
+        let mut event = make_valid_icp_event();
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have previous"));
     }
 
     #[test]
     fn test_validate_structure_est_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Est;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
-        pointer.write_policy = None;
-        assert!(pointer.validate_structure().is_ok());
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Est;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
+        event.write_policy = None;
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_est_wrong_version() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Est;
-        pointer.version = 2;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
-        pointer.write_policy = None;
-        let err = pointer.validate_structure().unwrap_err();
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Est;
+        event.version = 2;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
+        event.write_policy = None;
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("version 1"));
     }
 
     #[test]
-    fn test_validate_structure_est_missing_checkpoint_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Est;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.write_policy = None;
-        let err = pointer.validate_structure().unwrap_err();
-        assert!(err.contains("requires checkpointPolicy"));
+    fn test_validate_structure_est_missing_governance_policy() {
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Est;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.write_policy = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("requires governancePolicy"));
     }
 
     #[test]
     fn test_validate_structure_est_forbids_write_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Est;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Est;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         // write_policy inherited from Icp helper — Est forbids it
-        let err = pointer.validate_structure().unwrap_err();
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have writePolicy"));
     }
 
     #[test]
     fn test_validate_structure_upd_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Upd;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.content = Some(cesr::Digest256::blake3_256(b"content"));
-        pointer.write_policy = None;
-        assert!(pointer.validate_structure().is_ok());
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Upd;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.content = Some(cesr::Digest256::blake3_256(b"content"));
+        event.write_policy = None;
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
-    fn test_validate_structure_upd_forbids_checkpoint_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Upd;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
-        pointer.write_policy = None;
-        let err = pointer.validate_structure().unwrap_err();
-        assert!(err.contains("must not have checkpointPolicy"));
+    fn test_validate_structure_upd_forbids_governance_policy() {
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Upd;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
+        event.write_policy = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have governancePolicy"));
     }
 
     #[test]
     fn test_validate_structure_upd_forbids_write_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Upd;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Upd;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         // write_policy inherited from Icp helper — Upd forbids it
-        let err = pointer.validate_structure().unwrap_err();
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have writePolicy"));
     }
 
     #[test]
     fn test_validate_structure_evl_with_write_policy_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Evl;
-        pointer.version = 2;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Evl;
+        event.version = 2;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         // write_policy Some — policy evolution
-        assert!(pointer.validate_structure().is_ok());
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_evl_without_write_policy_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Evl;
-        pointer.version = 2;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.write_policy = None;
-        // write_policy None — pure checkpoint
-        assert!(pointer.validate_structure().is_ok());
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Evl;
+        event.version = 2;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.write_policy = None;
+        // write_policy None — pure evaluation
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
-    fn test_validate_structure_evl_with_checkpoint_policy_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Evl;
-        pointer.version = 2;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"new-cp"));
-        assert!(pointer.validate_structure().is_ok());
+    fn test_validate_structure_evl_with_governance_policy_valid() {
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Evl;
+        event.version = 2;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"new-gp"));
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_rpr_valid() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Rpr;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.write_policy = None;
-        assert!(pointer.validate_structure().is_ok());
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Rpr;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.write_policy = None;
+        assert!(event.validate_structure().is_ok());
     }
 
     #[test]
-    fn test_validate_structure_rpr_forbids_checkpoint_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Rpr;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        pointer.checkpoint_policy = Some(cesr::Digest256::blake3_256(b"cp"));
-        pointer.write_policy = None;
-        let err = pointer.validate_structure().unwrap_err();
-        assert!(err.contains("must not have checkpointPolicy"));
+    fn test_validate_structure_rpr_forbids_governance_policy() {
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Rpr;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
+        event.write_policy = None;
+        let err = event.validate_structure().unwrap_err();
+        assert!(err.contains("must not have governancePolicy"));
     }
 
     #[test]
     fn test_validate_structure_rpr_forbids_write_policy() {
-        let mut pointer = make_valid_icp_pointer();
-        pointer.kind = SadPointerKind::Rpr;
-        pointer.version = 1;
-        pointer.previous = Some(cesr::Digest256::blake3_256(b"prev"));
+        let mut event = make_valid_icp_event();
+        event.kind = SadEventKind::Rpr;
+        event.version = 1;
+        event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
         // write_policy inherited from Icp helper — Rpr forbids it
-        let err = pointer.validate_structure().unwrap_err();
+        let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have writePolicy"));
     }
 }

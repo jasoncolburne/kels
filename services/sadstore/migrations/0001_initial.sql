@@ -1,8 +1,8 @@
 -- KELS SADStore initial schema for PostgreSQL
 BEGIN;
 
--- SAD chain pointers table
-CREATE TABLE IF NOT EXISTS sad_pointers (
+-- SAD Event Log events table
+CREATE TABLE IF NOT EXISTS sad_events (
     said TEXT PRIMARY KEY,
     prefix TEXT NOT NULL,
     previous TEXT,
@@ -11,11 +11,11 @@ CREATE TABLE IF NOT EXISTS sad_pointers (
     content TEXT,
     custody TEXT,                    -- SAID of custody SAD
     write_policy TEXT,               -- required on Icp, optional on Evl, forbidden on Est/Upd/Rpr
-    kind TEXT NOT NULL,              -- record kind (kels/sad/v1/pointer/{icp,upd,est,evl,rpr})
-    checkpoint_policy TEXT           -- SAID of checkpoint policy (higher threshold than write_policy)
+    kind TEXT NOT NULL,              -- event kind (kels/sad/v1/events/{icp,upd,est,evl,rpr})
+    governance_policy TEXT           -- SAID of governance policy (higher threshold than write_policy)
 );
 
-CREATE INDEX IF NOT EXISTS sad_pointers_prefix_idx ON sad_pointers(prefix);
+CREATE INDEX IF NOT EXISTS sad_events_prefix_idx ON sad_events(prefix);
 
 -- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (
@@ -46,26 +46,26 @@ CREATE TABLE IF NOT EXISTS policies (
     immune BOOLEAN
 );
 
--- Archive tables: copies of pointers for repaired chains
-CREATE TABLE IF NOT EXISTS sad_pointer_archives (LIKE sad_pointers INCLUDING ALL);
+-- Archive tables: copies of events displaced by SEL repair
+CREATE TABLE IF NOT EXISTS sad_event_archives (LIKE sad_events INCLUDING ALL);
 
--- Chain repair tracking: each repair is a first-class entity
-CREATE TABLE IF NOT EXISTS sad_pointer_repairs (
+-- SEL repair tracking: each repair is a first-class entity
+CREATE TABLE IF NOT EXISTS sad_event_repairs (
     said TEXT PRIMARY KEY,
-    pointer_prefix TEXT NOT NULL,
+    event_prefix TEXT NOT NULL,
     diverged_at_version BIGINT NOT NULL,
     repaired_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS sad_pointer_repairs_prefix_idx ON sad_pointer_repairs(pointer_prefix);
+CREATE INDEX IF NOT EXISTS sad_event_repairs_prefix_idx ON sad_event_repairs(event_prefix);
 
--- Links a repair to the archived pointers it displaced
-CREATE TABLE IF NOT EXISTS sad_pointer_repair_records (
+-- Links a repair to the archived events it displaced
+CREATE TABLE IF NOT EXISTS sel_repair_events (
     said TEXT PRIMARY KEY,
-    repair_said TEXT NOT NULL REFERENCES sad_pointer_repairs(said) ON DELETE CASCADE,
-    pointer_said TEXT NOT NULL REFERENCES sad_pointer_archives(said) ON DELETE CASCADE
+    repair_said TEXT NOT NULL REFERENCES sad_event_repairs(said) ON DELETE CASCADE,
+    event_said TEXT NOT NULL REFERENCES sad_event_archives(said) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS sad_pointer_repair_records_repair_idx ON sad_pointer_repair_records(repair_said);
+CREATE INDEX IF NOT EXISTS sel_repair_events_repair_idx ON sel_repair_events(repair_said);
 
 COMMIT;

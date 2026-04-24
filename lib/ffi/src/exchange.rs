@@ -475,7 +475,7 @@ pub unsafe extern "C" fn kels_essr_open_result_free(result: *mut KelsEssrOpenRes
     }
 }
 
-/// Return the ENCAP_KEY_KIND constant for SADStore pointer chain lookups.
+/// Return the ENCAP_KEY_KIND constant for SADStore SEL lookups.
 ///
 /// # Returns
 /// Static string "kels/sad/v1/keys/mlkem". Do NOT free this string.

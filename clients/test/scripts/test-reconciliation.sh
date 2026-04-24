@@ -109,7 +109,7 @@ echo "Owner creates KEL on node-d, adversary injects on node-e, owner recovers o
 echo "Verify recovery propagates to node-e (which has adversary chain) and all nodes converge."
 echo ""
 
-PREFIX1=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX1=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX1"
 run_test "KEL propagated to all nodes" wait_for_propagation "$PREFIX1" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -118,7 +118,7 @@ kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX1" --events 
 echo "Adversary ixn injected on node-e"
 
 run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX1" 2 "$CONVERGENCE_TIMEOUT"
-run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX1"
+run_test "Owner recovers on node-d" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX1"
 run_test "All nodes converge after recovery" wait_for_convergence "$PREFIX1" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
 
 cleanup_adversary_backup
@@ -131,7 +131,7 @@ echo -e "${CYAN}=== Scenario 2: Post-Recovery Events → Adversary Node ===${NC}
 echo "After recovery, owner adds new events. Verify they propagate to nodes that had adversary chain."
 echo ""
 
-PREFIX2=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX2=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX2"
 run_test "KEL propagated" wait_for_propagation "$PREFIX2" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -139,10 +139,10 @@ save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX2" --events ixn
 
 run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX2" 2 "$CONVERGENCE_TIMEOUT"
-run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX2"
+run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX2"
 
 # Add post-recovery event
-run_test "Owner anchors after recovery" kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX2" --said KPostRecoveryAnchor_________________________
+run_test "Owner anchors after recovery" kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX2" --said KPostRecoveryAnchor_________________________
 run_test "All nodes converge with post-recovery event" wait_for_convergence "$PREFIX2" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
 
 cleanup_adversary_backup
@@ -156,7 +156,7 @@ echo "Adversary injects rot+ixns on node-e. Owner recovers on node-d with extra 
 echo "Verify all nodes converge including post-recovery anchor."
 echo ""
 
-PREFIX3=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX3=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX3"
 run_test "KEL propagated" wait_for_propagation "$PREFIX3" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -165,8 +165,8 @@ kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX3" --events 
 echo "Adversary rot,ixn,ixn injected on node-e"
 
 run_test "Adversary events propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX3" 4 "$CONVERGENCE_TIMEOUT"
-run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX3"
-run_test "Owner anchors after recovery" kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX3" --said KPostRotChainRecoveryAnchor_________________
+run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX3"
+run_test "Owner anchors after recovery" kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX3" --said KPostRotChainRecoveryAnchor_________________
 run_test "All nodes converge" wait_for_convergence "$PREFIX3" "$CONVERGENCE_TIMEOUT" "${ALL_NODES[@]}"
 
 cleanup_adversary_backup
@@ -180,7 +180,7 @@ echo "Adversary injects ror+ixn (longer chain) on node-e. Owner contests on node
 echo "Verify cnt reaches all nodes despite being on the shorter chain."
 echo ""
 
-PREFIX4=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX4=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX4"
 run_test "KEL propagated" wait_for_propagation "$PREFIX4" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -189,7 +189,7 @@ kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX4" --events 
 echo "Adversary ror,ixn injected on node-e (reveals recovery)"
 
 run_test "Adversary events propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX4" 3 "$CONVERGENCE_TIMEOUT"
-run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" contest --prefix "$PREFIX4"
+run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" kel contest --prefix "$PREFIX4"
 run_test "All nodes have cnt" wait_for_all_contested "$PREFIX4"
 
 cleanup_adversary_backup
@@ -203,8 +203,8 @@ echo "Adversary injects ror (shorter) on node-e. Owner has ixn+cnt (longer chain
 echo "cnt is on the longer chain and should propagate naturally."
 echo ""
 
-PREFIX5=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
-kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX5" --said KOwnerAnchorBeforeContest___________________
+PREFIX5=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX5" --said KOwnerAnchorBeforeContest___________________
 echo "Created KEL with anchor on node-d: $PREFIX5"
 run_test "KEL propagated" wait_for_propagation "$PREFIX5" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -213,7 +213,7 @@ kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX5" --events 
 echo "Adversary ror injected on node-e (reveals recovery, shorter chain)"
 
 run_test "Adversary ror propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX5" 3 "$CONVERGENCE_TIMEOUT"
-run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" contest --prefix "$PREFIX5"
+run_test "Owner contests" kels-cli --kels-url "$NODE_D_URL" kel contest --prefix "$PREFIX5"
 run_test "All nodes have cnt" wait_for_all_contested "$PREFIX5"
 
 cleanup_adversary_backup
@@ -227,8 +227,8 @@ echo "Adversary submits rec on node-d (triggering archival). Owner contests."
 echo "Archival should detect cnt and transition to contested terminal state."
 echo ""
 
-PREFIX6=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
-kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX6" --said KOwnerAnchorBeforeAdvRec____________________
+PREFIX6=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX6" --said KOwnerAnchorBeforeAdvRec____________________
 echo "Created KEL with anchor on node-d: $PREFIX6"
 run_test "KEL propagated" wait_for_propagation "$PREFIX6" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -242,7 +242,7 @@ swap_to_owner
 # Owner contests (adversary revealed recovery via rec).
 # No RecoveryRecord exists — the adversary rec was a normal append, not an
 # overlap/divergent submission. The contest creates divergence directly.
-run_test "Owner contests after adversary rec" kels-cli --kels-url "$NODE_D_URL" contest --prefix "$PREFIX6"
+run_test "Owner contests after adversary rec" kels-cli --kels-url "$NODE_D_URL" kel contest --prefix "$PREFIX6"
 run_test "All nodes have cnt" wait_for_all_contested "$PREFIX6"
 
 cleanup_adversary_backup
@@ -255,7 +255,7 @@ echo -e "${CYAN}=== Scenario 7: Double Recovery Rejected ===${NC}"
 echo "Owner recovers, then adversary tries to submit a second rec. Should be rejected."
 echo ""
 
-PREFIX7=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX7=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX7"
 run_test "KEL propagated" wait_for_propagation "$PREFIX7" "$CONVERGENCE_TIMEOUT" "$NODE_D_URL" "$NODE_E_URL" "$NODE_F_URL"
 
@@ -263,7 +263,7 @@ save_adversary_keys
 kels-cli --kels-url "$NODE_E_URL" adversary inject --prefix "$PREFIX7" --events ixn
 
 run_test "Adversary ixn propagated to node-d" wait_for_event_count "$NODE_D_URL" "$PREFIX7" 2 "$CONVERGENCE_TIMEOUT"
-run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" recover --prefix "$PREFIX7"
+run_test "Owner recovers" kels-cli --kels-url "$NODE_D_URL" kel recover --prefix "$PREFIX7"
 
 # Adversary tries another rec — should fail with ContestRequired
 swap_to_adversary
@@ -305,9 +305,9 @@ echo "All event types should be rejected on a contested KEL."
 echo ""
 
 # Reuse PREFIX4 (contested)
-run_test_expect_fail "ixn rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX4" --said KRejectedAnchor_____________________________
-run_test_expect_fail "rot rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" rotate --prefix "$PREFIX4"
-run_test_expect_fail "dec rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" decommission --prefix "$PREFIX4"
+run_test_expect_fail "ixn rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX4" --said KRejectedAnchor_____________________________
+run_test_expect_fail "rot rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" kel rotate --prefix "$PREFIX4"
+run_test_expect_fail "dec rejected on contested KEL" kels-cli --kels-url "$NODE_D_URL" kel decommission --prefix "$PREFIX4"
 
 echo ""
 
@@ -317,10 +317,10 @@ echo ""
 echo -e "${CYAN}=== Scenario 10: Submissions Rejected on Decommissioned KEL ===${NC}"
 echo ""
 
-PREFIX10=$(kels-cli --kels-url "$NODE_D_URL" incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+PREFIX10=$(kels-cli --kels-url "$NODE_D_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
 echo "Created KEL on node-d: $PREFIX10"
-run_test "Decommission KEL" kels-cli --kels-url "$NODE_D_URL" decommission --prefix "$PREFIX10"
-run_test_expect_fail "ixn rejected on decommissioned KEL" kels-cli --kels-url "$NODE_D_URL" anchor --prefix "$PREFIX10" --said KRejected___________________________________
+run_test "Decommission KEL" kels-cli --kels-url "$NODE_D_URL" kel decommission --prefix "$PREFIX10"
+run_test_expect_fail "ixn rejected on decommissioned KEL" kels-cli --kels-url "$NODE_D_URL" kel anchor --prefix "$PREFIX10" --said KRejected___________________________________
 
 echo ""
 

@@ -14,7 +14,7 @@ use verifiable_storage::{Chained, SelfAddressed};
 use crate::error::KelsError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EventKind {
+pub enum KeyEventKind {
     #[serde(rename = "kels/kel/v1/events/icp")]
     Icp, // Inception
     #[serde(rename = "kels/kel/v1/events/dip")]
@@ -33,7 +33,7 @@ pub enum EventKind {
     Cnt, // Contest (dual-signed, freezes KEL)
 }
 
-impl EventKind {
+impl KeyEventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Icp => "kels/kel/v1/events/icp",
@@ -160,13 +160,13 @@ impl EventKind {
     }
 }
 
-impl fmt::Display for EventKind {
+impl fmt::Display for KeyEventKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-impl FromStr for EventKind {
+impl FromStr for KeyEventKind {
     type Err = KelsError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -221,7 +221,7 @@ pub struct KeyEvent {
     /// Digest of next recovery key
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_hash: Option<cesr::Digest256>,
-    pub kind: EventKind,
+    pub kind: KeyEventKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<cesr::Digest256>,
     /// Only for dip events
@@ -240,7 +240,7 @@ impl KeyEvent {
             Some(rotation_hash),
             None,
             Some(recovery_hash),
-            EventKind::Icp,
+            KeyEventKind::Icp,
             None,
             None,
         ) {
@@ -260,7 +260,7 @@ impl KeyEvent {
             Some(rotation_hash),
             None,
             Some(recovery_hash),
-            EventKind::Dip,
+            KeyEventKind::Dip,
             None,
             Some(delegating_prefix),
         ) {
@@ -275,7 +275,7 @@ impl KeyEvent {
         rotation_hash: Option<cesr::Digest256>,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Rot;
+        event.kind = KeyEventKind::Rot;
         event.public_key = Some(public_key);
         event.rotation_hash = rotation_hash;
         event.recovery_key = None;
@@ -291,7 +291,7 @@ impl KeyEvent {
         anchor: cesr::Digest256,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Ixn;
+        event.kind = KeyEventKind::Ixn;
         event.public_key = None;
         event.rotation_hash = None;
         event.recovery_key = None;
@@ -310,7 +310,7 @@ impl KeyEvent {
         recovery_hash: cesr::Digest256,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Rec;
+        event.kind = KeyEventKind::Rec;
         event.public_key = Some(public_key);
         event.rotation_hash = Some(rotation_hash);
         event.recovery_key = Some(recovery_key);
@@ -329,7 +329,7 @@ impl KeyEvent {
         recovery_hash: cesr::Digest256,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Ror;
+        event.kind = KeyEventKind::Ror;
         event.public_key = Some(public_key);
         event.rotation_hash = Some(rotation_hash);
         event.recovery_key = Some(recovery_key);
@@ -346,7 +346,7 @@ impl KeyEvent {
         recovery_key: cesr::VerificationKey,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Dec;
+        event.kind = KeyEventKind::Dec;
         event.public_key = Some(public_key);
         event.rotation_hash = None;
         event.recovery_key = Some(recovery_key);
@@ -363,7 +363,7 @@ impl KeyEvent {
         recovery_key: cesr::VerificationKey,
     ) -> Result<Self, KelsError> {
         let mut event = previous_event.clone();
-        event.kind = EventKind::Cnt;
+        event.kind = KeyEventKind::Cnt;
         event.public_key = Some(public_key);
         event.rotation_hash = None;
         event.recovery_key = Some(recovery_key);
@@ -375,28 +375,28 @@ impl KeyEvent {
     }
 
     pub fn is_inception(&self) -> bool {
-        self.kind == EventKind::Icp
+        self.kind == KeyEventKind::Icp
     }
     pub fn is_delegated_inception(&self) -> bool {
-        self.kind == EventKind::Dip
+        self.kind == KeyEventKind::Dip
     }
     pub fn is_rotation(&self) -> bool {
-        self.kind == EventKind::Rot
+        self.kind == KeyEventKind::Rot
     }
     pub fn is_recover(&self) -> bool {
-        self.kind == EventKind::Rec
+        self.kind == KeyEventKind::Rec
     }
     pub fn is_recovery_rotation(&self) -> bool {
-        self.kind == EventKind::Ror
+        self.kind == KeyEventKind::Ror
     }
     pub fn is_decommission(&self) -> bool {
-        self.kind == EventKind::Dec
+        self.kind == KeyEventKind::Dec
     }
     pub fn is_contest(&self) -> bool {
-        self.kind == EventKind::Cnt
+        self.kind == KeyEventKind::Cnt
     }
     pub fn is_interaction(&self) -> bool {
-        self.kind == EventKind::Ixn
+        self.kind == KeyEventKind::Ixn
     }
     pub fn is_establishment(&self) -> bool {
         self.kind.is_establishment()
@@ -469,7 +469,7 @@ impl KeyEvent {
         // Public key fields are validated by typed deserialization
 
         match self.kind {
-            EventKind::Icp => {
+            KeyEventKind::Icp => {
                 // Inception: version=0, no previous, has public_key, rotation_hash, recovery_hash
                 forbid("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -479,7 +479,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Dip => {
+            KeyEventKind::Dip => {
                 // Delegated inception: same as icp but requires delegatingPrefix
                 forbid("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -489,7 +489,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 require("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Rot => {
+            KeyEventKind::Rot => {
                 // Rotation: version>0, has previous, public_key, rotation_hash
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -499,7 +499,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Ixn => {
+            KeyEventKind::Ixn => {
                 // Interaction: version>0, has previous and anchor, no keys
                 require("previous", self.previous.is_some())?;
                 require("anchor", self.anchor.is_some())?;
@@ -509,7 +509,7 @@ impl KeyEvent {
                 forbid("recoveryHash", self.recovery_hash.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Rec => {
+            KeyEventKind::Rec => {
                 // Recovery: version>0, has previous, all key fields
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -519,7 +519,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Ror => {
+            KeyEventKind::Ror => {
                 // Recovery rotation: same as rec
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -529,7 +529,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Dec => {
+            KeyEventKind::Dec => {
                 // Decommission: version>0, has previous, public_key, recovery_key
                 // No future keys (rotation_hash, recovery_hash) since KEL ends
                 require("previous", self.previous.is_some())?;
@@ -540,7 +540,7 @@ impl KeyEvent {
                 forbid("anchor", self.anchor.is_some())?;
                 forbid("delegatingPrefix", self.delegating_prefix.is_some())?;
             }
-            EventKind::Cnt => {
+            KeyEventKind::Cnt => {
                 // Contest: same as dec
                 require("previous", self.previous.is_some())?;
                 require("publicKey", self.public_key.is_some())?;
@@ -671,8 +671,8 @@ impl SignedKeyEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "BatchSubmitResponse.applied must be checked - events may be rejected"]
-pub struct SubmitEventsResponse {
+#[must_use = "SubmitKeyEventsResponse.applied must be checked - events may be rejected"]
+pub struct SubmitKeyEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,

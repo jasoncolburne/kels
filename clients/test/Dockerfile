@@ -16,7 +16,7 @@ COPY lib/policy /app/lib/policy
 COPY clients/bench /app/clients/bench
 COPY clients/cli /app/clients/cli
 
-# TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries
+# TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries (when applicable)
 ARG TRUSTED_REGISTRY_PREFIXES
 
 # Build kels-bench

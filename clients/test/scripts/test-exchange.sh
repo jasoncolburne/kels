@@ -68,7 +68,7 @@ echo "Phase 1: KEL Setup"
 echo "========================================="
 
 test_create_alice_kel() {
-    ALICE_PREFIX=$($CLI incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
+    ALICE_PREFIX=$($CLI kel incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
     if [ -z "$ALICE_PREFIX" ]; then
         echo "Failed to create Alice's KEL"
         return 1
@@ -78,7 +78,7 @@ test_create_alice_kel() {
 }
 
 test_create_bob_kel() {
-    BOB_PREFIX=$($CLI incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
+    BOB_PREFIX=$($CLI kel incept --signing-algorithm ml-dsa-65 2>&1 | grep "Prefix:" | awk '{print $NF}')
     if [ -z "$BOB_PREFIX" ]; then
         echo "Failed to create Bob's KEL"
         return 1
@@ -217,7 +217,7 @@ echo "Phase 4b: KEM Key Ops After Signing Key Rotation"
 echo "========================================="
 
 test_alice_rotate_signing_key() {
-    OUTPUT=$($CLI rotate --prefix "$ALICE_PREFIX" 2>&1)
+    OUTPUT=$($CLI kel rotate --prefix "$ALICE_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
 }
@@ -237,7 +237,7 @@ test_lookup_alice_key_after_rotations() {
 }
 
 test_bob_rotate_signing_key() {
-    OUTPUT=$($CLI rotate --prefix "$BOB_PREFIX" 2>&1)
+    OUTPUT=$($CLI kel rotate --prefix "$BOB_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
 }
@@ -271,7 +271,7 @@ echo "========================================="
 echo '{"message": "Hello Bob, this is a test credential exchange!"}' > "$TEMP_DIR/payload.json"
 
 test_alice_send_to_bob() {
-    OUTPUT=$($CLI exchange send \
+    OUTPUT=$($CLI mail send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
         --topic "kels/exchange/v1/topics/test" \
@@ -295,7 +295,7 @@ echo "========================================="
 test_bob_check_inbox() {
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        OUTPUT=$($CLI mail inbox --prefix "$BOB_PREFIX" 2>&1)
         if echo "$OUTPUT" | grep -q "messages):"; then
             echo "$OUTPUT"
             return 0
@@ -308,7 +308,7 @@ test_bob_check_inbox() {
 }
 
 test_alice_inbox_empty() {
-    OUTPUT=$($CLI exchange inbox --prefix "$ALICE_PREFIX" 2>&1)
+    OUTPUT=$($CLI mail inbox --prefix "$ALICE_PREFIX" 2>&1)
     echo "$OUTPUT"
     # Alice's inbox should be empty (she sent, not received)
     echo "$OUTPUT" | grep -qi "empty\|0 messages" || return 1
@@ -330,7 +330,7 @@ echo "Phase 7: Cross-Node Mail Gossip"
 echo "========================================="
 
 test_alice_send_cross_node() {
-    OUTPUT=$($CLI exchange send \
+    OUTPUT=$($CLI mail send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
         --topic "kels/exchange/v1/topics/cross-node-test" \
@@ -342,7 +342,7 @@ test_alice_send_cross_node() {
 test_bob_inbox_on_node_b() {
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        OUTPUT=$($CLI_B exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        OUTPUT=$($CLI_B mail inbox --prefix "$BOB_PREFIX" 2>&1)
         if echo "$OUTPUT" | grep -q "messages):"; then
             echo "$OUTPUT"
             return 0
@@ -371,7 +371,7 @@ echo "========================================="
 
 test_bob_fetch_and_verify() {
     # Get the first message SAID from Bob's inbox
-    INBOX_OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+    INBOX_OUTPUT=$($CLI mail inbox --prefix "$BOB_PREFIX" 2>&1)
     MAIL_SAID=$(echo "$INBOX_OUTPUT" | grep '|' | head -1 | awk '{print $1}')
     if [ -z "$MAIL_SAID" ]; then
         echo "No message SAID found in inbox"
@@ -382,7 +382,7 @@ test_bob_fetch_and_verify() {
     echo "$MAIL_SAID" > "$TEMP_DIR/mail_said"
 
     # Fetch and decrypt
-    PAYLOAD=$($CLI exchange fetch --prefix "$BOB_PREFIX" --said "$MAIL_SAID" 2>&1)
+    PAYLOAD=$($CLI mail fetch --prefix "$BOB_PREFIX" --said "$MAIL_SAID" 2>&1)
     FETCH_EXIT=$?
     echo "$PAYLOAD"
     if [ $FETCH_EXIT -ne 0 ]; then
@@ -420,7 +420,7 @@ echo "========================================="
 
 test_bob_ack_message() {
     MAIL_SAID=$(cat "$TEMP_DIR/mail_said")
-    OUTPUT=$($CLI exchange ack --prefix "$BOB_PREFIX" --saids "$MAIL_SAID" 2>&1)
+    OUTPUT=$($CLI mail ack --prefix "$BOB_PREFIX" --saids "$MAIL_SAID" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "acknowledged" || return 1
 }
@@ -429,7 +429,7 @@ test_bob_inbox_message_removed() {
     MAIL_SAID=$(cat "$TEMP_DIR/mail_said")
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        OUTPUT=$($CLI exchange inbox --prefix "$BOB_PREFIX" 2>&1)
+        OUTPUT=$($CLI mail inbox --prefix "$BOB_PREFIX" 2>&1)
         # Check that the acked message is no longer in the inbox
         if ! echo "$OUTPUT" | grep -q "$MAIL_SAID"; then
             echo "$OUTPUT"

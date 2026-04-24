@@ -21,7 +21,7 @@ use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecu
 
 use crate::{
     object_store::ObjectStore,
-    repository::{SadPointerRepository, SadStoreRepository},
+    repository::{SadEventRepository, SadStoreRepository},
 };
 
 const SECS_PER_DAY: u64 = 86_400;
@@ -58,10 +58,10 @@ fn ttl_reaper_interval_secs() -> u64 {
     kels_core::env_usize("SADSTORE_TTL_REAPER_INTERVAL", 60) as u64
 }
 
-/// Max expired records to reap per cycle.
+/// Max expired objects to reap per cycle.
 const TTL_REAPER_BATCH_SIZE: usize = 100;
 
-/// Spawn a background task that periodically deletes TTL-expired records.
+/// Spawn a background task that periodically deletes TTL-expired objects.
 /// Queries custodies with TTL, then finds expired sad_objects for each,
 /// deletes from DB and MinIO.
 pub fn spawn_ttl_reaper(state: Arc<AppState>) {
@@ -69,15 +69,15 @@ pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            if let Err(e) = reap_expired_records(&state).await {
+            if let Err(e) = reap_expired_objects(&state).await {
                 warn!("TTL reaper error: {}", e);
             }
         }
     });
 }
 
-// TODO: periodic custody GC — delete custodies with zero references from sad_objects and pointers
-async fn reap_expired_records(
+// TODO: periodic custody GC — delete custodies with zero references from sad_objects and events
+async fn reap_expired_objects(
     state: &AppState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use verifiable_storage_postgres::QueryExecutor;
@@ -95,11 +95,11 @@ async fn reap_expired_records(
     for custody in &custodies {
         let Some(ttl) = custody.ttl else { continue };
 
-        // Compute the expiry threshold: records created before this time are expired
+        // Compute the expiry threshold: objects created before this time are expired
         let threshold: verifiable_storage::StorageDatetime =
             (*now.inner() - chrono::Duration::seconds(ttl as i64)).into();
 
-        // Find expired records for this custody
+        // Find expired objects for this custody
         let expired_query =
             verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
                 "sad_objects",
@@ -134,9 +134,9 @@ async fn reap_expired_records(
     Ok(())
 }
 
-/// Max chain records per prefix per day. Low — chains represent stable state.
-fn max_records_per_prefix_per_day() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_RECORDS_PER_POINTER_PER_DAY", 8) as u32
+/// Max SAD events per SEL prefix per day. Low — SELs represent stable state.
+fn max_events_per_prefix_per_day() -> u32 {
+    kels_core::env_usize("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", 8) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
@@ -154,16 +154,16 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-chain-prefix daily rate limit. Checks whether adding `record_count` new
-/// records would exceed the daily limit. Does NOT update the counter — call
-/// `accrue_prefix_rate_limit` after storage with the actual new record count.
+/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` new
+/// events would exceed the daily limit. Does NOT update the counter — call
+/// `accrue_prefix_rate_limit` after storage with the actual new event count.
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
-    record_count: u32,
+    event_count: u32,
 ) -> Result<(), String> {
     let now = Instant::now();
-    let max_records = max_records_per_prefix_per_day();
+    let max_events = max_events_per_prefix_per_day();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
@@ -171,18 +171,18 @@ fn check_prefix_rate_limit(
         entry.1 = now;
     }
 
-    if entry.0 + record_count > max_records {
-        return Err("Too many records for this chain prefix".to_string());
+    if entry.0 + event_count > max_events {
+        return Err("Too many events for this SEL prefix".to_string());
     }
 
     Ok(())
 }
 
-/// Accrue the actual number of new records after storage completes.
+/// Accrue the actual number of new events after storage completes.
 fn accrue_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
-    new_record_count: u32,
+    new_event_count: u32,
 ) {
     let now = Instant::now();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
@@ -190,7 +190,7 @@ fn accrue_prefix_rate_limit(
         entry.0 = 0;
         entry.1 = now;
     }
-    entry.0 += new_record_count;
+    entry.0 += new_event_count;
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -250,7 +250,7 @@ async fn get_verified_peer(
     .transpose()
 }
 
-/// Fetch verified peers from the registry and store records in Redis.
+/// Fetch verified peers from the registry and store entries in Redis.
 async fn refresh_verified_peers(
     redis_conn: &redis::aio::ConnectionManager,
     registry_urls: &[String],
@@ -473,7 +473,7 @@ pub async fn post_sad_object(
 
     // Extract and validate custody if present
     let custody_said =
-        match extract_and_cache_custody(&value, kels_core::CustodyContext::SadObject, &state).await
+        match extract_and_cache_custody(&value, kels_core::SadCustodyContext::Object, &state).await
         {
             Ok(said) => said,
             Err(response) => return response,
@@ -521,7 +521,7 @@ pub async fn post_sad_object(
     (StatusCode::CREATED, "stored").into_response()
 }
 
-/// Gossip replication decision for a record.
+/// Gossip replication decision for an object.
 enum GossipPolicy {
     /// No nodes restriction — broadcast to all peers (default).
     BroadcastAll,
@@ -534,7 +534,7 @@ enum GossipPolicy {
 /// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
 /// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
 /// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
-/// gossip not yet implemented — records are accepted but not replicated).
+/// gossip not yet implemented — objects are accepted but not replicated).
 ///
 /// Fails secure: if `nodes` is set but can't be resolved, skip gossip
 /// (LocalOnly) to avoid leaking restricted data to unauthorized peers.
@@ -579,7 +579,7 @@ async fn resolve_gossip_policy(
                 } else {
                     // TODO: selective multi-node gossip — resolve target peers
                     // from the NodeSet prefix list and forward only to them.
-                    // For now, skip gossip; the record is stored locally and
+                    // For now, skip gossip; the object is stored locally and
                     // will be available when selective replication is implemented.
                     debug!(
                         "NodeSet {} has {} prefixes — skipping gossip until selective multi-node replication is implemented",
@@ -612,7 +612,7 @@ async fn resolve_gossip_policy(
 /// `Ok(None)` if absent or safety-valve disengaged.
 async fn extract_and_cache_custody(
     value: &serde_json::Value,
-    context: kels_core::CustodyContext,
+    context: kels_core::SadCustodyContext,
     state: &AppState,
 ) -> Result<Option<cesr::Digest256>, axum::response::Response> {
     let custody_value = match value.get("custody") {
@@ -665,7 +665,7 @@ async fn extract_and_cache_custody(
 /// Rejects if the custody is unresolvable or fails context validation.
 async fn resolve_and_cache_custody_by_said(
     custody_said: &cesr::Digest256,
-    context: kels_core::CustodyContext,
+    context: kels_core::SadCustodyContext,
     state: &AppState,
 ) -> Result<Option<cesr::Digest256>, axum::response::Response> {
     // Try Postgres cache first
@@ -792,7 +792,7 @@ pub async fn fetch_sad_object(
         return (StatusCode::BAD_REQUEST, format!("invalid disclosure: {e}")).into_response();
     }
 
-    // Look up the record in sad_objects to get custody info
+    // Look up the object in sad_objects to get custody info
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
         Ok(Some(entry)) => entry,
         Ok(None) => {
@@ -857,7 +857,7 @@ pub async fn fetch_sad_object(
         }
     }
 
-    // TTL check (per-record: sad_objects.created_at + custodies.ttl)
+    // TTL check (per-object: sad_objects.created_at + custodies.ttl)
     if let Some(ttl) = custody.ttl {
         let created = entry.created_at.inner().timestamp();
         let now = verifiable_storage::StorageDatetime::now()
@@ -878,8 +878,8 @@ pub async fn fetch_sad_object(
         {
             Ok(1) => {
                 // We consumed it — serve from MinIO. If MinIO fetch fails after
-                // the PG delete, the record becomes inaccessible. Acceptable for
-                // ephemeral records — that's the semantics of once.
+                // the PG delete, the object becomes inaccessible. Acceptable for
+                // ephemeral objects — that's the semantics of once.
                 let response =
                     serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
 
@@ -1073,28 +1073,28 @@ pub async fn sad_object_exists(
     }
 }
 
-pub async fn sad_pointer_exists(
+pub async fn sad_event_exists(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
-    match state.repo.sad_pointers.exists(&request.said).await {
+    match state.repo.sad_events.exists(&request.said).await {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
-            warn!("Failed to check pointer existence: {}", e);
+            warn!("Failed to check event existence: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
-// === Layer 2: Chain Records (Postgres) ===
+// === Layer 2: SAD Events (Postgres) ===
 
-/// Page through existing chain records in a transaction, feeding each page to the verifier.
+/// Page through existing SAD events in a transaction, feeding each page to the verifier.
 async fn verify_existing_chain<Tx: TransactionExecutor>(
     tx: &mut Tx,
-    repo: &SadPointerRepository,
+    repo: &SadEventRepository,
     prefix: &cesr::Digest256,
-    verifier: &mut kels_core::SadChainVerifier<'_>,
+    verifier: &mut kels_core::SelVerifier<'_>,
 ) -> Result<(), axum::response::Response> {
     let page_size = kels_core::page_size() as u64;
     let mut since: Option<cesr::Digest256> = None;
@@ -1131,22 +1131,22 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     Ok(())
 }
 
-/// Submit SAD pointer records — unified endpoint for clients, gossip sync, and repair.
+/// Submit SAD events — unified endpoint for clients, gossip sync, and repair.
 ///
-/// Accepts `Vec<SadPointer>`. Validates structure (SAID, prefix consistency)
+/// Accepts `Vec<SadEvent>`. Validates structure (SAID, prefix consistency)
 /// and write_policy authorization via verify-then-extend: re-verifies the entire
-/// existing chain from scratch, then verifies new records in context. Rejects
+/// existing chain from scratch, then verifies new events in context. Rejects
 /// unauthorized write_policy advances with 403.
 ///
-/// When any submitted record has `kind: Rpr`, the handler takes the repair path:
-/// truncates all records at version >= the first record's version, then re-verifies
-/// the entire chain including the repair records.
-pub async fn submit_sad_pointer(
+/// When any submitted event has `kind: Rpr`, the handler takes the repair path:
+/// truncates all events at version >= the first event's version, then re-verifies
+/// the entire chain including the repair events.
+pub async fn submit_sad_events(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
-    Json(records): Json<Vec<kels_core::SadPointer>>,
+    Json(events): Json<Vec<kels_core::SadEvent>>,
 ) -> impl IntoResponse {
-    if records.is_empty() {
+    if events.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
     }
 
@@ -1155,29 +1155,29 @@ pub async fn submit_sad_pointer(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // All records must be for the same chain prefix
-    let chain_prefix = &records[0].prefix;
-    if records.iter().any(|r| r.prefix != *chain_prefix) {
+    // All events must be for the same SEL prefix
+    let sel_prefix = &events[0].prefix;
+    if events.iter().any(|r| r.prefix != *sel_prefix) {
         return (
             StatusCode::BAD_REQUEST,
-            "All records must have the same prefix",
+            "All events must have the same prefix",
         )
             .into_response();
     }
 
-    // Verify SAID integrity for all records
-    for r in &records {
+    // Verify SAID integrity for all events
+    for r in &events {
         if r.verify_said().is_err() {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Record SAID verification failed: {}", r.said),
+                format!("SAD event SAID verification failed: {}", r.said),
             )
                 .into_response();
         }
     }
 
     // Verify prefix derivation for v0 if present
-    if let Some(v0) = records.iter().find(|r| r.version == 0)
+    if let Some(v0) = events.iter().find(|r| r.version == 0)
         && v0.verify_prefix().is_err()
     {
         return (
@@ -1187,17 +1187,17 @@ pub async fn submit_sad_pointer(
             .into_response();
     }
 
-    // Validate custody for pointer context — reject ttl/once (structurally
+    // Validate custody for event context — reject ttl/once (structurally
     // incompatible with chained data). This is a hard design requirement.
-    // Check every unique custody SAID in the batch, not just the first record.
+    // Check every unique custody SAID in the batch, not just the first event.
     {
         let mut validated_custodies = std::collections::HashSet::new();
-        for record in &records {
-            if let Some(custody_said) = record.custody
+        for event in &events {
+            if let Some(custody_said) = event.custody
                 && validated_custodies.insert(custody_said)
                 && let Err(response) = resolve_and_cache_custody_by_said(
                     &custody_said,
-                    kels_core::CustodyContext::Pointer,
+                    kels_core::SadCustodyContext::Event,
                     &state,
                 )
                 .await
@@ -1209,7 +1209,7 @@ pub async fn submit_sad_pointer(
 
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
-    let new_record_count;
+    let new_event_count;
     let should_publish;
     let mut diverged_at_version: Option<u64> = None;
     let is_repair;
@@ -1231,7 +1231,7 @@ pub async fn submit_sad_pointer(
             object_store: state.object_store.clone(),
         };
 
-        let mut tx = match state.repo.sad_pointers.pool.begin_transaction().await {
+        let mut tx = match state.repo.sad_events.pool.begin_transaction().await {
             Ok(tx) => tx,
             Err(e) => {
                 warn!("Failed to begin transaction: {}", e);
@@ -1239,25 +1239,24 @@ pub async fn submit_sad_pointer(
             }
         };
 
-        if let Err(e) = tx.acquire_advisory_lock(chain_prefix.as_ref()).await {
+        if let Err(e) = tx.acquire_advisory_lock(sel_prefix.as_ref()).await {
             warn!("Failed to acquire advisory lock: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
 
-        // Dedup first: filter out records that already exist in the DB.
+        // Dedup first: filter out events that already exist in the DB.
         // This is a SAID existence check — no verification needed.
-        // Historical Rpr records dedup out; only genuinely new Rpr records trigger repair.
-        let new_records: Vec<kels_core::SadPointer> = {
-            let submitted_saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
-            let query = verifiable_storage_postgres::Query::<kels_core::SadPointer>::for_table(
-                "sad_pointers",
-            )
-            .r#in("said", submitted_saids);
+        // Historical Rpr events dedup out; only genuinely new Rpr events trigger repair.
+        let new_events: Vec<kels_core::SadEvent> = {
+            let submitted_saids: Vec<String> = events.iter().map(|r| r.said.to_string()).collect();
+            let query =
+                verifiable_storage_postgres::Query::<kels_core::SadEvent>::for_table("sad_events")
+                    .r#in("said", submitted_saids);
             let existing_saids: std::collections::HashSet<cesr::Digest256> =
                 match tx.fetch(query).await {
                     Ok(existing) => existing
                         .into_iter()
-                        .map(|r: kels_core::SadPointer| r.said)
+                        .map(|r: kels_core::SadEvent| r.said)
                         .collect(),
                     Err(e) => {
                         warn!("Failed to query existing SAIDs: {}", e);
@@ -1266,60 +1265,60 @@ pub async fn submit_sad_pointer(
                             .into_response();
                     }
                 };
-            records
+            events
                 .iter()
                 .filter(|r| !existing_saids.contains(&r.said))
                 .cloned()
                 .collect()
         };
 
-        if new_records.is_empty() {
+        if new_events.is_empty() {
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
-            let response = kels_core::SubmitPointersResponse {
+            let response = kels_core::SubmitSadEventsResponse {
                 diverged_at: None,
                 applied: false,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
-        // Per-chain-prefix daily rate limit (check before, accrue after dedup)
+        // Per-SEL-prefix daily rate limit (check before, accrue after dedup)
         if let Err(msg) = check_prefix_rate_limit(
             &state.prefix_rate_limits,
-            chain_prefix,
-            new_records.len() as u32,
+            sel_prefix,
+            new_events.len() as u32,
         ) {
             let _ = tx.rollback().await;
             return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
         }
 
-        // Detect repair from post-dedup records — only genuinely new Rpr records trigger repair.
-        is_repair = new_records.iter().any(|r| r.kind.is_repair());
+        // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
+        is_repair = new_events.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
-            // Query the checkpoint seal before truncation — reject repairs behind the seal.
-            let last_cp_version = match state
+            // Query the evaluation seal before truncation — reject repairs behind the seal.
+            let last_gp_version = match state
                 .repo
-                .sad_pointers
-                .last_checkpoint_version(&mut tx, chain_prefix)
+                .sad_events
+                .last_governance_version(&mut tx, sel_prefix)
                 .await
             {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to query last checkpoint version: {}", e);
+                    warn!("Failed to query last governance version: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
             };
 
-            // Repair path: truncate/archive first, then verify remaining + repair records.
+            // Repair path: truncate/archive first, then verify remaining + repair events.
             // truncate_and_replace does the archival within this transaction.
             let from_version = match state
                 .repo
-                .sad_pointers
-                .truncate_and_replace(&mut tx, &records)
+                .sad_events
+                .truncate_and_replace(&mut tx, &events)
                 .await
             {
                 Ok(v) => v,
@@ -1330,46 +1329,42 @@ pub async fn submit_sad_pointer(
                 }
             };
 
-            // Repair must not truncate behind the checkpoint seal
-            if let Some(cp_version) = last_cp_version
-                && from_version <= cp_version
+            // Repair must not truncate behind the evaluation seal
+            if let Some(gp_version) = last_gp_version
+                && from_version <= gp_version
             {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot repair at version {} — sealed by checkpoint at version {}",
-                        from_version, cp_version
+                        "Cannot repair at version {} — sealed by evaluation at version {}",
+                        from_version, gp_version
                     ),
                 )
                     .into_response();
             }
 
-            // Repair must include a checkpoint at or after the divergence point —
+            // Repair must include an evaluation at or after the divergence point —
             // an attacker who can only satisfy write_policy cannot repair
-            // (checkpoint_policy is a higher bar).
-            if !new_records
+            // (governance_policy is a higher bar).
+            if !new_events
                 .iter()
-                .any(|r| r.version >= from_version && r.kind.evaluates_checkpoint())
+                .any(|r| r.version >= from_version && r.kind.evaluates_governance())
             {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
-                    "repair must include a checkpoint at or after the divergence point",
+                    "repair must include an evaluation at or after the divergence point",
                 )
                     .into_response();
             }
 
-            // Now verify the entire chain (post-truncation + repair records) from scratch.
+            // Now verify the entire chain (post-truncation + repair events) from scratch.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
-            if let Err(response) = verify_existing_chain(
-                &mut tx,
-                &state.repo.sad_pointers,
-                chain_prefix,
-                &mut verifier,
-            )
-            .await
+            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            if let Err(response) =
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
+                    .await
             {
                 let _ = tx.rollback().await;
                 return response;
@@ -1400,36 +1395,32 @@ pub async fn submit_sad_pointer(
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot repair at version {} — establishment record at version {}",
+                        "Cannot repair at version {} — establishment event at version {}",
                         from_version, est_version
                     ),
                 )
                     .into_response();
             }
 
-            new_record_count = new_records.len() as u32;
+            new_event_count = new_events.len() as u32;
             should_publish = true;
         } else {
-            // Normal path: verify existing chain + new records, then save.
+            // Normal path: verify existing chain + new events, then save.
             let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SadChainVerifier::new(chain_prefix, &checker);
-            if let Err(response) = verify_existing_chain(
-                &mut tx,
-                &state.repo.sad_pointers,
-                chain_prefix,
-                &mut verifier,
-            )
-            .await
+            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            if let Err(response) =
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
+                    .await
             {
                 let _ = tx.rollback().await;
                 return response;
             }
 
-            if let Err(e) = verifier.verify_page(&new_records).await {
+            if let Err(e) = verifier.verify_page(&new_events).await {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
-                    format!("Record verification failed: {}", e),
+                    format!("SAD event verification failed: {}", e),
                 )
                     .into_response();
             }
@@ -1453,12 +1444,8 @@ pub async fn submit_sad_pointer(
 
             match state
                 .repo
-                .sad_pointers
-                .save_batch(
-                    &mut tx,
-                    &new_records,
-                    verification.last_checkpoint_version(),
-                )
+                .sad_events
+                .save_batch(&mut tx, &new_events, verification.last_governance_version())
                 .await
             {
                 Ok(result) => {
@@ -1472,11 +1459,11 @@ pub async fn submit_sad_pointer(
                             *new_count
                         }
                     };
-                    new_record_count = count;
+                    new_event_count = count;
                     should_publish = count > 0;
                 }
                 Err(e) => {
-                    warn!("Failed to store records: {}", e);
+                    warn!("Failed to store events: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::CONFLICT, format!("{}", e)).into_response();
                 }
@@ -1489,33 +1476,30 @@ pub async fn submit_sad_pointer(
         }
     }
 
-    // Accrue only actual new records to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, chain_prefix, new_record_count);
+    // Accrue only actual new events to prefix rate limit
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
 
     // Check nodes replication policy for gossip
-    let pointer_custody = records.first().and_then(|r| r.custody);
+    let event_custody = events.first().and_then(|r| r.custody);
     if matches!(
-        resolve_gossip_policy(&pointer_custody, &state).await,
+        resolve_gossip_policy(&event_custody, &state).await,
         GossipPolicy::LocalOnly
     ) {
-        debug!("Skipping pointer gossip: custody.nodes restricts to local/home-node");
-        let response = kels_core::SubmitPointersResponse {
+        debug!("Skipping event gossip: custody.nodes restricts to local/home-node");
+        let response = kels_core::SubmitSadEventsResponse {
             diverged_at: diverged_at_version,
-            applied: new_record_count > 0,
+            applied: new_event_count > 0,
         };
         return (StatusCode::CREATED, Json(response)).into_response();
     }
 
     // Publish the effective SAID to Redis for gossip.
     let effective_said = if should_publish {
-        match state.repo.sad_pointers.effective_said(chain_prefix).await {
+        match state.repo.sad_events.effective_said(sel_prefix).await {
             Ok(Some((said, _))) => Some(said),
             Ok(None) => None,
             Err(e) => {
-                warn!(
-                    "Failed to compute effective SAID for {}: {}",
-                    chain_prefix, e
-                );
+                warn!("Failed to compute effective SAID for {}: {}", sel_prefix, e);
                 None
             }
         }
@@ -1525,48 +1509,44 @@ pub async fn submit_sad_pointer(
     match (&state.redis_conn, &effective_said) {
         (Some(conn), Some(said)) => {
             let mut conn = conn.clone();
-            let message = if is_repair {
-                format!("{}:{}:repair", chain_prefix, said)
-            } else {
-                format!("{}:{}", chain_prefix, said)
-            };
+            let message = format!("{}:{}", sel_prefix, said);
             if let Err(e) = redis::cmd("PUBLISH")
-                .arg("sad_chain_updates")
+                .arg("sel_updates")
                 .arg(&message)
                 .query_async::<()>(&mut conn)
                 .await
             {
-                warn!("Failed to publish chain update: {}", e);
+                warn!("Failed to publish SEL update: {}", e);
             } else {
                 debug!(
-                    chain_prefix = %chain_prefix,
+                    sel_prefix = %sel_prefix,
                     effective_said = %said,
-                    "Published chain update to Redis"
+                    "Published SEL update to Redis"
                 );
             }
         }
         (None, _) => {
-            debug!("Skipping chain publish: no Redis connection");
+            debug!("Skipping SEL publish: no Redis connection");
         }
         (_, None) => {
             debug!(
-                chain_prefix = %chain_prefix,
+                sel_prefix = %sel_prefix,
                 should_publish = should_publish,
-                "Skipping chain publish: no effective SAID"
+                "Skipping SEL publish: no effective SAID"
             );
         }
     }
 
-    let response = kels_core::SubmitPointersResponse {
+    let response = kels_core::SubmitSadEventsResponse {
         diverged_at: diverged_at_version,
-        applied: new_record_count > 0,
+        applied: new_event_count > 0,
     };
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
-pub async fn get_sad_pointer(
+pub async fn get_sad_events(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadPointerPageRequest>,
+    Json(request): Json<kels_core::SadEventPageRequest>,
 ) -> impl IntoResponse {
     let prefix = request.prefix;
     let page_size = kels_core::page_size();
@@ -1575,45 +1555,37 @@ pub async fn get_sad_pointer(
 
     match state
         .repo
-        .sad_pointers
+        .sad_events
         .get_stored(prefix.as_ref(), since_str, Some(limit + 1))
         .await
     {
-        Ok(records) if records.is_empty() => {
-            (StatusCode::NOT_FOUND, "Chain not found").into_response()
+        Ok(events) if events.is_empty() => {
+            (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response()
         }
-        Ok(pointers) => {
-            let has_more = pointers.len() as u64 > limit;
-            let records: Vec<_> = pointers.into_iter().take(limit as usize).collect();
-            let page = kels_core::SadPointerPage {
-                has_more,
-                pointers: records,
-            };
+        Ok(events) => {
+            let has_more = events.len() as u64 > limit;
+            let events: Vec<_> = events.into_iter().take(limit as usize).collect();
+            let page = kels_core::SadEventPage { has_more, events };
             (StatusCode::OK, Json(page)).into_response()
         }
         Err(e) => {
-            warn!("Failed to get chain: {}", e);
+            warn!("Failed to get SAD Event Log: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }
 }
 
-pub async fn get_sad_pointer_effective_said(
+pub async fn get_sel_effective_said(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<kels_core::SadPointerEffectiveSaidRequest>,
+    Json(request): Json<kels_core::SadEventEffectiveSaidRequest>,
 ) -> impl IntoResponse {
-    match state
-        .repo
-        .sad_pointers
-        .effective_said(&request.prefix)
-        .await
-    {
+    match state.repo.sad_events.effective_said(&request.prefix).await {
         Ok(Some((said, divergent))) => (
             StatusCode::OK,
             Json(kels_core::EffectiveSaidResponse { said, divergent }),
         )
             .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Chain not found").into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
@@ -1644,7 +1616,7 @@ async fn query_sad_objects(
     }
 }
 
-/// Shared query logic for listing SAD chain prefixes.
+/// Shared query logic for listing SAD Event Log prefixes.
 async fn query_sad_prefixes(
     state: &AppState,
     cursor: Option<&cesr::Digest256>,
@@ -1654,7 +1626,7 @@ async fn query_sad_prefixes(
         .unwrap_or(MAX_PREFIX_PAGE_SIZE)
         .min(MAX_PREFIX_PAGE_SIZE);
 
-    match state.repo.sad_pointers.list_prefixes(cursor, limit).await {
+    match state.repo.sad_events.list_prefixes(cursor, limit).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Failed to list prefixes: {}", e);
@@ -1693,8 +1665,8 @@ pub async fn list_sad_objects(
     .into_response()
 }
 
-/// Authenticated SAD chain prefix listing. Federation peers only.
-pub async fn list_sad_pointer_prefixes(
+/// Authenticated SAD Event Log prefix listing. Federation peers only.
+pub async fn list_sel_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
@@ -1723,9 +1695,9 @@ pub async fn list_sad_pointer_prefixes(
     .into_response()
 }
 
-// === Layer 2: Chain Repair History ===
+// === Layer 2: SEL Repair History ===
 
-pub(crate) async fn get_sad_pointer_repairs(
+pub(crate) async fn get_sel_repairs(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRepairsRequest>,
 ) -> impl IntoResponse {
@@ -1735,13 +1707,13 @@ pub(crate) async fn get_sad_pointer_repairs(
 
     match state
         .repo
-        .sad_pointers
+        .sad_events
         .get_repairs(request.prefix.as_ref(), limit, offset)
         .await
     {
         Ok((repairs, has_more)) => (
             StatusCode::OK,
-            Json(kels_core::SadPointerRepairPage { repairs, has_more }),
+            Json(kels_core::SadEventRepairPage { repairs, has_more }),
         )
             .into_response(),
         Err(e) => {
@@ -1751,7 +1723,7 @@ pub(crate) async fn get_sad_pointer_repairs(
     }
 }
 
-pub(crate) async fn get_sad_pointer_repair_records(
+pub(crate) async fn get_sel_repair_events(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadRepairPageRequest>,
 ) -> impl IntoResponse {
@@ -1761,20 +1733,17 @@ pub(crate) async fn get_sad_pointer_repair_records(
 
     match state
         .repo
-        .sad_pointers
-        .get_repair_records(request.said.as_ref(), limit, offset)
+        .sad_events
+        .get_repair_events(request.said.as_ref(), limit, offset)
         .await
     {
-        Ok((records, has_more)) => (
+        Ok((events, has_more)) => (
             StatusCode::OK,
-            Json(kels_core::SadPointerPage {
-                pointers: records,
-                has_more,
-            }),
+            Json(kels_core::SadEventPage { events, has_more }),
         )
             .into_response(),
         Err(e) => {
-            warn!("Failed to get repair records for {}: {}", request.said, e);
+            warn!("Failed to get repair events for {}: {}", request.said, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }
@@ -1800,9 +1769,9 @@ pub async fn test_list_sad_objects(
     .into_response()
 }
 
-/// Unauthenticated test endpoint for listing SAD chain prefixes.
+/// Unauthenticated test endpoint for listing SAD Event Log prefixes.
 /// Only available when `KELS_TEST_ENDPOINTS=true`.
-pub async fn test_list_sad_pointer_prefixes(
+pub async fn test_list_sel_prefixes(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,

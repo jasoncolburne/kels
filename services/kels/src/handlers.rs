@@ -17,7 +17,8 @@ use tracing::warn;
 
 use kels_core::{
     EffectiveSaidResponse, ErrorCode, ErrorResponse, KelMergeResult, KelsError, PrefixListResponse,
-    RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage, SubmitEventsResponse,
+    RecoveryRecordPage, ServerKelCache, SignedKeyEvent, SignedKeyEventPage,
+    SubmitKeyEventsResponse,
 };
 
 use crate::repository::KelsRepository;
@@ -366,11 +367,11 @@ pub(crate) async fn submit_events(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(events): Json<Vec<SignedKeyEvent>>,
-) -> Result<Json<SubmitEventsResponse>, ApiError> {
+) -> Result<Json<SubmitKeyEventsResponse>, ApiError> {
     check_ip_rate_limit(&state.ip_rate_limits, addr.ip())?;
 
     if events.is_empty() {
-        return Ok(Json(SubmitEventsResponse {
+        return Ok(Json(SubmitKeyEventsResponse {
             diverged_at: None,
             applied: true,
         }));
@@ -493,7 +494,7 @@ pub(crate) async fn submit_events(
         }
     }
 
-    Ok(Json(SubmitEventsResponse {
+    Ok(Json(SubmitKeyEventsResponse {
         diverged_at: outcome.diverged_at,
         applied,
     }))

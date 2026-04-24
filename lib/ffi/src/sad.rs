@@ -1,4 +1,4 @@
-//! SAD Operations (pointer prefix computation, SAD object and pointer CRUD)
+//! SAD Operations (SEL prefix computation, SAD object and event CRUD)
 
 use std::os::raw::c_char;
 
@@ -11,22 +11,22 @@ use crate::{
 
 // ==================== FFI Functions ====================
 
-/// Compute the deterministic SAD pointer prefix for a given write policy SAID and topic.
+/// Compute the deterministic SAD event prefix for a given write policy SAID and topic.
 ///
 /// This is an offline operation -- no network access needed.
 ///
 /// # Arguments
 /// * `write_policy` - The write policy SAID
-/// * `topic` - The pointer topic (e.g., "kels/sad/v1/keys/mlkem")
+/// * `topic` - The event topic (e.g., "kels/sad/v1/keys/mlkem")
 ///
 /// # Returns
-/// The computed pointer prefix string, or NULL on error.
+/// The computed SEL prefix string, or NULL on error.
 /// Must be freed with kels_free_string().
 ///
 /// # Safety
 /// - Both arguments must be valid C strings
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
+pub unsafe extern "C" fn kels_compute_sad_event_prefix(
     write_policy: *const c_char,
     topic: *const c_char,
 ) -> *mut c_char {
@@ -50,8 +50,8 @@ pub unsafe extern "C" fn kels_compute_sad_pointer_prefix(
         }
     };
 
-    match kels_core::compute_sad_pointer_prefix(policy_digest, &topic_str) {
-        Ok(pointer_prefix) => to_c_string(pointer_prefix.as_ref()),
+    match kels_core::compute_sad_event_prefix(policy_digest, &topic_str) {
+        Ok(event_prefix) => to_c_string(event_prefix.as_ref()),
         Err(e) => {
             set_last_error(&format!("Prefix computation failed: {e}"));
             std::ptr::null_mut()
@@ -182,11 +182,11 @@ pub unsafe extern "C" fn kels_sad_get_object(
     }
 }
 
-/// Submit SAD pointer records to a SADStore.
+/// Submit SAD events to a SADStore.
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
-/// * `json_signed_records` - JSON string of `Vec<SadPointer>`
+/// * `json_signed_events` - JSON string of `Vec<SadEvent>`
 ///
 /// # Returns
 /// 0 on success, -1 on error
@@ -194,9 +194,9 @@ pub unsafe extern "C" fn kels_sad_get_object(
 /// # Safety
 /// - Both arguments must be valid C strings
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_sad_submit_pointer(
+pub unsafe extern "C" fn kels_sad_submit_events(
     sadstore_url: *const c_char,
-    json_signed_records: *const c_char,
+    json_signed_events: *const c_char,
 ) -> KelsStatus {
     clear_last_error();
 
@@ -205,15 +205,15 @@ pub unsafe extern "C" fn kels_sad_submit_pointer(
         return KelsStatus::Error;
     };
 
-    let Some(records_str) = from_c_string(json_signed_records) else {
-        set_last_error("Invalid records JSON");
+    let Some(events_str) = from_c_string(json_signed_events) else {
+        set_last_error("Invalid events JSON");
         return KelsStatus::Error;
     };
 
-    let records: Vec<kels_core::SadPointer> = match serde_json::from_str(&records_str) {
+    let events: Vec<kels_core::SadEvent> = match serde_json::from_str(&events_str) {
         Ok(r) => r,
         Err(e) => {
-            set_last_error(&format!("Invalid records JSON: {e}"));
+            set_last_error(&format!("Invalid events JSON: {e}"));
             return KelsStatus::Error;
         }
     };
@@ -231,7 +231,7 @@ pub unsafe extern "C" fn kels_sad_submit_pointer(
         }
     };
 
-    match runtime.block_on(client.submit_sad_pointer(&records)) {
+    match runtime.block_on(client.submit_sad_events(&events)) {
         Ok(()) => KelsStatus::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
@@ -240,24 +240,24 @@ pub unsafe extern "C" fn kels_sad_submit_pointer(
     }
 }
 
-/// Fetch a page of SAD pointer records from a SADStore.
+/// Fetch a page of SAD events from a SADStore.
 ///
 /// # Arguments
 /// * `sadstore_url` - URL of the SADStore service
-/// * `pointer_prefix` - The pointer chain prefix
+/// * `event_prefix` - The SEL prefix
 /// * `since` - Optional effective SAID cursor (NULL for first page)
 ///
 /// # Returns
-/// JSON string of the SadPointerPage, or NULL on error.
+/// JSON string of the SadEventPage, or NULL on error.
 /// Must be freed with kels_free_string().
 ///
 /// # Safety
-/// - `sadstore_url` and `pointer_prefix` must be valid C strings
+/// - `sadstore_url` and `event_prefix` must be valid C strings
 /// - `since` may be NULL
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kels_sad_fetch_pointer(
+pub unsafe extern "C" fn kels_sad_fetch_events(
     sadstore_url: *const c_char,
-    pointer_prefix: *const c_char,
+    event_prefix: *const c_char,
     since: *const c_char,
 ) -> *mut c_char {
     clear_last_error();
@@ -267,8 +267,8 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
         return std::ptr::null_mut();
     };
 
-    let Some(prefix_str) = from_c_string(pointer_prefix) else {
-        set_last_error("Invalid pointer prefix");
+    let Some(prefix_str) = from_c_string(event_prefix) else {
+        set_last_error("Invalid SEL prefix");
         return std::ptr::null_mut();
     };
 
@@ -304,7 +304,7 @@ pub unsafe extern "C" fn kels_sad_fetch_pointer(
         }
     };
 
-    match runtime.block_on(client.fetch_sad_pointer(&prefix, since_digest.as_ref())) {
+    match runtime.block_on(client.fetch_sad_events(&prefix, since_digest.as_ref())) {
         Ok(page) => match serde_json::to_string(&page) {
             Ok(json) => to_c_string(&json),
             Err(e) => {
@@ -330,19 +330,19 @@ mod tests {
     use std::ffi::CString;
 
     #[test]
-    fn test_compute_sad_pointer_prefix() {
+    fn test_compute_sad_event_prefix() {
         let digest = test_digest("test-prefix");
         let prefix = CString::new(digest.as_ref()).expect("cstring");
         let kind = CString::new("kels/sad/v1/keys/mlkem").expect("cstring");
 
-        let result = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };
+        let result = unsafe { kels_compute_sad_event_prefix(prefix.as_ptr(), kind.as_ptr()) };
 
         assert!(!result.is_null());
         let prefix_str = crate::from_c_string(result).expect("valid string");
         assert_eq!(prefix_str.len(), 44);
 
         // Same inputs should produce same prefix (deterministic)
-        let result2 = unsafe { kels_compute_sad_pointer_prefix(prefix.as_ptr(), kind.as_ptr()) };
+        let result2 = unsafe { kels_compute_sad_event_prefix(prefix.as_ptr(), kind.as_ptr()) };
         let prefix_str2 = crate::from_c_string(result2).expect("valid string");
         assert_eq!(prefix_str, prefix_str2);
 
@@ -375,33 +375,33 @@ mod tests {
     }
 
     #[test]
-    fn test_sad_submit_pointer_null_url() {
-        let records = CString::new("[]").expect("cstring");
-        let result = unsafe { kels_sad_submit_pointer(std::ptr::null(), records.as_ptr()) };
+    fn test_sad_submit_events_null_url() {
+        let events = CString::new("[]").expect("cstring");
+        let result = unsafe { kels_sad_submit_events(std::ptr::null(), events.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
-    fn test_sad_submit_pointer_invalid_json() {
+    fn test_sad_submit_events_invalid_json() {
         let url = CString::new("http://localhost:9999").expect("cstring");
-        let records = CString::new("not json").expect("cstring");
-        let result = unsafe { kels_sad_submit_pointer(url.as_ptr(), records.as_ptr()) };
+        let events = CString::new("not json").expect("cstring");
+        let result = unsafe { kels_sad_submit_events(url.as_ptr(), events.as_ptr()) };
         assert_eq!(result, KelsStatus::Error);
     }
 
     #[test]
-    fn test_sad_fetch_pointer_null_url() {
+    fn test_sad_fetch_events_null_url() {
         let prefix = CString::new("KTestPrefix0000000000000000000000000000000").expect("cstring");
         let result =
-            unsafe { kels_sad_fetch_pointer(std::ptr::null(), prefix.as_ptr(), std::ptr::null()) };
+            unsafe { kels_sad_fetch_events(std::ptr::null(), prefix.as_ptr(), std::ptr::null()) };
         assert!(result.is_null());
     }
 
     #[test]
-    fn test_sad_fetch_pointer_null_prefix() {
+    fn test_sad_fetch_events_null_prefix() {
         let url = CString::new("http://localhost:9999").expect("cstring");
         let result =
-            unsafe { kels_sad_fetch_pointer(url.as_ptr(), std::ptr::null(), std::ptr::null()) };
+            unsafe { kels_sad_fetch_events(url.as_ptr(), std::ptr::null(), std::ptr::null()) };
         assert!(result.is_null());
     }
 }

@@ -1,8 +1,8 @@
-//! Custody and node set SAD types for per-record storage policy.
+//! Custody and node set SAD types for per-SAD storage policy.
 //!
 //! `custody` is a reserved top-level key on any SAD. It is itself a SAD
 //! (with its own SAID), compacted and stored independently in MinIO,
-//! referenced by SAID in the parent record. The SAID covers all custody
+//! referenced by SAID in the parent SAD. The SAID covers all custody
 //! fields, making storage policy tamper-evident.
 
 use std::collections::HashSet;
@@ -10,12 +10,12 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
-/// Per-record storage policy.
+/// Per-SAD storage policy.
 ///
 /// Fields:
 /// - `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
 /// - `readPolicy` — SAID of a policy SAD controlling reads (SADStore fetch-time enforcement)
-/// - `ttl` — seconds until expiry (per-record: `sad_objects.created_at + ttl`)
+/// - `ttl` — seconds until expiry (per-object: `sad_objects.created_at + ttl`)
 /// - `once` — atomic delete on first successful retrieval
 /// - `nodes` — SAID of a `NodeSet` SAD for selective replication
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
@@ -61,20 +61,20 @@ impl NodeSet {
 
 /// Context in which custody validation is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CustodyContext {
+pub enum SadCustodyContext {
     /// Standalone SAD objects — all custody fields allowed.
-    SadObject,
-    /// Chained pointer records — `ttl` and `once` are rejected.
-    Pointer,
+    Object,
+    /// Chained events — `ttl` and `once` are rejected.
+    Event,
 }
 
 /// Errors from custody validation.
 #[derive(Debug, Clone)]
 pub enum CustodyValidationError {
-    /// `ttl` is structurally incompatible with chained pointer records.
-    TtlNotAllowedOnPointer,
-    /// `once` is structurally incompatible with chained pointer records.
-    OnceNotAllowedOnPointer,
+    /// `ttl` is structurally incompatible with chained events.
+    TtlNotAllowedOnEvent,
+    /// `once` is structurally incompatible with chained events.
+    OnceNotAllowedOnEvent,
     /// `once: true` requires `nodes` to be present for consistent delete semantics.
     OnceRequiresNodes,
     /// Failed to parse the custody object.
@@ -84,16 +84,16 @@ pub enum CustodyValidationError {
 impl std::fmt::Display for CustodyValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TtlNotAllowedOnPointer => {
+            Self::TtlNotAllowedOnEvent => {
                 write!(
                     f,
-                    "ttl is not allowed on pointer records — expiring a link in a chain breaks verification for descendants"
+                    "ttl is not allowed on events — expiring a link in a chain breaks verification for descendants"
                 )
             }
-            Self::OnceNotAllowedOnPointer => {
+            Self::OnceNotAllowedOnEvent => {
                 write!(
                     f,
-                    "once is not allowed on pointer records — deleting a link in a chain breaks verification for descendants"
+                    "once is not allowed on events — deleting a link in a chain breaks verification for descendants"
                 )
             }
             Self::OnceRequiresNodes => {
@@ -118,10 +118,10 @@ const KNOWN_CUSTODY_FIELDS: &[&str] =
 /// Returns:
 /// - `Ok(Some(custody))` — valid custody, server enforces the policy
 /// - `Ok(None)` — unknown fields present, safety valve disengages enforcement
-/// - `Err(e)` — known but disallowed fields in this context (e.g. `ttl` on pointer)
+/// - `Err(e)` — known but disallowed fields in this context (e.g. `ttl` on event)
 pub fn parse_and_validate_custody(
     value: &serde_json::Value,
-    context: CustodyContext,
+    context: SadCustodyContext,
 ) -> Result<Option<Custody>, CustodyValidationError> {
     let obj = match value.as_object() {
         Some(obj) => obj,
@@ -142,16 +142,16 @@ pub fn parse_and_validate_custody(
         .map_err(|e| CustodyValidationError::ParseError(e.to_string()))?;
 
     match context {
-        CustodyContext::Pointer => {
+        SadCustodyContext::Event => {
             // ttl and once are known but disallowed — explicit rejection, not safety valve.
             if custody.ttl.is_some() {
-                return Err(CustodyValidationError::TtlNotAllowedOnPointer);
+                return Err(CustodyValidationError::TtlNotAllowedOnEvent);
             }
             if custody.once.is_some() {
-                return Err(CustodyValidationError::OnceNotAllowedOnPointer);
+                return Err(CustodyValidationError::OnceNotAllowedOnEvent);
             }
         }
-        CustodyContext::SadObject => {
+        SadCustodyContext::Object => {
             if custody.once == Some(true) && custody.nodes.is_none() {
                 return Err(CustodyValidationError::OnceRequiresNodes);
             }
@@ -258,25 +258,25 @@ mod tests {
         )
         .unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
 
     #[test]
-    fn test_validate_pointer_rejects_ttl() {
+    fn test_validate_event_rejects_ttl() {
         let custody =
             Custody::create(Some(test_digest(b"wp")), None, Some(3600), None, None).unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::Pointer);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Event);
         assert!(matches!(
             result,
-            Err(CustodyValidationError::TtlNotAllowedOnPointer)
+            Err(CustodyValidationError::TtlNotAllowedOnEvent)
         ));
     }
 
     #[test]
-    fn test_validate_pointer_rejects_once() {
+    fn test_validate_event_rejects_once() {
         let custody = Custody::create(
             Some(test_digest(b"wp")),
             None,
@@ -286,15 +286,15 @@ mod tests {
         )
         .unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::Pointer);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Event);
         assert!(matches!(
             result,
-            Err(CustodyValidationError::OnceNotAllowedOnPointer)
+            Err(CustodyValidationError::OnceNotAllowedOnEvent)
         ));
     }
 
     #[test]
-    fn test_validate_pointer_allows_write_read_nodes() {
+    fn test_validate_event_allows_write_read_nodes() {
         let custody = Custody::create(
             Some(test_digest(b"wp")),
             Some(test_digest(b"rp")),
@@ -304,7 +304,7 @@ mod tests {
         )
         .unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::Pointer);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Event);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
@@ -320,7 +320,7 @@ mod tests {
         )
         .unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(matches!(
             result,
             Err(CustodyValidationError::OnceRequiresNodes)
@@ -331,7 +331,7 @@ mod tests {
     fn test_validate_once_false_no_nodes_ok() {
         let custody = Custody::create(None, None, None, Some(false), None).unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
     }
@@ -344,11 +344,11 @@ mod tests {
             "customField": "something"
         });
         // Safety valve: unknown field present, no enforcement
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(result.unwrap().is_none());
 
-        // Same for pointer context — safety valve fires before context checks
-        let result = parse_and_validate_custody(&value, CustodyContext::Pointer);
+        // Same for event context — safety valve fires before context checks
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Event);
         assert!(result.unwrap().is_none());
 
         // Remove unknown field — now it should parse normally
@@ -361,7 +361,7 @@ mod tests {
     fn test_validate_empty_custody_object() {
         let custody = Custody::create(None, None, None, None, None).unwrap();
         let value = serde_json::to_value(&custody).unwrap();
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(result.is_ok());
         let parsed = result.unwrap().unwrap();
         assert!(parsed.write_policy.is_none());
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn test_validate_not_an_object() {
         let value = serde_json::json!("not an object");
-        let result = parse_and_validate_custody(&value, CustodyContext::SadObject);
+        let result = parse_and_validate_custody(&value, SadCustodyContext::Object);
         assert!(matches!(result, Err(CustodyValidationError::ParseError(_))));
     }
 }

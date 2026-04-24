@@ -417,15 +417,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     local_kel_prefix, local_kel_prefix, config.node_id
                 );
 
-                // Preload KELs, SAD objects, and SAD records from Ready peers
+                // Preload KELs, SAD objects, and SAD events from Ready peers
                 if let Err(e) = bootstrap.preload_kels().await {
                     warn!("KEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_objects().await {
                     warn!("SAD object preload failed: {}", e);
                 }
-                if let Err(e) = bootstrap.preload_sad_records().await {
-                    warn!("SAD pointer chain preload failed: {}", e);
+                if let Err(e) = bootstrap.preload_sad_events().await {
+                    warn!("SEL preload failed: {}", e);
                 }
 
                 // Wait 5 minutes before checking again
@@ -568,7 +568,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Start SAD Redis subscriber (listens for SAD object and chain updates)
+    // Start SAD Redis subscriber (listens for SAD object and SEL updates)
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
@@ -712,15 +712,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Waiting for first peer connection...");
         match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
             Ok(Ok(())) => {
-                info!("First peer connected — preloading KELs, SAD objects, and SAD records...");
+                info!("First peer connected — preloading KELs, SAD objects, and SAD events...");
                 if let Err(e) = bootstrap.preload_kels().await {
                     error!("KEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_objects().await {
                     error!("SAD object preload failed: {}", e);
                 }
-                if let Err(e) = bootstrap.preload_sad_records().await {
-                    error!("SAD record preload failed: {}", e);
+                if let Err(e) = bootstrap.preload_sad_events().await {
+                    error!("SEL preload failed: {}", e);
                 }
             }
             Ok(Err(_)) => {

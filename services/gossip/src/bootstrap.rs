@@ -152,7 +152,7 @@ impl BootstrapSync {
     /// Preload SAD objects from Ready peers.
     ///
     /// Paginates through the remote object listing, checks local existence, and
-    /// fetches any missing objects. Runs before chain record sync so that
+    /// fetches any missing objects. Runs before SAD event sync so that
     /// content objects are available when chains reference them.
     pub async fn preload_sad_objects(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
@@ -227,11 +227,11 @@ impl BootstrapSync {
         Ok(())
     }
 
-    /// Preload SAD records from Ready peers.
+    /// Preload SAD events from Ready peers.
     ///
-    /// Lists chain prefixes from each Ready peer's SADStore, compares with local
+    /// Lists SEL prefixes from each Ready peer's SADStore, compares with local
     /// state, and syncs any chains that are missing or behind.
-    pub async fn preload_sad_records(&self) -> Result<(), BootstrapError> {
+    pub async fn preload_sad_events(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
 
         if ready_peers.is_empty() {
@@ -240,7 +240,7 @@ impl BootstrapSync {
         }
 
         info!(
-            "Preloading SAD pointer chains from {} Ready peer(s)...",
+            "Preloading SAD Event Logs from {} Ready peer(s)...",
             ready_peers.len()
         );
 
@@ -254,7 +254,7 @@ impl BootstrapSync {
             let mut cursor: Option<cesr::Digest256> = None;
             loop {
                 let page = match remote_client
-                    .fetch_sad_pointer_prefixes(
+                    .fetch_sel_prefixes(
                         self.signer.as_ref(),
                         cursor.as_ref(),
                         self.config.page_size,
@@ -271,7 +271,7 @@ impl BootstrapSync {
                 for state in &page.prefixes {
                     // Check if we already have this chain at the same state
                     let local_said = local_client
-                        .fetch_sad_pointer_effective_said(&state.prefix)
+                        .fetch_sel_effective_said(&state.prefix)
                         .await
                         .ok()
                         .flatten()
@@ -285,7 +285,7 @@ impl BootstrapSync {
                     let since_digest = local_said
                         .as_deref()
                         .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                    if let Err(e) = kels_core::forward_sad_pointer(
+                    if let Err(e) = kels_core::forward_sad_events(
                         &state.prefix,
                         &remote_client.as_sad_source()?,
                         &local_client.as_sad_sink()?,
@@ -296,7 +296,7 @@ impl BootstrapSync {
                     .await
                     {
                         warn!(
-                            "Failed to sync SAD chain {} from {} during bootstrap: {}",
+                            "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
                             state.prefix, peer.node_id, e
                         );
                     } else {
@@ -312,7 +312,7 @@ impl BootstrapSync {
         }
 
         info!(
-            "SAD pointer chain preload complete: {} chains synced",
+            "SAD Event Log preload complete: {} chains synced",
             synced_chains
         );
         Ok(())

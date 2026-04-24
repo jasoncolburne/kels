@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use kels_core::{Custody, SadPointer, SadPointerRepair, SadPointerRepairRecord};
+use kels_core::{Custody, SadEvent, SadEventRepair, SelRepairEvent};
 use kels_policy::Policy;
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
@@ -10,13 +10,13 @@ use verifiable_storage::{
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
 
-/// Result of a `save_batch` operation on a pointer chain.
+/// Result of a `save_batch` operation on an event chain.
 #[derive(Debug)]
 pub enum SaveBatchResult {
-    /// Records were accepted, chain remains non-divergent.
+    /// Events were accepted, chain remains non-divergent.
     Accepted { new_count: u32 },
-    /// A version collision was detected — the forking record was inserted and
-    /// the chain is now divergent (frozen). Remaining batch records were discarded.
+    /// A version collision was detected — the forking event was inserted and
+    /// the chain is now divergent (frozen). Remaining batch events were discarded.
     DivergenceCreated {
         new_count: u32,
         diverged_at_version: u64,
@@ -24,31 +24,31 @@ pub enum SaveBatchResult {
 }
 
 #[derive(Stored)]
-#[stored(item_type = SadPointer, table = "sad_pointers", chained = true)]
-pub struct SadPointerRepository {
+#[stored(item_type = SadEvent, table = "sad_events", chained = true)]
+pub struct SadEventRepository {
     pub pool: PgPool,
 }
 
-impl SadPointerRepository {
-    /// Store a batch of pointer records within a caller-managed transaction.
+impl SadEventRepository {
+    /// Store a batch of events within a caller-managed transaction.
     ///
-    /// Caller must hold an advisory lock on the chain prefix.
+    /// Caller must hold an advisory lock on the SEL prefix.
     ///
-    /// If the chain is already divergent, returns an error. If a record in the
-    /// batch collides at the same version as an existing record (creating
-    /// divergence), inserts only up to and including the forking record, then
+    /// If the chain is already divergent, returns an error. If an event in the
+    /// batch collides at the same version as an existing event (creating
+    /// divergence), inserts only up to and including the forking event, then
     /// discards the rest. The chain freezes immediately.
     pub async fn save_batch<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
-        records: &[SadPointer],
-        last_checkpoint_version: Option<u64>,
+        events: &[SadEvent],
+        last_governance_version: Option<u64>,
     ) -> Result<SaveBatchResult, StorageError> {
-        if records.is_empty() {
+        if events.is_empty() {
             return Ok(SaveBatchResult::Accepted { new_count: 0 });
         }
 
-        let prefix = records[0].prefix;
+        let prefix = events[0].prefix;
 
         // Quick divergence check — reject appends to frozen chains
         let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
@@ -67,23 +67,22 @@ impl SadPointerRepository {
 
         // Collect existing SAIDs for dedup
         let existing_saids: HashSet<cesr::Digest256> = {
-            let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
-            let query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                    .r#in("said", saids);
+            let saids: Vec<String> = events.iter().map(|e| e.said.to_string()).collect();
+            let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+                .r#in("said", saids);
             tx.fetch(query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said)
+                .map(|e: SadEvent| e.said)
                 .collect()
         };
 
         // Collect occupied versions in one query: fetch only the version column
-        // for existing records at the batch's versions.
+        // for existing events at the batch's versions.
         let mut occupied_versions: HashSet<u64> = {
-            let batch_versions: Vec<i64> = records
+            let batch_versions: Vec<i64> = events
                 .iter()
-                .map(|r| r.version as i64)
+                .map(|e| e.version as i64)
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
@@ -98,77 +97,77 @@ impl SadPointerRepository {
         };
 
         let mut count = 0u32;
-        for record in records {
-            if existing_saids.contains(&record.said) {
+        for event in events {
+            if existing_saids.contains(&event.said) {
                 continue;
             }
 
-            // Version collision creates divergence — insert this forking record then freeze
-            if occupied_versions.contains(&record.version) {
-                // Reject fork at or before the last checkpoint — sealed by checkpoint_policy
-                if let Some(cp_version) = last_checkpoint_version
-                    && record.version <= cp_version
+            // Version collision creates divergence — insert this forking event then freeze
+            if occupied_versions.contains(&event.version) {
+                // Reject fork at or before the last evaluation — sealed by governance_policy
+                if let Some(gp_version) = last_governance_version
+                    && event.version <= gp_version
                 {
                     return Err(StorageError::StorageError(format!(
-                        "Cannot fork at version {} — sealed by checkpoint at version {}",
-                        record.version, cp_version,
+                        "Cannot fork at version {} — sealed by evaluation at version {}",
+                        event.version, gp_version,
                     )));
                 }
-                self.insert_in(tx, record.clone()).await?;
+                self.insert_in(tx, event.clone()).await?;
                 count += 1;
                 return Ok(SaveBatchResult::DivergenceCreated {
                     new_count: count,
-                    diverged_at_version: record.version,
+                    diverged_at_version: event.version,
                 });
             }
 
-            self.insert_in(tx, record.clone()).await?;
-            occupied_versions.insert(record.version);
+            self.insert_in(tx, event.clone()).await?;
+            occupied_versions.insert(event.version);
             count += 1;
         }
 
         Ok(SaveBatchResult::Accepted { new_count: count })
     }
 
-    /// Truncate records at and after the first replacement's version and insert replacements.
+    /// Truncate events at and after the first replacement's version and insert replacements.
     ///
-    /// Used to repair divergent chains. Archives displaced records, creates a repair
-    /// audit record, then inserts the replacements.
-    /// Caller must hold an advisory lock on the chain prefix.
+    /// Used to repair divergent chains. Archives displaced events, creates a repair
+    /// audit event, then inserts the replacements.
+    /// Caller must hold an advisory lock on the SEL prefix.
     pub async fn truncate_and_replace<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
-        records: &[SadPointer],
+        events: &[SadEvent],
     ) -> Result<u64, StorageError> {
-        if records.is_empty() {
+        if events.is_empty() {
             return Err(StorageError::StorageError("Empty batch".to_string()));
         }
 
-        let prefix = records[0].prefix;
+        let prefix = events[0].prefix;
 
         // Note: write_policy evolution is tracked by the verifier's branch state across
         // versions; no consistency check at the repo layer — callers must verify via
-        // SadChainVerifier (the handler does this with PolicyChecker after
+        // SelVerifier (the handler does this with PolicyChecker after
         // truncate_and_replace).
 
-        // Skip leading records that already exist locally
-        let (new_records, from_version) = {
-            let saids: Vec<String> = records.iter().map(|r| r.said.to_string()).collect();
+        // Skip leading events that already exist locally
+        let (new_events, from_version) = {
+            let saids: Vec<String> = events.iter().map(|e| e.said.to_string()).collect();
             let existing_query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
                     .r#in("said", saids);
             let existing: HashSet<cesr::Digest256> = tx
                 .fetch(existing_query)
                 .await?
                 .into_iter()
-                .map(|r: SadPointer| r.said)
+                .map(|e: SadEvent| e.said)
                 .collect();
-            let deduped: Vec<_> = records
+            let deduped: Vec<_> = events
                 .iter()
-                .skip_while(|r| existing.contains(&r.said))
+                .skip_while(|e| existing.contains(&e.said))
                 .collect();
             if deduped.is_empty() {
-                let last_version = records.last().map(|r| r.version).unwrap_or(0);
+                let last_version = events.last().map(|e| e.version).unwrap_or(0);
                 (deduped, last_version + 1)
             } else {
                 let version = deduped[0].version;
@@ -176,19 +175,19 @@ impl SadPointerRepository {
             }
         };
 
-        // Archive records page-at-a-time before deleting
+        // Archive events page-at-a-time before deleting
         let page_size = kels_core::page_size();
         let mut repair_said: Option<cesr::Digest256> = None;
         let mut version_cursor = from_version;
 
         loop {
             let page_query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
                     .eq("prefix", &prefix)
                     .gte("version", version_cursor)
                     .order_by("version", verifiable_storage::Order::Asc)
                     .limit(page_size as u64);
-            let page: Vec<SadPointer> = tx.fetch(page_query).await?;
+            let page: Vec<SadEvent> = tx.fetch(page_query).await?;
 
             if page.is_empty() {
                 break;
@@ -197,7 +196,7 @@ impl SadPointerRepository {
             let repair_said_ref = match &repair_said {
                 Some(said) => said,
                 None => {
-                    let repair = SadPointerRepair::create(prefix, from_version)?;
+                    let repair = SadEventRepair::create(prefix, from_version)?;
                     tx.insert(&repair).await?;
                     repair_said = Some(repair.said);
                     repair_said.as_ref().ok_or_else(|| {
@@ -206,28 +205,28 @@ impl SadPointerRepository {
                 }
             };
 
-            // Skip records already in archives (stale gossip can re-insert fork
-            // records after a prior repair archived them)
+            // Skip events already in archives (stale gossip can re-insert fork
+            // events after a prior repair archived them)
             let already_archived: HashSet<cesr::Digest256> = {
-                let page_saids: Vec<String> = page.iter().map(|r| r.said.to_string()).collect();
-                let archive_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
-                    Self::ARCHIVED_RECORDS_TABLE,
+                let page_saids: Vec<String> = page.iter().map(|e| e.said.to_string()).collect();
+                let archive_query = verifiable_storage_postgres::Query::<SadEvent>::for_table(
+                    Self::ARCHIVED_EVENTS_TABLE,
                 )
                 .r#in("said", page_saids);
                 tx.fetch(archive_query)
                     .await?
                     .into_iter()
-                    .map(|r: SadPointer| r.said)
+                    .map(|e: SadEvent| e.said)
                     .collect()
             };
 
-            for record in &page {
-                if already_archived.contains(&record.said) {
+            for event in &page {
+                if already_archived.contains(&event.said) {
                     continue;
                 }
-                tx.insert_with_table(record, Self::ARCHIVED_RECORDS_TABLE)
+                tx.insert_with_table(event, Self::ARCHIVED_EVENTS_TABLE)
                     .await?;
-                let repair_record = SadPointerRepairRecord::create(*repair_said_ref, record.said)?;
+                let repair_record = SelRepairEvent::create(*repair_said_ref, event.said)?;
                 tx.insert(&repair_record).await?;
             }
 
@@ -240,15 +239,15 @@ impl SadPointerRepository {
             }
         }
 
-        // Delete records at and after from_version
-        let delete_records = verifiable_storage::Delete::<SadPointer>::for_table(Self::TABLE_NAME)
+        // Delete events at and after from_version
+        let delete_events = verifiable_storage::Delete::<SadEvent>::for_table(Self::TABLE_NAME)
             .eq("prefix", &prefix)
             .gte("version", from_version);
-        tx.delete(delete_records).await?;
+        tx.delete(delete_events).await?;
 
         // Insert replacements
-        for record in new_records {
-            self.insert_in(tx, record.clone()).await?;
+        for event in new_events {
+            self.insert_in(tx, event.clone()).await?;
         }
 
         Ok(from_version)
@@ -267,39 +266,39 @@ impl SadPointerRepository {
         Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
-    /// Get the version of the most recent evaluated checkpoint for a chain.
-    /// Returns None if no checkpoint exists.
-    pub async fn last_checkpoint_version<Tx: TransactionExecutor>(
+    /// Get the version of the most recent governance evaluation for a chain.
+    /// Returns None if no governance evaluation has been recorded.
+    pub async fn last_governance_version<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
         prefix: &cesr::Digest256,
     ) -> Result<Option<u64>, StorageError> {
-        let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+        let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)
             .r#in(
                 "kind",
                 vec![
-                    kels_core::SadPointerKind::Evl.as_str().to_string(),
-                    kels_core::SadPointerKind::Rpr.as_str().to_string(),
+                    kels_core::SadEventKind::Evl.as_str().to_string(),
+                    kels_core::SadEventKind::Rpr.as_str().to_string(),
                 ],
             )
             .order_by("version", verifiable_storage::Order::Desc)
             .limit(1);
-        let records: Vec<SadPointer> = tx.fetch(query).await?;
-        Ok(records.first().map(|r| r.version))
+        let events: Vec<SadEvent> = tx.fetch(query).await?;
+        Ok(events.first().map(|e| e.version))
     }
 
-    /// Check if a pointer with the given SAID exists.
+    /// Check if an event with the given SAID exists.
     pub async fn exists(&self, said: &cesr::Digest256) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+        let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
             .eq("said", said.as_ref())
             .limit(1);
         Ok(!self.pool.fetch(query).await?.is_empty())
     }
 
-    /// Get the chain as bare `SadPointer`s.
+    /// Get the chain as bare `SadEvent`s.
     ///
     /// Ordering: `version ASC, said ASC` — deterministic across nodes.
     /// Delegates to `get_stored_in` via an implicit transaction.
@@ -308,7 +307,7 @@ impl SadPointerRepository {
         prefix: &str,
         since_said: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<Vec<SadPointer>, StorageError> {
+    ) -> Result<Vec<SadEvent>, StorageError> {
         let mut tx = self.pool.begin_transaction().await?;
         let result = self
             .get_stored_in(&mut tx, prefix, since_said, limit)
@@ -317,7 +316,7 @@ impl SadPointerRepository {
         Ok(result)
     }
 
-    /// Get chain records within an existing transaction.
+    /// Get SAD events within an existing transaction.
     ///
     /// Same ordering as `get_stored`: `version ASC, said ASC`.
     pub async fn get_stored_in<Tx: TransactionExecutor>(
@@ -326,10 +325,10 @@ impl SadPointerRepository {
         prefix: &str,
         since_said: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<Vec<SadPointer>, StorageError> {
+    ) -> Result<Vec<SadEvent>, StorageError> {
         let since_position: Option<(u64, cesr::Digest256)> = if let Some(said) = since_said {
             let cursor_query =
-                verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
                     .eq("said", said)
                     .limit(1);
             tx.fetch(cursor_query)
@@ -341,11 +340,10 @@ impl SadPointerRepository {
             None
         };
 
-        let mut query =
-            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                .eq("prefix", prefix)
-                .order_by("version", verifiable_storage_postgres::Order::Asc)
-                .order_by("said", verifiable_storage_postgres::Order::Asc);
+        let mut query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", verifiable_storage_postgres::Order::Asc)
+            .order_by("said", verifiable_storage_postgres::Order::Asc);
 
         if let Some((version, _)) = &since_position {
             query = query.gte("version", *version);
@@ -360,29 +358,29 @@ impl SadPointerRepository {
             query = query.limit(fetch_limit);
         }
 
-        let mut records: Vec<SadPointer> = tx.fetch(query).await?;
+        let mut events: Vec<SadEvent> = tx.fetch(query).await?;
 
         if let Some((version, said)) = &since_position {
-            let skipped = records.len();
-            records.retain(|r| r.version > *version || (r.version == *version && r.said > *said));
-            let skipped = skipped - records.len();
+            let skipped = events.len();
+            events.retain(|e| e.version > *version || (e.version == *version && e.said > *said));
+            let skipped = skipped - events.len();
 
             if skipped > 2 {
                 return Err(StorageError::StorageError(format!(
-                    "Chain integrity violation: {} records skipped at version {} for prefix {} — possible DB tampering",
+                    "Chain integrity violation: {} events skipped at version {} for prefix {} — possible DB tampering",
                     skipped, version, prefix
                 )));
             }
 
             if let Some(limit) = limit {
-                records.truncate(limit as usize);
+                events.truncate(limit as usize);
             }
         }
 
-        Ok(records)
+        Ok(events)
     }
 
-    /// Get the effective SAID for a chain prefix.
+    /// Get the effective SAID for a SEL prefix.
     pub async fn effective_said(
         &self,
         prefix: &cesr::Digest256,
@@ -400,43 +398,43 @@ impl SadPointerRepository {
         Ok(Some((latest.said, false)))
     }
 
-    const ARCHIVED_RECORDS_TABLE: &'static str = "sad_pointer_archives";
+    const ARCHIVED_EVENTS_TABLE: &'static str = "sad_event_archives";
 
-    /// Get repairs for a chain prefix, paginated.
+    /// Get repairs for a SEL prefix, paginated.
     pub async fn get_repairs(
         &self,
         prefix: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<kels_core::SadPointerRepair>, bool), StorageError> {
+    ) -> Result<(Vec<kels_core::SadEventRepair>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let query = verifiable_storage_postgres::Query::<kels_core::SadPointerRepair>::new()
-            .eq("pointer_prefix", prefix)
+        let query = verifiable_storage_postgres::Query::<kels_core::SadEventRepair>::new()
+            .eq("event_prefix", prefix)
             .order_by("repaired_at", verifiable_storage_postgres::Order::Asc)
             .offset(offset)
             .limit(limit + 1);
-        let mut repairs: Vec<kels_core::SadPointerRepair> = self.pool.fetch(query).await?;
+        let mut repairs: Vec<kels_core::SadEventRepair> = self.pool.fetch(query).await?;
 
         let has_more = repairs.len() as u64 > limit;
         repairs.truncate(limit as usize);
         Ok((repairs, has_more))
     }
 
-    /// Get archived records for a specific repair, paginated.
-    pub async fn get_repair_records(
+    /// Get archived events for a specific repair, paginated.
+    pub async fn get_repair_events(
         &self,
         repair_said: &str,
         limit: u64,
         offset: u64,
-    ) -> Result<(Vec<SadPointer>, bool), StorageError> {
+    ) -> Result<(Vec<SadEvent>, bool), StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let link_query = verifiable_storage_postgres::Query::<SadPointerRepairRecord>::new()
+        let link_query = verifiable_storage_postgres::Query::<SelRepairEvent>::new()
             .eq("repair_said", repair_said)
             .offset(offset)
             .limit(limit + 1);
-        let mut links: Vec<SadPointerRepairRecord> = self.pool.fetch(link_query).await?;
+        let mut links: Vec<SelRepairEvent> = self.pool.fetch(link_query).await?;
 
         let has_more = links.len() as u64 > limit;
         links.truncate(limit as usize);
@@ -445,18 +443,17 @@ impl SadPointerRepository {
             return Ok((Vec::new(), false));
         }
 
-        let pointer_saids: Vec<String> = links.iter().map(|l| l.pointer_said.to_string()).collect();
+        let event_saids: Vec<String> = links.iter().map(|l| l.event_said.to_string()).collect();
 
-        let records_query = verifiable_storage_postgres::Query::<SadPointer>::for_table(
-            Self::ARCHIVED_RECORDS_TABLE,
-        )
-        .r#in("said", pointer_saids);
-        let records: Vec<SadPointer> = self.pool.fetch(records_query).await?;
+        let events_query =
+            verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::ARCHIVED_EVENTS_TABLE)
+                .r#in("said", event_saids);
+        let events: Vec<SadEvent> = self.pool.fetch(events_query).await?;
 
-        Ok((records, has_more))
+        Ok((events, has_more))
     }
 
-    /// List chain prefixes with their effective SAIDs, paginated.
+    /// List SEL prefixes with their effective SAIDs, paginated.
     pub async fn list_prefixes(
         &self,
         cursor: Option<&cesr::Digest256>,
@@ -464,24 +461,23 @@ impl SadPointerRepository {
     ) -> Result<kels_core::PrefixListResponse, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
-        let mut query =
-            verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
-                .distinct_on("prefix")
-                .order_by("prefix", verifiable_storage_postgres::Order::Asc)
-                .order_by("version", verifiable_storage_postgres::Order::Desc)
-                .limit(limit as u64 + 1);
+        let mut query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .distinct_on("prefix")
+            .order_by("prefix", verifiable_storage_postgres::Order::Asc)
+            .order_by("version", verifiable_storage_postgres::Order::Desc)
+            .limit(limit as u64 + 1);
 
         if let Some(cursor) = cursor {
             query = query.gt("prefix", cursor.as_ref());
         }
 
-        let records: Vec<SadPointer> = self.pool.fetch(query).await?;
+        let events: Vec<SadEvent> = self.pool.fetch(query).await?;
 
-        let mut prefix_states: Vec<kels_core::PrefixState> = records
+        let mut prefix_states: Vec<kels_core::PrefixState> = events
             .into_iter()
-            .map(|r| kels_core::PrefixState {
-                prefix: r.prefix,
-                said: r.said,
+            .map(|e| kels_core::PrefixState {
+                prefix: e.prefix,
+                said: e.said,
             })
             .collect();
 
@@ -492,16 +488,16 @@ impl SadPointerRepository {
             let remaining = limit - prefix_states.len();
             if remaining > 0 {
                 let wrap_query =
-                    verifiable_storage_postgres::Query::<SadPointer>::for_table(Self::TABLE_NAME)
+                    verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
                         .distinct_on("prefix")
                         .order_by("prefix", verifiable_storage_postgres::Order::Asc)
                         .order_by("version", verifiable_storage_postgres::Order::Desc)
                         .lte("prefix", cursor.as_ref())
                         .limit(remaining as u64);
-                let wrap_records: Vec<SadPointer> = self.pool.fetch(wrap_query).await?;
-                prefix_states.extend(wrap_records.into_iter().map(|r| kels_core::PrefixState {
-                    prefix: r.prefix,
-                    said: r.said,
+                let wrap_events: Vec<SadEvent> = self.pool.fetch(wrap_query).await?;
+                prefix_states.extend(wrap_events.into_iter().map(|e| kels_core::PrefixState {
+                    prefix: e.prefix,
+                    said: e.said,
                 }));
             }
             None
@@ -729,7 +725,7 @@ impl PolicyRepository {
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
-    pub sad_pointers: SadPointerRepository,
+    pub sad_events: SadEventRepository,
     pub sad_objects: SadObjectIndex,
     pub custodies: CustodyRepository,
     pub policies: PolicyRepository,

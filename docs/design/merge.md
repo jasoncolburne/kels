@@ -228,7 +228,7 @@ The merge engine (`merge_events`) handles all routing internally. The KELS servi
 
 ## Pagination
 
-All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The CASE expression uses `EventKind::sort_priority()` to ensure state-determining events (recovery, contest) sort after normal events at the same serial. `MINIMUM_PAGE_SIZE` (64) / `page_size()` controls the page size for both reads and the submit handler's full path. Responses include `has_more` to indicate truncation.
+All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The CASE expression uses `KeyEventKind::sort_priority()` to ensure state-determining events (recovery, contest) sort after normal events at the same serial. `MINIMUM_PAGE_SIZE` (64) / `page_size()` controls the page size for both reads and the submit handler's full path. Responses include `has_more` to indicate truncation.
 
 ## Key Invariants
 
