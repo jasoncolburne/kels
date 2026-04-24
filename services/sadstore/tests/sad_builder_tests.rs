@@ -298,9 +298,12 @@ async fn setup_kel_and_policy(
     (prefix, kel_builder, policy, sad_client)
 }
 
-/// Build an `AnchoredPolicyChecker` for the given KEL + policy.
-/// Returns owned handles plus a closure that builds the checker — the
-/// checker borrows the other two, so callers must keep them alive.
+/// Returns the borrowed-from handles needed to build an
+/// `AnchoredPolicyChecker`: an `HttpKelSource` pointed at the harness's KEL
+/// service, and an `InMemoryPolicyResolver` seeded with the supplied policy.
+/// The caller composes the checker with `AnchoredPolicyChecker::new(&source,
+/// &resolver)` and must keep both returned values alive for the checker's
+/// lifetime.
 fn build_checker_inputs(
     harness: &SharedHarness,
     policy: Policy,

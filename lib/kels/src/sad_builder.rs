@@ -86,14 +86,20 @@ impl SadEventBuilder {
 
     // ==================== Accessors ====================
 
+    /// Locally staged events not yet flushed to SADStore.
     pub fn pending_events(&self) -> &[SadEvent] {
         &self.pending_events
     }
 
+    /// Verified server-side state, if hydrated via `with_dependencies` or
+    /// produced by a successful `flush`. `None` for a fresh builder.
     pub fn sad_verification(&self) -> Option<&SelVerification> {
         self.sad_verification.as_ref()
     }
 
+    /// The most recent event on the chain, preferring the pending tail over
+    /// the verified tip. `None` if the builder has neither pending nor
+    /// verified state.
     pub fn last_event(&self) -> Option<&SadEvent> {
         if let Some(last) = self.pending_events.last() {
             return Some(last);
@@ -101,10 +107,13 @@ impl SadEventBuilder {
         self.sad_verification.as_ref().map(|v| v.current_event())
     }
 
+    /// SAID of `last_event()`. Same pending-first precedence.
     pub fn last_said(&self) -> Option<&cesr::Digest256> {
         self.last_event().map(|e| &e.said)
     }
 
+    /// SEL prefix of the chain, preferring pending v0 over verified state.
+    /// Stable across the chain's lifetime once any inception event exists.
     pub fn prefix(&self) -> Option<&cesr::Digest256> {
         if let Some(first) = self.pending_events.first() {
             return Some(&first.prefix);
@@ -112,6 +121,7 @@ impl SadEventBuilder {
         self.sad_verification.as_ref().map(|v| v.prefix())
     }
 
+    /// Version of `last_event()`. Same pending-first precedence.
     pub fn version(&self) -> Option<u64> {
         self.last_event().map(|e| e.version)
     }
@@ -145,6 +155,12 @@ impl SadEventBuilder {
     /// resets on every evaluation event encountered, so a caller that
     /// staged an `Evl` already sees the counter back at zero (plus any
     /// subsequent non-evaluation events).
+    ///
+    /// Correctness depends on `pending_events` being append-only and only
+    /// mutated through this builder's stager methods, which enforce the
+    /// kind ordering the simulation assumes (Icp only at position 0, Est
+    /// only immediately after Icp, etc.). The field is module-private and
+    /// the public API surface preserves that invariant.
     pub fn events_since_evaluation(&self) -> usize {
         let mut count = self
             .sad_verification
@@ -173,7 +189,7 @@ impl SadEventBuilder {
 
     /// Stage a v0 `Icp` that declares both `write_policy` and `governance_policy`.
     ///
-    /// Consumers of a chain inepted this way cannot recompute the prefix from
+    /// Consumers of a chain incepted this way cannot recompute the prefix from
     /// `(topic, write_policy)` alone — the v0 SAID depends on
     /// `governance_policy` too. Use `incept_deterministic` when prefix-by-recomputation
     /// (exchange keys, identity chains, anything lookup-driven) is required.
@@ -346,9 +362,30 @@ impl SadEventBuilder {
     ///
     /// No anchoring — callers have already run `kel_builder.interact(&said)`
     /// for each returned SAID. On success, absorbs pending into
-    /// `sad_verification` via `SelVerifier::resume` + `verify_page` + `finish`.
-    /// On failure, leaves `pending_events` intact so the caller can reason
-    /// about already-anchored SAIDs.
+    /// `sad_verification` via `SelVerifier::resume` + `verify_page` + `finish`,
+    /// then clears `pending_events`.
+    ///
+    /// **Failure semantics.** Three internal phases run in order:
+    ///
+    /// 1. `sad_client.submit_sad_events(...)` — server commits the batch.
+    /// 2. `sad_store.store(...)` per event — local write-through cache.
+    /// 3. `absorb_pending(checker)` — re-verify pending and roll into
+    ///    `sad_verification`, then clear pending.
+    ///
+    /// An error from phase 1 means nothing was committed server-side; the
+    /// builder is unchanged and the caller can retry or discard. An error
+    /// from phase 2 or 3 means the events **are on the server** but the
+    /// builder's local state was not advanced: `pending_events` is still
+    /// populated and `sad_verification` is stale. The caller cannot tell
+    /// these apart from the `Err` alone.
+    ///
+    /// **Always retry on error rather than discarding pending.** All three
+    /// phases are idempotent: `submit_sad_events` deduplicates by SAID,
+    /// `sad_store.store` overwrites under the same key, and
+    /// `absorb_pending` re-verifies from current server state. A retry
+    /// after a phase-1 failure resubmits cleanly; a retry after a phase-2
+    /// or phase-3 failure no-ops on the server side and converges the
+    /// builder's local view.
     pub async fn flush(&mut self, checker: &(dyn PolicyChecker + Sync)) -> Result<(), KelsError> {
         if self.pending_events.is_empty() {
             return Ok(());
@@ -496,6 +533,35 @@ mod tests {
         let expected_prefix = crate::compute_sad_event_prefix(wp, TEST_TOPIC).unwrap();
         assert_eq!(v0.prefix, expected_prefix);
         assert_eq!(v1.prefix, expected_prefix);
+    }
+
+    /// Regression guard for the `incept` vs `incept_deterministic` distinction:
+    /// `incept` puts governance on v0, so the v0 SAID depends on it and the
+    /// chain prefix is NOT recoverable from `(topic, write_policy)` alone.
+    /// `incept_deterministic` keeps v0 bare so the prefix matches
+    /// `compute_sad_event_prefix`. If these ever converge silently the
+    /// lookup-driven flows (exchange keys, identity chains) break.
+    #[test]
+    fn incept_prefix_diverges_from_compute_sad_event_prefix() {
+        let wp = test_digest(b"wp");
+        let gp = test_digest(b"gp");
+        let mut b = SadEventBuilder::new(None);
+        b.incept(TEST_TOPIC, wp, gp).unwrap();
+        let v0_prefix = b.pending_events()[0].prefix;
+
+        let lookup_prefix = crate::compute_sad_event_prefix(wp, TEST_TOPIC).unwrap();
+        assert_ne!(
+            v0_prefix, lookup_prefix,
+            "incept(governance on v0) must NOT match the deterministic-lookup prefix; \
+             callers needing prefix recomputation must use incept_deterministic"
+        );
+
+        // And the deterministic variant DOES match — the symmetric assertion
+        // already lives in incept_deterministic_stages_atomic_v0_v1_pair, but
+        // restating it here keeps both halves of the contract visible at a glance.
+        let mut b2 = SadEventBuilder::new(None);
+        b2.incept_deterministic(TEST_TOPIC, wp, gp, None).unwrap();
+        assert_eq!(b2.pending_events()[0].prefix, lookup_prefix);
     }
 
     #[test]
