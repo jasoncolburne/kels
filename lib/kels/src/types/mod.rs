@@ -1424,14 +1424,14 @@ mod tests {
     #[test]
     fn test_validate_structure_icp_with_governance_policy_valid() {
         let wp = cesr::Digest256::blake3_256(b"wp");
-        let cp = cesr::Digest256::blake3_256(b"cp");
+        let gp = cesr::Digest256::blake3_256(b"gp");
         let event = SadEvent::create(
             "test/topic".to_string(),
             SadEventKind::Icp,
             None,
             None,
             Some(wp),
-            Some(cp),
+            Some(gp),
         )
         .unwrap();
         assert!(event.validate_structure().is_ok());
@@ -1478,7 +1478,7 @@ mod tests {
         event.kind = SadEventKind::Est;
         event.version = 1;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         event.write_policy = None;
         assert!(event.validate_structure().is_ok());
     }
@@ -1489,7 +1489,7 @@ mod tests {
         event.kind = SadEventKind::Est;
         event.version = 2;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         event.write_policy = None;
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("version 1"));
@@ -1512,7 +1512,7 @@ mod tests {
         event.kind = SadEventKind::Est;
         event.version = 1;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         // write_policy inherited from Icp helper — Est forbids it
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have writePolicy"));
@@ -1535,7 +1535,7 @@ mod tests {
         event.kind = SadEventKind::Upd;
         event.version = 1;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         event.write_policy = None;
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have governancePolicy"));
@@ -1579,7 +1579,7 @@ mod tests {
         event.kind = SadEventKind::Evl;
         event.version = 2;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"new-cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"new-gp"));
         assert!(event.validate_structure().is_ok());
     }
 
@@ -1599,7 +1599,7 @@ mod tests {
         event.kind = SadEventKind::Rpr;
         event.version = 1;
         event.previous = Some(cesr::Digest256::blake3_256(b"prev"));
-        event.governance_policy = Some(cesr::Digest256::blake3_256(b"cp"));
+        event.governance_policy = Some(cesr::Digest256::blake3_256(b"gp"));
         event.write_policy = None;
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have governancePolicy"));

@@ -56,7 +56,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/federation-state-machine.md`, `docs/design/secure-registration.md`, `docs/design/registry-removal.md`, `docs/design/rejection-threshold.md`.
 
-**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each record links to previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sad-events.md`.
+**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sad-events.md`.
 
 ## Architecture
 

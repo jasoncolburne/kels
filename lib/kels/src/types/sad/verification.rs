@@ -415,7 +415,7 @@ impl<'a> SelVerifier<'a> {
 
         if !self.saw_any_events {
             return Err(KelsError::VerificationFailed(
-                "Empty SAD event chain".into(),
+                "Empty SAD Event Log".into(),
             ));
         }
 
