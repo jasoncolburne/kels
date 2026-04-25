@@ -154,13 +154,16 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` new
-/// events would exceed the daily limit. Does NOT update the counter — call
-/// `accrue_prefix_rate_limit` after storage with the actual new event count.
+/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` units
+/// of budget would exceed the daily limit. When `accrue` is `true`, also
+/// charges the budget on success — used by the request gate above the dedup
+/// branch so duplicate-submit campaigns still consume budget. When `false`,
+/// behaves as a pure check (legacy; no current callers).
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
     event_count: u32,
+    accrue: bool,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max_events = max_events_per_prefix_per_day();
@@ -175,22 +178,11 @@ fn check_prefix_rate_limit(
         return Err("Too many events for this SEL prefix".to_string());
     }
 
-    Ok(())
-}
-
-/// Accrue the actual number of new events after storage completes.
-fn accrue_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
-    prefix: &cesr::Digest256,
-    new_event_count: u32,
-) {
-    let now = Instant::now();
-    let mut entry = limits.entry(*prefix).or_insert((0, now));
-    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
-        entry.0 = 0;
-        entry.1 = now;
+    if accrue {
+        entry.0 += event_count;
     }
-    entry.0 += new_event_count;
+
+    Ok(())
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -1224,6 +1216,21 @@ pub async fn submit_sad_events(
         }
     }
 
+    // Per-SEL-prefix request gate. Runs BEFORE the transaction setup and
+    // dedup query so duplicate-submit campaigns consume budget proportional
+    // to the request's claimed event count, regardless of whether anything
+    // commits server-side. Charges `events.len()` to the per-prefix budget;
+    // a failed request over-charges relative to its commits, which is the
+    // conservative shape we want for an unauthenticated entry point.
+    if let Err(msg) = check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        sel_prefix,
+        events.len() as u32,
+        true,
+    ) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
     let new_event_count;
@@ -1322,16 +1329,6 @@ pub async fn submit_sad_events(
                 applied: false,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
-        }
-
-        // Per-SEL-prefix daily rate limit (check before, accrue after dedup)
-        if let Err(msg) = check_prefix_rate_limit(
-            &state.prefix_rate_limits,
-            sel_prefix,
-            new_events.len() as u32,
-        ) {
-            let _ = tx.rollback().await;
-            return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
         }
 
         // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
@@ -1518,8 +1515,9 @@ pub async fn submit_sad_events(
         }
     }
 
-    // Accrue only actual new events to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
+    // Per-prefix budget was charged pre-flight by `check_prefix_rate_limit`
+    // above — duplicate submits and rejected requests both consume budget at
+    // the rate of their claimed event count, so no post-commit accrual here.
 
     // Check nodes replication policy for gossip
     let event_custody = events.first().and_then(|r| r.custody);
@@ -1612,6 +1610,46 @@ pub async fn get_sad_events(
         }
         Err(e) => {
             warn!("Failed to get SAD Event Log: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+/// Fetch the tail of a SAD Event Log — the last `limit` events ordered by
+/// `(version ASC, said ASC)`, capped at `kels_core::page_size()` server-side.
+///
+/// The boundary that `SadEventBuilder::repair`'s adversary-extension walk-back
+/// is searching for is at most `MAX_NON_EVALUATION_EVENTS = 63` hops from the
+/// tip, so this single fetch always suffices regardless of chain length.
+pub async fn get_sad_events_tail(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadEventTailRequest>,
+) -> impl IntoResponse {
+    let prefix = request.prefix;
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
+
+    match state
+        .repo
+        .sad_events
+        .get_stored_tail(prefix.as_ref(), limit)
+        .await
+    {
+        Ok(events) if events.is_empty() => {
+            (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response()
+        }
+        Ok(events) => {
+            // The tail fetch returns the entire suffix the caller asked for —
+            // there is no further page beyond what they got, by definition of
+            // "fetch the last N events." `has_more` is always false.
+            let page = kels_core::SadEventPage {
+                has_more: false,
+                events,
+            };
+            (StatusCode::OK, Json(page)).into_response()
+        }
+        Err(e) => {
+            warn!("Failed to get SAD Event Log tail: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }

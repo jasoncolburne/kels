@@ -252,6 +252,35 @@ impl SadStoreClient {
         }
     }
 
+    /// Fetch the tail of a SAD Event Log — the last `limit` events ordered by
+    /// `(version ASC, said ASC)`. Server caps `limit` at `page_size()`.
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back to
+    /// pull only the chain segment the walk could possibly need (bounded by
+    /// `MAX_NON_EVALUATION_EVENTS = 63` per the governance invariant), in a
+    /// single round-trip independent of chain length.
+    pub async fn fetch_sad_events_tail(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: usize,
+    ) -> Result<SadEventPage, KelsError> {
+        let url = format!("{}/api/v1/sad/events/tail", self.base_url);
+        let body = crate::SadEventTailRequest {
+            prefix: *prefix,
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(prefix.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
     /// Get the effective SAID and divergence status for a SEL prefix.
     /// Returns `(said, is_divergent)`. Used for sync comparison.
     pub async fn fetch_sel_effective_said(

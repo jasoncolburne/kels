@@ -43,6 +43,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/events", post(handlers::submit_sad_events))
         .route("/api/v1/sad/events/fetch", post(handlers::get_sad_events))
         .route(
+            "/api/v1/sad/events/tail",
+            post(handlers::get_sad_events_tail),
+        )
+        .route(
             "/api/v1/sad/events/effective-said",
             post(handlers::get_sel_effective_said),
         )

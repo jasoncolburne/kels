@@ -105,14 +105,15 @@ pub use types::{
     RaftLogEntry, RaftState, RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory,
     RemovalWithVotes, SadBranchTip, SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest,
     SadEventKind, SadEventPage, SadEventPageRequest, SadEventRepair, SadEventRepairPage,
-    SadFetchRequest, SadObjectEntry, SadObjectListResponse, SadRepairPageRequest,
-    SadRepairsRequest, SelRepairEvent, SelVerification, SelVerifier, SignedKeyEvent,
-    SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource, StorePageLoader,
-    SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote, completed_verification,
-    compute_approval_threshold, compute_rotation_hash, compute_sad_event_prefix,
-    forward_key_events, forward_sad_events, hash_effective_said, parse_and_validate_custody,
-    single_signer, truncate_incomplete_generation, validate_timestamp, verify_key_events,
-    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_events,
+    SadEventTailRequest, SadFetchRequest, SadObjectEntry, SadObjectListResponse,
+    SadRepairPageRequest, SadRepairsRequest, SelRepairEvent, SelVerification, SelVerifier,
+    SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource,
+    StorePageLoader, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
+    completed_verification, compute_approval_threshold, compute_rotation_hash,
+    compute_sad_event_prefix, forward_key_events, forward_sad_events, hash_effective_said,
+    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
+    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
+    verify_sad_events,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

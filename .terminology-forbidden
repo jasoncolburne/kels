@@ -63,5 +63,8 @@ test_sad_chain_verifier_
 # === KELS-126: Verification token rename (SadEventVerification → SelVerification) ===
 \bSadEventVerification\b
 
+# === KELS-126 round 7: Removed error variants ===
+\bCannotResumeDivergentChain\b
+
 # === Grammar: common slip introduced by in-place renames ===
 \ba event\b

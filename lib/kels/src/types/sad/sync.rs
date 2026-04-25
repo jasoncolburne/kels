@@ -31,6 +31,25 @@ pub trait PagedSadSource: Send + Sync {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+
+    /// Fetch the tail of a chain — the last `limit` events ordered by
+    /// `(version ASC, said ASC)`.
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back as
+    /// a single round-trip alternative to forward-paginating the whole chain.
+    /// Default implementation returns `Unsupported` so legacy sources don't
+    /// silently degrade — callers that need tail fetch should depend on a
+    /// source that overrides this. `HttpSadSource` provides the production
+    /// implementation; test mocks override as needed.
+    async fn fetch_tail(
+        &self,
+        _prefix: &cesr::Digest256,
+        _limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        Err(KelsError::OfflineMode(
+            "PagedSadSource::fetch_tail not implemented by this source".into(),
+        ))
+    }
 }
 
 /// Destination for SAD events (e.g., local SADStore).
@@ -93,6 +112,29 @@ impl PagedSadSource for HttpSadSource {
             Ok((page.events, page.has_more))
         } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok((Vec::new(), false))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    async fn fetch_tail(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        let url = format!("{}/api/v1/sad/events/tail", self.base_url);
+        let body = crate::SadEventTailRequest {
+            prefix: *prefix,
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let page: SadEventPage = resp.json().await?;
+            Ok(page.events)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(Vec::new())
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))

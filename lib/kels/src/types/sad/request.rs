@@ -35,6 +35,20 @@ pub struct SadEventPageRequest {
     pub limit: Option<usize>,
 }
 
+/// Request body for fetching the tail of a SAD Event Log.
+///
+/// Returns the last `limit` events ordered by `(version DESC, said DESC)`,
+/// then reversed so the page reads `(version ASC, said ASC)` for caller
+/// convenience. Lets `SadEventBuilder::repair` find the truncation boundary
+/// in a single round-trip regardless of chain length — bounded by
+/// `MINIMUM_PAGE_SIZE` server-side because that's exactly what the
+/// adversary-extension walk-back can possibly need.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SadEventTailRequest {
+    pub prefix: cesr::Digest256,
+    pub limit: Option<usize>,
+}
+
 /// Request body for fetching the effective SAID of a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadEventEffectiveSaidRequest {

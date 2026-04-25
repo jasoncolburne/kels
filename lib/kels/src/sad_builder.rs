@@ -120,16 +120,17 @@ async fn walk_back_to_version(
 /// locally) is the boundary. Used by `SadEventBuilder::repair` Case B
 /// (linear chain extended by an adversary).
 ///
-/// **One paginated server fetch + in-memory walk.** `MAX_NON_EVALUATION_EVENTS
-/// = MINIMUM_PAGE_SIZE - 1 = 63` is wired by design (`lib/kels/src/lib.rs:139`)
+/// **One server tail fetch + in-memory walk.** `MAX_NON_EVALUATION_EVENTS =
+/// MINIMUM_PAGE_SIZE - 1 = 63` is wired by design (`lib/kels/src/lib.rs:139`)
 /// — the bound on adversarial extension is exactly one page minus one event.
-/// So one or a few `SadStoreClient::fetch_sad_events` calls cover everything
-/// the walk could need; we hash the events into a SAID-keyed map and then
-/// walk in memory. Fetched events are SAID-integrity-protected (every server
-/// reply must match its SAID by structure or we'd have rejected it earlier),
-/// so using them for `previous`-link traversal is sound — **the boundary
-/// decision still lives in `sad_store`**, the server slice is only the chain
-/// segment for traversal.
+/// `PagedSadSource::fetch_tail(prefix, MINIMUM_PAGE_SIZE)` returns the last
+/// 64 events in a single round-trip — covers everything the walk could need
+/// regardless of total chain length. We hash the events into a SAID-keyed
+/// map and walk in memory. Fetched events are SAID-integrity-protected
+/// (every server reply must match its SAID by structure or we'd have
+/// rejected it earlier), so using them for `previous`-link traversal is
+/// sound — **the boundary decision still lives in `sad_store`**, the server
+/// slice is only the chain segment for traversal.
 ///
 /// Mirrors `KeyEventBuilder::find_missing_owner_events` (`lib/kels/src/builder.rs:469-496`)
 /// — same shape, mirrored data sources (KEL loads tail from local, probes
@@ -146,32 +147,15 @@ async fn walk_back_to_first_owner(
 ) -> Result<SadEvent, KelsError> {
     use std::collections::HashMap;
 
-    // Fetch the chain into a SAID-keyed map. `since: None` starts at v0;
-    // paginate via the last event's SAID. We stop once the cached tip is
-    // visible — by construction the boundary is at most 63 hops back from
-    // there, so anything earlier that we'd already loaded is enough. Most
-    // healthy chains complete in one fetch.
+    // Single tail fetch, server-bounded by MINIMUM_PAGE_SIZE. The boundary
+    // the walk is searching for is at most 63 hops from `start`, so a 64-
+    // event tail always covers it independent of the chain's total length.
+    let tail = sad_source
+        .fetch_tail(prefix, crate::MINIMUM_PAGE_SIZE)
+        .await?;
     let mut chain: HashMap<cesr::Digest256, SadEvent> = HashMap::new();
-    let mut since: Option<cesr::Digest256> = None;
-    let mut found_start = false;
-    loop {
-        let (events, has_more) = sad_source
-            .fetch_page(prefix, since.as_ref(), crate::page_size())
-            .await?;
-        if events.is_empty() {
-            break;
-        }
-        let last_said = events.last().map(|e| e.said);
-        for event in &events {
-            if event.said == start.said {
-                found_start = true;
-            }
-            chain.insert(event.said, event.clone());
-        }
-        if found_start || !has_more {
-            break;
-        }
-        since = last_said;
+    for event in &tail {
+        chain.insert(event.said, event.clone());
     }
 
     // Walk backward in memory. Probe `sad_store` at each step — first hit is
@@ -190,7 +174,7 @@ async fn walk_back_to_first_owner(
         let next = chain.get(&prev_said).cloned().ok_or_else(|| {
             KelsError::InvalidKel(format!(
                 "Cannot find owner boundary: event {} not in local store and not in \
-                 server-fetched chain — local cache may be inconsistent with server view",
+                 server-fetched tail — local cache may be inconsistent",
                 prev_said
             ))
         })?;
@@ -680,9 +664,7 @@ impl SadEventBuilder {
     ///
     /// Structural errors that survive retry (e.g., a verifier-internal
     /// invariant violation that fires identically on every attempt) are
-    /// bugs — file an issue rather than retrying indefinitely. The
-    /// round-6 parity rework removed the previous `CannotResumeDivergentChain`
-    /// deadlock by teaching `SelVerifier::resume` to accept divergent tokens.
+    /// bugs — file an issue rather than retrying indefinitely.
     ///
     /// **Divergence signal.** The server's `submit_sad_events` response
     /// carries `diverged_at: Option<u64>` — populated when a concurrent
@@ -876,7 +858,7 @@ impl SadEventBuilder {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use crate::types::SadEvent;
+    use crate::types::{PagedSadSource, SadEvent};
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
@@ -1184,8 +1166,10 @@ mod tests {
         );
     }
 
-    /// In-memory `PagedSadSource` for unit-testing the Case B walk. Returns
-    /// events sorted by version, paginated by `since` SAID + `limit`.
+    /// In-memory `PagedSadSource` for unit-testing the Case B walk. Mirrors
+    /// production semantics: `since` is **strictly exclusive** (server returns
+    /// events at `(version, said) > since`'s position), `fetch_tail` returns
+    /// the last `limit` events ordered by `(version ASC, said ASC)`.
     struct VecSadSource {
         events: Vec<SadEvent>,
     }
@@ -1197,17 +1181,36 @@ mod tests {
             since: Option<&cesr::Digest256>,
             limit: usize,
         ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+            // `since` semantics in production (`services/sadstore/src/repository.rs:374-410`):
+            // strictly `(version, said) > since`. Match that here so the mock
+            // doesn't silently double-count entries at page boundaries.
             let start_idx = match since {
-                Some(s) => self.events.iter().position(|e| e.said == *s).unwrap_or(0),
+                Some(s) => self
+                    .events
+                    .iter()
+                    .position(|e| e.said == *s)
+                    .map(|i| i + 1)
+                    .unwrap_or(0),
                 None => 0,
             };
-            // `since` semantics in the real handler: events at version >=
-            // since's version. Since events here are unique per version, we
-            // start at `since`'s position (inclusive).
             let end_idx = (start_idx + limit).min(self.events.len());
             let events: Vec<SadEvent> = self.events[start_idx..end_idx].to_vec();
             let has_more = end_idx < self.events.len();
             Ok((events, has_more))
+        }
+
+        async fn fetch_tail(
+            &self,
+            _prefix: &cesr::Digest256,
+            limit: usize,
+        ) -> Result<Vec<SadEvent>, KelsError> {
+            // Production semantics: last `limit` events ordered by
+            // `(version DESC, said DESC)`, then reversed before return so the
+            // caller sees `(version ASC, said ASC)`. Since these test events
+            // are stored sorted by version, taking the suffix of `limit` is
+            // equivalent.
+            let start = self.events.len().saturating_sub(limit);
+            Ok(self.events[start..].to_vec())
         }
     }
 
@@ -1383,6 +1386,66 @@ mod tests {
             b.pending_events().is_empty(),
             "no event should be staged when repair is refused"
         );
+    }
+
+    /// Pin `VecSadSource::fetch_page`'s exclusive-`since` semantics — the
+    /// pagination contract `walk_back_to_first_owner` and `transfer_sad_events`
+    /// depend on. With production-matching semantics, paging through with
+    /// `since = last_said` yields strictly disjoint pages; pre-fix
+    /// (inclusive `since`), pages overlapped by one event at the boundary.
+    /// The test fails under the inclusive impl and passes under exclusive.
+    #[tokio::test]
+    async fn vec_sad_source_pagination_exclusive_since() {
+        let (prefix, events, _store, _token) = build_adversary_extension_fixture(2, 4).await;
+        let source = VecSadSource {
+            events: events.clone(),
+        };
+        let total = events.len();
+        assert!(
+            total >= 5,
+            "fixture invariant: chain must be long enough to paginate"
+        );
+
+        // Page 1: from start, limit=2. Should return [v0, v1] with has_more=true.
+        let (page1, has_more_1) = source.fetch_page(&prefix, None, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].said, events[0].said);
+        assert_eq!(page1[1].said, events[1].said);
+        assert!(has_more_1);
+
+        // Page 2: since = last said of page 1 (v1). Exclusive semantics → page
+        // starts at v2, NOT v1. Returns [v2, v3] with has_more=true (more left).
+        let (page2, has_more_2) = source
+            .fetch_page(&prefix, Some(&page1.last().unwrap().said), 2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_eq!(
+            page2[0].said, events[2].said,
+            "exclusive `since`: next page must start AFTER the cursor, not AT it"
+        );
+        assert_eq!(page2[1].said, events[3].said);
+        assert!(has_more_2);
+
+        // Page 3: since = last of page 2 (v3). Returns the rest [v4, v5] with has_more=false.
+        let (page3, has_more_3) = source
+            .fetch_page(&prefix, Some(&page2.last().unwrap().said), 2)
+            .await
+            .unwrap();
+        assert_eq!(page3.len(), 2);
+        assert_eq!(page3[0].said, events[4].said);
+        assert_eq!(page3[1].said, events[5].said);
+        assert!(!has_more_3);
+
+        // The three pages must be strictly disjoint: a flatten produces the
+        // chain in order with no duplicates and no gaps.
+        let mut all = page1.clone();
+        all.extend(page2.clone());
+        all.extend(page3.clone());
+        assert_eq!(all.len(), total);
+        for (i, event) in all.iter().enumerate() {
+            assert_eq!(event.said, events[i].said, "page {i} mismatch");
+        }
     }
 
     /// `repair` errors cleanly when the builder has no `sad_store` configured —

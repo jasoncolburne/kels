@@ -298,6 +298,30 @@ impl SadEventRepository {
         Ok(row.map(|v| v as u64))
     }
 
+    /// Get the tail of a chain — the last `limit` events ordered by
+    /// `(version DESC, said DESC)`, then reversed before returning so the
+    /// caller sees `(version ASC, said ASC)` (matches `get_stored`'s shape).
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back: the
+    /// boundary is at most `MAX_NON_EVALUATION_EVENTS = 63` hops from the tip,
+    /// so a single `MINIMUM_PAGE_SIZE`-bounded fetch covers everything the
+    /// walk could possibly need — independent of the chain's total length.
+    pub async fn get_stored_tail(
+        &self,
+        prefix: &str,
+        limit: u64,
+    ) -> Result<Vec<SadEvent>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+        let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", verifiable_storage_postgres::Order::Desc)
+            .order_by("said", verifiable_storage_postgres::Order::Desc)
+            .limit(limit);
+        let mut events: Vec<SadEvent> = self.pool.fetch(query).await?;
+        events.reverse();
+        Ok(events)
+    }
+
     /// Get the version of the most recent governance evaluation for a chain.
     /// Returns None if no governance evaluation has been recorded.
     pub async fn last_governance_version<Tx: TransactionExecutor>(

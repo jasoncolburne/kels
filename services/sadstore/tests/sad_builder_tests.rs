@@ -1017,3 +1017,70 @@ async fn flush_repair_heals_adversarially_extended_chain() {
     assert_eq!(post_repair.current_event().said, rpr_said);
     assert_eq!(post_repair.current_event().version, 2);
 }
+
+/// Per-prefix rate limit gates the dedup short-circuit — a duplicate-submit
+/// campaign that exhausts the per-prefix daily budget gets `429` before the
+/// server runs the dedup query or the `first_divergent_version` MIN aggregate.
+///
+/// Pre-fix this test would never have triggered: dedup'd requests accrued
+/// `0` to the per-prefix counter, so an attacker could spin forever on the
+/// dedup path doing 2 DB reads per request without exhausting any budget.
+/// Post-fix the rate-limit check is moved above the dedup branch and accrues
+/// `events.len()` per request — duplicates pay budget at the rate of their
+/// claim size.
+///
+/// Default `SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY = 8` (handlers.rs).
+/// Submitting a 2-event batch four times charges 8 (2+2+2+2 = at the cap),
+/// the fifth submit would push to 10 > 8 and gets rejected.
+#[tokio::test]
+#[serial]
+async fn rate_limit_runs_above_dedup() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let (_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_policy(harness, "rate-limit-above-dedup").await;
+    let publication_said = upload_publication(&sad_client, "rate-limit-above-dedup").await;
+
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy);
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let (icp_said, est_said) = builder
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    kel_builder.interact(&est_said).await.unwrap();
+    let events = builder.pending_events().to_vec();
+
+    // 1st submit: applied=true, counter 0 → 2.
+    let r1 = sad_client
+        .submit_sad_events(&events)
+        .await
+        .expect("first submit succeeds");
+    assert!(r1.applied);
+
+    // Submits 2-4: dedup, applied=false, counter advances 2 → 4 → 6 → 8.
+    for i in 0..3 {
+        let r = sad_client
+            .submit_sad_events(&events)
+            .await
+            .unwrap_or_else(|e| panic!("dedup submit {i} should not error: {e:?}"));
+        assert!(!r.applied, "dedup submit {i} must report applied=false");
+    }
+
+    // 5th submit: counter 8 + claim 2 = 10 > 8 → 429 from the pre-flight
+    // gate. The error surfaces as `KelsError::ServerError` containing the
+    // "Too many events" message; we don't try to inspect the status code
+    // through the typed client, just assert the call errored on rate-limit
+    // shape rather than succeeded with applied=false (dedup) or applied=true.
+    let err = sad_client
+        .submit_sad_events(&events)
+        .await
+        .expect_err("5th submit must be rejected by the per-prefix rate limit");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Too many events"),
+        "expected per-prefix rate-limit rejection, got: {msg}"
+    );
+}
