@@ -446,14 +446,17 @@ mod tests {
         cesr::Digest256::blake3_256(label)
     }
 
-    /// In-memory source that serves events in pages, simulating page-boundary splits.
-    struct VecSadSource {
+    /// In-memory paginated-only source that serves events in pages,
+    /// simulating page-boundary splits for divergence-detection tests.
+    /// Does not implement `fetch_tail` — for repair-walk-back tests that
+    /// need it, see `RepairTestSadSource` in `lib/kels/src/sad_builder.rs`.
+    struct PagedVecSadSource {
         events: Vec<SadEvent>,
         page_size: usize,
     }
 
     #[async_trait]
-    impl PagedSadSource for VecSadSource {
+    impl PagedSadSource for PagedVecSadSource {
         async fn fetch_page(
             &self,
             _prefix: &cesr::Digest256,
@@ -521,7 +524,7 @@ mod tests {
         // Divergence is within page 2 — no boundary split.
         // Now test page_size=3: page 1 = [v0, v1, v2_a], held-back = v2_a,
         // page 2 starts with v2_b which has same version → divergence at boundary.
-        let source = VecSadSource {
+        let source = PagedVecSadSource {
             events: vec![v0, v1, v2_a.clone(), v2_b.clone()],
             page_size: 3,
         };

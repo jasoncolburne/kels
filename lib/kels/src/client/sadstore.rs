@@ -38,11 +38,21 @@ impl SadStoreClient {
     }
 
     /// Create an `HttpSadSource` for this client's events endpoint.
+    ///
+    /// Constructs a fresh `reqwest::Client` (with its own connection pool)
+    /// rather than sharing this `SadStoreClient`'s. Acceptable for one-off
+    /// flows like `SadEventBuilder::repair` (called once per repair); if a
+    /// caller invokes this in a hot loop, refactor to share the underlying
+    /// `reqwest::Client` to reuse pooled connections.
     pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
         crate::HttpSadSource::new(&self.base_url)
     }
 
     /// Create an `HttpSadSink` for this client's events endpoint.
+    ///
+    /// Constructs a fresh `reqwest::Client` per call — see `as_sad_source` for
+    /// the same trade-off note. Gossip/sync flows that call this repeatedly
+    /// would benefit from sharing the underlying client.
     pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new(&self.base_url)
     }

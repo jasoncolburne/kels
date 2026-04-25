@@ -1616,18 +1616,21 @@ pub async fn get_sad_events(
 }
 
 /// Fetch the tail of a SAD Event Log — the last `limit` events ordered by
-/// `(version ASC, said ASC)`, capped at `kels_core::page_size()` server-side.
+/// `(version ASC, said ASC)`, capped at `MINIMUM_PAGE_SIZE` server-side.
 ///
 /// The boundary that `SadEventBuilder::repair`'s adversary-extension walk-back
 /// is searching for is at most `MAX_NON_EVALUATION_EVENTS = 63` hops from the
 /// tip, so this single fetch always suffices regardless of chain length.
+/// Capping at the constant (rather than the operator-tunable `page_size()`)
+/// keeps an attacker probing this endpoint from amplifying response size when
+/// `KELS_PAGE_SIZE` is set higher than the default.
 pub async fn get_sad_events_tail(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadEventTailRequest>,
 ) -> impl IntoResponse {
     let prefix = request.prefix;
-    let page_size = kels_core::page_size();
-    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
+    let max_limit = kels_core::MINIMUM_PAGE_SIZE;
+    let limit = request.limit.unwrap_or(max_limit).clamp(1, max_limit) as u64;
 
     match state
         .repo

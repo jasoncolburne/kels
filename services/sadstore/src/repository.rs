@@ -306,6 +306,9 @@ impl SadEventRepository {
     /// boundary is at most `MAX_NON_EVALUATION_EVENTS = 63` hops from the tip,
     /// so a single `MINIMUM_PAGE_SIZE`-bounded fetch covers everything the
     /// walk could possibly need — independent of the chain's total length.
+    /// The handler caps `limit` at `MINIMUM_PAGE_SIZE` before reaching this
+    /// method; the repository signature accepts an arbitrary `u64` only
+    /// because it doesn't know about that constant.
     pub async fn get_stored_tail(
         &self,
         prefix: &str,

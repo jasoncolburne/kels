@@ -1170,11 +1170,15 @@ mod tests {
     /// production semantics: `since` is **strictly exclusive** (server returns
     /// events at `(version, said) > since`'s position), `fetch_tail` returns
     /// the last `limit` events ordered by `(version ASC, said ASC)`.
-    struct VecSadSource {
+    ///
+    /// Distinct from `lib/kels/src/types/sad/sync.rs`'s `PagedVecSadSource`,
+    /// which is the paginated-only variant used by divergence-detection tests
+    /// and does not implement `fetch_tail`.
+    struct RepairTestSadSource {
         events: Vec<SadEvent>,
     }
     #[async_trait::async_trait]
-    impl crate::types::PagedSadSource for VecSadSource {
+    impl crate::types::PagedSadSource for RepairTestSadSource {
         async fn fetch_page(
             &self,
             _prefix: &cesr::Digest256,
@@ -1284,7 +1288,7 @@ mod tests {
         let v1_owner_said = events[1].said;
 
         // Server's view of the chain (the full adversary-extended segment).
-        let source = VecSadSource {
+        let source = RepairTestSadSource {
             events: events.clone(),
         };
 
@@ -1319,7 +1323,7 @@ mod tests {
         let (prefix, events, store, _token) = build_adversary_extension_fixture(2, 4).await;
         let v1_owner_said = events[1].said;
 
-        let source = VecSadSource {
+        let source = RepairTestSadSource {
             events: events.clone(),
         };
 
@@ -1388,16 +1392,17 @@ mod tests {
         );
     }
 
-    /// Pin `VecSadSource::fetch_page`'s exclusive-`since` semantics — the
-    /// pagination contract `walk_back_to_first_owner` and `transfer_sad_events`
-    /// depend on. With production-matching semantics, paging through with
-    /// `since = last_said` yields strictly disjoint pages; pre-fix
-    /// (inclusive `since`), pages overlapped by one event at the boundary.
-    /// The test fails under the inclusive impl and passes under exclusive.
+    /// Pin `RepairTestSadSource::fetch_page`'s exclusive-`since` semantics —
+    /// the pagination contract `walk_back_to_first_owner` and
+    /// `transfer_sad_events` depend on. With production-matching semantics,
+    /// paging through with `since = last_said` yields strictly disjoint pages;
+    /// pre-fix (inclusive `since`), pages overlapped by one event at the
+    /// boundary. The test fails under the inclusive impl and passes under
+    /// exclusive.
     #[tokio::test]
     async fn vec_sad_source_pagination_exclusive_since() {
         let (prefix, events, _store, _token) = build_adversary_extension_fixture(2, 4).await;
-        let source = VecSadSource {
+        let source = RepairTestSadSource {
             events: events.clone(),
         };
         let total = events.len();

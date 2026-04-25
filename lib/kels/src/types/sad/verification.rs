@@ -481,6 +481,13 @@ impl SelVerifier {
     /// verifier's keyed-by-tip-SAID HashMap; chain-wide signals
     /// (`policy_satisfied`, `establishment_version`, `diverged_at_version`)
     /// are carried through verbatim.
+    ///
+    /// Returns `Result` for parity with `KeyEventVerifier::resume` (which
+    /// derives crypto from each branch tip and can fail) and for forward-compat
+    /// with future structural validation (e.g., enforcing non-empty `branches`
+    /// or shared-prefix invariants at resume time). Currently no path returns
+    /// `Err` — `SelVerification`'s constructor already enforces these
+    /// invariants.
     pub fn resume(
         verification: &super::event::SelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,
