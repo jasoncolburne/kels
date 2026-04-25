@@ -293,6 +293,13 @@ impl SadEventBuilder {
             Some(write_policy),
             Some(governance_policy),
         )?;
+        // Catch any structural rule violations before staging — keeps this
+        // path symmetric with `compute_sad_event_prefix` and the v1+ stagers,
+        // so future tightening of Icp's structural contract surfaces here
+        // rather than at server-side verification.
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -322,6 +329,12 @@ impl SadEventBuilder {
             Some(write_policy),
             None,
         )?;
+        // Validate v0 before mutating into v1 — keeps the staging contract
+        // symmetric with `compute_sad_event_prefix` (which validates Icp shape
+        // before returning the prefix) and ensures both pushes below are
+        // structurally sound.
+        v0.validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
 
         let mut v1 = v0.clone();
         v1.content = content;
@@ -487,9 +500,22 @@ impl SadEventBuilder {
             .as_ref()
             .ok_or_else(|| KelsError::OfflineMode("flush requires a SadStoreClient".into()))?;
 
+        // Fail fast: absorb_pending needs a checker. Validate before any side
+        // effects so we don't submit + persist locally and then strand pending
+        // on a no-checker error with no in-place recovery path.
+        if self.checker.is_none() {
+            return Err(KelsError::OfflineMode(
+                "flush requires a PolicyChecker".into(),
+            ));
+        }
+
         client.submit_sad_events(&self.pending_events).await?;
 
-        // Persist before absorbing so local store never falls behind verified state.
+        // Write to local cache before absorbing — events are already
+        // server-accepted (phase 1 succeeded), so the cache reflects committed
+        // state. If absorb_pending later fails, the cache is fine: it holds
+        // events that any subsequent with_prefix() will re-verify via the
+        // server.
         if let Some(store) = self.sad_store.as_ref() {
             for event in &self.pending_events {
                 let value = serde_json::to_value(event)?;
