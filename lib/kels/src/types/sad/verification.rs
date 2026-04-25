@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use verifiable_storage::{Chained, SelfAddressed};
 
-use super::event::{SadEvent, SadEventKind};
+use super::event::{SadBranchTip, SadEvent, SadEventKind};
 use crate::KelsError;
 
 // ==================== Policy Checker Trait ====================
@@ -43,27 +43,12 @@ pub trait PolicyChecker: Send + Sync {
 }
 
 // ==================== Incremental Chain Verification ====================
-
-/// Per-branch state for divergent SAD Event Logs.
-#[derive(Debug, Clone)]
-struct SadBranchState {
-    tip: SadEvent,
-    /// The effective write_policy for this branch.
-    /// Seeded from v0 (Icp always has write_policy) and updated when an Evl
-    /// event carries a new write_policy *and* the evolution was authorized
-    /// by the previous policy. Used to authorize v1+ advances.
-    tracked_write_policy: cesr::Digest256,
-    /// The governance policy SAID tracked on this branch.
-    /// `None` until the first governance_policy is declared.
-    governance_policy: Option<cesr::Digest256>,
-    /// Number of events since the last evaluation (or since chain start).
-    events_since_evaluation: usize,
-    /// Version of the most recent governance evaluation (Evl or Rpr) on this
-    /// branch that passed both the governance check and the soft write_policy
-    /// check. `None` until the first authorized evaluation. Monotonically
-    /// advances (max) within a branch.
-    last_governance_version: Option<u64>,
-}
+//
+// `SadBranchTip` (from `event.rs`) is the per-branch state shared between this
+// verifier's runtime HashMap and the `SelVerification` token. KEL splits these
+// (`BranchState` / `BranchTip` in `kel/verification.rs`) because KEL's runtime
+// state holds derivable crypto values; SEL's per-branch state has nothing
+// derivable, so one type serves both roles.
 
 /// Streaming structural + policy verifier for SAD Event Logs.
 ///
@@ -84,7 +69,7 @@ pub struct SelVerifier {
     prefix: Option<cesr::Digest256>,
     topic: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
-    branches: HashMap<cesr::Digest256, SadBranchState>,
+    branches: HashMap<cesr::Digest256, SadBranchTip>,
     /// Events buffered for the current generation (same version).
     generation_buffer: Vec<SadEvent>,
     /// The version of the current buffered generation.
@@ -201,7 +186,7 @@ impl SelVerifier {
 
             self.branches.insert(
                 event.said,
-                SadBranchState {
+                SadBranchTip {
                     tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
@@ -237,7 +222,7 @@ impl SelVerifier {
             self.diverged_at_version = Some(version);
         }
 
-        let mut new_branches: HashMap<cesr::Digest256, SadBranchState> = HashMap::new();
+        let mut new_branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
 
         for event in &events {
             let previous = event.previous.as_ref().ok_or_else(|| {
@@ -397,7 +382,7 @@ impl SelVerifier {
 
             new_branches.insert(
                 event.said,
-                SadBranchState {
+                SadBranchTip {
                     tip: event.clone(),
                     tracked_write_policy,
                     governance_policy,
@@ -467,42 +452,17 @@ impl SelVerifier {
             ));
         }
 
-        // Chain-wide last_governance_version: min across tip branches' per-branch
-        // values. In divergent chains this is the weakest seal — if any branch
-        // has not advanced past version V, repair below V must still be allowed
-        // on that branch. `None` on any branch collapses the chain-wide value to
-        // `None` (no authorized evaluation on at least one branch).
-        let last_governance_version = self
-            .branches
-            .values()
-            .map(|b| b.last_governance_version)
-            .reduce(|acc, v| match (acc, v) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                _ => None,
-            })
-            .flatten();
-
-        // Deterministic tie-break: higher version wins; equal versions break
-        // on lexicographically greater SAID. Matters for divergent chains so
-        // `verification.write_policy()` is reproducible across callers.
-        let winning_branch = self
-            .branches
-            .into_values()
-            .max_by(|a, b| {
-                a.tip
-                    .version
-                    .cmp(&b.tip.version)
-                    .then_with(|| a.tip.said.as_ref().cmp(b.tip.said.as_ref()))
-            })
-            .ok_or_else(|| KelsError::VerificationFailed("No tip after verification".into()))?;
+        // Sort branches by tip SAID for deterministic ordering (KEL parity —
+        // `kel::verification.rs:branch_tips.sort_by_key(|a| a.tip.event.said)`).
+        // The tie-break winner is computed on demand by `SelVerification`
+        // accessors; storing all branches preserves the per-branch state that
+        // `SelVerifier::resume` rehydrates on a divergent chain.
+        let mut branches: Vec<SadBranchTip> = self.branches.into_values().collect();
+        branches.sort_by_key(|b| b.tip.said);
 
         Ok(super::event::SelVerification::new(
-            winning_branch.tip,
-            winning_branch.tracked_write_policy,
-            winning_branch.governance_policy,
-            winning_branch.events_since_evaluation,
+            branches,
             self.policy_satisfied,
-            last_governance_version,
             self.establishment_version,
             self.diverged_at_version,
         ))
@@ -510,56 +470,43 @@ impl SelVerifier {
 
     /// Resume a verifier from a prior verification token.
     ///
-    /// Rehydrates single-branch state (`tip`, `tracked_write_policy`, `governance_policy`,
-    /// `events_since_evaluation`, `last_governance_version`) plus chain-wide
-    /// `establishment_version` and `policy_satisfied`, so subsequent `verify_page`
-    /// calls continue from where the prior verification left off instead of
-    /// re-verifying from inception.
+    /// Rehydrates per-branch state for **every** branch the token carries, so
+    /// subsequent `verify_page` calls continue from where the prior verification
+    /// left off — including divergent chains, where both forks remain visible
+    /// in the verifier's `branches` HashMap and an extension of either branch
+    /// is correctly tracked.
     ///
-    /// Parallel to `KelVerifier::resume`.
-    ///
-    /// **Precondition: non-divergent tokens only.** `SelVerification` carries a
-    /// single tie-break winner, so a resumed verifier cannot reconstruct the
-    /// losing branch. If `verification.diverged_at_version().is_some()`, resume
-    /// returns `KelsError::CannotResumeDivergentChain` and the caller must
-    /// re-verify the chain from inception.
+    /// Symmetric to `KeyEventVerifier::resume`. The token's `branches()` slice
+    /// (length 1 for non-divergent, >1 for divergent) is rebuilt into the
+    /// verifier's keyed-by-tip-SAID HashMap; chain-wide signals
+    /// (`policy_satisfied`, `establishment_version`, `diverged_at_version`)
+    /// are carried through verbatim.
     pub fn resume(
         verification: &super::event::SelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,
     ) -> Result<Self, KelsError> {
-        if verification.diverged_at_version().is_some() {
-            return Err(KelsError::CannotResumeDivergentChain);
+        let mut branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
+        for branch in verification.branches() {
+            branches.insert(branch.tip.said, branch.clone());
         }
 
-        let tip = verification.current_event().clone();
-
-        // The chain's prefix is authoritative from the verification tip — no
-        // caller-supplied prefix. Subsequent `verify_page` calls get the same
-        // strict prefix check as a latched fresh verifier would.
-        let prefix = tip.prefix;
-
-        let mut branches = HashMap::new();
-        branches.insert(
-            tip.said,
-            SadBranchState {
-                tip: tip.clone(),
-                tracked_write_policy: *verification.write_policy(),
-                governance_policy: verification.governance_policy().copied(),
-                events_since_evaluation: verification.events_since_evaluation(),
-                last_governance_version: verification.last_governance_version(),
-            },
-        );
+        // Prefix and topic are authoritative from the verification — all
+        // branches share both (the verifier enforced this during the original
+        // pass). Subsequent `verify_page` calls get the same strict prefix
+        // check as a latched fresh verifier would.
+        let prefix = *verification.prefix();
+        let topic = verification.topic().to_string();
 
         Ok(Self {
             prefix: Some(prefix),
-            topic: Some(tip.topic.clone()),
+            topic: Some(topic),
             branches,
             generation_buffer: Vec::new(),
             current_generation_version: None,
             saw_any_events: true,
             policy_satisfied: verification.policy_satisfied(),
             establishment_version: verification.establishment_version(),
-            diverged_at_version: None,
+            diverged_at_version: verification.diverged_at_version(),
             checker,
         })
     }
@@ -1828,11 +1775,13 @@ mod tests {
         assert_eq!(verification.diverged_at_version(), Some(1));
     }
 
-    /// `SelVerifier::resume` must refuse tokens carrying a divergence marker.
-    /// The single-branch rehydration cannot reconstruct the losing branch, so
-    /// continuing from a divergent token would silently drop state.
+    /// `SelVerifier::resume` rehydrates per-branch state for both forks of a
+    /// divergent token. After resume the verifier carries the same `branches`
+    /// HashMap shape it had right before `finish` ran, and finishing again
+    /// produces a token whose `branches()` slice matches the input verbatim.
+    /// Symmetric to `KeyEventVerifier::resume`'s divergent-rehydration contract.
     #[tokio::test]
-    async fn test_resume_refuses_divergent_token() {
+    async fn resume_rehydrates_divergent_token() {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_with_evaluation(wp);
 
@@ -1853,16 +1802,91 @@ mod tests {
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
-            .verify_page(&[v0.clone(), v1_a, v1_b])
+            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
             .await
             .unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(verification.diverged_at_version().is_some());
+        let original = verifier.finish().await.unwrap();
+        assert_eq!(original.diverged_at_version(), Some(1));
+        assert_eq!(
+            original.branches().len(),
+            2,
+            "two-fork chain must produce two branches"
+        );
 
-        match SelVerifier::resume(&verification, Arc::clone(&checker)) {
-            Err(KelsError::CannotResumeDivergentChain) => {}
-            Err(e) => panic!("Expected CannotResumeDivergentChain, got: {e:?}"),
-            Ok(_) => panic!("Expected resume to refuse divergent token"),
-        }
+        // Resume — must accept the divergent token and rebuild both branches.
+        let resumed = SelVerifier::resume(&original, Arc::clone(&checker))
+            .expect("resume must accept divergent tokens after the round-6 parity rework");
+
+        // No new events: `finish` again should produce the same branches.
+        let round_tripped = resumed.finish().await.unwrap();
+        assert_eq!(round_tripped.branches().len(), 2);
+        assert_eq!(round_tripped.diverged_at_version(), Some(1));
+
+        let original_saids: std::collections::HashSet<_> =
+            original.branches().iter().map(|b| b.tip.said).collect();
+        let round_tripped_saids: std::collections::HashSet<_> = round_tripped
+            .branches()
+            .iter()
+            .map(|b| b.tip.said)
+            .collect();
+        assert_eq!(
+            original_saids, round_tripped_saids,
+            "resume + finish must preserve all branch tips by SAID"
+        );
+    }
+
+    /// `SelVerifier::resume` followed by extending one branch with a new event
+    /// keeps both branches visible — the unextended branch carries through
+    /// untouched, the extended branch advances to its new tip. Pins the
+    /// per-branch-state-survives-resume contract that the M1 deadlock relied
+    /// on for in-builder repair.
+    #[tokio::test]
+    async fn resume_then_extend_preserves_other_branch() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_evaluation(wp);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadEventKind::Upd;
+        v1_a.write_policy = None;
+        v1_a.governance_policy = None;
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadEventKind::Upd;
+        v1_b.write_policy = None;
+        v1_b.governance_policy = None;
+        v1_b.increment().unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier
+            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
+            .await
+            .unwrap();
+        let divergent = verifier.finish().await.unwrap();
+
+        // Resume and extend branch A only with a v2 Upd.
+        let mut v2_a = v1_a.clone();
+        v2_a.content = Some(test_digest(b"content_a2"));
+        v2_a.increment().unwrap();
+
+        let mut resumed = SelVerifier::resume(&divergent, Arc::clone(&checker)).unwrap();
+        resumed.verify_page(&[v2_a.clone()]).await.unwrap();
+        let extended = resumed.finish().await.unwrap();
+
+        // Branch A advances to v2_a; branch B (v1_b) stays.
+        assert_eq!(extended.branches().len(), 2);
+        let saids: std::collections::HashSet<_> =
+            extended.branches().iter().map(|b| b.tip.said).collect();
+        assert!(
+            saids.contains(&v2_a.said),
+            "branch A must have advanced to v2_a"
+        );
+        assert!(
+            saids.contains(&v1_b.said),
+            "branch B must remain at v1_b — resume preserved it"
+        );
     }
 }

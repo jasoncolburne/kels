@@ -6,8 +6,8 @@
 //! - Chain prefix: the stable identity reference
 //! - `write_policy`: the current policy's SAID (self-governing)
 
-use kels_core::{SadEvent, SadEventKind, SelVerification, compute_sad_event_prefix};
-use verifiable_storage::{Chained, SelfAddressed};
+use kels_core::{SadEvent, SelVerification, compute_sad_event_prefix};
+use verifiable_storage::SelfAddressed;
 
 use crate::{Policy, error::PolicyError};
 
@@ -80,17 +80,19 @@ pub fn advance(
         ));
     }
 
-    let mut event = verification.current_event().clone();
-    event.content = None;
-    event.custody = None;
-    event.kind = SadEventKind::Evl;
-    event.governance_policy = None;
-    event.write_policy = Some(new_policy.said);
-    event
-        .increment()
-        .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to increment event: {e}")))?;
-
-    Ok(event)
+    // Route through `SadEvent::evl` — the per-kind constructor runs
+    // `validate_structure` internally, so any future tightening of Evl's
+    // rules surfaces here at construction rather than at server-side
+    // verification. Identity chains carry no custody at any version (see
+    // `create` above), so the inherited custody is `None` and no explicit
+    // reset is needed.
+    SadEvent::evl(
+        verification.current_event(),
+        None,                  // content: identity chains carry none
+        Some(new_policy.said), // write_policy: the rotation
+        None,                  // governance_policy: not evolved on advance
+    )
+    .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create advance event: {e}")))
 }
 
 /// Compute the identity chain prefix for a given initial policy.
@@ -114,7 +116,8 @@ pub fn compute_identity_prefix(initial_policy: &Policy) -> Result<cesr::Digest25
 mod tests {
     use std::sync::Arc;
 
-    use kels_core::{KelsError, PolicyChecker, SadEventBuilder, SelVerifier};
+    use kels_core::{KelsError, PolicyChecker, SadEventBuilder, SadEventKind, SelVerifier};
+    use verifiable_storage::Chained;
 
     use super::*;
 

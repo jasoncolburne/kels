@@ -1229,7 +1229,6 @@ pub async fn submit_sad_events(
     let new_event_count;
     let should_publish;
     let mut diverged_at_version: Option<u64> = None;
-    let is_repair;
 
     {
         let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> =
@@ -1336,7 +1335,7 @@ pub async fn submit_sad_events(
         }
 
         // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
-        is_repair = new_events.iter().any(|r| r.kind.is_repair());
+        let is_repair = new_events.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
             // Query the evaluation seal before truncation — reject repairs behind the seal.

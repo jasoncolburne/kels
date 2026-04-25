@@ -389,16 +389,30 @@ impl SadEventBuilder {
     }
 
     /// Stage an `Rpr`. Serves as the evaluation proof at `from_version`.
-    /// For actually-divergent chains, repair requires branch-tip information
-    /// the verification token does not carry — callers in that case must
-    /// construct the repair event out of band.
+    ///
+    /// On non-divergent chains, extends the chain tip (preferring pending tail
+    /// over verified). On divergent chains, extends the **owner's branch tip**
+    /// — `branches().first()` of the verification, mirroring `KeyEventBuilder::recover`'s
+    /// branch-selection convention. This is the assumption that the local
+    /// verifier walked only the owner's submitted events; under
+    /// server-stamped divergence (Round 4 M1's mechanism) the cached token's
+    /// first branch is the owner's branch by construction.
+    ///
+    /// For pathological cases where the verifier was hydrated against a
+    /// multi-branch server-side view via `with_prefix` and `branches().first()`
+    /// is not the branch the caller wants to repair from, callers must
+    /// construct the repair event out of band and submit via
+    /// `SadStoreClient::submit_sad_events` directly.
+    ///
+    /// Bypasses `require_non_divergent` — repair is the explicit recovery path
+    /// from divergent state, symmetric to KEL's `recover` / `contest`.
     pub fn repair(
         &mut self,
         content: Option<cesr::Digest256>,
     ) -> Result<cesr::Digest256, KelsError> {
         self.require_established()?;
 
-        let event = SadEvent::rpr(self.current_tip()?, content)?;
+        let event = SadEvent::rpr(self.owner_branch_tip()?, content)?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -450,13 +464,19 @@ impl SadEventBuilder {
     /// populated and `sad_verification` is stale. The caller cannot tell
     /// these apart from the `Err` alone.
     ///
-    /// **Always retry on error rather than discarding pending.** All three
+    /// **Retry transient errors rather than discarding pending.** All three
     /// phases are idempotent: `submit_sad_events` deduplicates by SAID,
-    /// `sad_store.store` overwrites under the same key, and
-    /// `absorb_pending` re-verifies from current server state. A retry
-    /// after a phase-1 failure resubmits cleanly; a retry after a phase-2
-    /// or phase-3 failure no-ops on the server side and converges the
-    /// builder's local view.
+    /// `sad_store.store` overwrites under the same key, and `absorb_pending`
+    /// re-verifies from current server state. A retry after a phase-1
+    /// failure resubmits cleanly; a retry after a phase-2 or phase-3
+    /// failure no-ops on the server side and converges the builder's
+    /// local view.
+    ///
+    /// Structural errors that survive retry (e.g., a verifier-internal
+    /// invariant violation that fires identically on every attempt) are
+    /// bugs — file an issue rather than retrying indefinitely. The
+    /// round-6 parity rework removed the previous `CannotResumeDivergentChain`
+    /// deadlock by teaching `SelVerifier::resume` to accept divergent tokens.
     ///
     /// **Divergence signal.** The server's `submit_sad_events` response
     /// carries `diverged_at: Option<u64>` — populated when a concurrent
@@ -563,6 +583,27 @@ impl SadEventBuilder {
 
     fn current_tip(&self) -> Result<&SadEvent, KelsError> {
         self.last_event().ok_or(KelsError::NotIncepted)
+    }
+
+    /// Tip of the **owner's branch** — pending tail if any, otherwise
+    /// `branches().first().tip` from the verification. Mirrors
+    /// `KeyEventBuilder::get_owner_tail` (`builder.rs:622-631`).
+    ///
+    /// On non-divergent chains this is identical to `current_tip` (one
+    /// branch). On divergent chains the verification carries multiple branches;
+    /// the convention is "owner is `branches().first()`" — correct under the
+    /// Round 4 M1 server-stamped-divergence flow where the local verifier
+    /// only walked the owner's submitted events. Callers needing a different
+    /// branch must construct the repair event out of band.
+    fn owner_branch_tip(&self) -> Result<&SadEvent, KelsError> {
+        if let Some(last) = self.pending_events.last() {
+            return Ok(last);
+        }
+        self.sad_verification
+            .as_ref()
+            .and_then(|v| v.branches().first())
+            .map(|b| &b.tip)
+            .ok_or(KelsError::NotIncepted)
     }
 
     /// Fold pending events into verified state via `SelVerifier::resume`.
@@ -882,49 +923,44 @@ mod tests {
         }
     }
 
-    /// A builder whose cached `sad_verification` came from a divergent chain
-    /// must surface `CannotResumeDivergentChain` when `absorb_pending` fires.
-    /// Integration-level guard for `flush`: `flush` calls `submit_sad_events`
-    /// → `sad_store.store` → `absorb_pending`, and `absorb_pending` is where
-    /// the verifier resume happens. Exercising it directly proves the error
-    /// propagates without needing a live server in the unit harness.
+    /// A builder whose cached `sad_verification` is divergent can flush a
+    /// staged repair through `absorb_pending` — the round-6 parity rework made
+    /// `SelVerifier::resume` accept divergent tokens and rehydrate per-branch
+    /// state, so the prior `CannotResumeDivergentChain` deadlock is gone.
+    /// `repair` extends the owner's branch tip (`branches().first()`); the
+    /// resulting Rpr verifies cleanly against the rehydrated branch state.
     #[tokio::test]
-    async fn absorb_pending_errors_on_divergent_cached_verification() {
-        use crate::types::SelVerifier;
-
-        // Hand-build a divergent chain: v0 Icp (with governance) → two v1 Upd
-        // extending the same tip. Verify it to get a SelVerification that
-        // carries `diverged_at_version = Some(1)`.
-        let wp = test_digest(b"wp");
-        let gp = test_digest(b"gp");
-        let v0 = SadEvent::icp(TEST_TOPIC, wp, Some(gp)).unwrap();
-        let v1_a = SadEvent::upd(&v0, test_digest(b"content_a")).unwrap();
-        let v1_b = SadEvent::upd(&v0, test_digest(b"content_b")).unwrap();
+    async fn absorb_pending_succeeds_on_divergent_cached_verification() {
+        let (divergent, _v0) = build_divergent_token().await;
+        assert!(
+            divergent.diverged_at_version().is_some(),
+            "fixture invariant: builder seed must carry divergence"
+        );
 
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
-        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
-        verifier
-            .verify_page(&[v0.clone(), v1_a.clone(), v1_b])
-            .await
-            .unwrap();
-        let divergent = verifier.finish().await.unwrap();
-        assert!(divergent.diverged_at_version().is_some());
-
-        // Seed a builder with the divergent token and queue a pending event so
-        // absorb_pending's early-return-on-empty doesn't short-circuit. The
-        // checker stored on the builder is what absorb_pending hands to
-        // SelVerifier::resume.
         let mut b = SadEventBuilder::new(None, None, Some(Arc::clone(&checker)));
         b.sad_verification = Some(divergent);
 
-        let pending = SadEvent::upd(&v1_a, test_digest(b"content_a2")).unwrap();
-        b.pending_events.push(pending);
+        // Stage a repair against the owner's branch (branches().first()). The
+        // gate at `require_non_divergent` is bypassed by `repair` intentionally
+        // — repair is the divergent-recovery path.
+        b.repair(Some(test_digest(b"repaired-content")))
+            .expect("repair stages on divergent cached verification");
+        assert_eq!(b.pending_events().len(), 1);
 
-        let err = b.absorb_pending().await.unwrap_err();
-        assert!(
-            matches!(err, KelsError::CannotResumeDivergentChain),
-            "Expected CannotResumeDivergentChain, got: {err:?}"
-        );
+        // Pre-round-6 this errored with `CannotResumeDivergentChain`. Now it
+        // succeeds: the verifier rehydrates both branches, accepts the Rpr as
+        // an extension of the owner's branch, and produces a fresh token.
+        b.absorb_pending()
+            .await
+            .expect("absorb_pending must succeed on divergent cached verification + repair");
+
+        // After absorb: pending cleared, verification updated to reflect the
+        // post-repair state (still divergent at the locally-tracked level —
+        // the local verifier saw the original fork, the Rpr extended one
+        // branch but didn't archive the other).
+        assert!(b.pending_events().is_empty());
+        assert!(b.sad_verification().is_some());
     }
 
     /// Resume round-trip: verify a chain from scratch, then resume from the

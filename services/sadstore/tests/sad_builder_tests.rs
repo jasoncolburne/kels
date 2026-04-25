@@ -679,3 +679,147 @@ async fn submit_dedup_returns_current_divergence_signal() {
          not unconditional None"
     );
 }
+
+/// Owner can repair a divergent chain through `SadEventBuilder::flush` —
+/// pre-round-6 this deadlocked because `SelVerifier::resume` refused divergent
+/// tokens, so `absorb_pending` errored after the server had already accepted
+/// the repair. The round-6 parity rework made `SelVerification` carry
+/// per-branch state and `SelVerifier::resume` rehydrate divergent tokens, so
+/// the in-builder flush flow now works end-to-end on divergent chains.
+///
+/// **What this test pins.** The M1 finding's specific failure mode was
+/// `KelsError::CannotResumeDivergentChain` returned from `absorb_pending`
+/// after a successful submit — leaving the builder structurally stuck. The
+/// fix-contract is: flush against a divergent cached verification succeeds,
+/// `applied: true`, `pending_events` is cleared, and a retry would be a no-op
+/// rather than a permanent error.
+///
+/// **Divergence resolution is a separate concern.** The high-level
+/// `repair` stager on `SadEventBuilder` extends the owner's branch tip
+/// (`branches().first()` of the verification). For a chain divergent at v2,
+/// this produces an Rpr at v3 — which the server's `is_repair` path inserts
+/// without archiving the v2 fork (truncation operates at version >=
+/// `from_version`, and `from_version` derives from the Rpr's version).
+/// True divergence resolution requires constructing the Rpr at the
+/// divergence version with `previous` pointing to the v(divergence-1) tip;
+/// callers needing that build it out-of-builder via direct
+/// `SadStoreClient::submit_sad_events`. See `repair_tests.rs::build_replacement`
+/// for the divergence-resolving shape.
+#[tokio::test]
+#[serial]
+async fn flush_repair_on_divergent_chain_succeeds() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let (_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_policy(harness, "divergent-repair").await;
+    let publication_said = upload_publication(&sad_client, "divergent-repair").await;
+
+    // Stage v0 Icp + v1 Est via the builder, anchor + flush.
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy.clone());
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let (icp_said, est_said) = builder
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    kel_builder.interact(&est_said).await.unwrap();
+    let _ = builder.flush().await.expect("initial flush succeeds");
+
+    // Hand-build two conflicting v2 Upd events bypassing the (single-actor) builder.
+    let v1_event = builder
+        .sad_verification()
+        .expect("verified after initial flush")
+        .current_event()
+        .clone();
+    let content_a = upload_publication(&sad_client, "divergent-repair-a").await;
+    let content_b = upload_publication(&sad_client, "divergent-repair-b").await;
+    let v2_a = SadEvent::upd(&v1_event, content_a).unwrap();
+    let v2_b = SadEvent::upd(&v1_event, content_b).unwrap();
+    kel_builder.interact(&v2_a.said).await.unwrap();
+    kel_builder.interact(&v2_b.said).await.unwrap();
+
+    // Submit both forks to create server-side divergence.
+    let r_a = sad_client
+        .submit_sad_events(std::slice::from_ref(&v2_a))
+        .await
+        .expect("first fork accepted");
+    assert!(r_a.applied);
+    let r_b = sad_client
+        .submit_sad_events(std::slice::from_ref(&v2_b))
+        .await
+        .expect("second fork accepted, chain becomes divergent");
+    assert!(r_b.applied);
+    assert_eq!(r_b.diverged_at, Some(2));
+
+    // Confirm server-side divergence via the effective-SAID endpoint.
+    let sel_prefix = compute_sad_event_prefix(policy_said, TEST_TOPIC).unwrap();
+    let (_, divergent_before) = sad_client
+        .fetch_sel_effective_said(&sel_prefix)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        divergent_before,
+        "fixture invariant: chain must be divergent server-side before repair"
+    );
+
+    // Fresh builder hydrating from the divergent server. `with_prefix` issues
+    // `verify_sad_events`, which walks both branches and produces a token with
+    // `branches().len() == 2`. The repair stager extends `branches().first()`
+    // (the deterministic owner-branch convention).
+    let checker2 = build_checker(harness, policy);
+    let mut repair_builder =
+        SadEventBuilder::with_prefix(Some(sad_client.clone()), None, Some(checker2), &sel_prefix)
+            .await
+            .expect("with_prefix hydrates divergent chain");
+
+    let hydrated = repair_builder
+        .sad_verification()
+        .expect("hydrated verification present");
+    assert_eq!(
+        hydrated.branches().len(),
+        2,
+        "hydration must preserve both branches post-round-6"
+    );
+    assert_eq!(hydrated.diverged_at_version(), Some(2));
+
+    // Stage the repair. Rpr at v3 extends the owner's branch tip
+    // (branches().first()). The repair stager bypasses require_non_divergent
+    // intentionally — repair is the recovery path.
+    let repaired_content = upload_publication(&sad_client, "divergent-repair-c").await;
+    let rpr_said = repair_builder
+        .repair(Some(repaired_content))
+        .expect("repair stages on divergent hydrated chain");
+
+    // Anchor the Rpr and flush. Pre-round-6 this would error with
+    // `CannotResumeDivergentChain` in absorb_pending and leave the builder
+    // structurally stuck. Post-fix: flush succeeds end-to-end.
+    kel_builder.interact(&rpr_said).await.unwrap();
+    let outcome = repair_builder
+        .flush()
+        .await
+        .expect("flush of divergent-chain repair must succeed post-round-6");
+    assert!(
+        outcome.applied,
+        "repair must commit server-side (the M1 deadlock blocked exactly this)"
+    );
+
+    // Builder-side: pending cleared (the absorb-pending step succeeded post-fix).
+    assert!(
+        repair_builder.pending_events().is_empty(),
+        "pending must clear after successful flush — proves absorb_pending didn't deadlock"
+    );
+
+    // Builder-side: a follow-up flush is a no-op (idempotent, no error). Pre-fix
+    // this would still fail with CannotResumeDivergentChain on every retry.
+    let outcome2 = repair_builder
+        .flush()
+        .await
+        .expect("idempotent retry must succeed, not deadlock");
+    assert!(
+        !outcome2.applied,
+        "second flush has no pending events to commit"
+    );
+}

@@ -161,13 +161,17 @@ pub struct SadEvent {
 /// Anyone can call this offline — no server needed. The prefix is derived from
 /// the v0 inception event content (with said+prefix as placeholders), which
 /// contains only deterministic fields.
+///
+/// Routes through `SadEvent::icp` so prefix derivation and v0 staging share
+/// exactly the same structural-validation gate — a future tightening of Icp's
+/// rules surfaces uniformly across both paths. The cost is one extra Blake3
+/// hash (the SAID derivation, whose result we discard) plus `validate_structure`.
+/// If profiling later shows this on a hot path (e.g., bulk identity-chain
+/// lookup), factor a private prefix-only helper that `SadEvent::icp` also calls.
 pub fn compute_sad_event_prefix(
     write_policy: cesr::Digest256,
     topic: impl Into<String>,
 ) -> Result<cesr::Digest256, KelsError> {
-    // Delegate to `SadEvent::icp` so prefix derivation and v0 staging share
-    // exactly the same structural-validation gate. A future tightening of
-    // Icp's rules surfaces uniformly across both paths.
     Ok(SadEvent::icp(topic, write_policy, None)?.prefix)
 }
 
@@ -363,64 +367,126 @@ impl SadEvent {
     }
 }
 
+/// A verified SEL branch endpoint: tip event plus the per-branch state that
+/// drives policy authorization on extension.
+///
+/// For non-divergent chains there is exactly one `SadBranchTip`; for divergent
+/// chains there is one per branch. Mirrors `kel::BranchTip` (`lib/kels/src/types/kel/verification.rs`)
+/// — the shape that lets `SelVerifier::resume` rehydrate full per-branch state
+/// rather than collapsing to a tie-break winner.
+///
+/// Unlike KEL's split between runtime `BranchState` and serialized `BranchTip`,
+/// SEL's per-branch state has no derivable-at-resume crypto — `tracked_write_policy`
+/// is set by `Icp` and advanced by authorized `Evl`s, `events_since_evaluation`
+/// is a counter, etc. So one type serves both the verifier's runtime HashMap
+/// and the verification token.
+#[derive(Debug, Clone)]
+pub struct SadBranchTip {
+    /// The chain head — latest event on this branch.
+    pub tip: SadEvent,
+    /// The effective write_policy for this branch. Seeded from v0 (`Icp` always
+    /// has `write_policy`) and updated when an `Evl` carries a new `write_policy`
+    /// *and* the evolution was authorized by the previous policy.
+    pub tracked_write_policy: cesr::Digest256,
+    /// The governance_policy SAID tracked on this branch. `None` until first
+    /// declared (via `Icp` at v0 or `Est` at v1).
+    pub governance_policy: Option<cesr::Digest256>,
+    /// Number of non-evaluation events on this branch since the last
+    /// authorized governance evaluation (or since chain start if none).
+    pub events_since_evaluation: usize,
+    /// Version of the most recent governance evaluation (`Evl` or `Rpr`) on
+    /// this branch that passed both the governance check and the soft
+    /// write_policy check. `None` until the first authorized evaluation.
+    pub last_governance_version: Option<u64>,
+}
+
 /// Proof-of-verification token for a SAD Event Log.
 ///
 /// Cannot be constructed outside this crate — only via `SelVerifier`.
 /// Having a `SelVerification` proves the chain was fully verified
 /// (structural integrity and policy authorization checked).
+///
+/// Carries per-branch state in `branches` so `SelVerifier::resume` can
+/// rehydrate divergent chains symmetrically with `KeyEventVerifier::resume`.
+/// Most accessors (`current_event`, `write_policy`, `governance_policy`,
+/// `events_since_evaluation`, `last_governance_version`) return values from
+/// the **tie-break winner** (higher version, then lexicographically greater
+/// SAID), which is the right answer for non-divergent chains and a
+/// deterministic-but-branch-scoped answer on divergent ones. Consumers needing
+/// chain-wide invariants on divergent state should iterate `branches()`.
 #[derive(Debug, Clone)]
 pub struct SelVerification {
-    tip: SadEvent,
-    tracked_write_policy: cesr::Digest256,
-    governance_policy: Option<cesr::Digest256>,
-    events_since_evaluation: usize,
+    /// All verified branch endpoints, sorted by tip SAID. Length 1 for
+    /// non-divergent chains. Never empty (the verifier rejects empty chains
+    /// at `finish` time).
+    branches: Vec<SadBranchTip>,
     policy_satisfied: bool,
-    last_governance_version: Option<u64>,
     establishment_version: Option<u64>,
     diverged_at_version: Option<u64>,
 }
 
 impl SelVerification {
     /// Create a new verification token. Crate-internal only.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        tip: SadEvent,
-        tracked_write_policy: cesr::Digest256,
-        governance_policy: Option<cesr::Digest256>,
-        events_since_evaluation: usize,
+        branches: Vec<SadBranchTip>,
         policy_satisfied: bool,
-        last_governance_version: Option<u64>,
         establishment_version: Option<u64>,
         diverged_at_version: Option<u64>,
     ) -> Self {
         Self {
-            tip,
-            tracked_write_policy,
-            governance_policy,
-            events_since_evaluation,
+            branches,
             policy_satisfied,
-            last_governance_version,
             establishment_version,
             diverged_at_version,
         }
     }
 
-    /// The latest verified event in the chain.
+    /// The tie-break winner across all verified branches: higher version wins,
+    /// then lexicographically greater SAID. Reproducible across callers.
+    ///
+    /// Invariant: `branches` is non-empty (constructor's only caller is
+    /// `SelVerifier::finish`, which rejects empty chains before calling here).
+    fn winning_branch(&self) -> &SadBranchTip {
+        #[allow(clippy::expect_used)]
+        // SelVerification invariant: at least one branch — enforced by SelVerifier::finish.
+        self.branches
+            .iter()
+            .max_by(|a, b| {
+                a.tip
+                    .version
+                    .cmp(&b.tip.version)
+                    .then_with(|| a.tip.said.as_ref().cmp(b.tip.said.as_ref()))
+            })
+            .expect("SelVerification invariant: branches is non-empty")
+    }
+
+    /// All verified branch endpoints. Sorted by tip SAID for deterministic
+    /// ordering. Length 1 on non-divergent chains; >1 on divergent.
+    ///
+    /// Used by `SadEventBuilder` to identify the owner's branch tip for
+    /// in-builder repair, and by `SelVerifier::resume` to rehydrate per-branch
+    /// state without collapsing to a tie-break winner.
+    pub fn branches(&self) -> &[SadBranchTip] {
+        &self.branches
+    }
+
+    /// The latest verified event on the tie-break winner's branch.
     pub fn current_event(&self) -> &SadEvent {
-        &self.tip
+        &self.winning_branch().tip
     }
 
-    /// The SAID of the content object referenced by the current event.
+    /// The SAID of the content object referenced by the winning branch's tip.
     pub fn current_content(&self) -> Option<&cesr::Digest256> {
-        self.tip.content.as_ref()
+        self.winning_branch().tip.content.as_ref()
     }
 
-    /// The SEL prefix.
+    /// The SEL prefix. All branches share the same prefix (the verifier
+    /// enforces this); returning the winner's is unambiguous.
     pub fn prefix(&self) -> &cesr::Digest256 {
-        &self.tip.prefix
+        &self.winning_branch().tip.prefix
     }
 
-    /// The tracked (effective) write policy SAID for the verified chain.
+    /// The tracked (effective) write policy SAID on the tie-break winner's branch.
     ///
     /// Seeded by v0 (Icp) and updated whenever an Evl event carries a new
     /// write_policy *and* the evolution was authorized by the previous policy.
@@ -432,34 +498,33 @@ impl SelVerification {
     /// state (higher version wins; equal versions break on lexicographically
     /// greater SAID). Divergent branches may legitimately carry different
     /// tracked policies, so callers that depend on chain-wide invariants
-    /// should detect divergence via `effective_said` before consulting this.
+    /// should iterate `branches()` directly.
     pub fn write_policy(&self) -> &cesr::Digest256 {
-        &self.tracked_write_policy
+        &self.winning_branch().tracked_write_policy
     }
 
-    /// The event topic.
+    /// The event topic. All branches share the same topic.
     pub fn topic(&self) -> &str {
-        &self.tip.topic
+        &self.winning_branch().tip.topic
     }
 
-    /// The tracked governance_policy SAID on the winning branch, if established.
+    /// The tracked governance_policy SAID on the tie-break winner's branch, if established.
     ///
     /// `None` until an `Icp` with governance_policy or an `Est` at v1 establishes it.
     /// For divergent chains where branches legitimately carry different governance
     /// policies, this reflects only the tie-break winner — gate on `policy_satisfied()`
     /// before relying on a chain-wide interpretation.
     pub fn governance_policy(&self) -> Option<&cesr::Digest256> {
-        self.governance_policy.as_ref()
+        self.winning_branch().governance_policy.as_ref()
     }
 
     /// Number of non-evaluation events on the winning branch since the last
     /// governance evaluation (Evl or Rpr), or since chain start if none.
     ///
     /// Used by builder-side enforcement of `MAX_NON_EVALUATION_EVENTS` before
-    /// staging an `Upd`. Caller needs the bound-comparison value, not the
-    /// policy-level semantics.
+    /// staging an `Upd`.
     pub fn events_since_evaluation(&self) -> usize {
-        self.events_since_evaluation
+        self.winning_branch().events_since_evaluation
     }
 
     /// Whether all write_policy checks were satisfied during verification.
@@ -467,10 +532,18 @@ impl SelVerification {
         self.policy_satisfied
     }
 
-    /// The version of the most recent governance evaluation, if any.
-    /// Versions at or before this are sealed by governance_policy.
+    /// The version of the most recent governance evaluation on the tie-break
+    /// winner's branch, if any. Versions at or before this are sealed by
+    /// governance_policy on that branch.
+    ///
+    /// Branch-scoped (winner's value), unlike `establishment_version` which is
+    /// chain-wide. Consumers needing the chain-wide weakest-seal must iterate
+    /// `branches()` and reduce. In practice the SADStore handler's
+    /// `save_batch` only consults this on linear chains (the divergence check
+    /// rejects appends to multi-branch chains), so winner's value coincides
+    /// with the chain-wide value.
     pub fn last_governance_version(&self) -> Option<u64> {
-        self.last_governance_version
+        self.winning_branch().last_governance_version
     }
 
     /// The version at which governance_policy was established (v0 if Icp declared it, v1 if Est).
@@ -492,11 +565,11 @@ impl SelVerification {
     /// The lowest version at which divergence was first observed, or `None` on
     /// linear chains. Mirrors `KelVerification::diverged_at_serial()`.
     ///
-    /// Consumers should treat `Some(_)` as a hard signal that the chain has
-    /// multiple live tips and that branch-scoped accessors (`write_policy`,
-    /// `governance_policy`, `events_since_evaluation`) reflect only the
-    /// tie-break winner. `SelVerifier::resume` refuses divergent tokens — the
-    /// single-branch rehydration cannot reconstruct the losing branch.
+    /// `Some(_)` indicates the chain has multiple live tips. Branch-scoped
+    /// accessors (`write_policy`, `governance_policy`, `events_since_evaluation`,
+    /// `last_governance_version`) reflect only the tie-break winner; iterate
+    /// `branches()` for the full picture. `SelVerifier::resume` accepts
+    /// divergent tokens and rehydrates full per-branch state.
     pub fn diverged_at_version(&self) -> Option<u64> {
         self.diverged_at_version
     }
