@@ -680,34 +680,22 @@ async fn submit_dedup_returns_current_divergence_signal() {
     );
 }
 
-/// Owner can repair a divergent chain through `SadEventBuilder::flush` —
-/// pre-round-6 this deadlocked because `SelVerifier::resume` refused divergent
-/// tokens, so `absorb_pending` errored after the server had already accepted
-/// the repair. The round-6 parity rework made `SelVerification` carry
-/// per-branch state and `SelVerifier::resume` rehydrate divergent tokens, so
-/// the in-builder flush flow now works end-to-end on divergent chains.
+/// `SadEventBuilder::flush` heals a divergent chain end-to-end: walks back to
+/// the divergence boundary via the local `sad_store`, stages an Rpr at
+/// version `d` with `previous = v(d-1).said`, submits, and re-hydrates the
+/// local token from the post-truncation server state. After the flush,
+/// `effective_said` reports `divergent: false` server-side.
 ///
-/// **What this test pins.** The M1 finding's specific failure mode was
-/// `KelsError::CannotResumeDivergentChain` returned from `absorb_pending`
-/// after a successful submit — leaving the builder structurally stuck. The
-/// fix-contract is: flush against a divergent cached verification succeeds,
-/// `applied: true`, `pending_events` is cleared, and a retry would be a no-op
-/// rather than a permanent error.
-///
-/// **Divergence resolution is a separate concern.** The high-level
-/// `repair` stager on `SadEventBuilder` extends the owner's branch tip
-/// (`branches().first()` of the verification). For a chain divergent at v2,
-/// this produces an Rpr at v3 — which the server's `is_repair` path inserts
-/// without archiving the v2 fork (truncation operates at version >=
-/// `from_version`, and `from_version` derives from the Rpr's version).
-/// True divergence resolution requires constructing the Rpr at the
-/// divergence version with `previous` pointing to the v(divergence-1) tip;
-/// callers needing that build it out-of-builder via direct
-/// `SadStoreClient::submit_sad_events`. See `repair_tests.rs::build_replacement`
-/// for the divergence-resolving shape.
+/// Pre-M1-followup, the high-level repair stager built Rpr at `owner_tip+1`,
+/// so the server's `is_repair` truncation ran at `from_version = owner_tip+1`
+/// — past the divergence point — and the chain stayed divergent. The
+/// M1-followup walk-back (`SadEventBuilder::repair` Case A) constructs the
+/// Rpr at the truncation boundary so divergence is actually resolved.
 #[tokio::test]
 #[serial]
-async fn flush_repair_on_divergent_chain_succeeds() {
+async fn flush_repair_heals_divergent_chain() {
+    use std::sync::Arc;
+
     let Some(harness) = get_harness().await else {
         return;
     };
@@ -716,10 +704,18 @@ async fn flush_repair_on_divergent_chain_succeeds() {
         setup_kel_and_policy(harness, "divergent-repair").await;
     let publication_said = upload_publication(&sad_client, "divergent-repair").await;
 
-    // Stage v0 Icp + v1 Est via the builder, anchor + flush.
+    // First flush uses a shared `InMemorySadStore`. The store ends up holding
+    // owner's v0 and v1 (the events the first builder authored), which the
+    // repair builder's walk-back will use to find the divergence boundary.
+    let owner_store: Arc<dyn kels_core::SadStore> = Arc::new(kels_core::InMemorySadStore::new());
+
     let policy_said = policy.said;
     let checker = build_checker(harness, policy.clone());
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let mut builder = SadEventBuilder::new(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker),
+    );
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
@@ -765,15 +761,23 @@ async fn flush_repair_on_divergent_chain_succeeds() {
         "fixture invariant: chain must be divergent server-side before repair"
     );
 
-    // Fresh builder hydrating from the divergent server. `with_prefix` issues
-    // `verify_sad_events`, which walks both branches and produces a token with
-    // `branches().len() == 2`. The repair stager extends `branches().first()`
-    // (the deterministic owner-branch convention).
+    // Fresh builder hydrating from the divergent server, sharing the
+    // `owner_store` populated by the initial flush. `with_prefix` issues
+    // `verify_sad_events`, which walks both branches and produces a token
+    // with `branches().len() == 2`. The repair stager walks back from
+    // `branches().first().tip` (one of v2_a/v2_b — both fork from v1) via
+    // `previous` SAIDs through `owner_store` until it finds v1, then builds
+    // Rpr at version 2 with `previous = v1.said`. Server's `is_repair` path
+    // archives both v2_a and v2_b and inserts the Rpr — chain becomes linear.
     let checker2 = build_checker(harness, policy);
-    let mut repair_builder =
-        SadEventBuilder::with_prefix(Some(sad_client.clone()), None, Some(checker2), &sel_prefix)
-            .await
-            .expect("with_prefix hydrates divergent chain");
+    let mut repair_builder = SadEventBuilder::with_prefix(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker2),
+        &sel_prefix,
+    )
+    .await
+    .expect("with_prefix hydrates divergent chain");
 
     let hydrated = repair_builder
         .sad_verification()
@@ -785,41 +789,231 @@ async fn flush_repair_on_divergent_chain_succeeds() {
     );
     assert_eq!(hydrated.diverged_at_version(), Some(2));
 
-    // Stage the repair. Rpr at v3 extends the owner's branch tip
-    // (branches().first()). The repair stager bypasses require_non_divergent
-    // intentionally — repair is the recovery path.
+    // Stage the repair — walks back to v1, builds Rpr at v2 with previous=v1.said.
     let repaired_content = upload_publication(&sad_client, "divergent-repair-c").await;
     let rpr_said = repair_builder
         .repair(Some(repaired_content))
+        .await
         .expect("repair stages on divergent hydrated chain");
 
-    // Anchor the Rpr and flush. Pre-round-6 this would error with
-    // `CannotResumeDivergentChain` in absorb_pending and leave the builder
-    // structurally stuck. Post-fix: flush succeeds end-to-end.
+    // Sanity-check the boundary: the staged Rpr must be at the divergence
+    // version (v2), not at owner_tip+1 (v3). This is the M1-followup
+    // contract — pre-fix the high-level repair built at v3.
+    let staged = repair_builder.pending_events().last().unwrap();
+    assert_eq!(staged.said, rpr_said);
+    assert_eq!(
+        staged.version, 2,
+        "M1-followup contract: Rpr at divergence version (v2), not at owner_tip+1 (v3)"
+    );
+    assert_eq!(
+        staged.previous,
+        Some(v1_event.said),
+        "Rpr's previous = v1 (the v(d-1) tip shared by both branches)"
+    );
+
+    // Anchor the Rpr and flush. Server's is_repair path runs at from_version=2,
+    // archives both v2_a and v2_b, inserts the Rpr. Builder re-hydrates from
+    // the post-truncation linear chain.
     kel_builder.interact(&rpr_said).await.unwrap();
     let outcome = repair_builder
         .flush()
         .await
-        .expect("flush of divergent-chain repair must succeed post-round-6");
+        .expect("flush of divergent-chain repair must succeed");
+    assert!(outcome.applied, "repair must commit server-side");
+
+    // Server-side: chain is now LINEAR — the M1-followup contract.
+    let (_, divergent_after) = sad_client
+        .fetch_sel_effective_said(&sel_prefix)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        outcome.applied,
-        "repair must commit server-side (the M1 deadlock blocked exactly this)"
+        !divergent_after,
+        "M1-followup contract: server-side chain must be linear after repair flush"
     );
 
-    // Builder-side: pending cleared (the absorb-pending step succeeded post-fix).
-    assert!(
-        repair_builder.pending_events().is_empty(),
-        "pending must clear after successful flush — proves absorb_pending didn't deadlock"
+    // Builder-side: pending cleared, post-truncation server state hydrated.
+    assert!(repair_builder.pending_events().is_empty());
+    let post_repair = repair_builder
+        .sad_verification()
+        .expect("verification re-hydrated post-flush");
+    assert_eq!(
+        post_repair.branches().len(),
+        1,
+        "post-truncation server chain has a single branch — local token reflects it"
+    );
+    assert_eq!(post_repair.diverged_at_version(), None);
+    assert_eq!(
+        post_repair.current_event().said,
+        rpr_said,
+        "current event is the freshly-committed Rpr"
     );
 
-    // Builder-side: a follow-up flush is a no-op (idempotent, no error). Pre-fix
-    // this would still fail with CannotResumeDivergentChain on every retry.
+    // Idempotent retry: a follow-up flush with no pending events is a no-op.
     let outcome2 = repair_builder
         .flush()
         .await
-        .expect("idempotent retry must succeed, not deadlock");
-    assert!(
-        !outcome2.applied,
-        "second flush has no pending events to commit"
+        .expect("idempotent retry must succeed");
+    assert!(!outcome2.applied);
+}
+
+/// `SadEventBuilder::flush` heals an adversarially-extended linear chain
+/// end-to-end via the page-fetch + in-memory walk: paginated
+/// `fetch_sad_events` pulls the chain segment into memory, the walk
+/// traverses adversary's `previous` links there, probes `sad_store` for the
+/// owner-authored boundary, builds Rpr at `v(K+1)` with `previous = vK.said`.
+/// Multi-step adversary extension (T-K > 1) — pre-followup-extension this
+/// would error with `InvalidKel` because the single-step probe hit a miss
+/// and couldn't continue without adversary's intermediate events.
+#[tokio::test]
+#[serial]
+async fn flush_repair_heals_adversarially_extended_chain() {
+    use std::sync::Arc;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let (_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_policy(harness, "adversary-extension").await;
+    let publication_said = upload_publication(&sad_client, "adversary-extension").await;
+
+    // Owner uses a shared sad_store from the start so v0/v1 land in it.
+    let owner_store: Arc<dyn kels_core::SadStore> = Arc::new(kels_core::InMemorySadStore::new());
+
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy.clone());
+    let mut builder = SadEventBuilder::new(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker),
     );
+    let (icp_said, est_said) = builder
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    kel_builder.interact(&est_said).await.unwrap();
+    let _ = builder.flush().await.expect("initial flush succeeds");
+
+    // Owner's authoritative tip is v1 (the Est). vK = v1.
+    let v1_event = builder
+        .sad_verification()
+        .expect("verified after initial flush")
+        .current_event()
+        .clone();
+    assert_eq!(v1_event.version, 1);
+
+    // Adversary extends the chain by THREE Upd events bypassing the (single-actor)
+    // builder. T - K = 3 — pre-followup-extension the walk would error.
+    let mut adv_prev = v1_event.clone();
+    let mut adv_events = Vec::new();
+    for i in 0..3 {
+        let content = upload_publication(&sad_client, &format!("adversary-extension-{}", i)).await;
+        let event = SadEvent::upd(&adv_prev, content).unwrap();
+        kel_builder.interact(&event.said).await.unwrap();
+        let r = sad_client
+            .submit_sad_events(std::slice::from_ref(&event))
+            .await
+            .expect("adversary submit accepted");
+        assert!(r.applied);
+        assert_eq!(r.diverged_at, None, "linear extension; no divergence");
+        adv_prev = event.clone();
+        adv_events.push(event);
+    }
+    let v_t = adv_events.last().unwrap().clone();
+    assert_eq!(v_t.version, 4, "T = K + 3 = 1 + 3 = 4");
+
+    // Sanity: server-side chain is linear (no divergence).
+    let sel_prefix = compute_sad_event_prefix(policy_said, TEST_TOPIC).unwrap();
+    let (effective_before, divergent_before) = sad_client
+        .fetch_sel_effective_said(&sel_prefix)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!divergent_before);
+    assert_eq!(
+        effective_before.to_string(),
+        v_t.said.to_string(),
+        "effective SAID is the adversary's tip"
+    );
+
+    // Fresh builder hydrating from the (linear, adversary-extended) server,
+    // sharing `owner_store` (which holds only owner's v0 and v1). `with_prefix`
+    // verifies the chain via verify_sad_events, producing a token whose
+    // current_event is the adversary's tip vT = v4. cached_tip is NOT in
+    // owner_store — Case B.
+    let checker2 = build_checker(harness, policy);
+    let mut repair_builder = SadEventBuilder::with_prefix(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker2),
+        &sel_prefix,
+    )
+    .await
+    .expect("with_prefix hydrates linear adversary-extended chain");
+
+    let hydrated = repair_builder
+        .sad_verification()
+        .expect("hydrated verification present");
+    assert_eq!(hydrated.diverged_at_version(), None);
+    assert_eq!(
+        hydrated.current_event().said,
+        v_t.said,
+        "hydration sees adversary's tip as the cached tip"
+    );
+
+    // Stage the repair. The page-fetch + in-memory walk traverses
+    // v_t → v3 → v2 → v1 (hit in owner_store) → boundary at v1. Builds Rpr
+    // at version 2 with previous = v1.said.
+    let repaired_content = upload_publication(&sad_client, "repaired-after-adversary").await;
+    let rpr_said = repair_builder
+        .repair(Some(repaired_content))
+        .await
+        .expect("repair walks back through multi-step adversary extension to vK");
+
+    let staged = repair_builder.pending_events().last().unwrap();
+    assert_eq!(staged.said, rpr_said);
+    assert_eq!(
+        staged.version, 2,
+        "Rpr at v(K+1) = v2 (truncates adversary's v2..v4 and replaces with Rpr@v2)"
+    );
+    assert_eq!(
+        staged.previous,
+        Some(v1_event.said),
+        "Rpr's previous = vK = v1 (the owner-authored boundary, hit in local store)"
+    );
+
+    // Anchor the Rpr and flush. Server's is_repair archives v2..v4 and
+    // inserts Rpr@v2.
+    kel_builder.interact(&rpr_said).await.unwrap();
+    let outcome = repair_builder
+        .flush()
+        .await
+        .expect("flush of multi-step adversary repair must succeed");
+    assert!(outcome.applied);
+
+    // Server-side: chain is now linear at [v0, v1, Rpr@v2].
+    let (effective_after, divergent_after) = sad_client
+        .fetch_sel_effective_said(&sel_prefix)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !divergent_after,
+        "chain stays linear after repair (was already linear, just adversary-extended)"
+    );
+    assert_eq!(
+        effective_after.to_string(),
+        rpr_said.to_string(),
+        "effective SAID is now the freshly-committed Rpr at v2"
+    );
+
+    // Builder-side: pending cleared, hydrated to the post-truncation tip.
+    assert!(repair_builder.pending_events().is_empty());
+    let post_repair = repair_builder
+        .sad_verification()
+        .expect("verification re-hydrated post-flush");
+    assert_eq!(post_repair.branches().len(), 1);
+    assert_eq!(post_repair.current_event().said, rpr_said);
+    assert_eq!(post_repair.current_event().version, 2);
 }

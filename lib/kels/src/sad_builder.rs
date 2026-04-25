@@ -69,6 +69,139 @@ pub struct SadEventBuilder {
     requested_prefix: Option<cesr::Digest256>,
 }
 
+/// Walk back from `start` via `previous` SAIDs, loading each predecessor from
+/// `sad_store`, until reaching an event at `target_version`. Used by
+/// `SadEventBuilder::repair` Case A (divergent) — owner's branch events are
+/// always in the local store (they were owner-authored and written via past
+/// flushes), so every step's `load` succeeds.
+///
+/// Bounded by `MAX_NON_EVALUATION_EVENTS = 63`: the divergence version
+/// satisfies `d > last_governance_version`, and owner's branch tip is at most
+/// 63 events past the last governance evaluation, so `start.version - target`
+/// can't exceed the bound. A bound violation indicates the local store is
+/// inconsistent with the verification token — surface as `InvalidKel`.
+async fn walk_back_to_version(
+    sad_store: &Arc<dyn SadStore>,
+    start: &SadEvent,
+    target_version: u64,
+) -> Result<SadEvent, KelsError> {
+    if start.version < target_version {
+        return Err(KelsError::InvalidKel(format!(
+            "walk-back: start version {} is below target {}",
+            start.version, target_version
+        )));
+    }
+    let mut current = start.clone();
+    let mut hops: usize = 0;
+    while current.version > target_version {
+        if hops >= MAX_NON_EVALUATION_EVENTS {
+            return Err(KelsError::InvalidKel(
+                "repair walk-back exceeded governance bound — local cache may be inconsistent"
+                    .into(),
+            ));
+        }
+        let prev_said = current
+            .previous
+            .ok_or_else(|| KelsError::InvalidKel("walk-back hit event with no previous".into()))?;
+        let prev_value = sad_store.load(&prev_said).await?.ok_or_else(|| {
+            KelsError::InvalidKel(format!(
+                "owner's event {} not in local store — incomplete cache",
+                prev_said
+            ))
+        })?;
+        current = serde_json::from_value(prev_value)?;
+        hops += 1;
+    }
+    Ok(current)
+}
+
+/// Walk back from `start` via `previous` SAIDs, probing `sad_store` for each
+/// predecessor; the first hit (an event the owner authored and stored
+/// locally) is the boundary. Used by `SadEventBuilder::repair` Case B
+/// (linear chain extended by an adversary).
+///
+/// **One paginated server fetch + in-memory walk.** `MAX_NON_EVALUATION_EVENTS
+/// = MINIMUM_PAGE_SIZE - 1 = 63` is wired by design (`lib/kels/src/lib.rs:139`)
+/// — the bound on adversarial extension is exactly one page minus one event.
+/// So one or a few `SadStoreClient::fetch_sad_events` calls cover everything
+/// the walk could need; we hash the events into a SAID-keyed map and then
+/// walk in memory. Fetched events are SAID-integrity-protected (every server
+/// reply must match its SAID by structure or we'd have rejected it earlier),
+/// so using them for `previous`-link traversal is sound — **the boundary
+/// decision still lives in `sad_store`**, the server slice is only the chain
+/// segment for traversal.
+///
+/// Mirrors `KeyEventBuilder::find_missing_owner_events` (`lib/kels/src/builder.rs:469-496`)
+/// — same shape, mirrored data sources (KEL loads tail from local, probes
+/// server in-memory; SEL loads tail from server, probes local in-memory).
+///
+/// Bounded by `MINIMUM_PAGE_SIZE = 64` (one cached_tip + up to 63
+/// adversary predecessors). A bound violation indicates the local cache is
+/// inconsistent with the server's view — surface as `InvalidKel`.
+async fn walk_back_to_first_owner(
+    sad_store: &Arc<dyn SadStore>,
+    sad_source: &dyn crate::types::PagedSadSource,
+    prefix: &cesr::Digest256,
+    start: &SadEvent,
+) -> Result<SadEvent, KelsError> {
+    use std::collections::HashMap;
+
+    // Fetch the chain into a SAID-keyed map. `since: None` starts at v0;
+    // paginate via the last event's SAID. We stop once the cached tip is
+    // visible — by construction the boundary is at most 63 hops back from
+    // there, so anything earlier that we'd already loaded is enough. Most
+    // healthy chains complete in one fetch.
+    let mut chain: HashMap<cesr::Digest256, SadEvent> = HashMap::new();
+    let mut since: Option<cesr::Digest256> = None;
+    let mut found_start = false;
+    loop {
+        let (events, has_more) = sad_source
+            .fetch_page(prefix, since.as_ref(), crate::page_size())
+            .await?;
+        if events.is_empty() {
+            break;
+        }
+        let last_said = events.last().map(|e| e.said);
+        for event in &events {
+            if event.said == start.said {
+                found_start = true;
+            }
+            chain.insert(event.said, event.clone());
+        }
+        if found_start || !has_more {
+            break;
+        }
+        since = last_said;
+    }
+
+    // Walk backward in memory. Probe `sad_store` at each step — first hit is
+    // the owner boundary. On miss, follow the in-memory `previous` link.
+    // Bounded by MINIMUM_PAGE_SIZE = 64 (cached_tip + 63 adversary hops).
+    let mut current = start.clone();
+    for _ in 0..crate::MINIMUM_PAGE_SIZE {
+        let prev_said = current.previous.ok_or_else(|| {
+            KelsError::InvalidKel(
+                "walk-back hit event with no previous before finding owner boundary".into(),
+            )
+        })?;
+        if let Some(value) = sad_store.load(&prev_said).await? {
+            return Ok(serde_json::from_value(value)?);
+        }
+        let next = chain.get(&prev_said).cloned().ok_or_else(|| {
+            KelsError::InvalidKel(format!(
+                "Cannot find owner boundary: event {} not in local store and not in \
+                 server-fetched chain — local cache may be inconsistent with server view",
+                prev_said
+            ))
+        })?;
+        current = next;
+    }
+    Err(KelsError::InvalidKel(
+        "repair walk-back exceeded governance bound — local cache may be inconsistent with server view"
+            .into(),
+    ))
+}
+
 impl SadEventBuilder {
     // ==================== Constructors ====================
 
@@ -388,33 +521,106 @@ impl SadEventBuilder {
         Ok(said)
     }
 
-    /// Stage an `Rpr`. Serves as the evaluation proof at `from_version`.
+    /// Stage an `Rpr` at the truncation boundary so the server-side
+    /// `is_repair` path actually heals divergence or adversarial extension.
     ///
-    /// On non-divergent chains, extends the chain tip (preferring pending tail
-    /// over verified). On divergent chains, extends the **owner's branch tip**
-    /// — `branches().first()` of the verification, mirroring `KeyEventBuilder::recover`'s
-    /// branch-selection convention. This is the assumption that the local
-    /// verifier walked only the owner's submitted events; under
-    /// server-stamped divergence (Round 4 M1's mechanism) the cached token's
-    /// first branch is the owner's branch by construction.
+    /// Bypasses `require_non_divergent` — repair is the explicit recovery path,
+    /// symmetric to KEL's `recover` / `contest`. Three cases dispatch from
+    /// the chain's state, all bounded by `MAX_NON_EVALUATION_EVENTS = 63` per
+    /// the governance invariant (an adversary holding only `write_policy`
+    /// authorization can submit at most 63 `Upd` events between governance
+    /// evaluations, and divergence cannot precede the seal floor).
     ///
-    /// For pathological cases where the verifier was hydrated against a
-    /// multi-branch server-side view via `with_prefix` and `branches().first()`
-    /// is not the branch the caller wants to repair from, callers must
-    /// construct the repair event out of band and submit via
-    /// `SadStoreClient::submit_sad_events` directly.
+    /// **Case A — divergent chain** (`diverged_at_version() == Some(d)`):
+    /// walks back from owner's branch tip (`branches().first().tip`) through
+    /// the local `sad_store` until reaching the v(d-1) tip — the last
+    /// pre-divergence event shared by both branches. Builds Rpr at version
+    /// `d`, `previous = v(d-1).said`. Server's `truncate_and_replace`
+    /// computes `from_version = d`, archives both branches' v_d events, and
+    /// inserts the Rpr — chain becomes linear. Requires `sad_store: Some(_)`;
+    /// no server fetch needed — owner's branch events are all locally cached.
     ///
-    /// Bypasses `require_non_divergent` — repair is the explicit recovery path
-    /// from divergent state, symmetric to KEL's `recover` / `contest`.
-    pub fn repair(
+    /// **Case B — linear chain extended by an adversary** (cached tip not in
+    /// local store): one paginated `SadStoreClient::fetch_sad_events` call
+    /// pulls the chain segment into memory; the walk traverses `previous`
+    /// links there, probing `sad_store` at each step for the boundary. First
+    /// hit is owner's last authoritative event `vK`. Builds Rpr at version
+    /// `K+1`, `previous = vK.said`. Server's `truncate_and_replace` archives
+    /// the adversary's tail and inserts the Rpr. Requires both
+    /// `sad_store: Some(_)` AND `sad_client: Some(_)` — local store is the
+    /// boundary oracle, server fetch supplies the chain segment for
+    /// traversal (server events are SAID-integrity-protected, so using them
+    /// for in-memory `previous` walks is sound; **the boundary decision
+    /// itself remains local-store-only**).
+    ///
+    /// **Case C — clean state** (cached tip in local store): nothing to
+    /// repair. Returns `KelsError::NothingToRepair`.
+    ///
+    /// **Authoritative source split.** `sad_store` is the authoritative
+    /// source for "is this event owner-authored?" — never the server. The
+    /// server is the authoritative source for "what events form the chain
+    /// segment between v0 and the cached tip?" — a substitution-resistant
+    /// query because each event's SAID is structurally bound to its content.
+    /// Letting the server influence the boundary decision (e.g., trusting an
+    /// adversary's stored event as a "boundary candidate") would allow an
+    /// adversary's events into the truncation point — that's the wrong
+    /// direction. The split keeps the trust model clean.
+    pub async fn repair(
         &mut self,
         content: Option<cesr::Digest256>,
     ) -> Result<cesr::Digest256, KelsError> {
         self.require_established()?;
 
-        let event = SadEvent::rpr(self.owner_branch_tip()?, content)?;
-        let said = event.said;
-        self.pending_events.push(event);
+        let sad_store = self
+            .sad_store
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("repair requires a sad_store".into()))?;
+
+        let verification = self
+            .sad_verification
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
+
+        // Case A: divergent chain. Walk back from owner's branch tip until we
+        // reach the v(d-1) tip — the last shared event before divergence.
+        if let Some(divergence_at) = verification.diverged_at_version() {
+            let owner_tip = self.owner_branch_tip()?.clone();
+            let target_version = divergence_at.saturating_sub(1);
+            let boundary = walk_back_to_version(sad_store, &owner_tip, target_version).await?;
+
+            let rpr = SadEvent::rpr(&boundary, content)?;
+            let said = rpr.said;
+            self.pending_events.push(rpr);
+            return Ok(said);
+        }
+
+        // Linear chain. Distinguish Cases B and C by probing the cached tip
+        // in the local store — owner-authored tips were written via flush,
+        // adversary-authored tips were never owner-staged.
+        let cached_tip = verification.current_event().clone();
+        if sad_store.load(&cached_tip.said).await?.is_some() {
+            // Case C: clean state. Nothing to repair.
+            return Err(KelsError::NothingToRepair);
+        }
+
+        // Case B: walk back from cached tip via `previous` links, using a
+        // server-fetched in-memory map to traverse adversary's events and
+        // local store as the boundary oracle.
+        let sad_client = self.sad_client.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode(
+                "repair on adversary-extended chain requires a SadStoreClient \
+                 (chain segment must be fetched for in-memory walk; \
+                  boundary decision still uses sad_store)"
+                    .into(),
+            )
+        })?;
+        let sad_source = sad_client.as_sad_source()?;
+        let prefix = cached_tip.prefix;
+        let boundary =
+            walk_back_to_first_owner(sad_store, &sad_source, &prefix, &cached_tip).await?;
+        let rpr = SadEvent::rpr(&boundary, content)?;
+        let said = rpr.said;
+        self.pending_events.push(rpr);
         Ok(said)
     }
 
@@ -527,18 +733,50 @@ impl SadEventBuilder {
             }
         }
 
-        self.absorb_pending().await?;
+        // Repair flushes need a fresh server fetch, not incremental absorb.
+        // The Rpr's `previous` points at a pre-truncation event that isn't a
+        // current branch tip in the cached token, so `SelVerifier::resume` +
+        // `verify_page` would error ("previous does not match any branch
+        // tip"). After the server's `is_repair` truncation the chain is
+        // linear from v0 to the Rpr; a fresh `verify_sad_events` round-trip
+        // produces the right post-repair token. One extra GET on the repair
+        // path; non-repair flushes keep the incremental-absorb fast path.
+        let was_repair = self.pending_events.iter().any(|e| e.kind.is_repair());
 
-        // Stamp the server-reported divergence onto the local token. The local
-        // verifier only saw the owner's batch, so its `diverged_at_version`
-        // would be `None` even when the server has two branches at this
-        // version. This is record-keeping, not recovery — the owner calls
-        // `repair` themselves when they're ready, exactly as they'd call
-        // `rec`/`cnt` on a divergent KEL today.
-        if let Some(at) = response.diverged_at
-            && let Some(v) = self.sad_verification.as_mut()
-        {
-            v.set_diverged_at_version(at);
+        if was_repair {
+            // Lifted from `with_prefix`: same hydrate path for the
+            // post-repair, post-truncation server state.
+            #[allow(clippy::expect_used)]
+            // Repair built from this builder's verification; prefix is set.
+            let prefix = *self
+                .prefix()
+                .expect("repair flush has prefix from pending or verification");
+            #[allow(clippy::expect_used)]
+            // Already-checked above; checker.is_none() returned early.
+            let checker = Arc::clone(
+                self.checker
+                    .as_ref()
+                    .expect("flush is_none-checked checker above"),
+            );
+            let fresh = client.verify_sad_events(&prefix, checker).await?;
+            self.sad_verification = Some(fresh);
+            self.pending_events.clear();
+        } else {
+            self.absorb_pending().await?;
+
+            // Stamp the server-reported divergence onto the local token. The
+            // local verifier only saw the owner's batch, so its
+            // `diverged_at_version` would be `None` even when the server has
+            // two branches at this version. This is record-keeping, not
+            // recovery — the owner calls `repair` themselves when they're
+            // ready, exactly as they'd call `rec`/`cnt` on a divergent KEL
+            // today. Skip on repair: post-repair the server chain is linear,
+            // and the fresh hydrate already reflects that.
+            if let Some(at) = response.diverged_at
+                && let Some(v) = self.sad_verification.as_mut()
+            {
+                v.set_diverged_at_version(at);
+            }
         }
 
         Ok(FlushOutcome {
@@ -823,25 +1061,12 @@ mod tests {
         b.update(test_digest(b"after-eval")).unwrap();
     }
 
-    #[test]
-    fn repair_stages_rpr_from_tip() {
-        let wp = test_digest(b"wp");
-        let gp = test_digest(b"gp");
-        let mut b = SadEventBuilder::new(None, None, None);
-        b.incept(TEST_TOPIC, wp, gp).unwrap();
-        b.update(test_digest(b"c1")).unwrap();
-
-        let rpr_said = b.repair(Some(test_digest(b"repaired"))).unwrap();
-        let rpr = b
-            .pending_events()
-            .last()
-            .expect("at least one pending event");
-        assert_eq!(rpr.said, rpr_said);
-        assert_eq!(rpr.kind, SadEventKind::Rpr);
-        assert_eq!(rpr.version, 2);
-        assert!(rpr.write_policy.is_none());
-        assert!(rpr.governance_policy.is_none());
-    }
+    // Pre-M1-followup, `repair` extended the tip on any chain (including
+    // clean chains). The new contract: repair is for actual healing —
+    // divergent or adversarially-extended chains. Clean chains return
+    // `NothingToRepair`. The "stage an Rpr from tip" semantic is gone;
+    // tests covering Rpr verification are pinned by the new
+    // `repair_at_*` tests below and the full-stack tests in sad_builder_tests.rs.
 
     #[test]
     fn incept_deterministic_without_establish_content_ok() {
@@ -853,9 +1078,11 @@ mod tests {
         assert!(b.pending_events()[1].content.is_none());
     }
 
-    /// Happy path: incept_deterministic → update → evaluate → update → repair,
+    /// Happy path: incept_deterministic → update → evaluate → update,
     /// verified end-to-end against a fresh `SelVerifier` to confirm every
-    /// staged event is structurally sound and correctly chained.
+    /// staged event is structurally sound and correctly chained. Repair is
+    /// not exercised here — a clean chain returns `NothingToRepair`; Rpr
+    /// verification is covered by the dedicated `repair_at_*` tests.
     #[tokio::test]
     async fn staged_chain_verifies_from_scratch() {
         let wp = test_digest(b"wp");
@@ -866,7 +1093,7 @@ mod tests {
         b.update(test_digest(b"c2")).unwrap();
         b.evaluate(Some(test_digest(b"c3")), None, None).unwrap();
         b.update(test_digest(b"c4")).unwrap();
-        b.repair(Some(test_digest(b"c5"))).unwrap();
+        b.evaluate(Some(test_digest(b"c5")), None, None).unwrap();
 
         let prefix = *b.prefix().unwrap();
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
@@ -877,7 +1104,7 @@ mod tests {
             .expect("staged chain verifies");
         let verification = verifier.finish().await.expect("verification finishes");
         assert_eq!(verification.current_event().version, 5);
-        assert_eq!(verification.current_event().kind, SadEventKind::Rpr);
+        assert_eq!(verification.current_event().kind, SadEventKind::Evl);
     }
 
     /// A builder constructed with `with_prefix(sel_prefix = X)` must reject
@@ -923,44 +1150,260 @@ mod tests {
         }
     }
 
-    /// A builder whose cached `sad_verification` is divergent can flush a
-    /// staged repair through `absorb_pending` — the round-6 parity rework made
-    /// `SelVerifier::resume` accept divergent tokens and rehydrate per-branch
-    /// state, so the prior `CannotResumeDivergentChain` deadlock is gone.
-    /// `repair` extends the owner's branch tip (`branches().first()`); the
-    /// resulting Rpr verifies cleanly against the rehydrated branch state.
+    /// `repair` on a divergent cached verification stages an Rpr at the
+    /// divergence boundary — version `d`, `previous = v(d-1).said` — by
+    /// walking back through the local sad_store. The constructed Rpr archives
+    /// both v_d branches when submitted to the server's `is_repair` path.
     #[tokio::test]
-    async fn absorb_pending_succeeds_on_divergent_cached_verification() {
-        let (divergent, _v0) = build_divergent_token().await;
-        assert!(
-            divergent.diverged_at_version().is_some(),
-            "fixture invariant: builder seed must carry divergence"
-        );
+    async fn repair_at_divergence_version() {
+        let (divergent, v0, v1_a, v1_b) = build_divergent_token().await;
+        let store = seed_owner_branch_store(&v0, &v1_a, &v1_b).await;
+        assert_eq!(divergent.diverged_at_version(), Some(1));
 
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut b = SadEventBuilder::new(None, Some(store), Some(Arc::clone(&checker)));
+        b.sad_verification = Some(divergent);
+
+        let rpr_said = b
+            .repair(Some(test_digest(b"repaired-content")))
+            .await
+            .expect("repair stages on divergent chain");
+        assert_eq!(b.pending_events().len(), 1);
+
+        let staged = b.pending_events().last().unwrap();
+        assert_eq!(staged.said, rpr_said);
+        assert_eq!(staged.kind, SadEventKind::Rpr);
+        assert_eq!(
+            staged.version, 1,
+            "Rpr at divergence_at = 1 (truncates both v1 forks)"
+        );
+        assert_eq!(
+            staged.previous,
+            Some(v0.said),
+            "Rpr's previous = v(d-1) = v0.said"
+        );
+    }
+
+    /// In-memory `PagedSadSource` for unit-testing the Case B walk. Returns
+    /// events sorted by version, paginated by `since` SAID + `limit`.
+    struct VecSadSource {
+        events: Vec<SadEvent>,
+    }
+    #[async_trait::async_trait]
+    impl crate::types::PagedSadSource for VecSadSource {
+        async fn fetch_page(
+            &self,
+            _prefix: &cesr::Digest256,
+            since: Option<&cesr::Digest256>,
+            limit: usize,
+        ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+            let start_idx = match since {
+                Some(s) => self.events.iter().position(|e| e.said == *s).unwrap_or(0),
+                None => 0,
+            };
+            // `since` semantics in the real handler: events at version >=
+            // since's version. Since events here are unique per version, we
+            // start at `since`'s position (inclusive).
+            let end_idx = (start_idx + limit).min(self.events.len());
+            let events: Vec<SadEvent> = self.events[start_idx..end_idx].to_vec();
+            let has_more = end_idx < self.events.len();
+            Ok((events, has_more))
+        }
+    }
+
+    /// Build owner+adversary linear-chain fixture for Case B tests:
+    /// owner authored v0..vK, adversary appended v(K+1)..vT. Returns
+    /// `(prefix, events_v0_to_vT, sad_store_with_owner_events_only,
+    /// owner_token_at_vT)`. The token is verified across the full
+    /// adversary-extended chain so cached_tip == vT.
+    async fn build_adversary_extension_fixture(
+        owner_count: usize,
+        adversary_count: usize,
+    ) -> (
+        cesr::Digest256,
+        Vec<SadEvent>,
+        Arc<dyn SadStore>,
+        SelVerification,
+    ) {
+        use crate::store::InMemorySadStore;
+        assert!(
+            owner_count >= 2,
+            "need at least v0 (Icp) + vK (Upd or beyond)"
+        );
+        assert!(adversary_count >= 1, "need at least one adversary event");
+
+        let wp = test_digest(b"wp");
+        let gp = test_digest(b"gp");
+        let mut events = Vec::new();
+        let v0 = SadEvent::icp(TEST_TOPIC, wp, Some(gp)).unwrap();
+        events.push(v0.clone());
+        for i in 1..owner_count {
+            let prev = events.last().unwrap();
+            let event =
+                SadEvent::upd(prev, test_digest(format!("owner-{}", i).as_bytes())).unwrap();
+            events.push(event);
+        }
+        for i in 0..adversary_count {
+            let prev = events.last().unwrap();
+            let event =
+                SadEvent::upd(prev, test_digest(format!("adversary-{}", i).as_bytes())).unwrap();
+            events.push(event);
+        }
+
+        // Owner's local store has only owner-authored events (v0..v(K)).
+        let store: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+        for event in &events[..owner_count] {
+            store
+                .store(&event.said, &serde_json::to_value(event).unwrap())
+                .await
+                .unwrap();
+        }
+
+        // Verify full adversary-extended chain to produce a token whose
+        // current_event is the adversary's tip vT.
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier.verify_page(&events).await.unwrap();
+        let token = verifier.finish().await.unwrap();
+        assert_eq!(token.diverged_at_version(), None);
+        assert_eq!(token.current_event().said, events.last().unwrap().said);
+
+        (v0.prefix, events, store, token)
+    }
+
+    /// `repair` on a linear chain extended by an adversary by ONE event
+    /// stages an Rpr at `v(K+1)` where `vK` is owner's last authoritative
+    /// event. The walk-back finds vK at the first probe.
+    #[tokio::test]
+    async fn repair_at_adversarial_extension_boundary() {
+        // owner: v0 + v1 (K=1); adversary: v2 (T=2). T-K = 1.
+        let (prefix, events, store, _token) = build_adversary_extension_fixture(2, 1).await;
+        let v1_owner_said = events[1].said;
+
+        // Server's view of the chain (the full adversary-extended segment).
+        let source = VecSadSource {
+            events: events.clone(),
+        };
+
+        let boundary =
+            super::walk_back_to_first_owner(&store, &source, &prefix, events.last().unwrap())
+                .await
+                .expect("walk finds owner boundary at vK = v1");
+        assert_eq!(boundary.said, v1_owner_said);
+        assert_eq!(boundary.version, 1);
+
+        // End-to-end via repair (with a real builder + the mock source
+        // injected through walk_back_to_first_owner directly). Since
+        // `repair` requires a real `SadStoreClient`, we exercise the walk
+        // helper directly here and let the full-stack test cover repair.
+        let _ = SadEventBuilder::new(None, Some(store), None);
+        // Sanity assertion on what an Rpr built from `boundary` looks like.
+        let rpr = SadEvent::rpr(&boundary, Some(test_digest(b"repaired-content"))).unwrap();
+        assert_eq!(rpr.kind, SadEventKind::Rpr);
+        assert_eq!(rpr.version, 2);
+        assert_eq!(rpr.previous, Some(v1_owner_said));
+    }
+
+    /// `repair` on a linear chain extended by the adversary by MORE THAN
+    /// ONE event still finds the owner's boundary — the walk uses the
+    /// server-fetched chain segment as an in-memory map for `previous`-link
+    /// traversal of adversary events, and probes `sad_store` at each step
+    /// for the owner-authored boundary. Pins the page-fetch + in-memory walk
+    /// shape introduced in the M1-followup multi-step extension.
+    #[tokio::test]
+    async fn repair_at_adversarial_extension_boundary_multi_step() {
+        // owner: v0 + v1 (K=1); adversary: v2..v5 (4 events). T-K = 4.
+        let (prefix, events, store, _token) = build_adversary_extension_fixture(2, 4).await;
+        let v1_owner_said = events[1].said;
+
+        let source = VecSadSource {
+            events: events.clone(),
+        };
+
+        let boundary =
+            super::walk_back_to_first_owner(&store, &source, &prefix, events.last().unwrap())
+                .await
+                .expect("walk finds owner boundary across multi-step adversary extension");
+        assert_eq!(
+            boundary.said, v1_owner_said,
+            "boundary must be vK (owner's last) regardless of adversary extension length"
+        );
+        assert_eq!(boundary.version, 1);
+
+        // Sanity assertion on what an Rpr built from `boundary` looks like.
+        let rpr = SadEvent::rpr(&boundary, Some(test_digest(b"repaired-content"))).unwrap();
+        assert_eq!(rpr.version, 2, "Rpr at v(K+1) = v2 regardless of T-K");
+        assert_eq!(rpr.previous, Some(v1_owner_said));
+    }
+
+    /// `repair` on a clean linear chain (cached tip is owner's last
+    /// authoritative event, so it's in the local store) returns
+    /// `KelsError::NothingToRepair`. The user shouldn't call repair without
+    /// a divergence or adversarial extension to heal.
+    #[tokio::test]
+    async fn repair_clean_state_errors() {
+        use crate::store::InMemorySadStore;
+
+        let wp = test_digest(b"wp");
+        let gp = test_digest(b"gp");
+        let v0 = SadEvent::icp(TEST_TOPIC, wp, Some(gp)).unwrap();
+        let v1 = SadEvent::upd(&v0, test_digest(b"content")).unwrap();
+
+        // Owner's store has both events — clean chain, no adversary.
+        let store: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+        store
+            .store(&v0.said, &serde_json::to_value(&v0).unwrap())
+            .await
+            .unwrap();
+        store
+            .store(&v1.said, &serde_json::to_value(&v1).unwrap())
+            .await
+            .unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let token = verifier.finish().await.unwrap();
+
+        let mut b = SadEventBuilder::new(None, Some(store), Some(Arc::clone(&checker)));
+        b.sad_verification = Some(token);
+
+        let err = b
+            .repair(Some(test_digest(b"unnecessary")))
+            .await
+            .expect_err("repair on clean state must error");
+        assert!(
+            matches!(err, KelsError::NothingToRepair),
+            "Expected NothingToRepair, got: {err:?}"
+        );
+        assert!(
+            b.pending_events().is_empty(),
+            "no event should be staged when repair is refused"
+        );
+    }
+
+    /// `repair` errors cleanly when the builder has no `sad_store` configured —
+    /// the walk needs a probe oracle to distinguish owner's events from
+    /// adversary's. No silent fallback to server fetches (would let
+    /// adversary's events into the boundary decision).
+    #[tokio::test]
+    async fn repair_without_sad_store_errors() {
+        let (divergent, _v0, _v1_a, _v1_b) = build_divergent_token().await;
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
         let mut b = SadEventBuilder::new(None, None, Some(Arc::clone(&checker)));
         b.sad_verification = Some(divergent);
 
-        // Stage a repair against the owner's branch (branches().first()). The
-        // gate at `require_non_divergent` is bypassed by `repair` intentionally
-        // — repair is the divergent-recovery path.
-        b.repair(Some(test_digest(b"repaired-content")))
-            .expect("repair stages on divergent cached verification");
-        assert_eq!(b.pending_events().len(), 1);
-
-        // Pre-round-6 this errored with `CannotResumeDivergentChain`. Now it
-        // succeeds: the verifier rehydrates both branches, accepts the Rpr as
-        // an extension of the owner's branch, and produces a fresh token.
-        b.absorb_pending()
+        let err = b
+            .repair(Some(test_digest(b"content")))
             .await
-            .expect("absorb_pending must succeed on divergent cached verification + repair");
-
-        // After absorb: pending cleared, verification updated to reflect the
-        // post-repair state (still divergent at the locally-tracked level —
-        // the local verifier saw the original fork, the Rpr extended one
-        // branch but didn't archive the other).
-        assert!(b.pending_events().is_empty());
-        assert!(b.sad_verification().is_some());
+            .expect_err("repair must error without a sad_store");
+        assert!(
+            matches!(err, KelsError::OfflineMode(_)),
+            "Expected OfflineMode, got: {err:?}"
+        );
     }
 
     /// Resume round-trip: verify a chain from scratch, then resume from the
@@ -1028,11 +1471,11 @@ mod tests {
     }
 
     /// Hand-build a divergent `SelVerification` for use as a builder seed.
-    /// Mirrors the construction in `absorb_pending_errors_on_divergent_cached_verification`
-    /// but factored so the divergence-gating tests below can reuse it.
-    /// Returns `(divergent_token, v0_event)` — `v0` is the inception, useful
-    /// when the test wants to stage a `repair` from the established branch.
-    async fn build_divergent_token() -> (SelVerification, SadEvent) {
+    /// Returns `(divergent_token, v0_event, v1_a, v1_b)` — callers needing to
+    /// seed a `sad_store` for `repair` to walk back through use these events
+    /// directly. Owner's branch is the SAID-sorted-first of `v1_a` / `v1_b`
+    /// per the `branches().first()` convention.
+    async fn build_divergent_token() -> (SelVerification, SadEvent, SadEvent, SadEvent) {
         use crate::types::SelVerifier;
 
         let wp = test_digest(b"wp");
@@ -1044,7 +1487,7 @@ mod tests {
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
-            .verify_page(&[v0.clone(), v1_a, v1_b])
+            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
             .await
             .unwrap();
         let divergent = verifier.finish().await.unwrap();
@@ -1052,7 +1495,37 @@ mod tests {
             divergent.diverged_at_version().is_some(),
             "fixture invariant: hand-built chain must be divergent"
         );
-        (divergent, v0)
+        (divergent, v0, v1_a, v1_b)
+    }
+
+    /// Seed an `InMemorySadStore` with the events needed for `repair`'s
+    /// Case-A walk-back to v(d-1). Owner's branch tip is the SAID-sorted-first
+    /// of `v1_a`/`v1_b` per the `branches().first()` convention.
+    async fn seed_owner_branch_store(
+        v0: &SadEvent,
+        v1_a: &SadEvent,
+        v1_b: &SadEvent,
+    ) -> Arc<dyn SadStore> {
+        use crate::store::InMemorySadStore;
+        let store: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+        store
+            .store(&v0.said, &serde_json::to_value(v0).unwrap())
+            .await
+            .unwrap();
+        // Owner's branch is whichever has the lex-smaller SAID.
+        let owner_branch = if v1_a.said.as_ref() < v1_b.said.as_ref() {
+            v1_a
+        } else {
+            v1_b
+        };
+        store
+            .store(
+                &owner_branch.said,
+                &serde_json::to_value(owner_branch).unwrap(),
+            )
+            .await
+            .unwrap();
+        store
     }
 
     /// `update` must refuse on a divergent chain — the owner's only legal
@@ -1061,7 +1534,7 @@ mod tests {
     /// resolved.
     #[tokio::test]
     async fn update_refused_on_divergent_chain() {
-        let (divergent, _v0) = build_divergent_token().await;
+        let (divergent, _v0, _v1_a, _v1_b) = build_divergent_token().await;
         let at = divergent.diverged_at_version().unwrap();
 
         let mut b = SadEventBuilder::new(None, None, None);
@@ -1082,7 +1555,7 @@ mod tests {
     /// next step.
     #[tokio::test]
     async fn evaluate_refused_on_divergent_chain() {
-        let (divergent, _v0) = build_divergent_token().await;
+        let (divergent, _v0, _v1_a, _v1_b) = build_divergent_token().await;
         let at = divergent.diverged_at_version().unwrap();
 
         let mut b = SadEventBuilder::new(None, None, None);
@@ -1096,25 +1569,11 @@ mod tests {
         assert!(b.pending_events.is_empty());
     }
 
-    /// `repair` must succeed on a divergent chain — it's the explicit
-    /// owner-initiated recovery path. Without this, a builder seeded with a
-    /// divergent token would have no escape route within the builder API.
-    #[tokio::test]
-    async fn repair_allowed_on_divergent_chain() {
-        let (divergent, _v0) = build_divergent_token().await;
-
-        let mut b = SadEventBuilder::new(None, None, None);
-        b.sad_verification = Some(divergent);
-
-        let rpr_said = b
-            .repair(Some(test_digest(b"repaired-content")))
-            .expect("repair must succeed on divergent chain");
-
-        assert_eq!(b.pending_events.len(), 1);
-        let staged = b.pending_events.last().unwrap();
-        assert_eq!(staged.said, rpr_said);
-        assert_eq!(staged.kind, SadEventKind::Rpr);
-    }
+    // The `repair_allowed_on_divergent_chain` test from prior rounds is
+    // superseded by `repair_at_divergence_version` above, which pins the
+    // M1-followup contract: divergent repair stages an Rpr at the divergence
+    // boundary, not at owner_tip+1. The old test only proved a Rpr was
+    // staged; the new test pins the boundary semantics.
 
     /// Stamping is `or_else`: an existing `Some(_)` is preserved (the local
     /// verifier already saw the fork — server's report is redundant). When
@@ -1143,7 +1602,7 @@ mod tests {
         );
 
         // Already-divergent token: stamping with a different value is a no-op.
-        let (mut divergent, _) = build_divergent_token().await;
+        let (mut divergent, _, _, _) = build_divergent_token().await;
         let original = divergent.diverged_at_version().unwrap();
         divergent.set_diverged_at_version(original + 100);
         assert_eq!(

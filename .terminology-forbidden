@@ -41,7 +41,11 @@ SAD_CHAIN_PUBSUB_CHANNEL
 /sad/pointers
 kels/sad/v1/pointer/
 "type"[[:space:]]*:[[:space:]]*"pointer"
-:repair\b
+# Match `:repair` as a URL/announcement fragment, NOT Rust's `::repair`.
+# `(^|[^:])` requires the preceding char to not be a colon (allowing
+# start-of-line). Catches `sad-announcement:repair` and similar wire-format
+# strings without false-positiving on Rust paths like `Builder::repair`.
+(^|[^:]):repair\b
 \?repair=
 
 # === KELS-133: Phantom types (referenced in docs but never existed post-rename) ===

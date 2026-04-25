@@ -157,6 +157,11 @@ pub enum KelsError {
         "SAD Event Log diverged at version {at} — stage a repair to resolve before further updates"
     )]
     SelDivergent { at: u64 },
+
+    #[error(
+        "Nothing to repair — chain is linear and the cached tip matches the local store's owner-authored tip"
+    )]
+    NothingToRepair,
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -277,6 +282,7 @@ mod tests {
             KelsError::InvalidDisclosure("bad expression".to_string()),
             KelsError::EvaluationRequired,
             KelsError::SelDivergent { at: 7 },
+            KelsError::NothingToRepair,
         ];
 
         for err in errors {
