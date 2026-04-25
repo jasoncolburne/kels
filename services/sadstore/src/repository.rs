@@ -266,6 +266,38 @@ impl SadEventRepository {
         Ok(counts.first().is_some_and(|&c| c > 1))
     }
 
+    /// Lowest version at which more than one event exists for this prefix, or
+    /// `None` if every version is single-rowed.
+    ///
+    /// `is_divergent` answers "is the chain divergent at all?" but the dedup
+    /// short-circuit in `submit_sad_events` needs the actual version so it can
+    /// populate `SubmitSadEventsResponse.diverged_at` symmetrically with the
+    /// normal-path response. Without this, a client retrying after a phase-3
+    /// failure (Round 4 M1's terminology) gets `diverged_at: None` even when
+    /// the chain is currently divergent server-side.
+    ///
+    /// `ColumnQuery` / `fetch_grouped_count` can't express MIN(grouped_column)
+    /// HAVING COUNT(*) > 1 — the API returns counts only, not group keys —
+    /// so this drops to a hand-written SQL query via the underlying sqlx pool.
+    pub async fn first_divergent_version(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<u64>, StorageError> {
+        let row: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(version) FROM (\
+                SELECT version FROM sad_events \
+                WHERE prefix = $1 \
+                GROUP BY version HAVING COUNT(*) > 1\
+             ) AS divergent_versions",
+        )
+        .bind(prefix.to_string())
+        .fetch_optional(self.pool.inner())
+        .await
+        .map_err(|e| StorageError::StorageError(e.to_string()))?
+        .flatten();
+        Ok(row.map(|v| v as u64))
+    }
+
     /// Get the version of the most recent governance evaluation for a chain.
     /// Returns None if no governance evaluation has been recorded.
     pub async fn last_governance_version<Tx: TransactionExecutor>(

@@ -58,6 +58,13 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 # Redis for pub/sub announcements
 redis = { version = "1.1", features = ["tokio-comp", "connection-manager"] }
 
+# SQL queries that don't fit ColumnQuery's GROUP BY / aggregate shape
+# (e.g., MIN(version) over a HAVING-filtered set of grouped versions). Already
+# transitive via verifiable-storage-postgres; adding as a direct dep so the
+# repository can call sqlx::query_scalar without going through PgPool::inner()
+# at every call site.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+
 [dev-dependencies]
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 chrono = "0.4"

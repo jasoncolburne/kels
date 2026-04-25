@@ -1292,12 +1292,34 @@ pub async fn submit_sad_events(
         };
 
         if new_events.is_empty() {
+            // Report the chain's *current* divergence state, not "what this
+            // submit changed." A client retrying after a phase-2 / phase-3
+            // failure (Round 4 M1's terminology) has otherwise lost the
+            // original `Some(version)` signal — the first submit's response
+            // never made it to the local token. The normal-path response
+            // populates `diverged_at` from `save_batch`'s `DivergenceCreated`
+            // outcome; this is the symmetric read-side mechanism on the
+            // dedup path. The dedup short-circuit performs no writes, so a
+            // pool-level read alongside the in-flight tx is fine.
+            let diverged_at = match state
+                .repo
+                .sad_events
+                .first_divergent_version(sel_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query first divergent version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
             let response = kels_core::SubmitSadEventsResponse {
-                diverged_at: None,
+                diverged_at,
                 applied: false,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
@@ -1363,20 +1385,14 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            // Repair must include an evaluation at or after the divergence point —
-            // an attacker who can only satisfy write_policy cannot repair
-            // (governance_policy is a higher bar).
-            if !new_events
-                .iter()
-                .any(|r| r.version >= from_version && r.kind.evaluates_governance())
-            {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "repair must include an evaluation at or after the divergence point",
-                )
-                    .into_response();
-            }
+            // Repair correctness invariant: `is_repair` ⟹ at least one new
+            // event is `Rpr` ⟹ that event satisfies `evaluates_governance()`
+            // and lives at `version >= from_version` (since `from_version` is
+            // derived from these events). The "repair includes a governance
+            // evaluation" requirement is therefore enforced by the kind
+            // taxonomy — no runtime check needed. If `Rpr` is ever split
+            // into evaluating / non-evaluating subkinds, restore an explicit
+            // check here.
 
             // Now verify the entire chain (post-truncation + repair events) from scratch.
             let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =

@@ -20,10 +20,17 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
         .await
         .context("Failed to submit SAD events")?;
 
-    println!(
-        "{}",
-        format!("{} SAD event(s) submitted", events.len()).green()
-    );
+    if response.applied {
+        println!(
+            "{}",
+            format!("{} SAD event(s) submitted", events.len()).green()
+        );
+    } else {
+        println!(
+            "{}",
+            "no new events submitted (all already present on server)".yellow()
+        );
+    }
     if let Some(at) = response.diverged_at {
         eprintln!(
             "{}",

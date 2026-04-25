@@ -583,3 +583,99 @@ async fn flush_failure_preserves_pending() {
     assert_eq!(pending_after.len(), 2);
     assert!(builder.sad_verification().is_none());
 }
+
+/// A retried submit of an already-applied batch must return the chain's
+/// *current* divergence state — not unconditional `diverged_at: None`.
+///
+/// Without this signal, a client whose first flush succeeded server-side but
+/// failed in phase 2 / 3 (Round 4 M1's terminology) can never learn that a
+/// concurrent writer forked the chain at submit time. Their local
+/// `sad_verification.diverged_at_version()` stays `None`, the next stager
+/// call accepts when it should refuse with `KelsError::SelDivergent`, and the
+/// builder's divergence-aware staging gate is silently defeated.
+///
+/// The test deliberately bypasses `SadEventBuilder` (which is single-actor and
+/// refuses divergent state) to fork the chain at the HTTP layer, then re-submits
+/// the second branch as a duplicate batch.
+#[tokio::test]
+#[serial]
+async fn submit_dedup_returns_current_divergence_signal() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let (_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_policy(harness, "dedup-divergence").await;
+    let publication_said = upload_publication(&sad_client, "dedup-divergence").await;
+
+    // Stage v0 Icp + v1 Est via the builder, anchor + flush.
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy);
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let (icp_said, est_said) = builder
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    kel_builder.interact(&est_said).await.unwrap();
+    let _ = builder.flush().await.expect("initial flush succeeds");
+
+    // Hand-build two conflicting v2 Upd events — both extend v1 (the Est tip)
+    // with different content, producing distinct SAIDs at the same version.
+    let v1_event = builder
+        .sad_verification()
+        .expect("verified after initial flush")
+        .current_event()
+        .clone();
+    let content_a = upload_publication(&sad_client, "fork-a").await;
+    let content_b = upload_publication(&sad_client, "fork-b").await;
+    let v2_a = SadEvent::upd(&v1_event, content_a).unwrap();
+    let v2_b = SadEvent::upd(&v1_event, content_b).unwrap();
+
+    // Anchor both forks in the same KEL — the policy check evaluates each
+    // event's SAID against the KEL anchors, and both SAIDs need to resolve.
+    kel_builder.interact(&v2_a.said).await.unwrap();
+    kel_builder.interact(&v2_b.said).await.unwrap();
+
+    // First fork lands cleanly — chain is still linear after this.
+    let r_a = sad_client
+        .submit_sad_events(std::slice::from_ref(&v2_a))
+        .await
+        .expect("first fork accepted");
+    assert!(r_a.applied);
+    assert_eq!(
+        r_a.diverged_at, None,
+        "single v2 event should not produce divergence yet"
+    );
+
+    // Second fork creates divergence — server detects collision at v2.
+    let r_b = sad_client
+        .submit_sad_events(std::slice::from_ref(&v2_b))
+        .await
+        .expect("second fork accepted, chain becomes divergent");
+    assert!(r_b.applied);
+    assert_eq!(
+        r_b.diverged_at,
+        Some(2),
+        "second event at v2 must report divergence at version 2"
+    );
+
+    // Now the load-bearing assertion: re-submit the second fork. All events
+    // are present → dedup short-circuit → `applied: false`. Pre-fix this would
+    // return `diverged_at: None` and silently mask the chain's state. After
+    // the fix, the dedup path queries `first_divergent_version` and reports
+    // the same `Some(2)` the original submit did.
+    let r_retry = sad_client
+        .submit_sad_events(std::slice::from_ref(&v2_b))
+        .await
+        .expect("retry of already-applied fork dedups");
+    assert!(
+        !r_retry.applied,
+        "retry of already-applied batch must report applied=false"
+    );
+    assert_eq!(
+        r_retry.diverged_at,
+        Some(2),
+        "dedup path must surface the chain's current divergence version, \
+         not unconditional None"
+    );
+}

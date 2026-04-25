@@ -159,6 +159,13 @@ pub(crate) async fn cmd_exchange_publish_key(
         .await
         .context("Failed to submit SAD events")?;
 
+    if !outcome.applied {
+        eprintln!(
+            "{}",
+            "key already published — server reports no new events".yellow()
+        );
+    }
+
     if let Some(at) = outcome.diverged_at_at_submit {
         eprintln!(
             "{}",
@@ -272,6 +279,13 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .flush()
         .await
         .context("Failed to submit SAD event")?;
+
+    if !outcome.applied {
+        eprintln!(
+            "{}",
+            "rotation event already on server — no new events committed".yellow()
+        );
+    }
 
     if let Some(at) = outcome.diverged_at_at_submit {
         eprintln!(

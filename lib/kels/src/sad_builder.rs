@@ -26,7 +26,7 @@ use crate::{
 /// breakdown, server-side rate-limit headroom) get added as additional fields
 /// without rebreaking the call sites.
 #[derive(Debug, Clone)]
-#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit before continuing to stage events"]
+#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit before continuing to stage events, and check applied to distinguish committed-new from already-present-on-server"]
 pub struct FlushOutcome {
     /// Server-reported divergence version, if a fork was created or
     /// already-existed at submit time. `None` means the chain is linear
@@ -34,6 +34,12 @@ pub struct FlushOutcome {
     /// `sad_verification().diverged_at_version()` so subsequent stagers can
     /// gate on builder state alone.
     pub diverged_at_at_submit: Option<u64>,
+    /// Whether this submit committed any new events server-side. `false`
+    /// means every submitted event was already present (typically a retry
+    /// after a previous flush succeeded server-side but the client failed in
+    /// phase 2 or 3) — the chain state is unchanged by this call. `true`
+    /// means at least one event was newly accepted.
+    pub applied: bool,
 }
 
 /// Builder for SAD Event Logs.
@@ -469,6 +475,7 @@ impl SadEventBuilder {
         if self.pending_events.is_empty() {
             return Ok(FlushOutcome {
                 diverged_at_at_submit: None,
+                applied: false,
             });
         }
 
@@ -516,6 +523,7 @@ impl SadEventBuilder {
 
         Ok(FlushOutcome {
             diverged_at_at_submit: response.diverged_at,
+            applied: response.applied,
         })
     }
 
