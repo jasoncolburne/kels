@@ -123,19 +123,22 @@ pub(crate) async fn cmd_exchange_publish_key(
     )
     .await?;
 
-    let kel_source = kel_source(cli)?;
-    let resolver = kels_policy::InMemoryPolicyResolver::new(vec![policy]);
-    let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &resolver);
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(kel_source(cli)?);
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(kels_policy::InMemoryPolicyResolver::new(vec![policy]));
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(kel_source, resolver),
+    );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
-    // No existing chain yet (sel_prefix = None) — `with_dependencies` simply
-    // wires deps without attempting hydration. Keeps the construction path
-    // identical to rotate-key so the two don't drift.
-    let mut sad_builder = SadEventBuilder::with_dependencies(
+    // No existing chain yet (sel_prefix = None) — `with_prefix` simply wires
+    // deps without attempting hydration. Keeps the construction path identical
+    // to rotate-key so the two don't drift.
+    let mut sad_builder = SadEventBuilder::with_prefix(
         Some(sad_client.clone()),
         Some(sad_store),
+        Some(checker),
         None,
-        &checker,
     )
     .await?;
 
@@ -158,7 +161,7 @@ pub(crate) async fn cmd_exchange_publish_key(
         .context("Failed to anchor v1 SAID in KEL")?;
 
     sad_builder
-        .flush(&checker)
+        .flush()
         .await
         .context("Failed to submit SAD events")?;
 
@@ -225,18 +228,21 @@ pub(crate) async fn cmd_exchange_rotate_key(
             .context("Failed to compute SEL prefix")?;
 
     // Hydrate the builder from the server-verified chain state, then stage
-    // the Upd. The checker is required by both hydration and flush; we share
-    // one instance across both calls.
-    let kel_source = kel_source(cli)?;
-    let resolver = kels_policy::InMemoryPolicyResolver::new(vec![policy]);
-    let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &resolver);
+    // the Upd. The checker is owned by the builder; hydration and flush both
+    // pull from the same Arc.
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(kel_source(cli)?);
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(kels_policy::InMemoryPolicyResolver::new(vec![policy]));
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(kel_source, resolver),
+    );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
-    let mut sad_builder = SadEventBuilder::with_dependencies(
+    let mut sad_builder = SadEventBuilder::with_prefix(
         Some(sad_client.clone()),
         Some(sad_store),
+        Some(checker),
         Some(&sel_prefix),
-        &checker,
     )
     .await?;
 
@@ -258,7 +264,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .context("Failed to anchor event SAID in KEL")?;
 
     sad_builder
-        .flush(&checker)
+        .flush()
         .await
         .context("Failed to submit SAD event")?;
 

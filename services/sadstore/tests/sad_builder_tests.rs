@@ -14,15 +14,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{net::TcpListener, sync::OnceLock, time::Duration};
+use std::{
+    net::TcpListener,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use cesr::Digest256;
 use ctor::dtor;
 use kels_core::{
-    KelsClient, KeyEventBuilder, SadEvent, SadEventBuilder, SadStoreClient, SoftwareKeyProvider,
-    VerificationKeyCode, compute_sad_event_prefix,
+    KelsClient, KeyEventBuilder, PolicyChecker, SadEvent, SadEventBuilder, SadStoreClient,
+    SoftwareKeyProvider, VerificationKeyCode, compute_sad_event_prefix,
 };
-use kels_policy::{AnchoredPolicyChecker, InMemoryPolicyResolver, Policy};
+use kels_policy::{AnchoredPolicyChecker, InMemoryPolicyResolver, Policy, PolicyResolver};
 use reqwest::Client;
 use serial_test::serial;
 use testcontainers::{
@@ -298,20 +302,17 @@ async fn setup_kel_and_policy(
     (prefix, kel_builder, policy, sad_client)
 }
 
-/// Returns the borrowed-from handles needed to build an
-/// `AnchoredPolicyChecker`: an `HttpKelSource` pointed at the harness's KEL
-/// service, and an `InMemoryPolicyResolver` seeded with the supplied policy.
-/// The caller composes the checker with `AnchoredPolicyChecker::new(&source,
-/// &resolver)` and must keep both returned values alive for the checker's
-/// lifetime.
-fn build_checker_inputs(
-    harness: &SharedHarness,
-    policy: Policy,
-) -> (kels_core::HttpKelSource, InMemoryPolicyResolver) {
-    let kel_source = kels_core::HttpKelSource::new(&harness.kels_url, "/api/v1/kels/kel/fetch")
-        .expect("kel source");
-    let resolver = InMemoryPolicyResolver::new(vec![policy]);
-    (kel_source, resolver)
+/// Build an `AnchoredPolicyChecker` from an `HttpKelSource` pointed at the
+/// harness's KEL service plus an `InMemoryPolicyResolver` seeded with the
+/// supplied policy. Returns the type-erased Arc the builder expects.
+fn build_checker(harness: &SharedHarness, policy: Policy) -> Arc<dyn PolicyChecker + Send + Sync> {
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(
+        kels_core::HttpKelSource::new(&harness.kels_url, "/api/v1/kels/kel/fetch")
+            .expect("kel source"),
+    );
+    let resolver: Arc<dyn PolicyResolver + Send + Sync> =
+        Arc::new(InMemoryPolicyResolver::new(vec![policy]));
+    Arc::new(AnchoredPolicyChecker::new(kel_source, resolver))
 }
 
 /// Upload a fresh publication SAD to act as `content` for Est/Upd events.
@@ -324,11 +325,70 @@ async fn upload_publication(sad_client: &SadStoreClient, tag: &str) -> Digest256
     sad_client
         .post_sad_object(&object)
         .await
-        .expect("upload publication");
-    object.get_said()
+        .expect("upload publication")
 }
 
 // ==================== Tests ====================
+
+/// Expanded-form SADs (parent with inline nested children) are stored under the
+/// post-compaction canonical SAID — not the SAID the client computed on the
+/// expanded form. The server returns the canonical value in the response body
+/// so clients can locate what was actually stored. Closes the M3 audit
+/// finding: without this round-trip, expanded-form posters would 404 on fetch.
+#[tokio::test]
+#[serial]
+async fn post_sad_object_returns_canonical_said_for_expanded_form() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
+
+    // Build an expanded-form parent with a nested SAD inline. Both SAIDs are
+    // computed by the client on the expanded shape; the server will compact
+    // the child into a SAID-string reference and rederive the parent.
+    let mut child = serde_json::json!({
+        "said": "",
+        "tag": "expanded-child",
+    });
+    child.derive_said().unwrap();
+
+    let mut parent = serde_json::json!({
+        "said": "",
+        "child": child,
+    });
+    parent.derive_said().unwrap();
+    let client_computed = parent.get_said();
+
+    let returned = sad_client
+        .post_sad_object(&parent)
+        .await
+        .expect("expanded-form post should succeed");
+
+    // Compaction changes the bytes the SAID is computed over, so the canonical
+    // SAID must differ from the client-computed value.
+    assert_ne!(
+        returned, client_computed,
+        "compaction should produce a different SAID; if these match, the parent\
+         had no nested SADs to compact and the test isn't exercising the path"
+    );
+
+    // The canonical SAID must be the one that locates the stored object.
+    let _ = sad_client
+        .get_sad_object(&returned)
+        .await
+        .expect("canonical SAID must locate the stored object");
+
+    // Sanity: the client-computed (pre-compaction) SAID must NOT locate
+    // anything — the server stored under the canonical SAID only.
+    assert!(
+        !sad_client
+            .sad_object_exists(&client_computed)
+            .await
+            .unwrap(),
+        "pre-compaction SAID must not exist server-side"
+    );
+}
 
 #[tokio::test]
 #[serial]
@@ -341,7 +401,7 @@ async fn publish_pending_makes_events_fetchable_by_said() {
         setup_kel_and_policy(harness, "publish-fetchable").await;
     let publication_said = upload_publication(&sad_client, "publish-fetchable").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None);
     builder
         .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
         .unwrap();
@@ -388,7 +448,7 @@ async fn publish_pending_idempotent() {
         setup_kel_and_policy(harness, "publish-idempotent").await;
     let publication_said = upload_publication(&sad_client, "publish-idempotent").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None);
     builder
         .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
         .unwrap();
@@ -418,9 +478,11 @@ async fn flush_submits_and_absorbs() {
         setup_kel_and_policy(harness, "flush-success").await;
     let publication_said = upload_publication(&sad_client, "flush-success").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()));
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy);
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
     let (icp_said, est_said) = builder
-        .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
 
     // Anchor both staged SAIDs in the owner's KEL — the server's write_policy
@@ -428,11 +490,8 @@ async fn flush_submits_and_absorbs() {
     kel_builder.interact(&icp_said).await.expect("anchor icp");
     kel_builder.interact(&est_said).await.expect("anchor est");
 
-    let (kel_source, resolver) = build_checker_inputs(harness, policy);
-    let checker = AnchoredPolicyChecker::new(&kel_source, &resolver);
-
     builder
-        .flush(&checker)
+        .flush()
         .await
         .expect("flush should succeed with anchors in place");
 
@@ -486,22 +545,26 @@ async fn flush_failure_preserves_pending() {
 
     let publication_said = upload_publication(&sad_client, "flush-failure").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()));
+    let policy_said = policy.said;
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(
+        kels_core::HttpKelSource::new(&harness.kels_url, "/api/v1/kels/kel/fetch").unwrap(),
+    );
+    let resolver: Arc<dyn PolicyResolver + Send + Sync> =
+        Arc::new(InMemoryPolicyResolver::new(vec![policy]));
+    let checker: Arc<dyn PolicyChecker + Send + Sync> =
+        Arc::new(AnchoredPolicyChecker::new(kel_source, resolver));
+
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
     let (icp_said, est_said) = builder
-        .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
     kel_builder.interact(&icp_said).await.unwrap();
     kel_builder.interact(&est_said).await.unwrap();
 
-    let kel_source =
-        kels_core::HttpKelSource::new(&harness.kels_url, "/api/v1/kels/kel/fetch").unwrap();
-    let resolver = InMemoryPolicyResolver::new(vec![policy]);
-    let checker = AnchoredPolicyChecker::new(&kel_source, &resolver);
-
     let pending_before: Vec<_> = builder.pending_events().iter().map(|e| e.said).collect();
 
     let err = builder
-        .flush(&checker)
+        .flush()
         .await
         .expect_err("flush must fail — server can't resolve the write_policy");
     // Server-side rejection surfaces as ServerError; we don't assert a specific

@@ -445,22 +445,24 @@ pub async fn post_sad_object(
         }
     };
 
-    let said = value.get_said();
-
     // Derive canonical SAID on the fully compacted form
     if value.derive_said().is_err() {
         return (StatusCode::BAD_REQUEST, "SAID derivation failed").into_response();
     }
 
-    if said != value.get_said() {
-        return (StatusCode::BAD_REQUEST, "SAID mismatch").into_response();
-    }
+    let canonical_said = value.get_said();
 
     // HEAD check — short-circuit if already exists (before any MinIO writes)
-    match state.object_store.exists(&said).await {
+    match state.object_store.exists(&canonical_said).await {
         Ok(true) => {
-            debug!("SAD object already exists: {}", said);
-            return (StatusCode::OK, "exists").into_response();
+            debug!("SAD object already exists: {}", canonical_said);
+            return (
+                StatusCode::OK,
+                Json(kels_core::PostSadObjectResponse {
+                    said: canonical_said,
+                }),
+            )
+                .into_response();
         }
         Ok(false) => {}
         Err(e) => {
@@ -495,7 +497,12 @@ pub async fn post_sad_object(
     if let Err(e) = state
         .repo
         .sad_objects
-        .store(&said, custody_said, &state.object_store, &compacted_bytes)
+        .store(
+            &canonical_said,
+            custody_said,
+            &state.object_store,
+            &compacted_bytes,
+        )
         .await
     {
         warn!("Failed to store SAD object: {}", e);
@@ -509,7 +516,7 @@ pub async fn post_sad_object(
                 let mut conn = conn.clone();
                 if let Err(e) = redis::cmd("PUBLISH")
                     .arg("sad_updates")
-                    .arg(said.as_ref())
+                    .arg(canonical_said.as_ref())
                     .query_async::<()>(&mut conn)
                     .await
                 {
@@ -522,7 +529,13 @@ pub async fn post_sad_object(
         }
     }
 
-    (StatusCode::CREATED, "stored").into_response()
+    (
+        StatusCode::CREATED,
+        Json(kels_core::PostSadObjectResponse {
+            said: canonical_said,
+        }),
+    )
+        .into_response()
 }
 
 /// Gossip replication decision for an object.
@@ -1098,7 +1111,7 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     tx: &mut Tx,
     repo: &SadEventRepository,
     prefix: &cesr::Digest256,
-    verifier: &mut kels_core::SelVerifier<'_>,
+    verifier: &mut kels_core::SelVerifier,
 ) -> Result<(), axum::response::Response> {
     let page_size = kels_core::page_size() as u64;
     let mut since: Option<cesr::Digest256> = None;
@@ -1219,21 +1232,23 @@ pub async fn submit_sad_events(
     let is_repair;
 
     {
-        let kel_source = match state.kels_client.as_kel_source() {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to build KEL source: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to build KEL source",
-                )
-                    .into_response();
-            }
-        };
-        let policy_resolver = SadStorePolicyResolver {
-            policies: state.repo.clone(),
-            object_store: state.object_store.clone(),
-        };
+        let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> =
+            match state.kels_client.as_kel_source() {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    warn!("Failed to build KEL source: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build KEL source",
+                    )
+                        .into_response();
+                }
+            };
+        let policy_resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+            Arc::new(SadStorePolicyResolver {
+                policies: state.repo.clone(),
+                object_store: state.object_store.clone(),
+            });
 
         let mut tx = match state.repo.sad_events.pool.begin_transaction().await {
             Ok(tx) => tx,
@@ -1364,8 +1379,12 @@ pub async fn submit_sad_events(
             }
 
             // Now verify the entire chain (post-truncation + repair events) from scratch.
-            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+                Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                    Arc::clone(&kel_source),
+                    Arc::clone(&policy_resolver),
+                ));
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1410,8 +1429,12 @@ pub async fn submit_sad_events(
             should_publish = true;
         } else {
             // Normal path: verify existing chain + new events, then save.
-            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+                Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                    Arc::clone(&kel_source),
+                    Arc::clone(&policy_resolver),
+                ));
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await

@@ -277,10 +277,12 @@ pub struct SelVerification {
     policy_satisfied: bool,
     last_governance_version: Option<u64>,
     establishment_version: Option<u64>,
+    diverged_at_version: Option<u64>,
 }
 
 impl SelVerification {
     /// Create a new verification token. Crate-internal only.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tip: SadEvent,
         tracked_write_policy: cesr::Digest256,
@@ -289,6 +291,7 @@ impl SelVerification {
         policy_satisfied: bool,
         last_governance_version: Option<u64>,
         establishment_version: Option<u64>,
+        diverged_at_version: Option<u64>,
     ) -> Self {
         Self {
             tip,
@@ -298,6 +301,7 @@ impl SelVerification {
             policy_satisfied,
             last_governance_version,
             establishment_version,
+            diverged_at_version,
         }
     }
 
@@ -383,6 +387,18 @@ impl SelVerification {
     /// reading this as branch-scoped must gate on `policy_satisfied()` first.
     pub fn establishment_version(&self) -> Option<u64> {
         self.establishment_version
+    }
+
+    /// The lowest version at which divergence was first observed, or `None` on
+    /// linear chains. Mirrors `KelVerification::diverged_at_serial()`.
+    ///
+    /// Consumers should treat `Some(_)` as a hard signal that the chain has
+    /// multiple live tips and that branch-scoped accessors (`write_policy`,
+    /// `governance_policy`, `events_since_evaluation`) reflect only the
+    /// tie-break winner. `SelVerifier::resume` refuses divergent tokens — the
+    /// single-branch rehydration cannot reconstruct the losing branch.
+    pub fn diverged_at_version(&self) -> Option<u64> {
+        self.diverged_at_version
     }
 }
 

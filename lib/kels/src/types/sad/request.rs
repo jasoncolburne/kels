@@ -51,6 +51,20 @@ pub struct SubmitSadEventsResponse {
     pub applied: bool,
 }
 
+/// Response from a successful SAD object submission.
+///
+/// Carries the **canonical** SAID under which the server stored the object —
+/// after compaction of any inline nested SADs. Clients submitting an expanded-form
+/// SAD cannot recompute this without redoing the server's compaction, so the
+/// server returns it authoritatively. Returned on both 200 ("exists") and 201
+/// ("stored") responses; pre-compacted submissions will see this equal to the
+/// SAID they computed locally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostSadObjectResponse {
+    pub said: cesr::Digest256,
+}
+
 /// Request body for listing repairs for a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadRepairsRequest {

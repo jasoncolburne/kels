@@ -3,12 +3,12 @@
 //! Client for the replicated SAD store service.
 //! Provides methods for both Layer 1 (SAD objects) and Layer 2 (SAD events).
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadEventPage, SadEventRepairPage, SelVerification,
+    KelsError, PostSadObjectResponse, SadEventPage, SadEventRepairPage, SelVerification,
     error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
@@ -73,11 +73,13 @@ impl SadStoreClient {
         &self,
         object: &serde_json::Value,
     ) -> Result<cesr::Digest256, KelsError> {
+        // Pre-flight: catches tampered or partially-constructed payloads before
+        // they hit the wire. The returned SAID is the *server's* canonical one
+        // (post-compaction), which differs from the client-computed value when
+        // the submission is in expanded form.
         object.verify_said().map_err(|e| {
             KelsError::VerificationFailed(format!("Object SAID verification failed: {}", e))
         })?;
-
-        let said = object.get_said();
 
         let url = format!("{}/api/v1/sad", self.base_url);
         let body = serde_json::to_vec(object)?;
@@ -91,7 +93,8 @@ impl SadStoreClient {
             .await?;
 
         if resp.status().is_success() {
-            Ok(said)
+            let parsed: PostSadObjectResponse = resp.json().await?;
+            Ok(parsed.said)
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -358,7 +361,7 @@ impl SadStoreClient {
     pub async fn verify_sad_events(
         &self,
         prefix: &cesr::Digest256,
-        checker: &(dyn crate::PolicyChecker + Sync),
+        checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
     ) -> Result<SelVerification, KelsError> {
         crate::verify_sad_events(
             prefix,

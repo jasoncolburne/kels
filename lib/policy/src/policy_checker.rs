@@ -3,6 +3,8 @@
 //! Evaluates write_policy satisfaction by checking that the endorsers required
 //! by the policy have anchored the event's SAID in their KELs.
 
+use std::sync::Arc;
+
 use kels_core::{KelsError, PagedKelSource, PolicyChecker, SadEvent};
 
 use crate::{evaluate_anchored_policy, resolver::PolicyResolver};
@@ -14,15 +16,20 @@ use crate::{evaluate_anchored_policy, resolver::PolicyResolver};
 ///
 /// For v1+ advances: resolves `previous_policy`, checks that endorsers
 /// anchored `new_event.said` per the previous policy.
-pub struct AnchoredPolicyChecker<'a> {
-    kel_source: &'a (dyn PagedKelSource + Sync),
-    resolver: &'a (dyn PolicyResolver + Sync),
+///
+/// Owns its dependencies via `Arc` so the checker is `'static` and can be
+/// stashed in `Arc<dyn PolicyChecker + Send + Sync>` on `SadEventBuilder` or
+/// any other type-erased holder. Cloning is cheap (Arc bumps a refcount).
+#[derive(Clone)]
+pub struct AnchoredPolicyChecker {
+    kel_source: Arc<dyn PagedKelSource + Send + Sync>,
+    resolver: Arc<dyn PolicyResolver + Send + Sync>,
 }
 
-impl<'a> AnchoredPolicyChecker<'a> {
+impl AnchoredPolicyChecker {
     pub fn new(
-        kel_source: &'a (dyn PagedKelSource + Sync),
-        resolver: &'a (dyn PolicyResolver + Sync),
+        kel_source: Arc<dyn PagedKelSource + Send + Sync>,
+        resolver: Arc<dyn PolicyResolver + Send + Sync>,
     ) -> Self {
         Self {
             kel_source,
@@ -32,7 +39,7 @@ impl<'a> AnchoredPolicyChecker<'a> {
 }
 
 #[async_trait::async_trait]
-impl PolicyChecker for AnchoredPolicyChecker<'_> {
+impl PolicyChecker for AnchoredPolicyChecker {
     async fn satisfies(
         &self,
         new_event: &SadEvent,
@@ -43,7 +50,7 @@ impl PolicyChecker for AnchoredPolicyChecker<'_> {
             .resolve_policy(previous_policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, &new_event.said, self.kel_source, self.resolver)
+        match evaluate_anchored_policy(&policy, &new_event.said, &*self.kel_source, &*self.resolver)
             .await
         {
             Ok(v) => Ok(v.is_satisfied),
@@ -62,7 +69,9 @@ impl PolicyChecker for AnchoredPolicyChecker<'_> {
             .resolve_policy(write_policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, &event.said, self.kel_source, self.resolver).await {
+        match evaluate_anchored_policy(&policy, &event.said, &*self.kel_source, &*self.resolver)
+            .await
+        {
             Ok(v) => Ok(v.is_satisfied),
             Err(e) => Err(KelsError::VerificationFailed(e.to_string())),
         }

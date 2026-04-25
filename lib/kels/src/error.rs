@@ -152,6 +152,11 @@ pub enum KelsError {
 
     #[error("Evaluation required: would exceed non-evaluation event bound")]
     EvaluationRequired,
+
+    #[error(
+        "Cannot resume verifier from divergent-chain token — re-verify the chain from inception"
+    )]
+    CannotResumeDivergentChain,
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -271,6 +276,7 @@ mod tests {
             KelsError::RegistryFailure("all failed".to_string()),
             KelsError::InvalidDisclosure("bad expression".to_string()),
             KelsError::EvaluationRequired,
+            KelsError::CannotResumeDivergentChain,
         ];
 
         for err in errors {

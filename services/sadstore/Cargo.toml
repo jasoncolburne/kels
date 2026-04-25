@@ -70,6 +70,15 @@ serial_test = "3"
 # Full-stack integration tests: sad_builder_tests drives both services.
 # The package is named `kels` (services/kels/Cargo.toml); the library target
 # it exports is `kels_service`, which is what `use` statements reference.
+#
+# Why: full-stack integration tests in tests/sad_builder_tests.rs need to
+# spawn a live KELS service — the AnchoredPolicyChecker walks a real KEL to
+# verify anchors, and there's no test-mode bypass on the policy check at the
+# service boundary. This inverts the usual "services don't depend on services"
+# rule, but only at dev-deps (no runtime impact). If the test-build cost
+# becomes painful, the principled fix is to extract a `kels-test-harness`
+# crate exposing the test-spawning surface — file as a follow-up at that
+# point, not pre-emptively.
 kels = { path = "../../services/kels" }
 
 [lints.clippy]

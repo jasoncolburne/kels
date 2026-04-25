@@ -9,6 +9,8 @@
 //! - `verify_sad_events` — structural + policy verification via `PolicyChecker`
 //! - `forward_sad_events` — forward without verification, supports delta via `since`
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
@@ -148,11 +150,11 @@ impl PagedSadSink for HttpSadSink {
 /// found (two events at the same version), switches to collection mode,
 /// accumulates all remaining events, then submits them via
 /// `send_divergent_sad_events` in an order the remote can accept.
-async fn transfer_sad_events<'a>(
+async fn transfer_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
-    mut verifier: Option<&mut SelVerifier<'a>>,
+    mut verifier: Option<&mut SelVerifier>,
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
@@ -354,11 +356,11 @@ async fn send_divergent_sad_events(
 pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
-    checker: &(dyn super::verification::PolicyChecker + Sync),
+    checker: Arc<dyn super::verification::PolicyChecker + Send + Sync>,
     page_size: usize,
     max_pages: usize,
 ) -> Result<SelVerification, KelsError> {
-    let mut verifier = SelVerifier::new(prefix, checker);
+    let mut verifier = SelVerifier::new(Some(prefix), checker);
     transfer_sad_events(
         prefix,
         source,

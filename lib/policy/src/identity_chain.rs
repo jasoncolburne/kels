@@ -119,6 +119,8 @@ pub fn compute_identity_prefix(initial_policy: &Policy) -> Result<cesr::Digest25
 // wrong-topic test stay hand-built: they produce intermediate partial states or
 // cross-topic shapes that the builder refuses by design.
 mod tests {
+    use std::sync::Arc;
+
     use kels_core::{KelsError, PolicyChecker, SadEventBuilder, SelVerifier};
 
     use super::*;
@@ -203,7 +205,7 @@ mod tests {
 
         // Stage v0 Icp + v1 Est via the builder. Identity chains are
         // prefix-discoverable, so governance lives on v1 (Est), not v0.
-        let mut builder = SadEventBuilder::new(None);
+        let mut builder = SadEventBuilder::new(None, None, None);
         builder
             .incept_deterministic(IDENTITY_CHAIN_TOPIC, policy1.said, gp.said, None)
             .unwrap();
@@ -211,8 +213,8 @@ mod tests {
         let v0 = staged[0].clone();
         let prefix = v0.prefix;
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&staged).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
@@ -230,8 +232,8 @@ mod tests {
         let mut full_chain = staged.clone();
         full_chain.push(v2);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&full_chain).await.unwrap();
         let reverification = verifier.finish().await.unwrap();
         assert!(reverification.policy_satisfied());
@@ -261,8 +263,8 @@ mod tests {
         )
         .unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
@@ -276,14 +278,14 @@ mod tests {
         let policy = test_policy("test-identity");
         let gp = test_policy("governance");
 
-        let mut builder = SadEventBuilder::new(None);
+        let mut builder = SadEventBuilder::new(None, None, None);
         builder
             .incept_deterministic(IDENTITY_CHAIN_TOPIC, policy.said, gp.said, None)
             .unwrap();
         let staged = builder.pending_events().to_vec();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&staged[0].prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&staged[0].prefix), Arc::clone(&checker));
         verifier.verify_page(&staged).await.unwrap();
         let verification = verifier.finish().await.unwrap();
 
@@ -313,8 +315,8 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = RejectAdvanceChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectAdvanceChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());

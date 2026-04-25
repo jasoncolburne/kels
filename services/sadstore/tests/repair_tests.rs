@@ -150,7 +150,7 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadEvent> {
     );
     let wp = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
     let gp = cesr::Digest256::blake3_256(format!("{}-gp", kel_prefix).as_bytes());
-    let mut builder = SadEventBuilder::new(None);
+    let mut builder = SadEventBuilder::new(None, None, None);
     builder.incept_deterministic(kind, wp, gp, None).unwrap();
     for i in 2..count {
         let content = cesr::Digest256::blake3_256(format!("content_{}", i).as_bytes());

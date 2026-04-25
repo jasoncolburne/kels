@@ -1,6 +1,6 @@
 //! SAD Event Log verification (structural + policy authorization)
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -76,8 +76,12 @@ struct SadBranchState {
 /// `policy_satisfied`. Structural errors (bad SAID, wrong prefix, etc.)
 /// still return errors. Callers check `policy_satisfied()` on the verification
 /// token to decide what to do (e.g., server returns 403, client logs a warning).
-pub struct SelVerifier<'a> {
-    prefix: cesr::Digest256,
+pub struct SelVerifier {
+    /// Expected chain prefix. `None` on a fresh builder with no hydration and
+    /// no caller-supplied prefix — latches to `event.prefix` at inception. Once
+    /// set (latched or supplied), `verify_event` enforces that every event
+    /// matches; a mismatch surfaces as `KelsError::VerificationFailed`.
+    prefix: Option<cesr::Digest256>,
     topic: Option<String>,
     /// Branches keyed by tip SAID. Pre-divergence: one branch.
     branches: HashMap<cesr::Digest256, SadBranchState>,
@@ -90,13 +94,22 @@ pub struct SelVerifier<'a> {
     /// The version at which governance_policy was first established (v0 or v1).
     /// Chain-wide, set once.
     establishment_version: Option<u64>,
-    checker: &'a dyn PolicyChecker,
+    /// The lowest version at which a second branch first appeared on the chain.
+    /// Set once at first divergence, carried through to `SelVerification`.
+    diverged_at_version: Option<u64>,
+    /// Owned policy checker. Held as `Arc` so the verifier can outlive any
+    /// individual call site and so `SadEventBuilder` can stash one and reuse
+    /// it across `new`/`resume` paths without lifetime gymnastics.
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
 }
 
-impl<'a> SelVerifier<'a> {
-    pub fn new(prefix: &cesr::Digest256, checker: &'a dyn PolicyChecker) -> Self {
+impl SelVerifier {
+    pub fn new(
+        prefix: Option<&cesr::Digest256>,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
+    ) -> Self {
         Self {
-            prefix: *prefix,
+            prefix: prefix.copied(),
             topic: None,
             branches: HashMap::new(),
             generation_buffer: Vec::new(),
@@ -104,6 +117,7 @@ impl<'a> SelVerifier<'a> {
             saw_any_events: false,
             policy_satisfied: true,
             establishment_version: None,
+            diverged_at_version: None,
             checker,
         }
     }
@@ -116,10 +130,12 @@ impl<'a> SelVerifier<'a> {
     fn verify_event(&self, event: &SadEvent) -> Result<(), KelsError> {
         event.verify_said()?;
 
-        if event.prefix != self.prefix {
+        if let Some(ref expected) = self.prefix
+            && event.prefix != *expected
+        {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD event {} prefix {} doesn't match SEL prefix {}",
-                event.said, event.prefix, self.prefix
+                event.said, event.prefix, expected
             )));
         }
 
@@ -193,6 +209,14 @@ impl<'a> SelVerifier<'a> {
                     last_governance_version: None,
                 },
             );
+
+            // Latch the chain prefix from v0 if the caller didn't supply one.
+            // On subsequent events the `verify_event` check will enforce equality
+            // against this value; a fresh-builder incept that derives a prefix
+            // different from what the caller expected surfaces there.
+            if self.prefix.is_none() {
+                self.prefix = Some(event.prefix);
+            }
             return Ok(());
         }
 
@@ -203,6 +227,14 @@ impl<'a> SelVerifier<'a> {
                 version,
                 events.len()
             )));
+        }
+
+        // Detect divergence: more events than branches means a new fork. Mirrors
+        // the KEL verifier's detection at types/kel/verification.rs. Set once —
+        // later generations on a divergent chain don't overwrite the first
+        // divergence version.
+        if events.len() > self.branches.len() && self.diverged_at_version.is_none() {
+            self.diverged_at_version = Some(version);
         }
 
         let mut new_branches: HashMap<cesr::Digest256, SadBranchState> = HashMap::new();
@@ -472,6 +504,7 @@ impl<'a> SelVerifier<'a> {
             self.policy_satisfied,
             last_governance_version,
             self.establishment_version,
+            self.diverged_at_version,
         ))
     }
 
@@ -483,16 +516,27 @@ impl<'a> SelVerifier<'a> {
     /// calls continue from where the prior verification left off instead of
     /// re-verifying from inception.
     ///
-    /// Parallel to `KelVerifier::resume`. Only supports non-divergent chains —
-    /// `SelVerification` carries a single tie-break winner, so a resumed verifier
-    /// cannot reconstruct two divergent branches. Callers that hold a verification
-    /// over a divergent chain must re-verify from inception.
+    /// Parallel to `KelVerifier::resume`.
+    ///
+    /// **Precondition: non-divergent tokens only.** `SelVerification` carries a
+    /// single tie-break winner, so a resumed verifier cannot reconstruct the
+    /// losing branch. If `verification.diverged_at_version().is_some()`, resume
+    /// returns `KelsError::CannotResumeDivergentChain` and the caller must
+    /// re-verify the chain from inception.
     pub fn resume(
-        prefix: &cesr::Digest256,
         verification: &super::event::SelVerification,
-        checker: &'a dyn PolicyChecker,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
     ) -> Result<Self, KelsError> {
+        if verification.diverged_at_version().is_some() {
+            return Err(KelsError::CannotResumeDivergentChain);
+        }
+
         let tip = verification.current_event().clone();
+
+        // The chain's prefix is authoritative from the verification tip — no
+        // caller-supplied prefix. Subsequent `verify_page` calls get the same
+        // strict prefix check as a latched fresh verifier would.
+        let prefix = tip.prefix;
 
         let mut branches = HashMap::new();
         branches.insert(
@@ -507,7 +551,7 @@ impl<'a> SelVerifier<'a> {
         );
 
         Ok(Self {
-            prefix: *prefix,
+            prefix: Some(prefix),
             topic: Some(tip.topic.clone()),
             branches,
             generation_buffer: Vec::new(),
@@ -515,6 +559,7 @@ impl<'a> SelVerifier<'a> {
             saw_any_events: true,
             policy_satisfied: verification.policy_satisfied(),
             establishment_version: verification.establishment_version(),
+            diverged_at_version: None,
             checker,
         })
     }
@@ -543,7 +588,7 @@ mod tests {
     /// Create a v0 event with governance_policy declared.
     fn create_v0_with_evaluation(wp: cesr::Digest256) -> SadEvent {
         let gp = test_digest(b"evaluation-policy");
-        let mut builder = SadEventBuilder::new(None);
+        let mut builder = SadEventBuilder::new(None, None, None);
         builder
             .incept("kels/sad/v1/keys/mlkem", wp, gp)
             .expect("incept produces a valid v0 with governance");
@@ -654,8 +699,8 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         assert!(verifier.verify_page(&[v0.clone(), v1]).await.is_ok());
         assert!(!verifier.is_divergent());
         let verification = verifier.finish().await.unwrap();
@@ -664,8 +709,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sel_verifier_empty_fails() {
-        let checker = AlwaysPassChecker;
-        let verifier = SelVerifier::new(&test_digest(b"test"), &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let verifier = SelVerifier::new(Some(&test_digest(b"test")), Arc::clone(&checker));
         assert!(verifier.finish().await.is_err());
     }
 
@@ -682,8 +727,8 @@ mod tests {
         v1.version = 5;
         v1.derive_said().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -707,8 +752,8 @@ mod tests {
         v2.content = Some(test_digest(b"content2"));
         v2.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         assert!(verifier.verify_page(&[v0]).await.is_ok());
         assert!(verifier.verify_page(&[v1, v2]).await.is_ok());
 
@@ -727,8 +772,8 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(verification.policy_satisfied());
@@ -746,8 +791,8 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(verification.policy_satisfied());
@@ -773,10 +818,11 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptEvaluationRejectWriteChecker {
+                governance_policy: gp,
+            });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(
@@ -800,8 +846,8 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         // Pure evaluation — tracked write_policy inherited from v0
@@ -829,10 +875,11 @@ mod tests {
         v1.increment().unwrap();
 
         // Accepts governance_policy evaluation, rejects write_policy authorization.
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptEvaluationRejectWriteChecker {
+                governance_policy: gp,
+            });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(
@@ -888,10 +935,11 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp1,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptEvaluationRejectWriteChecker {
+                governance_policy: gp1,
+            });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier
             .finish()
@@ -926,10 +974,11 @@ mod tests {
 
         // AcceptEvaluationRejectWriteChecker accepts only checks against gp_legit.
         // The wp check (against tracked wp1) returns false → soft-fail.
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp_legit,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptEvaluationRejectWriteChecker {
+                governance_policy: gp_legit,
+            });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap_err();
         // finish() rejects: the gate kept branch.governance_policy = None, so
@@ -991,8 +1040,9 @@ mod tests {
             }
         }
 
-        let checker = AcceptLegitEstChecker { legit_gp: gp_legit };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptLegitEstChecker { legit_gp: gp_legit });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
             .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
             .await
@@ -1036,8 +1086,8 @@ mod tests {
         v1.governance_policy = None; // Rpr forbids governance_policy
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         // Rpr inherits wp1 from branch state
@@ -1071,8 +1121,8 @@ mod tests {
         v3.governance_policy = None;
         v3.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
             .verify_page(&[v0.clone(), v1, v2, v3])
             .await
@@ -1111,10 +1161,11 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AcceptEvaluationRejectWriteChecker {
+                governance_policy: gp,
+            });
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(
@@ -1157,8 +1208,8 @@ mod tests {
         };
 
         // Order 1: a then b
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
             .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
             .await
@@ -1168,8 +1219,8 @@ mod tests {
         assert_eq!(v1.write_policy(), &expected_wp);
 
         // Order 2: b then a — must return the same branch
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1_b, v1_a]).await.unwrap();
         let v2 = verifier.finish().await.unwrap();
         assert_eq!(v2.write_policy(), &expected_wp);
@@ -1186,8 +1237,8 @@ mod tests {
         v1.governance_policy = None;
         v1.increment().unwrap();
 
-        let checker = RejectingChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());
@@ -1198,8 +1249,8 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_with_evaluation(wp);
 
-        let checker = RejectInceptionChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectInceptionChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert!(!verification.policy_satisfied());
@@ -1212,8 +1263,8 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_with_evaluation(wp);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 0);
@@ -1228,8 +1279,8 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 1);
@@ -1267,8 +1318,8 @@ mod tests {
         current.increment().unwrap();
         events.push(current.clone());
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&events).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1306,8 +1357,8 @@ mod tests {
         add_governance_evaluation(&mut current);
         events.push(current.clone());
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&events).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 64);
@@ -1324,8 +1375,8 @@ mod tests {
         v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 1);
@@ -1342,8 +1393,8 @@ mod tests {
         v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1362,8 +1413,8 @@ mod tests {
         v1.kind = SadEventKind::Evl;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1387,8 +1438,8 @@ mod tests {
 
         // Chain has governance_policy established but never evaluated — still passes finish
         // (finish only checks that governance_policy exists on at least one branch)
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 1);
@@ -1400,8 +1451,8 @@ mod tests {
         let v0 = create_v0_no_evaluation(wp);
 
         // v0 without governance_policy and no Est — finish should reject
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1429,8 +1480,8 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 1);
@@ -1448,8 +1499,8 @@ mod tests {
         v1.governance_policy = Some(test_digest(b"another-evaluation-policy"));
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1474,8 +1525,8 @@ mod tests {
         v2.governance_policy = Some(test_digest(b"another-gp"));
         v2.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1495,8 +1546,8 @@ mod tests {
         v1.write_policy = None;
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1518,8 +1569,8 @@ mod tests {
         v1.governance_policy = None; // Rpr forbids governance_policy
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.last_governance_version(), Some(1));
@@ -1536,8 +1587,8 @@ mod tests {
         v1.governance_policy = Some(test_digest(b"rpr-gp"));
         v1.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1561,8 +1612,8 @@ mod tests {
         v2.content = Some(test_digest(b"content2"));
         add_governance_evaluation(&mut v2);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.last_governance_version(), Some(2));
@@ -1596,8 +1647,8 @@ mod tests {
         v4.content = Some(test_digest(b"content4"));
         add_governance_evaluation(&mut v4);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2, v3, v4]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.last_governance_version(), Some(4));
@@ -1611,8 +1662,8 @@ mod tests {
         v1.content = Some(test_digest(b"content1"));
         add_governance_declaration(&mut v1);
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.last_governance_version(), None);
@@ -1637,8 +1688,8 @@ mod tests {
         };
         v0.derive_said().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1665,8 +1716,8 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
         assert_eq!(verification.current_event().version, 2);
@@ -1684,8 +1735,8 @@ mod tests {
 
         // RejectingChecker returns Ok(false) for all satisfies calls —
         // governance_policy evaluation is a hard error (unlike write_policy which is soft).
-        let checker = RejectingChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
@@ -1693,5 +1744,133 @@ mod tests {
             "Expected governance policy error, got: {}",
             err
         );
+    }
+
+    // ==================== Divergence tracking + resume refusal ====================
+
+    /// A linear chain must leave `diverged_at_version == None`.
+    #[tokio::test]
+    async fn test_diverged_at_version_none_on_linear_chain() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_evaluation(wp);
+        let mut v1 = v0.clone();
+        v1.content = Some(test_digest(b"content1"));
+        v1.kind = SadEventKind::Upd;
+        v1.write_policy = None;
+        v1.governance_policy = None;
+        v1.increment().unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.diverged_at_version(), None);
+    }
+
+    /// Two events at v1 extending the same v0 tip → diverged_at_version == Some(1).
+    #[tokio::test]
+    async fn test_diverged_at_version_set_at_first_fork() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_evaluation(wp);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadEventKind::Upd;
+        v1_a.write_policy = None;
+        v1_a.governance_policy = None;
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadEventKind::Upd;
+        v1_b.write_policy = None;
+        v1_b.governance_policy = None;
+        v1_b.increment().unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier.verify_page(&[v0, v1_a, v1_b]).await.unwrap();
+        // `is_divergent()` only reports true once `finish()` flushes the last
+        // generation — v1's fork is still in `generation_buffer` at this point.
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.diverged_at_version(), Some(1));
+    }
+
+    /// Once set, `diverged_at_version` doesn't advance on subsequent generations.
+    /// Chain: v0 Icp → v1 two-branch fork → v2 (one event per branch).
+    #[tokio::test]
+    async fn test_diverged_at_version_set_once() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_evaluation(wp);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadEventKind::Upd;
+        v1_a.write_policy = None;
+        v1_a.governance_policy = None;
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadEventKind::Upd;
+        v1_b.write_policy = None;
+        v1_b.governance_policy = None;
+        v1_b.increment().unwrap();
+
+        // v2 on each branch — legitimate per-branch continuation, not new divergence.
+        let mut v2_a = v1_a.clone();
+        v2_a.content = Some(test_digest(b"content_a2"));
+        v2_a.increment().unwrap();
+
+        let mut v2_b = v1_b.clone();
+        v2_b.content = Some(test_digest(b"content_b2"));
+        v2_b.increment().unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier
+            .verify_page(&[v0, v1_a, v1_b, v2_a, v2_b])
+            .await
+            .unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert_eq!(verification.diverged_at_version(), Some(1));
+    }
+
+    /// `SelVerifier::resume` must refuse tokens carrying a divergence marker.
+    /// The single-branch rehydration cannot reconstruct the losing branch, so
+    /// continuing from a divergent token would silently drop state.
+    #[tokio::test]
+    async fn test_resume_refuses_divergent_token() {
+        let wp = test_digest(b"write-policy");
+        let v0 = create_v0_with_evaluation(wp);
+
+        let mut v1_a = v0.clone();
+        v1_a.content = Some(test_digest(b"content_a"));
+        v1_a.kind = SadEventKind::Upd;
+        v1_a.write_policy = None;
+        v1_a.governance_policy = None;
+        v1_a.increment().unwrap();
+
+        let mut v1_b = v0.clone();
+        v1_b.content = Some(test_digest(b"content_b"));
+        v1_b.kind = SadEventKind::Upd;
+        v1_b.write_policy = None;
+        v1_b.governance_policy = None;
+        v1_b.increment().unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier
+            .verify_page(&[v0.clone(), v1_a, v1_b])
+            .await
+            .unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(verification.diverged_at_version().is_some());
+
+        match SelVerifier::resume(&verification, Arc::clone(&checker)) {
+            Err(KelsError::CannotResumeDivergentChain) => {}
+            Err(e) => panic!("Expected CannotResumeDivergentChain, got: {e:?}"),
+            Ok(_) => panic!("Expected resume to refuse divergent token"),
+        }
     }
 }
