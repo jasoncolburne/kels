@@ -601,15 +601,7 @@ mod tests {
 
     /// Create a v0 event without evaluation (prefix stays deterministic).
     fn create_v0_no_evaluation(wp: cesr::Digest256) -> SadEvent {
-        SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            None,
-        )
-        .unwrap()
+        SadEvent::icp("kels/sad/v1/keys/mlkem", wp, None).unwrap()
     }
 
     /// Declare governance_policy on an event (Est kind) and increment.

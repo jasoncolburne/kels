@@ -130,6 +130,11 @@ impl PagedSadSink for HttpSadSink {
         let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
+            // Drain the body to honor `SubmitSadEventsResponse`'s `#[must_use]`.
+            // Forwarding/sync isn't owner-driven, so the divergence/applied
+            // signals aren't actionable here — owner submission goes through
+            // `SadStoreClient::submit_sad_events`, which surfaces the response.
+            let _ = resp.json::<crate::SubmitSadEventsResponse>().await;
             Ok(())
         } else if resp.status() == reqwest::StatusCode::CONFLICT {
             // Chain already divergent on remote — that's fine, skip
@@ -393,9 +398,6 @@ pub async fn forward_sad_events(
 // page-boundary divergence detection. `SadEventBuilder` is single-actor
 // and refuses divergent state by design, so the fixture is hand-built.
 mod tests {
-    use verifiable_storage::Chained;
-
-    use super::super::event::SadEventKind;
     use super::*;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
@@ -464,29 +466,12 @@ mod tests {
         let gp = test_digest(b"governance-policy");
 
         // Build a chain: v0 (declares governance_policy), v1, then two events at v2 (divergence)
-        let v0 = SadEvent::create(
-            "kels/test".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.kind = SadEventKind::Upd;
-        v1.content = Some(test_digest(b"content1"));
-        v1.increment().unwrap();
+        let v0 = SadEvent::icp("kels/test", wp, Some(gp)).unwrap();
+        let v1 = SadEvent::upd(&v0, test_digest(b"content1")).unwrap();
 
         // Two conflicting v2 events (same previous = v1.said)
-        let mut v2_a = v1.clone();
-        v2_a.content = Some(test_digest(b"content2a"));
-        v2_a.increment().unwrap();
-
-        let mut v2_b = v1.clone();
-        v2_b.content = Some(test_digest(b"content2b"));
-        v2_b.increment().unwrap();
+        let v2_a = SadEvent::upd(&v1, test_digest(b"content2a")).unwrap();
+        let v2_b = SadEvent::upd(&v1, test_digest(b"content2b")).unwrap();
 
         let prefix = v0.prefix;
 

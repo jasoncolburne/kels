@@ -157,6 +157,11 @@ pub enum KelsError {
         "Cannot resume verifier from divergent-chain token — re-verify the chain from inception"
     )]
     CannotResumeDivergentChain,
+
+    #[error(
+        "SAD Event Log diverged at version {at} — stage a repair to resolve before further updates"
+    )]
+    SelDivergent { at: u64 },
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -277,6 +282,7 @@ mod tests {
             KelsError::InvalidDisclosure("bad expression".to_string()),
             KelsError::EvaluationRequired,
             KelsError::CannotResumeDivergentChain,
+            KelsError::SelDivergent { at: 7 },
         ];
 
         for err in errors {

@@ -9,6 +9,7 @@ use verifiable_storage::SelfAddressed;
 
 use crate::{
     KelsError, PostSadObjectResponse, SadEventPage, SadEventRepairPage, SelVerification,
+    SubmitSadEventsResponse,
     error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
@@ -201,12 +202,22 @@ impl SadStoreClient {
     /// Authorization is via KEL anchoring: each event's SAID must be anchored
     /// via ixn by `write_policy` endorsers in their KELs. There are no per-event
     /// signatures — the server validates anchoring against the endorsers' KELs.
-    pub async fn submit_sad_events(&self, events: &[crate::SadEvent]) -> Result<(), KelsError> {
+    ///
+    /// Returns the server-reported `SubmitSadEventsResponse`. The `diverged_at`
+    /// field carries the server's authoritative divergence signal — a fork
+    /// created by a concurrent writer at submission time would be invisible to
+    /// the local verifier (which only sees the owner's batch). Callers that
+    /// build on the local verification token (`SadEventBuilder::flush`) must
+    /// propagate this to avoid silent state drift.
+    pub async fn submit_sad_events(
+        &self,
+        events: &[crate::SadEvent],
+    ) -> Result<SubmitSadEventsResponse, KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
-            Ok(())
+            Ok(resp.json().await?)
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))

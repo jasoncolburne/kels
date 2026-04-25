@@ -490,10 +490,15 @@ async fn flush_submits_and_absorbs() {
     kel_builder.interact(&icp_said).await.expect("anchor icp");
     kel_builder.interact(&est_said).await.expect("anchor est");
 
-    builder
+    let outcome = builder
         .flush()
         .await
         .expect("flush should succeed with anchors in place");
+    assert!(
+        outcome.diverged_at_at_submit.is_none(),
+        "linear-chain flush must not report divergence, got {:?}",
+        outcome.diverged_at_at_submit
+    );
 
     // Server-side: chain readable via fetch_sad_events.
     let sel_prefix = compute_sad_event_prefix(

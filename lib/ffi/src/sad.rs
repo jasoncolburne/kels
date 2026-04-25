@@ -232,7 +232,11 @@ pub unsafe extern "C" fn kels_sad_submit_events(
     };
 
     match runtime.block_on(client.submit_sad_events(&events)) {
-        Ok(()) => KelsStatus::Ok,
+        // FFI surface stays a single status code — divergence signals on the
+        // response are not currently propagated across the C boundary.
+        // Server-side state is correct; callers that need the divergence
+        // value should query the SEL via `kels_sad_fetch_events` after submit.
+        Ok(_) => KelsStatus::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
             map_error_to_status(&e)

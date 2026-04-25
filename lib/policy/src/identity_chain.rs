@@ -29,15 +29,8 @@ pub fn create(initial_policy: &Policy) -> Result<SadEvent, PolicyError> {
         .verify_said()
         .map_err(|e| PolicyError::InvalidPolicy(format!("Policy SAID verification failed: {e}")))?;
 
-    SadEvent::create(
-        IDENTITY_CHAIN_TOPIC.to_string(),
-        SadEventKind::Icp,
-        None,
-        None,
-        Some(initial_policy.said),
-        None,
-    )
-    .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity event: {e}")))
+    SadEvent::icp(IDENTITY_CHAIN_TOPIC, initial_policy.said, None)
+        .map_err(|e| PolicyError::InvalidPolicy(format!("Failed to create identity event: {e}")))
 }
 
 /// Create the next version of an identity chain with an updated policy.
@@ -253,15 +246,8 @@ mod tests {
         // Create a non-identity chain event with governance_policy and verify it
         let policy = test_policy("test");
         let gp_policy = test_policy("governance");
-        let v0 = SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(policy.said),
-            Some(gp_policy.said),
-        )
-        .unwrap();
+        let v0 =
+            SadEvent::icp("kels/sad/v1/keys/mlkem", policy.said, Some(gp_policy.said)).unwrap();
 
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));

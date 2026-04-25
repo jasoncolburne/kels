@@ -12,14 +12,29 @@
 
 use std::sync::Arc;
 
-use verifiable_storage::Chained;
-
 use crate::{
     KelsError, MAX_NON_EVALUATION_EVENTS,
     client::SadStoreClient,
     store::SadStore,
     types::{PolicyChecker, SadEvent, SadEventKind, SelVerification, SelVerifier},
 };
+
+/// Outcome of a successful `SadEventBuilder::flush` — carries forward signals
+/// from the server response that the local verifier could not have observed.
+///
+/// Forward-extensible: future flush signals (e.g., per-event acceptance
+/// breakdown, server-side rate-limit headroom) get added as additional fields
+/// without rebreaking the call sites.
+#[derive(Debug, Clone)]
+#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit before continuing to stage events"]
+pub struct FlushOutcome {
+    /// Server-reported divergence version, if a fork was created or
+    /// already-existed at submit time. `None` means the chain is linear
+    /// according to the server. The same value is also stamped onto
+    /// `sad_verification().diverged_at_version()` so subsequent stagers can
+    /// gate on builder state alone.
+    pub diverged_at_at_submit: Option<u64>,
+}
 
 /// Builder for SAD Event Logs.
 ///
@@ -70,48 +85,45 @@ impl SadEventBuilder {
         }
     }
 
-    /// Construct a builder and optionally hydrate existing SEL state at `sel_prefix`.
+    /// Construct a builder for an existing SEL at `sel_prefix` and attempt
+    /// to hydrate verified state from the server.
     ///
-    /// Hydration is attempted only when `sad_client`, `checker`, and
-    /// `sel_prefix` are all provided — verification goes through the server
-    /// via `verify_sad_events`, so the resulting state matches what any other
-    /// caller would see. `sad_store` is a write-through cache on flush
-    /// success; it is not used for hydration to avoid a second set of
-    /// invariants.
+    /// This is the resume-from-existing-chain constructor — call `new` instead
+    /// for inception flows. Use this when you know which chain you intend to
+    /// operate on and want the builder pre-populated with the server-accepted
+    /// tail. `sad_store` is a write-through cache on flush success; it is not
+    /// used for hydration to avoid a second set of invariants.
     ///
-    /// `sel_prefix` is cached as `requested_prefix` regardless of whether
-    /// hydration succeeds or returns `NotFound`. A later `incept` or
-    /// `incept_deterministic` that derives a different prefix will be rejected
-    /// at `flush` time via the verifier's prefix check — catches the
-    /// silent-state-drift footgun where a caller asked for chain X and
+    /// Hydration is attempted only when both `sad_client` and `checker` are
+    /// provided. With either missing the builder still latches `sel_prefix`
+    /// as `requested_prefix` and skips the round-trip; a later
+    /// `incept`/`incept_deterministic` that derives a different prefix will
+    /// be rejected at `flush` time via the verifier's prefix check — closes
+    /// the silent-state-drift footgun where a caller asked for chain X and
     /// accidentally initialized chain Y.
+    ///
+    /// `KelsError::NotFound` from the server is silently absorbed: the chain
+    /// may not exist yet (it's about to be incepted at this prefix), and the
+    /// prefix-mismatch guard above remains armed via `requested_prefix`.
     pub async fn with_prefix(
         sad_client: Option<SadStoreClient>,
         sad_store: Option<Arc<dyn SadStore>>,
         checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
-        sel_prefix: Option<&cesr::Digest256>,
+        sel_prefix: &cesr::Digest256,
     ) -> Result<Self, KelsError> {
-        let sad_verification = match (&sad_client, &checker, sel_prefix) {
-            (Some(client), Some(c), Some(prefix)) => {
-                match client.verify_sad_events(prefix, Arc::clone(c)).await {
-                    Ok(v) => Some(v),
-                    // A missing chain is legitimate — the caller may be about
-                    // to incept one at this prefix. Any other error propagates.
-                    Err(KelsError::NotFound(_)) => None,
-                    Err(e) => return Err(e),
-                }
+        let mut builder = Self::new(sad_client.clone(), sad_store, checker.clone());
+        builder.requested_prefix = Some(*sel_prefix);
+        if let (Some(client), Some(c)) = (sad_client.as_ref(), checker.as_ref()) {
+            match client.verify_sad_events(sel_prefix, Arc::clone(c)).await {
+                Ok(v) => builder.sad_verification = Some(v),
+                // Chain not yet inducted — caller may be about to incept it.
+                // The prefix-mismatch guard latched on `requested_prefix`
+                // catches misuse at flush.
+                Err(KelsError::NotFound(_)) => {}
+                Err(e) => return Err(e),
             }
-            _ => None,
-        };
-
-        Ok(Self {
-            sad_client,
-            sad_store,
-            checker,
-            sad_verification,
-            pending_events: Vec::new(),
-            requested_prefix: sel_prefix.copied(),
-        })
+        }
+        Ok(builder)
     }
 
     // ==================== Accessors ====================
@@ -279,27 +291,13 @@ impl SadEventBuilder {
     /// (exchange keys, identity chains, anything lookup-driven) is required.
     pub fn incept(
         &mut self,
-        topic: &str,
+        topic: impl Into<String>,
         write_policy: cesr::Digest256,
         governance_policy: cesr::Digest256,
     ) -> Result<cesr::Digest256, KelsError> {
         self.require_fresh_builder()?;
 
-        let event = SadEvent::create(
-            topic.to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(write_policy),
-            Some(governance_policy),
-        )?;
-        // Catch any structural rule violations before staging — keeps this
-        // path symmetric with `compute_sad_event_prefix` and the v1+ stagers,
-        // so future tightening of Icp's structural contract surfaces here
-        // rather than at server-side verification.
-        event
-            .validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
+        let event = SadEvent::icp(topic, write_policy, Some(governance_policy))?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -314,38 +312,19 @@ impl SadEventBuilder {
     /// `(v0_said, v1_said)`. Either both events stage or neither does.
     pub fn incept_deterministic(
         &mut self,
-        topic: &str,
+        topic: impl Into<String>,
         write_policy: cesr::Digest256,
         governance_policy: cesr::Digest256,
         content: Option<cesr::Digest256>,
     ) -> Result<(cesr::Digest256, cesr::Digest256), KelsError> {
         self.require_fresh_builder()?;
 
-        let v0 = SadEvent::create(
-            topic.to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(write_policy),
-            None,
-        )?;
-        // Validate v0 before mutating into v1 — keeps the staging contract
-        // symmetric with `compute_sad_event_prefix` (which validates Icp shape
-        // before returning the prefix) and ensures both pushes below are
-        // structurally sound.
-        v0.validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
-
-        let mut v1 = v0.clone();
-        v1.content = content;
-        v1.kind = SadEventKind::Est;
-        v1.write_policy = None;
-        v1.governance_policy = Some(governance_policy);
-        v1.increment()?;
-        // Catch structural issues (e.g., topic / version constraints) before
-        // we mutate state — either both stage or neither.
-        v1.validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
+        // Build both events before mutating state — `SadEvent::icp` and
+        // `SadEvent::est` each run `validate_structure` internally, so a
+        // structural failure on either leaves `pending_events` empty rather
+        // than half-populated.
+        let v0 = SadEvent::icp(topic, write_policy, None)?;
+        let v1 = SadEvent::est(&v0, content, governance_policy)?;
 
         let v0_said = v0.said;
         let v1_said = v1.said;
@@ -358,25 +337,19 @@ impl SadEventBuilder {
     ///
     /// Requires the chain to be established (governance_policy present). Fails
     /// with `KelsError::EvaluationRequired` when the 63-event bound would be
-    /// crossed — caller must stage an `Evl` or `Rpr` first.
+    /// crossed — caller must stage an `Evl` or `Rpr` first. Fails with
+    /// `KelsError::SelDivergent` when the chain is divergent — owner must
+    /// stage a `repair` to resolve before further updates, mirroring the
+    /// KEL `rec`/`cnt` recovery model.
     pub fn update(&mut self, content: cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
         self.require_established()?;
+        self.require_non_divergent()?;
 
         if self.needs_evaluation() {
             return Err(KelsError::EvaluationRequired);
         }
 
-        let tip = self.current_tip()?;
-        let mut event = tip.clone();
-        event.content = Some(content);
-        event.kind = SadEventKind::Upd;
-        event.write_policy = None;
-        event.governance_policy = None;
-        event.increment()?;
-        event
-            .validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
-
+        let event = SadEvent::upd(self.current_tip()?, content)?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -384,6 +357,11 @@ impl SadEventBuilder {
 
     /// Stage an `Evl`. All three fields are optional — all-None is a legal
     /// pure evaluation that preserves current-pointer semantics.
+    ///
+    /// Refuses on divergent chains for symmetry with `update` — the owner
+    /// must `repair` first. A pure evaluation on a divergent chain would
+    /// pretend the divergence doesn't exist; resolving the fork is the
+    /// only meaningful next step.
     pub fn evaluate(
         &mut self,
         content: Option<cesr::Digest256>,
@@ -391,18 +369,14 @@ impl SadEventBuilder {
         governance_policy: Option<cesr::Digest256>,
     ) -> Result<cesr::Digest256, KelsError> {
         self.require_established()?;
+        self.require_non_divergent()?;
 
-        let tip = self.current_tip()?;
-        let mut event = tip.clone();
-        event.content = content;
-        event.kind = SadEventKind::Evl;
-        event.write_policy = write_policy;
-        event.governance_policy = governance_policy;
-        event.increment()?;
-        event
-            .validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
-
+        let event = SadEvent::evl(
+            self.current_tip()?,
+            content,
+            write_policy,
+            governance_policy,
+        )?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -418,17 +392,7 @@ impl SadEventBuilder {
     ) -> Result<cesr::Digest256, KelsError> {
         self.require_established()?;
 
-        let tip = self.current_tip()?;
-        let mut event = tip.clone();
-        event.content = content;
-        event.kind = SadEventKind::Rpr;
-        event.write_policy = None;
-        event.governance_policy = None;
-        event.increment()?;
-        event
-            .validate_structure()
-            .map_err(KelsError::InvalidKeyEvent)?;
-
+        let event = SadEvent::rpr(self.current_tip()?, content)?;
         let said = event.said;
         self.pending_events.push(event);
         Ok(said)
@@ -488,11 +452,24 @@ impl SadEventBuilder {
     /// or phase-3 failure no-ops on the server side and converges the
     /// builder's local view.
     ///
+    /// **Divergence signal.** The server's `submit_sad_events` response
+    /// carries `diverged_at: Option<u64>` — populated when a concurrent
+    /// writer's fork is observed at submit time. The local `absorb_pending`
+    /// processes only the owner's pending batch, so it cannot detect such a
+    /// fork. On success, the server-reported value is stamped onto
+    /// `sad_verification.diverged_at_version()` (with `or_else` semantics:
+    /// only when the local detection didn't already produce `Some(_)`) and
+    /// surfaced via [`FlushOutcome::diverged_at_at_submit`]. Subsequent
+    /// `update` / `evaluate` calls refuse with `KelsError::SelDivergent`
+    /// until the owner stages a `repair`.
+    ///
     /// Returns `KelsError::OfflineMode` when `sad_client` is `None`, or when
     /// pending events exist but `checker` was not supplied at construction.
-    pub async fn flush(&mut self) -> Result<(), KelsError> {
+    pub async fn flush(&mut self) -> Result<FlushOutcome, KelsError> {
         if self.pending_events.is_empty() {
-            return Ok(());
+            return Ok(FlushOutcome {
+                diverged_at_at_submit: None,
+            });
         }
 
         let client = self
@@ -509,7 +486,7 @@ impl SadEventBuilder {
             ));
         }
 
-        client.submit_sad_events(&self.pending_events).await?;
+        let response = client.submit_sad_events(&self.pending_events).await?;
 
         // Write to local cache before absorbing — events are already
         // server-accepted (phase 1 succeeded), so the cache reflects committed
@@ -524,7 +501,22 @@ impl SadEventBuilder {
         }
 
         self.absorb_pending().await?;
-        Ok(())
+
+        // Stamp the server-reported divergence onto the local token. The local
+        // verifier only saw the owner's batch, so its `diverged_at_version`
+        // would be `None` even when the server has two branches at this
+        // version. This is record-keeping, not recovery — the owner calls
+        // `repair` themselves when they're ready, exactly as they'd call
+        // `rec`/`cnt` on a divergent KEL today.
+        if let Some(at) = response.diverged_at
+            && let Some(v) = self.sad_verification.as_mut()
+        {
+            v.set_diverged_at_version(at);
+        }
+
+        Ok(FlushOutcome {
+            diverged_at_at_submit: response.diverged_at,
+        })
     }
 
     // ==================== Private helpers ====================
@@ -544,6 +536,19 @@ impl SadEventBuilder {
                 "Chain not established — incept (with governance) or incept_deterministic first"
                     .into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// Refuse staging on a divergent chain. `repair` is the only legal next
+    /// staging operation — analogous to how a divergent KEL refuses normal
+    /// rotations until the owner runs `recover` or `contest`. The owner has
+    /// to explicitly choose recovery; nothing happens automatically.
+    fn require_non_divergent(&self) -> Result<(), KelsError> {
+        if let Some(v) = self.sad_verification.as_ref()
+            && let Some(at) = v.diverged_at_version()
+        {
+            return Err(KelsError::SelDivergent { at });
         }
         Ok(())
     }
@@ -826,8 +831,8 @@ mod tests {
         assert_eq!(verification.current_event().kind, SadEventKind::Rpr);
     }
 
-    /// A builder constructed with `with_prefix(sel_prefix = Some(X))` must
-    /// reject an inception whose derived prefix doesn't equal X. Closes the
+    /// A builder constructed with `with_prefix(sel_prefix = X)` must reject
+    /// an inception whose derived prefix doesn't equal X. Closes the
     /// silent-state-drift footgun where a caller asked for chain X and the
     /// builder happily initialized chain Y instead.
     #[tokio::test]
@@ -850,14 +855,10 @@ mod tests {
         // gets latched. The checker is required so absorb_pending has one to
         // hand to the verifier.
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
-        let mut b = SadEventBuilder::with_prefix(
-            None,
-            None,
-            Some(Arc::clone(&checker)),
-            Some(&expected_prefix),
-        )
-        .await
-        .unwrap();
+        let mut b =
+            SadEventBuilder::with_prefix(None, None, Some(Arc::clone(&checker)), &expected_prefix)
+                .await
+                .unwrap();
 
         b.incept_deterministic(TEST_TOPIC, wp, gp, None).unwrap();
 
@@ -888,29 +889,9 @@ mod tests {
         // carries `diverged_at_version = Some(1)`.
         let wp = test_digest(b"wp");
         let gp = test_digest(b"gp");
-        let v0 = SadEvent::create(
-            TEST_TOPIC.to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap();
-
-        let mut v1_a = v0.clone();
-        v1_a.content = Some(test_digest(b"content_a"));
-        v1_a.kind = SadEventKind::Upd;
-        v1_a.write_policy = None;
-        v1_a.governance_policy = None;
-        v1_a.increment().unwrap();
-
-        let mut v1_b = v0.clone();
-        v1_b.content = Some(test_digest(b"content_b"));
-        v1_b.kind = SadEventKind::Upd;
-        v1_b.write_policy = None;
-        v1_b.governance_policy = None;
-        v1_b.increment().unwrap();
+        let v0 = SadEvent::icp(TEST_TOPIC, wp, Some(gp)).unwrap();
+        let v1_a = SadEvent::upd(&v0, test_digest(b"content_a")).unwrap();
+        let v1_b = SadEvent::upd(&v0, test_digest(b"content_b")).unwrap();
 
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
@@ -928,9 +909,7 @@ mod tests {
         let mut b = SadEventBuilder::new(None, None, Some(Arc::clone(&checker)));
         b.sad_verification = Some(divergent);
 
-        let mut pending = v1_a.clone();
-        pending.content = Some(test_digest(b"content_a2"));
-        pending.increment().unwrap();
+        let pending = SadEvent::upd(&v1_a, test_digest(b"content_a2")).unwrap();
         b.pending_events.push(pending);
 
         let err = b.absorb_pending().await.unwrap_err();
@@ -1001,6 +980,132 @@ mod tests {
         assert_eq!(
             resumed_token.establishment_version(),
             fresh_token.establishment_version()
+        );
+    }
+
+    /// Hand-build a divergent `SelVerification` for use as a builder seed.
+    /// Mirrors the construction in `absorb_pending_errors_on_divergent_cached_verification`
+    /// but factored so the divergence-gating tests below can reuse it.
+    /// Returns `(divergent_token, v0_event)` — `v0` is the inception, useful
+    /// when the test wants to stage a `repair` from the established branch.
+    async fn build_divergent_token() -> (SelVerification, SadEvent) {
+        use crate::types::SelVerifier;
+
+        let wp = test_digest(b"wp");
+        let gp = test_digest(b"gp");
+        let v0 = SadEvent::icp(TEST_TOPIC, wp, Some(gp)).unwrap();
+        let v1_a = SadEvent::upd(&v0, test_digest(b"content_a")).unwrap();
+        let v1_b = SadEvent::upd(&v0, test_digest(b"content_b")).unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
+        verifier
+            .verify_page(&[v0.clone(), v1_a, v1_b])
+            .await
+            .unwrap();
+        let divergent = verifier.finish().await.unwrap();
+        assert!(
+            divergent.diverged_at_version().is_some(),
+            "fixture invariant: hand-built chain must be divergent"
+        );
+        (divergent, v0)
+    }
+
+    /// `update` must refuse on a divergent chain — the owner's only legal
+    /// next staging operation is `repair`. Mirrors the KEL `rec`/`cnt`
+    /// recovery model where normal rotations stop until divergence is
+    /// resolved.
+    #[tokio::test]
+    async fn update_refused_on_divergent_chain() {
+        let (divergent, _v0) = build_divergent_token().await;
+        let at = divergent.diverged_at_version().unwrap();
+
+        let mut b = SadEventBuilder::new(None, None, None);
+        b.sad_verification = Some(divergent);
+
+        let err = b.update(test_digest(b"new-content")).unwrap_err();
+        match err {
+            KelsError::SelDivergent { at: reported } => assert_eq!(reported, at),
+            other => panic!("Expected SelDivergent, got: {other:?}"),
+        }
+        // Pending must be unchanged — refusal is a no-op.
+        assert!(b.pending_events.is_empty());
+    }
+
+    /// `evaluate` must refuse on a divergent chain for symmetry with `update`.
+    /// A "pure evaluation" Evl on a divergent chain would pretend the
+    /// divergence doesn't exist; resolving the fork is the only meaningful
+    /// next step.
+    #[tokio::test]
+    async fn evaluate_refused_on_divergent_chain() {
+        let (divergent, _v0) = build_divergent_token().await;
+        let at = divergent.diverged_at_version().unwrap();
+
+        let mut b = SadEventBuilder::new(None, None, None);
+        b.sad_verification = Some(divergent);
+
+        let err = b.evaluate(None, None, None).unwrap_err();
+        match err {
+            KelsError::SelDivergent { at: reported } => assert_eq!(reported, at),
+            other => panic!("Expected SelDivergent, got: {other:?}"),
+        }
+        assert!(b.pending_events.is_empty());
+    }
+
+    /// `repair` must succeed on a divergent chain — it's the explicit
+    /// owner-initiated recovery path. Without this, a builder seeded with a
+    /// divergent token would have no escape route within the builder API.
+    #[tokio::test]
+    async fn repair_allowed_on_divergent_chain() {
+        let (divergent, _v0) = build_divergent_token().await;
+
+        let mut b = SadEventBuilder::new(None, None, None);
+        b.sad_verification = Some(divergent);
+
+        let rpr_said = b
+            .repair(Some(test_digest(b"repaired-content")))
+            .expect("repair must succeed on divergent chain");
+
+        assert_eq!(b.pending_events.len(), 1);
+        let staged = b.pending_events.last().unwrap();
+        assert_eq!(staged.said, rpr_said);
+        assert_eq!(staged.kind, SadEventKind::Rpr);
+    }
+
+    /// Stamping is `or_else`: an existing `Some(_)` is preserved (the local
+    /// verifier already saw the fork — server's report is redundant). When
+    /// the local detection produced `None`, the server's reported version is
+    /// stamped through.
+    #[tokio::test]
+    async fn set_diverged_at_version_or_else_semantics() {
+        // Linear-chain token first: stamping should set the value.
+        let wp = test_digest(b"wp");
+        let gp = test_digest(b"gp");
+        let mut b = SadEventBuilder::new(None, None, None);
+        b.incept_deterministic(TEST_TOPIC, wp, gp, None).unwrap();
+        b.update(test_digest(b"c1")).unwrap();
+        let prefix = *b.prefix().unwrap();
+        let pending = b.pending_events().to_vec();
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = SelVerifier::new(Some(&prefix), Arc::clone(&checker));
+        verifier.verify_page(&pending).await.unwrap();
+        let mut linear = verifier.finish().await.unwrap();
+        assert_eq!(linear.diverged_at_version(), None);
+        linear.set_diverged_at_version(7);
+        assert_eq!(
+            linear.diverged_at_version(),
+            Some(7),
+            "stamp must set on a token that didn't observe divergence"
+        );
+
+        // Already-divergent token: stamping with a different value is a no-op.
+        let (mut divergent, _) = build_divergent_token().await;
+        let original = divergent.diverged_at_version().unwrap();
+        divergent.set_diverged_at_version(original + 100);
+        assert_eq!(
+            divergent.diverged_at_version(),
+            Some(original),
+            "stamp must NOT overwrite a previously observed divergence"
         );
     }
 }

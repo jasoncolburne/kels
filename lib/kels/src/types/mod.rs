@@ -1404,15 +1404,7 @@ mod tests {
 
     fn make_valid_icp_event() -> SadEvent {
         let wp = cesr::Digest256::blake3_256(b"wp");
-        SadEvent::create(
-            "test/topic".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            None,
-        )
-        .unwrap()
+        SadEvent::icp("test/topic", wp, None).unwrap()
     }
 
     #[test]
@@ -1425,15 +1417,7 @@ mod tests {
     fn test_validate_structure_icp_with_governance_policy_valid() {
         let wp = cesr::Digest256::blake3_256(b"wp");
         let gp = cesr::Digest256::blake3_256(b"gp");
-        let event = SadEvent::create(
-            "test/topic".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap();
+        let event = SadEvent::icp("test/topic", wp, Some(gp)).unwrap();
         assert!(event.validate_structure().is_ok());
     }
 

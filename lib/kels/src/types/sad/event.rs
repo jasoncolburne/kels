@@ -14,7 +14,7 @@
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageError};
+use verifiable_storage::{Chained, SelfAddressed};
 
 use crate::error::KelsError;
 
@@ -163,25 +163,125 @@ pub struct SadEvent {
 /// contains only deterministic fields.
 pub fn compute_sad_event_prefix(
     write_policy: cesr::Digest256,
-    topic: &str,
-) -> Result<cesr::Digest256, StorageError> {
-    let event = SadEvent::create(
-        topic.to_string(),
-        SadEventKind::Icp,
-        None,
-        None,
-        Some(write_policy),
-        None,
-    )?;
-    // Future-proof: if Icp's structural rules grow new required fields,
-    // prefix derivation must not silently diverge from validate_structure.
-    event
-        .validate_structure()
-        .map_err(StorageError::StorageError)?;
-    Ok(event.prefix)
+    topic: impl Into<String>,
+) -> Result<cesr::Digest256, KelsError> {
+    // Delegate to `SadEvent::icp` so prefix derivation and v0 staging share
+    // exactly the same structural-validation gate. A future tightening of
+    // Icp's rules surfaces uniformly across both paths.
+    Ok(SadEvent::icp(topic, write_policy, None)?.prefix)
 }
 
 impl SadEvent {
+    /// Build a v0 `Icp` (inception) event.
+    ///
+    /// `governance_policy` is `Option` because declaring it on v0 makes the
+    /// chain prefix depend on it — chains that need prefix recomputation
+    /// from `(topic, write_policy)` alone (exchange keys, identity chains,
+    /// any lookup-driven flow) pass `None` here and declare governance via
+    /// a v1 `Est` instead. See `SadEventBuilder::incept` vs
+    /// `incept_deterministic` for the two flows.
+    ///
+    /// Runs `validate_structure` before returning, matching the staging
+    /// contract in `SadEventBuilder` and the prefix-derivation invariant in
+    /// `compute_sad_event_prefix`. A future tightening of Icp's structural
+    /// rules surfaces here rather than at server-side verification.
+    pub fn icp(
+        topic: impl Into<String>,
+        write_policy: cesr::Digest256,
+        governance_policy: Option<cesr::Digest256>,
+    ) -> Result<Self, KelsError> {
+        let event = Self::create(
+            topic.into(),
+            SadEventKind::Icp,
+            None,
+            None,
+            Some(write_policy),
+            governance_policy,
+        )?;
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
+        Ok(event)
+    }
+
+    /// Build a v1 `Est` (governance establishment) event from a v0 `Icp` tip.
+    ///
+    /// `governance_policy` is required (Est's purpose is to declare it).
+    /// `content` is optional. The new event inherits the chain prefix and
+    /// links to the previous event via `increment()`. Runs `validate_structure`
+    /// before returning.
+    pub fn est(
+        previous: &Self,
+        content: Option<cesr::Digest256>,
+        governance_policy: cesr::Digest256,
+    ) -> Result<Self, KelsError> {
+        let mut event = previous.clone();
+        event.content = content;
+        event.kind = SadEventKind::Est;
+        event.write_policy = None;
+        event.governance_policy = Some(governance_policy);
+        event.increment()?;
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
+        Ok(event)
+    }
+
+    /// Build a v+1 `Upd` event from a chain tip. `content` is required.
+    pub fn upd(previous: &Self, content: cesr::Digest256) -> Result<Self, KelsError> {
+        let mut event = previous.clone();
+        event.content = Some(content);
+        event.kind = SadEventKind::Upd;
+        event.write_policy = None;
+        event.governance_policy = None;
+        event.increment()?;
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
+        Ok(event)
+    }
+
+    /// Build a v+1 `Evl` (governance evaluation) event from a chain tip.
+    ///
+    /// All three fields are optional — all-`None` is a legal pure
+    /// evaluation that resets the events-since-evaluation counter without
+    /// changing tracked state. `Some(write_policy)` is policy evolution.
+    /// `Some(governance_policy)` is governance evolution (Evl is the only
+    /// kind that allows it post-establishment).
+    pub fn evl(
+        previous: &Self,
+        content: Option<cesr::Digest256>,
+        write_policy: Option<cesr::Digest256>,
+        governance_policy: Option<cesr::Digest256>,
+    ) -> Result<Self, KelsError> {
+        let mut event = previous.clone();
+        event.content = content;
+        event.kind = SadEventKind::Evl;
+        event.write_policy = write_policy;
+        event.governance_policy = governance_policy;
+        event.increment()?;
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
+        Ok(event)
+    }
+
+    /// Build a v+1 `Rpr` (repair) event from a chain tip. `content` is
+    /// optional. Rpr forbids both `write_policy` and `governance_policy`
+    /// (validated by `validate_structure`).
+    pub fn rpr(previous: &Self, content: Option<cesr::Digest256>) -> Result<Self, KelsError> {
+        let mut event = previous.clone();
+        event.content = content;
+        event.kind = SadEventKind::Rpr;
+        event.write_policy = None;
+        event.governance_policy = None;
+        event.increment()?;
+        event
+            .validate_structure()
+            .map_err(KelsError::InvalidKeyEvent)?;
+        Ok(event)
+    }
+
     /// Validates that the event has the correct fields for its kind.
     /// Returns Ok(()) if valid, Err with description if invalid.
     pub fn validate_structure(&self) -> Result<(), String> {
@@ -400,6 +500,19 @@ impl SelVerification {
     pub fn diverged_at_version(&self) -> Option<u64> {
         self.diverged_at_version
     }
+
+    /// Stamp a server-reported divergence version onto a token whose local
+    /// verification didn't observe the fork.
+    ///
+    /// `or_else` semantics: if the token already carries `Some(_)` (the local
+    /// verifier saw the divergence itself), leave it untouched. Only stamps
+    /// when the local detection produced `None`. Crate-private so external
+    /// callers can't fabricate a divergence claim.
+    pub(crate) fn set_diverged_at_version(&mut self, version: u64) {
+        if self.diverged_at_version.is_none() {
+            self.diverged_at_version = Some(version);
+        }
+    }
 }
 
 /// A page of stored SAD events returned by the SAD Event Log API.
@@ -443,15 +556,8 @@ mod tests {
 
     #[test]
     fn test_sad_event_inception_no_content() {
-        let event = SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(test_digest(b"write-policy")),
-            None,
-        )
-        .unwrap();
+        let event =
+            SadEvent::icp("kels/sad/v1/keys/mlkem", test_digest(b"write-policy"), None).unwrap();
         assert_eq!(event.version, 0);
         assert!(event.previous.is_none());
         assert!(event.content.is_none());
@@ -460,15 +566,8 @@ mod tests {
 
     #[test]
     fn test_sad_event_chain_increment() {
-        let mut event = SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(test_digest(b"write-policy")),
-            None,
-        )
-        .unwrap();
+        let mut event =
+            SadEvent::icp("kels/sad/v1/keys/mlkem", test_digest(b"write-policy"), None).unwrap();
 
         let v0_said = event.said;
         let prefix = event.prefix;
@@ -485,15 +584,8 @@ mod tests {
 
     #[test]
     fn test_sad_event_verify_said() {
-        let event = SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(test_digest(b"write-policy")),
-            None,
-        )
-        .unwrap();
+        let event =
+            SadEvent::icp("kels/sad/v1/keys/mlkem", test_digest(b"write-policy"), None).unwrap();
         assert!(event.verify_said().is_ok());
 
         // Tamper with content
@@ -504,15 +596,8 @@ mod tests {
 
     #[test]
     fn test_sad_event_verify_prefix() {
-        let event = SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(test_digest(b"write-policy")),
-            None,
-        )
-        .unwrap();
+        let event =
+            SadEvent::icp("kels/sad/v1/keys/mlkem", test_digest(b"write-policy"), None).unwrap();
         assert!(event.verify_prefix().is_ok());
 
         // Tamper with write_policy

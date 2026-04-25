@@ -84,7 +84,7 @@ pub use sad::{
     ExpansionState, MAX_EXPANSION_DEPTH, MAX_EXPANSIONS, compact_at_path, compact_children_only,
     compact_recursive, expand_at_path, navigate_to_value_mut,
 };
-pub use sad_builder::SadEventBuilder;
+pub use sad_builder::{FlushOutcome, SadEventBuilder};
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
     FileKelStore, FileSadStore, InMemorySadStore, KelStore, KelStoreSink, RepositoryKelStore,

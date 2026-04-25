@@ -131,16 +131,10 @@ pub(crate) async fn cmd_exchange_publish_key(
     );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
-    // No existing chain yet (sel_prefix = None) — `with_prefix` simply wires
-    // deps without attempting hydration. Keeps the construction path identical
-    // to rotate-key so the two don't drift.
-    let mut sad_builder = SadEventBuilder::with_prefix(
-        Some(sad_client.clone()),
-        Some(sad_store),
-        Some(checker),
-        None,
-    )
-    .await?;
+    // Inception path — no existing chain to hydrate. `new` is the honest
+    // constructor; rotate-key uses `with_prefix` because it's resuming.
+    let mut sad_builder =
+        SadEventBuilder::new(Some(sad_client.clone()), Some(sad_store), Some(checker));
 
     let (icp_said, est_said) = sad_builder.incept_deterministic(
         kels_exchange::ENCAP_KEY_KIND,
@@ -160,10 +154,21 @@ pub(crate) async fn cmd_exchange_publish_key(
         .await
         .context("Failed to anchor v1 SAID in KEL")?;
 
-    sad_builder
+    let outcome = sad_builder
         .flush()
         .await
         .context("Failed to submit SAD events")?;
+
+    if let Some(at) = outcome.diverged_at_at_submit {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
+                at
+            )
+            .yellow()
+        );
+    }
 
     println!(
         "{}",
@@ -242,7 +247,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         Some(sad_client.clone()),
         Some(sad_store),
         Some(checker),
-        Some(&sel_prefix),
+        &sel_prefix,
     )
     .await?;
 
@@ -263,10 +268,21 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .await
         .context("Failed to anchor event SAID in KEL")?;
 
-    sad_builder
+    let outcome = sad_builder
         .flush()
         .await
         .context("Failed to submit SAD event")?;
+
+    if let Some(at) = outcome.diverged_at_at_submit {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
+                at
+            )
+            .yellow()
+        );
+    }
 
     println!("{}", "Key rotated!".green().bold());
     Ok(())
