@@ -510,7 +510,7 @@ pub(crate) async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix).await?;
 
     let kel_verification = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&kel_store),
+        &mut kels_core::KelStorePageLoader::new(&kel_store),
         &prefix_digest,
         kels_core::page_size(),
         kels_core::max_pages(),

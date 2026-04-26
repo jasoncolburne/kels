@@ -162,6 +162,11 @@ pub enum KelsError {
         "Nothing to repair — chain is linear and the cached tip matches the local store's owner-authored tip"
     )]
     NothingToRepair,
+
+    #[error(
+        "Chain has unverified events: {0} — cannot repair until policy is satisfied (verify the data source and re-run, or re-fetch a clean owner-local view)"
+    )]
+    ChainHasUnverifiedEvents(String),
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -283,6 +288,7 @@ mod tests {
             KelsError::EvaluationRequired,
             KelsError::SelDivergent { at: 7 },
             KelsError::NothingToRepair,
+            KelsError::ChainHasUnverifiedEvents("local store policy_satisfied=false".to_string()),
         ];
 
         for err in errors {

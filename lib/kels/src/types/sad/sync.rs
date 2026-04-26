@@ -5,9 +5,15 @@
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
+//! For owner-local hydration over a `SadStore` (no server round-trip), use
+//! `SelPageLoader` + `SadStorePageLoader` + `sel_completed_verification` —
+//! parallels KEL's `PageLoader` / `KelStorePageLoader` / `completed_verification`
+//! at `lib/kels/src/types/kel/sync.rs`.
+//!
 //! Public functions:
 //! - `verify_sad_events` — structural + policy verification via `PolicyChecker`
 //! - `forward_sad_events` — forward without verification, supports delta via `since`
+//! - `sel_completed_verification` — owner-local verification via `SelPageLoader`
 
 use std::sync::Arc;
 
@@ -15,7 +21,8 @@ use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
 use super::event::{SadEvent, SadEventPage, SelVerification};
-use super::verification::SelVerifier;
+use super::verification::{PolicyChecker, SelVerifier};
+use crate::store::SadStore;
 use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
@@ -56,6 +63,110 @@ pub trait PagedSadSource: Send + Sync {
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
     async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError>;
+}
+
+// ==================== Owner-local Page Loader ====================
+
+/// Trait for loading offset-paginated SAD events for a given chain prefix.
+///
+/// The offset-based parallel of `PagedSadSource` (which is cursor/`since`-based
+/// for HTTP transfer). Mirrors KEL's `PageLoader`
+/// (`lib/kels/src/types/kel/sync.rs`) — implemented by `SadStorePageLoader`
+/// over a `&dyn SadStore`, or by transaction wrappers that read under
+/// advisory locks.
+#[async_trait]
+pub trait SelPageLoader: Send + Sync {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+}
+
+/// `SadStore` adapter for `SelPageLoader` — wraps a shared reference to a
+/// `SadStore`. Pairs with the trait's `load_sel_events` method, which is
+/// populated by `store_sel_event` calls during `SadEventBuilder::flush`.
+///
+/// Mirrors KEL's `KelStorePageLoader` (`lib/kels/src/types/kel/sync.rs`).
+pub struct SadStorePageLoader<'a>(&'a dyn SadStore);
+
+impl<'a> SadStorePageLoader<'a> {
+    pub fn new(store: &'a dyn SadStore) -> Self {
+        Self(store)
+    }
+}
+
+#[async_trait]
+impl SelPageLoader for SadStorePageLoader<'_> {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        self.0.load_sel_events(prefix, limit, offset).await
+    }
+}
+
+/// Verify a full SEL using paginated reads from a local store, returning a
+/// trusted owner-local `SelVerification`.
+///
+/// Mirrors KEL's `completed_verification` (`lib/kels/src/types/kel/sync.rs`).
+/// Walks pages via `loader.load_page`, runs `SelVerifier::verify_page` per
+/// page, and returns the proof-of-verification token. `max_pages` limits
+/// resource exhaustion — fails secure if exceeded.
+///
+/// **Owner-local invariant.** Loader-fed pages contain only owner-authored
+/// events (the `store_sel_event` writers populate the prefix index, the
+/// repair flow does not). The resulting `SelVerification` reflects owner's
+/// view; server state is consulted at action time, not here.
+pub async fn sel_completed_verification(
+    loader: &mut dyn SelPageLoader,
+    prefix: &cesr::Digest256,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<SelVerification, KelsError> {
+    let mut verifier = SelVerifier::new(Some(prefix), checker);
+    let mut offset: u64 = 0;
+    let mut exhausted = false;
+    let mut saw_any = false;
+    let limit = page_size as u64;
+
+    for _ in 0..max_pages {
+        let (events, has_more) = loader.load_page(prefix, limit, offset).await?;
+
+        if events.is_empty() {
+            exhausted = true;
+            break;
+        }
+
+        saw_any = true;
+        let advanced = events.len() as u64;
+        verifier.verify_page(&events).await?;
+        offset += advanced;
+
+        if !has_more {
+            exhausted = true;
+            break;
+        }
+    }
+
+    // Fail secure: if we ran out of pages before exhausting the source,
+    // return an error rather than a partial SelVerification.
+    if !exhausted {
+        return Err(KelsError::InvalidKel(format!(
+            "SEL for {} exceeds max_pages limit ({}) — verification incomplete",
+            prefix, max_pages,
+        )));
+    }
+
+    if !saw_any {
+        return Err(KelsError::NotFound(prefix.to_string()));
+    }
+
+    verifier.finish().await
 }
 
 // ==================== Sink Implementations ====================

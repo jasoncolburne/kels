@@ -28,8 +28,13 @@ benchmark: clean-garden
 	garden deploy test-client --env=node-a
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 5
 
+# Optional passthrough: set BUILD_ARGS to forward flags to cargo build.
+# Examples:
+#   make build BUILD_ARGS="-p kels-core"             # build one package
+#   make build BUILD_ARGS="-p kels-core --tests"     # include test binaries
+# When unset, builds the full workspace as before.
 build:
-	cargo build --workspace --all-features
+	cargo build --workspace --all-features $(BUILD_ARGS)
 
 clean:
 	@echo "Cleaning workspace..."
@@ -65,14 +70,22 @@ clean-test-containers:
 	@docker ps -q --filter "label=kels-test=true" | xargs -r docker stop 2>/dev/null || true
 	@docker ps -aq --filter "label=kels-test=true" | xargs -r docker rm 2>/dev/null || true
 
+# Optional passthrough: set CHECK_ARGS to forward flags to cargo check.
+# Examples:
+#   make check CHECK_ARGS="-p kels-core"             # check one package
+# When unset, checks the full workspace.
 check:
-	cargo check --workspace --all-targets --all-features
+	cargo check --workspace --all-targets --all-features $(CHECK_ARGS)
 
+# Optional passthrough: set CLIPPY_ARGS to forward flags to cargo clippy.
+# Examples:
+#   make clippy CLIPPY_ARGS="-p kels-core"           # lint one package
+# When unset, lints the full workspace.
 clippy:
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features $(CLIPPY_ARGS) -- -D warnings
 
 clippy-fix:
-	cargo clippy --fix --workspace --all-targets --all-features --allow-dirty --allow-staged
+	cargo clippy --fix --workspace --all-targets --all-features $(CLIPPY_ARGS) --allow-dirty --allow-staged
 
 deny:
 	@if ! command -v cargo-deny &> /dev/null; then \

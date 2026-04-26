@@ -186,6 +186,11 @@ impl SadEventRepository {
                     .eq("prefix", &prefix)
                     .gte("version", version_cursor)
                     .order_by("version", verifiable_storage::Order::Asc)
+                    .order_by_case(
+                        "kind",
+                        &kels_core::SadEventKind::sort_priority_mapping(),
+                        verifiable_storage::Order::Asc,
+                    )
                     .limit(page_size as u64);
             let page: Vec<SadEvent> = tx.fetch(page_query).await?;
 
@@ -318,6 +323,11 @@ impl SadEventRepository {
         let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)
             .order_by("version", verifiable_storage_postgres::Order::Desc)
+            .order_by_case(
+                "kind",
+                &kels_core::SadEventKind::sort_priority_mapping(),
+                verifiable_storage_postgres::Order::Desc,
+            )
             .order_by("said", verifiable_storage_postgres::Order::Desc)
             .limit(limit);
         let mut events: Vec<SadEvent> = self.pool.fetch(query).await?;
@@ -359,7 +369,8 @@ impl SadEventRepository {
 
     /// Get the chain as bare `SadEvent`s.
     ///
-    /// Ordering: `version ASC, said ASC` — deterministic across nodes.
+    /// Ordering: `version ASC, kind sort_priority ASC, said ASC` — deterministic
+    /// across nodes (mirrors KEL's `serial ASC, kind sort_priority ASC, said ASC`).
     /// Delegates to `get_stored_in` via an implicit transaction.
     pub async fn get_stored(
         &self,
@@ -377,7 +388,9 @@ impl SadEventRepository {
 
     /// Get SAD events within an existing transaction.
     ///
-    /// Same ordering as `get_stored`: `version ASC, said ASC`.
+    /// Same ordering as `get_stored`: `version ASC, kind sort_priority ASC, said ASC`.
+    /// State-determining events (Rpr) sort after normal events at the same version,
+    /// so cross-node convergence under gossip-induced reordering is canonical.
     pub async fn get_stored_in<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
@@ -385,26 +398,32 @@ impl SadEventRepository {
         since_said: Option<&str>,
         limit: Option<u64>,
     ) -> Result<Vec<SadEvent>, StorageError> {
-        let since_position: Option<(u64, cesr::Digest256)> = if let Some(said) = since_said {
-            let cursor_query =
-                verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
-                    .eq("said", said)
-                    .limit(1);
-            tx.fetch(cursor_query)
-                .await?
-                .into_iter()
-                .next()
-                .map(|r| (r.version, r.said))
-        } else {
-            None
-        };
+        let since_position: Option<(u64, kels_core::SadEventKind, cesr::Digest256)> =
+            if let Some(said) = since_said {
+                let cursor_query =
+                    verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+                        .eq("said", said)
+                        .limit(1);
+                tx.fetch(cursor_query)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|r| (r.version, r.kind, r.said))
+            } else {
+                None
+            };
 
         let mut query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
             .eq("prefix", prefix)
             .order_by("version", verifiable_storage_postgres::Order::Asc)
+            .order_by_case(
+                "kind",
+                &kels_core::SadEventKind::sort_priority_mapping(),
+                verifiable_storage_postgres::Order::Asc,
+            )
             .order_by("said", verifiable_storage_postgres::Order::Asc);
 
-        if let Some((version, _)) = &since_position {
+        if let Some((version, _, _)) = &since_position {
             query = query.gte("version", *version);
         }
 
@@ -419,9 +438,18 @@ impl SadEventRepository {
 
         let mut events: Vec<SadEvent> = tx.fetch(query).await?;
 
-        if let Some((version, said)) = &since_position {
+        if let Some((version, kind, said)) = &since_position {
             let skipped = events.len();
-            events.retain(|e| e.version > *version || (e.version == *version && e.said > *said));
+            // Strictly-greater on (version, kind sort_priority, said) — the canonical
+            // tuple ordering. Same SAID implies same content (and thus same kind),
+            // so the kind comparison only affects events at the same version.
+            let since_priority = kind.sort_priority();
+            events.retain(|e| {
+                let e_priority = e.kind.sort_priority();
+                e.version > *version
+                    || (e.version == *version && e_priority > since_priority)
+                    || (e.version == *version && e_priority == since_priority && e.said > *said)
+            });
             let skipped = skipped - events.len();
 
             if skipped > 2 {

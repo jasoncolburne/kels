@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use cesr::Matter;
 
 use kels_core::{
-    ExpansionState, KelsError, MAX_EXPANSION_DEPTH, PathToken, SadStore, compact_children_only,
-    compact_recursive, navigate_to_value_mut, parse_disclosure,
+    ExpansionState, KelsError, MAX_EXPANSION_DEPTH, PathToken, SadEvent, SadStore,
+    compact_children_only, compact_recursive, navigate_to_value_mut, parse_disclosure,
 };
 
 use crate::object_store::{ObjectStore, ObjectStoreError};
@@ -57,6 +57,24 @@ impl SadStore for ObjectStoreSadAdapter<'_> {
 
     async fn delete(&self, _said: &cesr::Digest256) -> Result<(), KelsError> {
         Err(KelsError::StorageError("read-only adapter".to_string()))
+    }
+
+    async fn store_sel_event(&self, _event: &SadEvent) -> Result<(), KelsError> {
+        Err(KelsError::StorageError("read-only adapter".to_string()))
+    }
+
+    async fn load_sel_events(
+        &self,
+        _prefix: &cesr::Digest256,
+        _limit: u64,
+        _offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        // The MinIO adapter exists for disclosure expansion only — it has no
+        // prefix-keyed iteration. Owner-local hydration paths must use a
+        // proper local SadStore (FileSadStore / InMemorySadStore / similar).
+        Err(KelsError::OfflineMode(
+            "ObjectStoreSadAdapter does not support prefix-keyed SEL iteration".into(),
+        ))
     }
 }
 

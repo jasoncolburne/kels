@@ -30,16 +30,16 @@ pub trait PageLoader: Send + Sync {
 }
 
 /// `KelStore` adapter for `PageLoader` — wraps a shared reference.
-pub struct StorePageLoader<'a>(&'a dyn KelStore);
+pub struct KelStorePageLoader<'a>(&'a dyn KelStore);
 
-impl<'a> StorePageLoader<'a> {
+impl<'a> KelStorePageLoader<'a> {
     pub fn new(store: &'a dyn KelStore) -> Self {
         Self(store)
     }
 }
 
 #[async_trait]
-impl PageLoader for StorePageLoader<'_> {
+impl PageLoader for KelStorePageLoader<'_> {
     async fn load_page(
         &mut self,
         prefix: &cesr::Digest256,
@@ -99,7 +99,7 @@ impl PagedKelSource for StoreKelSource<'_> {
 /// `anchor_saids` optionally registers SAIDs to check for anchoring during the walk.
 /// Results are available via `KelVerification::anchored_saids()` / `anchors_all_saids()`.
 ///
-/// Use `StorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
+/// Use `KelStorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
 /// locked transaction wrapper to read under advisory lock.
 pub async fn completed_verification(
     loader: &mut dyn PageLoader,
@@ -964,7 +964,7 @@ mod tests {
 
         // Verify — spans 3+ pages
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             100,
@@ -1031,7 +1031,7 @@ mod tests {
 
         // Verify with paginated reads — should detect divergence
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             100,
@@ -1060,7 +1060,7 @@ mod tests {
 
         // Check for an anchor that exists
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             100,
@@ -1074,7 +1074,7 @@ mod tests {
 
         // Check for an anchor that doesn't exist
         let kel_verification2 = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             100,
@@ -1108,7 +1108,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events max, but we have 21
         let result = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1680,7 +1680,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events, we have exactly 10
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1713,7 +1713,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events, we have 11
         let result = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1929,7 +1929,7 @@ mod tests {
         store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2001,7 +2001,7 @@ mod tests {
         store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2049,7 +2049,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             10,
@@ -2098,7 +2098,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2506,7 +2506,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             7,
             10,
@@ -2567,7 +2567,7 @@ mod tests {
 
         // Verify divergence
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2661,7 +2661,7 @@ mod tests {
     async fn test_empty_kel_verification() {
         let store = MemoryStore::new();
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &test_digest("nonexistent-prefix"),
             crate::page_size(),
             10,
@@ -2758,7 +2758,7 @@ mod tests {
             .unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             3, // very small pages
             100,
@@ -3357,7 +3357,7 @@ mod tests {
 
         // Phase 1: verify with anchor check
         let kel_verification1 = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             100,

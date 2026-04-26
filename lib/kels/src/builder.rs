@@ -73,7 +73,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let kel_verification = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
                 let verification = crate::completed_verification(
-                    &mut crate::StorePageLoader::new(store.as_ref()),
+                    &mut crate::KelStorePageLoader::new(store.as_ref()),
                     p,
                     crate::page_size(),
                     crate::max_pages(),
@@ -218,7 +218,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         let verification = crate::completed_verification(
-            &mut crate::StorePageLoader::new(store.as_ref()),
+            &mut crate::KelStorePageLoader::new(store.as_ref()),
             &prefix,
             crate::page_size(),
             crate::max_pages(),

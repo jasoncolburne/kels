@@ -715,7 +715,7 @@ pub(crate) async fn list_prefixes(
             continue;
         }
 
-        let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
+        let mut loader = kels_core::KelStorePageLoader::new(state.kel_store.as_ref());
         match kels_core::completed_verification(
             &mut loader,
             prefix,

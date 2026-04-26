@@ -7,6 +7,7 @@ use cesr::Matter;
 use tokio::{sync::RwLock, task::spawn_blocking};
 
 use crate::error::KelsError;
+use crate::types::SadEvent;
 
 /// Trait for persisting self-addressed data objects by SAID.
 #[async_trait]
@@ -31,6 +32,34 @@ pub trait SadStore: Send + Sync {
 
     /// Delete a self-addressed object by SAID. No-op if not found.
     async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError>;
+
+    /// Store an owner-authored SAD event, recording it in the prefix index so
+    /// `load_sel_events` can return it by chain prefix.
+    ///
+    /// Required for owner-local `SelVerification` derivation in
+    /// `SadEventBuilder::with_prefix` (KEL parity with `KelStore::store` →
+    /// `KelStore::load`). Backends that can't support prefix-keyed iteration
+    /// (e.g., the read-only MinIO adapter on the server) must error here
+    /// rather than silently dropping the index update — owner code that
+    /// hydrates from such a backend would get an empty token and
+    /// silently extend from the wrong tip.
+    async fn store_sel_event(&self, event: &SadEvent) -> Result<(), KelsError>;
+
+    /// Load owner-authored SAD events for `prefix`, ordered
+    /// `(version ASC, kind sort_priority ASC, said ASC)`. Returns
+    /// `(events, has_more)` using the limit-based pagination shape that
+    /// mirrors `KelStore::load`.
+    ///
+    /// Required for owner-local `SelVerification` derivation. Pairs with
+    /// `store_sel_event` — the prefix index populated by stores feeds this
+    /// query. Backends that can't support prefix-keyed iteration return an
+    /// error.
+    async fn load_sel_events(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError>;
 
     /// Load, returning NotFound error if missing.
     async fn load_or_not_found(
@@ -70,24 +99,44 @@ pub trait SadStore: Send + Sync {
 
 /// File-based SAD store for CLI and desktop apps.
 /// Each object is stored as a pretty-printed JSON file named `{said}.json`.
+///
+/// SEL events are additionally tracked in per-prefix sidecar index files
+/// (`sel-index/{prefix}.json`) so `load_sel_events` can return owner-authored
+/// events ordered by `(version, kind sort_priority, said)` without scanning
+/// the entire `sad_dir`. The index is populated by `store_sel_event`.
 pub struct FileSadStore {
     sad_dir: std::path::PathBuf,
+    index_dir: std::path::PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct FileSelIndexEntry {
+    version: u64,
+    kind_priority: u8,
+    said: cesr::Digest256,
 }
 
 impl FileSadStore {
     pub async fn new(sad_dir: impl Into<std::path::PathBuf>) -> Result<Self, KelsError> {
         let sad_dir = sad_dir.into();
+        let index_dir = sad_dir.join("sel-index");
         let dir = sad_dir.clone();
+        let idx = index_dir.clone();
         spawn_blocking(move || {
-            std::fs::create_dir_all(&dir).map_err(|e| KelsError::StorageError(e.to_string()))
+            std::fs::create_dir_all(&dir).map_err(|e| KelsError::StorageError(e.to_string()))?;
+            std::fs::create_dir_all(&idx).map_err(|e| KelsError::StorageError(e.to_string()))
         })
         .await
         .map_err(|e| KelsError::StorageError(e.to_string()))??;
-        Ok(Self { sad_dir })
+        Ok(Self { sad_dir, index_dir })
     }
 
     fn sad_path(&self, said: &cesr::Digest256) -> std::path::PathBuf {
         self.sad_dir.join(format!("{}.json", said))
+    }
+
+    fn index_path(&self, prefix: &cesr::Digest256) -> std::path::PathBuf {
+        self.index_dir.join(format!("{}.json", prefix))
     }
 }
 
@@ -137,6 +186,10 @@ impl SadStore for FileSadStore {
             for entry in entries {
                 let entry = entry.map_err(|e| KelsError::StorageError(e.to_string()))?;
                 let path = entry.path();
+                // Skip subdirectories (the `sel-index/` sidecar lives here)
+                if path.is_dir() {
+                    continue;
+                }
                 if path.extension().is_some_and(|e| e == "json")
                     && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
                     && let Ok(digest) = cesr::Digest256::from_qb64(stem)
@@ -168,17 +221,107 @@ impl SadStore for FileSadStore {
         .await
         .map_err(|e| KelsError::StorageError(e.to_string()))?
     }
+
+    async fn store_sel_event(&self, event: &SadEvent) -> Result<(), KelsError> {
+        let value = serde_json::to_value(event)?;
+        // SAID-keyed payload first so `load(said)` is consistent with index lookup.
+        self.store(&event.said, &value).await?;
+
+        let index_path = self.index_path(&event.prefix);
+        let new_entry = FileSelIndexEntry {
+            version: event.version,
+            kind_priority: event.kind.sort_priority(),
+            said: event.said,
+        };
+        spawn_blocking(move || {
+            let mut entries: Vec<FileSelIndexEntry> = match std::fs::read_to_string(&index_path) {
+                Ok(data) => serde_json::from_str(&data)
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(KelsError::StorageError(e.to_string())),
+            };
+            // Idempotent overwrite by SAID.
+            if let Some(existing) = entries.iter_mut().find(|e| e.said == new_entry.said) {
+                *existing = new_entry;
+            } else {
+                entries.push(new_entry);
+            }
+            entries.sort_by(|a, b| {
+                a.version
+                    .cmp(&b.version)
+                    .then_with(|| a.kind_priority.cmp(&b.kind_priority))
+                    .then_with(|| a.said.as_ref().cmp(b.said.as_ref()))
+            });
+            let serialized = serde_json::to_string_pretty(&entries)
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            std::fs::write(&index_path, serialized)
+                .map_err(|e| KelsError::StorageError(e.to_string()))
+        })
+        .await
+        .map_err(|e| KelsError::StorageError(e.to_string()))?
+    }
+
+    async fn load_sel_events(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        let index_path = self.index_path(prefix);
+        let entries: Vec<FileSelIndexEntry> =
+            spawn_blocking(move || match std::fs::read_to_string(&index_path) {
+                Ok(data) => {
+                    serde_json::from_str(&data).map_err(|e| KelsError::StorageError(e.to_string()))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(e) => Err(KelsError::StorageError(e.to_string())),
+            })
+            .await
+            .map_err(|e| KelsError::StorageError(e.to_string()))??;
+
+        let start = offset as usize;
+        if start >= entries.len() {
+            return Ok((Vec::new(), false));
+        }
+        let end_inclusive = start.saturating_add(limit as usize);
+        let has_more = end_inclusive < entries.len();
+        let end = end_inclusive.min(entries.len());
+
+        let mut events = Vec::with_capacity(end - start);
+        for entry in &entries[start..end] {
+            let value = self
+                .load(&entry.said)
+                .await?
+                .ok_or_else(|| KelsError::NotFound(entry.said.to_string()))?;
+            let event: SadEvent = serde_json::from_value(value)?;
+            events.push(event);
+        }
+        Ok((events, has_more))
+    }
 }
 
 /// In-memory SAD store for tests and lightweight use cases.
 pub struct InMemorySadStore {
     chunks: RwLock<HashMap<cesr::Digest256, serde_json::Value>>,
+    /// Per-prefix SEL event index keyed by (version, kind sort_priority, said).
+    /// Populated by `store_sel_event`; consumed by `load_sel_events`. Mirrors
+    /// the canonical query ordering used server-side
+    /// (`services/sadstore/src/repository.rs`).
+    sel_index: RwLock<HashMap<cesr::Digest256, Vec<SelIndexEntry>>>,
+}
+
+#[derive(Clone)]
+struct SelIndexEntry {
+    version: u64,
+    kind_priority: u8,
+    said: cesr::Digest256,
 }
 
 impl InMemorySadStore {
     pub fn new() -> Self {
         Self {
             chunks: RwLock::new(HashMap::new()),
+            sel_index: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -225,6 +368,69 @@ impl SadStore for InMemorySadStore {
     async fn delete(&self, said: &cesr::Digest256) -> Result<(), KelsError> {
         self.chunks.write().await.remove(said);
         Ok(())
+    }
+
+    async fn store_sel_event(&self, event: &SadEvent) -> Result<(), KelsError> {
+        let value = serde_json::to_value(event)?;
+        // Write the SAID-keyed payload first so `load(said)` is consistent
+        // with the index lookup.
+        self.chunks.write().await.insert(event.said, value);
+
+        let entry = SelIndexEntry {
+            version: event.version,
+            kind_priority: event.kind.sort_priority(),
+            said: event.said,
+        };
+        let mut index = self.sel_index.write().await;
+        let entries = index.entry(event.prefix).or_default();
+        // Idempotent: same SAID overwrites in place; new SAID at same position
+        // gets inserted and re-sorted.
+        if let Some(existing) = entries.iter_mut().find(|e| e.said == event.said) {
+            *existing = entry;
+        } else {
+            entries.push(entry);
+        }
+        entries.sort_by(|a, b| {
+            a.version
+                .cmp(&b.version)
+                .then_with(|| a.kind_priority.cmp(&b.kind_priority))
+                .then_with(|| a.said.as_ref().cmp(b.said.as_ref()))
+        });
+        Ok(())
+    }
+
+    async fn load_sel_events(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        let index = self.sel_index.read().await;
+        let entries = match index.get(prefix) {
+            Some(e) => e.clone(),
+            None => return Ok((Vec::new(), false)),
+        };
+        drop(index);
+
+        let start = offset as usize;
+        if start >= entries.len() {
+            return Ok((Vec::new(), false));
+        }
+        let end_inclusive = start.saturating_add(limit as usize);
+        let has_more = end_inclusive < entries.len();
+        let end = end_inclusive.min(entries.len());
+
+        let chunks = self.chunks.read().await;
+        let mut events = Vec::with_capacity(end - start);
+        for entry in &entries[start..end] {
+            let value = chunks
+                .get(&entry.said)
+                .cloned()
+                .ok_or_else(|| KelsError::NotFound(entry.said.to_string()))?;
+            let event: SadEvent = serde_json::from_value(value)?;
+            events.push(event);
+        }
+        Ok((events, has_more))
     }
 
     async fn store_batch(

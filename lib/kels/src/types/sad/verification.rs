@@ -57,6 +57,15 @@ pub trait PolicyChecker: Send + Sync {
 /// divergent chain are fully verified (SAID, prefix, topic, chain linkage,
 /// and write_policy authorization via `PolicyChecker`).
 ///
+/// **Expected event ordering.** Sources must return events in
+/// `version ASC, kind sort_priority ASC, said ASC` order — the canonical
+/// ordering used by the server's repository queries
+/// (`services/sadstore/src/repository.rs`) and by every page-paginated
+/// transfer. Within a generation (same `version`), state-determining kinds
+/// (Rpr, Evl) sort after normal kinds (Upd, Est, Icp) so that under
+/// gossip-induced reordering the canonical ordering converges across nodes.
+/// Mirrors KEL's `serial ASC, kind sort_priority ASC, said ASC` shape.
+///
 /// The verifier never errors on policy failure — it records the result in
 /// `policy_satisfied`. Structural errors (bad SAID, wrong prefix, etc.)
 /// still return errors. Callers check `policy_satisfied()` on the verification

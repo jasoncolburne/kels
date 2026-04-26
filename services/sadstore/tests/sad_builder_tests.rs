@@ -779,36 +779,55 @@ async fn flush_repair_heals_divergent_chain() {
     .await
     .expect("with_prefix hydrates divergent chain");
 
+    // Round-9 owner-local rework: `with_prefix` now hydrates from owner's
+    // local store only — the cached tip is owner's last authoritative event
+    // (v1), NOT the server's tip. Owner's local view is linear (no fork in
+    // owner's local store). The server's divergence is detected on-demand by
+    // `repair`, which fetches `effective_said` and `fetch_tail` then walks
+    // back to find the boundary.
     let hydrated = repair_builder
         .sad_verification()
         .expect("hydrated verification present");
     assert_eq!(
         hydrated.branches().len(),
-        2,
-        "hydration must preserve both branches post-round-6"
+        1,
+        "owner-local hydration: owner's view sees only owner-authored events (linear)"
     );
-    assert_eq!(hydrated.diverged_at_version(), Some(2));
+    assert_eq!(
+        hydrated.diverged_at_version(),
+        None,
+        "owner-local view: no divergence in owner's local store (server's divergence \
+         is detected on-demand at repair time, not stored in the token)"
+    );
+    assert_eq!(
+        hydrated.current_event().said,
+        v1_event.said,
+        "owner's tip is v1 (last owner-authored event)"
+    );
 
-    // Stage the repair — walks back to v1, builds Rpr at v2 with previous=v1.said.
+    // Stage the repair — fetches server's effective_said + tail, verifies,
+    // walks back from server's tip via in-memory chain map probing
+    // `sad_store`, finds owner-authored boundary = v1, builds Rpr at v2.
     let repaired_content = upload_publication(&sad_client, "divergent-repair-c").await;
     let rpr_said = repair_builder
         .repair(Some(repaired_content))
         .await
-        .expect("repair stages on divergent hydrated chain");
+        .expect("repair stages after on-demand server consultation");
 
     // Sanity-check the boundary: the staged Rpr must be at the divergence
-    // version (v2), not at owner_tip+1 (v3). This is the M1-followup
-    // contract — pre-fix the high-level repair built at v3.
+    // version (v2), with `previous = v1.said` (owner's last authoritative
+    // event). Round-9 contract — under owner-local design, the boundary is
+    // discovered by walking server's tail until probing `sad_store` hits.
     let staged = repair_builder.pending_events().last().unwrap();
     assert_eq!(staged.said, rpr_said);
     assert_eq!(
         staged.version, 2,
-        "M1-followup contract: Rpr at divergence version (v2), not at owner_tip+1 (v3)"
+        "Rpr at v(boundary+1) = v2 (boundary = v1, owner's last authoritative event)"
     );
     assert_eq!(
         staged.previous,
         Some(v1_event.said),
-        "Rpr's previous = v1 (the v(d-1) tip shared by both branches)"
+        "Rpr's previous = v1 (the boundary owner-authored event found via walk-back)"
     );
 
     // Anchor the Rpr and flush. Server's is_repair path runs at from_version=2,
@@ -937,11 +956,13 @@ async fn flush_repair_heals_adversarially_extended_chain() {
         "effective SAID is the adversary's tip"
     );
 
-    // Fresh builder hydrating from the (linear, adversary-extended) server,
-    // sharing `owner_store` (which holds only owner's v0 and v1). `with_prefix`
-    // verifies the chain via verify_sad_events, producing a token whose
-    // current_event is the adversary's tip vT = v4. cached_tip is NOT in
-    // owner_store — Case B.
+    // Fresh builder hydrating owner-locally from `owner_store` (which holds
+    // only owner's v0 and v1). Round-9 owner-local rework: the cached tip is
+    // owner's tip (v1), NOT the server's tip (v_t). Server's adversarial
+    // extension is detected on-demand by `repair`, which fetches
+    // `effective_said` and `fetch_tail`, verifies the fetched chain, then
+    // walks back via in-memory chain map probing `sad_store` for the
+    // owner-authored boundary.
     let checker2 = build_checker(harness, policy);
     let mut repair_builder = SadEventBuilder::with_prefix(
         Some(sad_client.clone()),
@@ -950,7 +971,7 @@ async fn flush_repair_heals_adversarially_extended_chain() {
         &sel_prefix,
     )
     .await
-    .expect("with_prefix hydrates linear adversary-extended chain");
+    .expect("with_prefix hydrates owner-local chain from local store");
 
     let hydrated = repair_builder
         .sad_verification()
@@ -958,18 +979,21 @@ async fn flush_repair_heals_adversarially_extended_chain() {
     assert_eq!(hydrated.diverged_at_version(), None);
     assert_eq!(
         hydrated.current_event().said,
-        v_t.said,
-        "hydration sees adversary's tip as the cached tip"
+        v1_event.said,
+        "owner-local hydration: cached tip is owner's last authoritative event \
+         (v1), NOT the server's adversary-extended tip"
     );
 
-    // Stage the repair. The page-fetch + in-memory walk traverses
-    // v_t → v3 → v2 → v1 (hit in owner_store) → boundary at v1. Builds Rpr
-    // at version 2 with previous = v1.said.
+    // Stage the repair. Repair fetches server's effective_said (which differs
+    // from owner_tip), then fetches the server's tail and verifies it. The
+    // verified chain map traversal walks v_t → v3 → v2 → v1 (hit in
+    // owner_store) → boundary at v1. Builds Rpr at version 2 with
+    // previous = v1.said.
     let repaired_content = upload_publication(&sad_client, "repaired-after-adversary").await;
     let rpr_said = repair_builder
         .repair(Some(repaired_content))
         .await
-        .expect("repair walks back through multi-step adversary extension to vK");
+        .expect("repair walks back through multi-step adversary extension to v1");
 
     let staged = repair_builder.pending_events().last().unwrap();
     assert_eq!(staged.said, rpr_said);

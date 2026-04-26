@@ -84,6 +84,32 @@ impl SadEventKind {
     pub fn is_inception(&self) -> bool {
         matches!(self, Self::Icp)
     }
+
+    /// Sort priority within the same version (lower = earlier in sorted order).
+    /// State-determining events (Rpr) sort after normal events so that — under
+    /// gossip-induced reordering or divergent generations — the canonical
+    /// ordering converges on the most authoritative event. Mirrors KEL's
+    /// `KeyEventKind::sort_priority` shape (`lib/kels/src/types/kel/event.rs:86-97`).
+    pub fn sort_priority(&self) -> u8 {
+        match self {
+            Self::Icp => 0,
+            Self::Est => 1,
+            Self::Upd => 2,
+            Self::Evl => 3,
+            Self::Rpr => 4,
+        }
+    }
+
+    const ALL: [Self; 5] = [Self::Icp, Self::Est, Self::Upd, Self::Evl, Self::Rpr];
+
+    /// Returns the sort priority mapping for use with `order_by_case` in DB queries.
+    /// Mirrors KEL's `KeyEventKind::sort_priority_mapping`.
+    pub fn sort_priority_mapping() -> Vec<(&'static str, i64)> {
+        Self::ALL
+            .iter()
+            .map(|k| (k.as_str(), k.sort_priority() as i64))
+            .collect()
+    }
 }
 
 impl fmt::Display for SadEventKind {
@@ -442,7 +468,11 @@ impl SelVerification {
     }
 
     /// The tie-break winner across all verified branches: higher version wins,
-    /// then lexicographically greater SAID. Reproducible across callers.
+    /// then higher kind sort_priority (state-determining sorts later — order is
+    /// `Rpr > Evl > Upd > Est > Icp`), then lexicographically greater SAID.
+    /// Reproducible across callers, and converges across nodes regardless of
+    /// arrival order because kind priority is canonical. Mirrors KEL's
+    /// branch-tip selection.
     ///
     /// Invariant: `branches` is non-empty (constructor's only caller is
     /// `SelVerifier::finish`, which rejects empty chains before calling here).
@@ -455,6 +485,7 @@ impl SelVerification {
                 a.tip
                     .version
                     .cmp(&b.tip.version)
+                    .then_with(|| a.tip.kind.sort_priority().cmp(&b.tip.kind.sort_priority()))
                     .then_with(|| a.tip.said.as_ref().cmp(b.tip.said.as_ref()))
             })
             .expect("SelVerification invariant: branches is non-empty")
@@ -665,6 +696,27 @@ mod tests {
         let mut tampered = event;
         tampered.topic = "kels/v1/tampered".to_string();
         assert!(tampered.verify_said().is_err());
+    }
+
+    #[test]
+    fn test_sad_event_kind_sort_priority() {
+        // State-determining kinds (Rpr) sort after normal kinds. Mirrors KEL's
+        // priority ordering — the convention is "lower priority sorts earlier."
+        assert_eq!(SadEventKind::Icp.sort_priority(), 0);
+        assert_eq!(SadEventKind::Est.sort_priority(), 1);
+        assert_eq!(SadEventKind::Upd.sort_priority(), 2);
+        assert_eq!(SadEventKind::Evl.sort_priority(), 3);
+        assert_eq!(SadEventKind::Rpr.sort_priority(), 4);
+
+        // sort_priority_mapping returns canonical (kind_string, i64) pairs for
+        // use with `order_by_case` in DB queries — round-trip via `as_str`.
+        let mapping = SadEventKind::sort_priority_mapping();
+        assert_eq!(mapping.len(), 5);
+        assert!(mapping.contains(&("kels/sad/v1/events/icp", 0)));
+        assert!(mapping.contains(&("kels/sad/v1/events/est", 1)));
+        assert!(mapping.contains(&("kels/sad/v1/events/upd", 2)));
+        assert!(mapping.contains(&("kels/sad/v1/events/evl", 3)));
+        assert!(mapping.contains(&("kels/sad/v1/events/rpr", 4)));
     }
 
     #[test]

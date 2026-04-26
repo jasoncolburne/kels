@@ -12,6 +12,17 @@
 #   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
 #   NODE_A_KELS_HOST     - node-a KELS hostname (default: kels)
 #   PROPAGATION_DELAY    - Time to wait for gossip propagation (default: 5s)
+#
+# **Round-9 note (#147 migration path).** Scenarios 7-9 cover the round-9
+# repair surface (divergent / silent extension / clean state). They exercise
+# the **server-side** Rpr contract by building events with raw JSON and
+# submitting via `kels-cli sel submit` (which is just an HTTP wrapper).
+# This is the right shape for testing the truncate_and_replace contract.
+# When the higher-level `kels sel repair` subcommand lands (#147), migrate
+# the construction to drive `SadEventBuilder::repair` end-to-end so the
+# owner-local boundary discovery is also exercised here. Until then, the
+# in-process integration tests at `services/sadstore/tests/sad_builder_tests.rs`
+# cover the builder side; this script covers the wire contract.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
@@ -477,6 +488,165 @@ else
     # Wait for repair to propagate to node-b via gossip
     run_test "Repair: propagated to node-b" \
         wait_for_chain_propagation "$DIV_PREFIX" "$D_REPAIR_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+fi
+
+echo ""
+
+# ========================================
+# Scenario 8: Silent Adversarial Extension + Repair
+# ========================================
+echo -e "${CYAN}=== Scenario 8: Silent Adversarial Extension + Repair ===${NC}"
+echo "Owner authors v0+v1, then a third party (with write_policy auth)"
+echo "extends the chain with an unauthorized v2 (no fork — linear extension)."
+echo "Owner runs repair, building Rpr@v2 with previous=v1.said. Server's"
+echo "truncate_and_replace archives the rogue v2 and inserts the Rpr."
+echo ""
+
+EXT_TOPIC="kels/sad/v1/test-extension"
+
+EXT_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+if [ -z "$EXT_KEL_PREFIX" ]; then
+    echo -e "${RED}Failed to create KEL for extension test${NC}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+else
+    echo "Created KEL: $EXT_KEL_PREFIX"
+
+    EXT_POLICY_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($EXT_KEL_PREFIX)" \
+        '{said: $p, expression: $expr}')
+    EXT_POLICY_SAID=$(compute_said "$EXT_POLICY_JSON")
+    EXT_POLICY_JSON=$(echo "$EXT_POLICY_JSON" | jq -c --arg s "$EXT_POLICY_SAID" '.said = $s')
+    curl -s -o /dev/null -X POST "${NODE_A_SAD_URL}/api/v1/sad" \
+        -H 'Content-Type: application/json' -d "$EXT_POLICY_JSON"
+
+    EXT_GP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$EXT_KEL_PREFIX")
+
+    # v0: Icp with governance_policy
+    E_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$EXT_POLICY_SAID" --arg k "$EXT_TOPIC" \
+        --arg gp "$EXT_GP_SAID" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $gp}')
+    E_V0_PREFIX=$(compute_prefix "$E_V0_JSON")
+    E_V0_JSON=$(echo "$E_V0_JSON" | jq -c --arg pfx "$E_V0_PREFIX" '.prefix = $pfx')
+    E_V0_SAID=$(compute_said "$E_V0_JSON")
+    E_V0_JSON=$(echo "$E_V0_JSON" | jq -c --arg s "$E_V0_SAID" '.said = $s')
+    EXT_PREFIX="$E_V0_PREFIX"
+    echo "SEL prefix: $EXT_PREFIX"
+
+    run_test "Extension: v0 SAID anchored" \
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V0_SAID"
+    echo "[$E_V0_JSON]" > "$TEMP_DIR/ext-v0.json"
+    run_test "Extension: v0 submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v0.json"
+
+    # v1: Upd authored by owner — this is owner's authoritative tip
+    E_V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$EXT_PREFIX" --arg prev "$E_V0_SAID" \
+        --arg k "$EXT_TOPIC" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kowner_v1_content___________________________"}')
+    E_V1_SAID=$(compute_said "$E_V1_JSON")
+    E_V1_JSON=$(echo "$E_V1_JSON" | jq -c --arg s "$E_V1_SAID" '.said = $s')
+    run_test "Extension: v1 (owner) SAID anchored" \
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V1_SAID"
+    echo "[$E_V1_JSON]" > "$TEMP_DIR/ext-v1.json"
+    run_test "Extension: v1 (owner) submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v1.json"
+
+    # v2: rogue extension (still write_policy-authorized — anchored by the same KEL).
+    # In a real adversarial scenario the KEL would be controlled by a compromised
+    # signer; for this script we anchor with the same KEL as a stand-in for the
+    # silent-extension shape. The point being tested is that owner can repair.
+    E_V2_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$EXT_PREFIX" --arg prev "$E_V1_SAID" \
+        --arg k "$EXT_TOPIC" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 2, topic: $k, kind: "kels/sad/v1/events/upd", content: "Krogue_v2_content___________________________"}')
+    E_V2_SAID=$(compute_said "$E_V2_JSON")
+    E_V2_JSON=$(echo "$E_V2_JSON" | jq -c --arg s "$E_V2_SAID" '.said = $s')
+    run_test "Extension: rogue v2 SAID anchored" \
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V2_SAID"
+    echo "[$E_V2_JSON]" > "$TEMP_DIR/ext-v2.json"
+    run_test "Extension: rogue v2 submitted to node-a (linear, no divergence)" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v2.json"
+
+    EXT_PRE_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$EXT_PREFIX")
+    EXT_PRE_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${EXT_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
+    run_test "Extension: chain still linear after rogue v2 (effective != divergent SAID)" [ "$EXT_PRE_DIVERGENT" = "false" ]
+    run_test "Extension: rogue v2 is current effective tip" [ "$EXT_PRE_EFFECTIVE" = "$E_V2_SAID" ]
+
+    # Owner builds Rpr@v2 with previous=v1.said. Server's truncate_and_replace
+    # archives the rogue v2 and inserts the Rpr at v2.
+    E_RPR_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$EXT_PREFIX" --arg prev "$E_V1_SAID" \
+        --arg k "$EXT_TOPIC" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 2, topic: $k, kind: "kels/sad/v1/events/rpr", content: "Krepaired_v2_content________________________"}')
+    E_RPR_SAID=$(compute_said "$E_RPR_JSON")
+    E_RPR_JSON=$(echo "$E_RPR_JSON" | jq -c --arg s "$E_RPR_SAID" '.said = $s')
+    run_test "Extension: Rpr SAID anchored" \
+        kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_RPR_SAID"
+    echo "[$E_RPR_JSON]" > "$TEMP_DIR/ext-rpr.json"
+    run_test "Extension: Rpr submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-rpr.json"
+
+    EXT_POST_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$EXT_PREFIX")
+    EXT_POST_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${EXT_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
+    run_test "Extension: post-repair chain still linear" [ "$EXT_POST_DIVERGENT" = "false" ]
+    run_test "Extension: post-repair tip is the Rpr" [ "$EXT_POST_EFFECTIVE" = "$E_RPR_SAID" ]
+fi
+
+echo ""
+
+# ========================================
+# Scenario 9: Clean State (NothingToRepair shape)
+# ========================================
+echo -e "${CYAN}=== Scenario 9: Clean State (no-op repair) ===${NC}"
+echo "Owner submits v0+v1. No adversary, no fork. Server's effective_said"
+echo "matches owner's tip. Owner-local repair would return NothingToRepair;"
+echo "this script asserts the wire-level invariant that effective_said equals"
+echo "owner's last submission."
+echo ""
+
+CLEAN_TOPIC="kels/sad/v1/test-clean"
+
+CLEAN_KEL_PREFIX=$(kels-cli --kels-url "$NODE_A_KELS_URL" kel incept 2>&1 | grep "Prefix:" | awk '{print $2}')
+if [ -z "$CLEAN_KEL_PREFIX" ]; then
+    echo -e "${RED}Failed to create KEL for clean-state test${NC}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+else
+    echo "Created KEL: $CLEAN_KEL_PREFIX"
+
+    CLEAN_POLICY_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($CLEAN_KEL_PREFIX)" \
+        '{said: $p, expression: $expr}')
+    CLEAN_POLICY_SAID=$(compute_said "$CLEAN_POLICY_JSON")
+    CLEAN_POLICY_JSON=$(echo "$CLEAN_POLICY_JSON" | jq -c --arg s "$CLEAN_POLICY_SAID" '.said = $s')
+    curl -s -o /dev/null -X POST "${NODE_A_SAD_URL}/api/v1/sad" \
+        -H 'Content-Type: application/json' -d "$CLEAN_POLICY_JSON"
+
+    CLEAN_GP_SAID=$(build_governance_policy "$NODE_A_SAD_URL" "$CLEAN_KEL_PREFIX")
+
+    C_V0_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg wp "$CLEAN_POLICY_SAID" --arg k "$CLEAN_TOPIC" \
+        --arg gp "$CLEAN_GP_SAID" \
+        '{said: $p, prefix: $p, version: 0, topic: $k, kind: "kels/sad/v1/events/icp", writePolicy: $wp, governancePolicy: $gp}')
+    C_V0_PREFIX=$(compute_prefix "$C_V0_JSON")
+    C_V0_JSON=$(echo "$C_V0_JSON" | jq -c --arg pfx "$C_V0_PREFIX" '.prefix = $pfx')
+    C_V0_SAID=$(compute_said "$C_V0_JSON")
+    C_V0_JSON=$(echo "$C_V0_JSON" | jq -c --arg s "$C_V0_SAID" '.said = $s')
+    CLEAN_PREFIX="$C_V0_PREFIX"
+
+    kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_V0_SAID" >/dev/null
+    echo "[$C_V0_JSON]" > "$TEMP_DIR/clean-v0.json"
+    run_test "Clean: v0 submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/clean-v0.json"
+
+    C_V1_JSON=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$CLEAN_PREFIX" --arg prev "$C_V0_SAID" \
+        --arg k "$CLEAN_TOPIC" \
+        '{said: $p, prefix: $pfx, previous: $prev, version: 1, topic: $k, kind: "kels/sad/v1/events/upd", content: "Kclean_v1_content___________________________"}')
+    C_V1_SAID=$(compute_said "$C_V1_JSON")
+    C_V1_JSON=$(echo "$C_V1_JSON" | jq -c --arg s "$C_V1_SAID" '.said = $s')
+    kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_V1_SAID" >/dev/null
+    echo "[$C_V1_JSON]" > "$TEMP_DIR/clean-v1.json"
+    run_test "Clean: v1 submitted to node-a" \
+        kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/clean-v1.json"
+
+    # Owner's tip == server's effective_said. NothingToRepair shape.
+    CLEAN_EFFECTIVE=$(get_effective_said "$NODE_A_SAD_URL" "$CLEAN_PREFIX")
+    CLEAN_DIVERGENT=$(curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${CLEAN_PREFIX}\"}" "${NODE_A_SAD_URL}/api/v1/sad/events/effective-said" | jq -r '.divergent // false')
+    run_test "Clean: effective SAID == owner's last submission (v1)" [ "$CLEAN_EFFECTIVE" = "$C_V1_SAID" ]
+    run_test "Clean: chain not divergent" [ "$CLEAN_DIVERGENT" = "false" ]
 fi
 
 echo ""
