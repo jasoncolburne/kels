@@ -42,11 +42,11 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/verification.md`, `docs/design/streaming-verification-architecture.md`.
+**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/kel/events.md`, `docs/design/kel/verification.md`, `docs/design/streaming-verification-architecture.md`.
 
-**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/divergence-detection.md`, `docs/design/recovery-workflow.md`, `docs/design/reconciliation.md`.
+**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/kel/event-log.md`, `docs/design/kel/recovery-workflow.md`, `docs/design/kel/reconciliation.md`.
 
-**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/merge.md`.
+**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/kel/merge.md`.
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
@@ -58,7 +58,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/federation-state-machine.md`, `docs/design/secure-registration.md`, `docs/design/registry-removal.md`, `docs/design/rejection-threshold.md`.
 
-**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sad-events.md`.
+**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sel/events.md`, `docs/design/sel/event-log.md`.
 
 ## Architecture
 

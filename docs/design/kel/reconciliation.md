@@ -1,16 +1,20 @@
-# KEL Reconciliation Proof
+# KEL Reconciliation: Multi-Node Correctness Matrix
 
-Exhaustive enumeration of all KEL state × submission type × gossip sync combinations, demonstrating that every case is handled correctly.
+> Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound.
+
+For lifecycle prose (states, divergence, recovery via discriminator, contest, decommission, the proactive-ROR seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
 ## Invariants
 
-All proofs below depend on these invariants:
+All cases below depend on these invariants:
 
-1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2` (62) non-revealing events. Surfaced by the verification engine and enforced by the merge engine; the builder auto-inserts `ror` when needed.
+1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2 = 62` non-revealing events. Surfaced by `KelVerifier` and enforced by the merge engine; the builder auto-inserts `ror` when the bound is about to be crossed.
 
-2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive ROR enforcement limits them to at most 62 events before rejection.
+2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive-ROR enforcement limits them to at most 62 events before rejection.
 
 3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contest batch (`events + cnt`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
+
+These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (round-10 backport from SEL) relies on bound 3.
 
 ## KEL States
 
@@ -19,20 +23,20 @@ All proofs below depend on these invariants:
 | **Empty** | No events for this prefix |
 | **Normal** | Non-divergent, active |
 | **Divergent** | Fork detected, no `rec`/`cnt` yet |
-| **Recovered** | Clean chain after synchronous archival in merge transaction |
+| **Recovered** | Clean chain after synchronous archival in the merge transaction |
 | **Contested** | `cnt` present, permanently frozen |
 | **Decommissioned** | `dec` present, permanently frozen |
 
-Note: "Divergent with recovery revealed" means a recovery-revealing event exists on one branch since the divergence point. This is a sub-state of Divergent where only `cnt` is accepted (non-`cnt` submissions return `ContestRequired`).
+"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only `cnt` is accepted; non-`cnt` submissions return `ContestRequired`.
 
-## Local Submissions
+## Local Submissions Matrix
 
-What happens when a client submits events to the merge engine.
+What happens when a client submits events to the merge engine on a single node.
 
-| KEL State | ixn/rot | ror | rec/rec+rot | cnt/events+cnt | dec |
-|-----------|---------|-----|-------------|----------------|-----|
+| KEL State | ixn/rot | ror | rec / rec+rot | cnt / events+cnt | dec |
+|-----------|---------|-----|---------------|------------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Normal** | Append ✓ | Append ✓ | Append ✓ (accepted for gossip sync of recovered KELs) | Overlap: Contest ✓ (requires existing recovery-revealing event, creates divergence + freezes); Append: Reject | Append ✓ |
+| **Normal** | Append ✓ | Append ✓ | Append ✓ (accepted to support gossip-sync of recovered KELs) | Overlap: Contest ✓ (requires existing recovery-revealing event, creates divergence + freezes); Append: Reject | Append ✓ |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (no recovery revealed — recover, don't contest) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
 | **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
@@ -43,10 +47,10 @@ What happens when a client submits events to the merge engine.
 
 The merge engine handles batches atomically:
 
-- **`[events + rec + rot]`**: Owner's chain from the fork point through recovery. At most 64 events (bounded by proactive ROR). Processed as a single overlap or divergent submission.
-- **`[events + cnt]`**: Owner's chain from the fork point through contest. At most 63 events. The `cnt` must be last in the batch.
-- **`[ror, ixn]`**: Auto-inserted by the builder when an `ixn` would exceed the proactive ROR interval.
-- **`[rot] → [ror]`**: The builder upgrades `rot` to `ror` when the proactive ROR interval is due, since `ror` rotates both signing and recovery keys.
+- **`[events + rec + rot]`** — owner's chain from the fork point through recovery. At most 64 events (bounded by proactive ROR). Processed as a single overlap or divergent submission.
+- **`[events + cnt]`** — owner's chain from the fork point through contest. At most 63 events. The `cnt` must be last in the batch.
+- **`[ror, ixn]`** — auto-inserted by the builder when an `ixn` would exceed the proactive-ROR interval.
+- **`[rot] → [ror]`** — the builder upgrades `rot` to `ror` when the proactive-ROR interval is due, since `ror` rotates both signing and recovery keys.
 
 ## Gossip Sync (transfer_key_events)
 
@@ -56,13 +60,13 @@ When node A syncs a KEL to node B, `transfer_key_events` reads from A and writes
 
 For divergent source KELs, `send_divergent_events` reorders events to ensure the KEL is reconstructed the same way. With synchronous archival, a recovered source KEL is always a clean linear chain — the adversary events are archived in the merge transaction. In normal operation, only unrecovered and contested cases reach `send_divergent_events`.
 
-- **Divergent with rec (no cnt)**: Rejected with error. This state cannot exist through normal merge paths — synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
-- **Unrecovered (no rec, no cnt)**: Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver).
-- **Contested (cnt found)**: Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive ROR invariant). If the cnt chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
+- **Divergent with rec (no cnt)** — Rejected with error. This state cannot exist through normal merge paths: synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
+- **Unrecovered (no rec, no cnt)** — Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver).
+- **Contested (cnt found)** — Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive-ROR invariant). If the cnt chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
 
 ### Source → Sink state matrix
 
-Each cell describes what happens when gossip syncs a KEL from a source node (row) to a sink node (column). The source's `transfer_key_events` reads its local KEL and sends events via `store_page` calls to the sink. The sink's merge engine processes the incoming events against whatever state it already has for that prefix.
+Each cell describes what happens when gossip syncs a KEL from a source node (row) to a sink node (column). The source's `transfer_key_events` reads its local KEL and sends events via `store_page` to the sink. The sink's merge engine processes the incoming events against whatever state it already has for that prefix.
 
 "Normal (owner)" means the sink has the legitimate owner's non-divergent chain. "Normal (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
 
@@ -94,10 +98,12 @@ Archival happens synchronously within the merge transaction that accepts the `re
 
 The merge engine identifies owner events via two strategies depending on the divergence geometry:
 
-- **`collect_all_adversary_saids`** (owner has no events at divergence serial): All events from `diverged_at` onward are adversary.
-- **`collect_adversary_chain_saids`** (owner has events at divergence serial): Walk backward from the adversary event at the divergence point to identify the adversary chain, then forward-trace to capture any adversary extensions.
+- **`collect_all_adversary_saids`** — owner has no events at the divergence serial. All events from `diverged_at` onward not on the owner walkback are adversary.
+- **`collect_adversary_chain_saids`** — owner has events at the divergence serial. Walk backward from the adversary event at the divergence point to identify the adversary chain, then forward-trace to capture any adversary extensions.
 
 Everything not in the owner's chain is archived to mirror tables.
+
+The round-10 backport from SEL replaces per-hop DB queries in both strategies with a single page fetch + resume-mode verifier trust gate + in-memory walkback. The case enumeration in this doc is unchanged; only the implementation efficiency changes. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
 
 ### Archival bounds
 
@@ -127,4 +133,11 @@ After recovery on node A, new events (e.g., `ixn`) are appended. When synced to 
 
 ### 5. Contested KELs across nodes
 
-Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived, another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived; another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+
+## References
+
+- [docs/design/kel/events.md](events.md) — Per-kind reference: kinds, field rules, chain shapes.
+- [docs/design/kel/event-log.md](event-log.md) — KEL chain lifecycle: states, divergence, recovery, contest, decommission, proactive-ROR seal, discriminator algorithm.
+- [docs/design/kel/merge.md](merge.md) — KEL merge engine; `MergeTransaction` API and full routing.
+- [docs/design/sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator and pending-bundling shape are mirrored on both sides.
