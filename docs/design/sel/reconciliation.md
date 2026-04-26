@@ -38,7 +38,7 @@ What happens when a client submits events to the submit handler on a single node
 | SEL State | Est / Upd | Sea | Rpr / pending+Rpr | Cnt / pending+Cnt | Dec |
 |-----------|-----------|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
-| **Empty** (Icp only batch) | Append ✓ (creates chain) | n/a | n/a | n/a | n/a |
+| **Empty** (Icp only batch) | Append ✓ if `write_policy` satisfied (Icp.said anchored under declared write_policy); reject otherwise | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (write_policy gated) | Append ✓ (governance_policy gated) | Reject `RepairRequired` if not divergent (or `NothingToRepair` from builder); else discriminator-driven repair ✓ | Append ✓ (only legal when seal-past-version on existing branch — see ContestRequired) | Append ✓ |
 | **Active, sealed** (write_policy normal-event at version ≤ `last_governance_version`) | `ContestRequired` | n/a (Sea is governance-authorized; bypasses) | n/a | Contest ✓ (extends owner tip; chain becomes Contested) | n/a |
 | **Divergent** | Reject `RepairRequired` | Reject `RepairRequired` | Discriminator-driven repair ✓ | Reject `RepairRequired` (no recovery-revealing event yet — repair, don't contest) | Reject `RepairRequired` |
@@ -54,7 +54,7 @@ The submit handler treats a batch atomically:
 - **`[pending..., Rpr]`** — owner's pre-flush staged events that never landed, plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at version ≥ `first_divergent_version` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
-- **`[Icp]`** — chain inception; standalone batch.
+- **`[Icp]`** — chain inception; standalone batch. Icp.said must be anchored under the declared `write_policy` for the handler to accept (uniformly anchor-gated with v1+ events).
 - **`[Est]`** — v1 establishment of `governance_policy` (only valid when v0 omitted it).
 
 ## Gossip Sync

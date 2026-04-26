@@ -38,14 +38,21 @@ Server errors map to:
 
 `submit_sad_events` is the single HTTP entry point for all write paths. It validates the batch, walks the existing chain, then routes to one of several handler paths.
 
-### 1. Structural Validation
+### 1. Structural and Authorization Validation
 
 ```
 for each event:
     SadEvent::validate_structure()  // per-kind field rules per [events.md](events.md)
     verify event.prefix derives from declared write_policy + topic (for v0)
     verify each batch event shares the same prefix
+
+for v0 (Icp): verify Icp.said is anchored under the declared write_policy
+              (the inceptor proves membership in the policy they're naming)
+for v1+:      verifier checks anchoring against branch.tracked_write_policy
+              or branch.tracked_governance_policy per kind
 ```
+
+The Icp authorization gate closes a phishing class where an adversary could otherwise submit a v0 declaring an arbitrary `governance_policy` for a public `(write_policy, topic)` pair — the resulting chain has a different prefix, but a write-authorized party lured into `Upd`-ing on it could later have control rotated out from under them via the adversary's `governance_policy`. Anchoring Icp under `write_policy` ensures only members of the declared policy can incept. See [events.md §Authorization model](events.md#authorization-model).
 
 ### 2. Terminal-State Gate
 

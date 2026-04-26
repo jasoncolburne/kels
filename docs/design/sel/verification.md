@@ -77,7 +77,8 @@ When an event requires policy satisfaction, the verifier resolves the relevant p
 ```
 verify_policy(event, branch):
     policy = match event.kind:
-        Est, Upd → branch.tracked_write_policy
+        Icp           → event.write_policy (the policy declared at v0; no prior tracked state)
+        Est, Upd      → branch.tracked_write_policy
         Sea, Rpr, Cnt, Dec → branch.tracked_governance_policy
 
     // Anchoring model: policy resolves to Endorse(KEL_PREFIX) nodes;
@@ -87,10 +88,10 @@ verify_policy(event, branch):
 
 Policy state is **branch-tracked**:
 
-- `tracked_write_policy` — seeded from v0's `write_policy` declaration. Updated whenever an authorized `Sea` carries a new `write_policy`.
+- `tracked_write_policy` — seeded from v0's `write_policy` declaration *after* the verifier confirms Icp.said is anchored under it. Updated whenever an authorized `Sea` carries a new `write_policy`.
 - `tracked_governance_policy` — seeded from v0's `governance_policy` (if present), or from v1's `Est` (if v0 omitted it). Updated whenever an authorized `Sea` carries a new `governance_policy`.
 
-Authorization checks are against the *tracked* (effective) values, not the event's own field. This prevents an adversary who satisfies the current `write_policy` from replacing the policy via an Upd-style event: policy replacement requires satisfying the stricter `governance_policy`.
+Authorization checks for v1+ are against the *tracked* (effective) values, not the event's own field. This prevents an adversary who satisfies the current `write_policy` from replacing the policy via an Upd-style event: policy replacement requires satisfying the stricter `governance_policy`. For v0 (Icp), the policy resolution is against the event's own declared `write_policy`, since no prior tracked state exists — the inceptor proves membership in the policy they're declaring.
 
 ### Content Preservation
 

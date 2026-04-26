@@ -24,7 +24,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 | Kind | version | previous | content | write_policy | governance_policy | authorization |
 |---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | forbidden | **required** | optional | n/a |
+| `Icp` | `== 0` | forbidden | forbidden | **required** | optional | write |
 | `Est` | `== 1` | required | forbidden | forbidden | **required** | write |
 | `Upd` | `>= 1` | required | **required** | forbidden | forbidden | write |
 | `Sea` | `>= 1` | required | preserved | optional | optional | governance |
@@ -36,15 +36,15 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 The "authorization" column names which policy must be satisfied for the verifier to accept the event:
 
-- **Icp** is the chain's declarative root. v0 is not gated by any prior policy — its acceptance is structural (the SAID + prefix derivation make it self-authenticating; a colliding Icp would have a different prefix and therefore belong to a different chain). Icp *declares* `write_policy` (always) and *may declare* `governance_policy` (optionally, on chains where prefix derivation is caller-controlled). v1+ events satisfy what Icp declared; Icp itself satisfies nothing.
-- **Est / Upd** must satisfy the branch's tracked `write_policy`. The verifier seeds `tracked_write_policy` from v0's declaration and updates it whenever a `Sea` carries a new `write_policy`. v1+ authorization checks against the tracked value, not the event's own field.
+- **Icp** must satisfy the `write_policy` it declares. The inceptor proves membership in the policy they're naming by anchoring `Icp.said` under that policy. The SAID + prefix derivation provides chain identity (a colliding Icp with different declarations belongs to a different chain), but identity is not authorization — anchoring under the declared `write_policy` is. This is the SEL analog of KEL's "Icp signed by the declared `public_key`" rule: in both, v0 authenticates the inceptor against what v0 declares. Without this gate, an adversary could submit an Icp declaring an arbitrary `governance_policy` of their choosing for any public `(write_policy, topic)` pair — the resulting chain would have a different prefix, but the adversary could lure a write-authorized party into submitting an `Upd` to it (e.g., via a phishing prefix), then later use the adversary-controlled `governance_policy` to `Sea`-rotate `write_policy` and capture the chain. Anchoring Icp under `write_policy` closes this by ensuring only members of the declared policy can incept the chain.
+- **Est / Upd** must also satisfy the branch's tracked `write_policy`. The verifier seeds `tracked_write_policy` from v0's declaration and updates it whenever a `Sea` carries a new `write_policy`. v1+ authorization checks against the tracked value, not the event's own field.
 - **Sea / Rpr / Cnt / Dec** must satisfy `governance_policy` — the higher bar. They do NOT separately need to satisfy `write_policy`: a properly-crafted `governance_policy` should subsume `write_policy` (a chain whose governance authorizes a strictly disjoint set from its write authority is misconfigured, not a case the kind structure should defend against). See [event-log.md](event-log.md#authorization-asymmetry-vs-kel-cnt) for the rationale and the contrast with KEL's dual-signature model.
 
 ### `write_policy` semantics
 
-- `Icp`: required — seeds the SEL prefix (prefix = Blake3 of v0 template with said+prefix blanked).
+- `Icp`: required as a **field** (seeds the SEL prefix — prefix = Blake3 of v0 template with said+prefix blanked) AND as the **authorization gate** (Icp.said must be anchored under the declared `write_policy`).
 - `Sea`: optional — present means policy evolution (evaluated against `governance_policy`, the higher bar). Absent means pure evaluation.
-- `Est` / `Upd` / `Rpr` / `Cnt` / `Dec`: forbidden. Est declares governance_policy, not write_policy. Upd is content-only. Rpr/Cnt/Dec are governance-authorized lifecycle transitions; to evolve policy after repair, submit a separate `Sea` afterward.
+- `Est` / `Upd` / `Rpr` / `Cnt` / `Dec`: forbidden as a field. Est declares governance_policy, not write_policy. Upd is content-only. Rpr/Cnt/Dec are governance-authorized lifecycle transitions; to evolve policy after repair, submit a separate `Sea` afterward.
 
 The verifier's `SadBranchState` tracks the effective `tracked_write_policy` — seeded from v0 (Icp always carries it) and updated whenever a `Sea` event carries a new write_policy. v1+ events are authorized against `branch.tracked_write_policy`, not the event's own field. This prevents an adversary who satisfies the current write_policy from replacing the policy via an Upd-style event: policy replacement requires satisfying the stricter `governance_policy` too.
 

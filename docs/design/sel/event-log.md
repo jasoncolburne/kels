@@ -23,7 +23,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
-| `Icp` | Inception (v0). | None (prefix-deriving). | No |
+| `Icp` | Inception (v0). | `write_policy` (Icp.said anchored under the declared write_policy). | No |
 | `Est` | Establishment of `governance_policy` (v1, optional). | `write_policy`. | No |
 | `Upd` | Normal update. | `write_policy`. | No |
 | `Sea` | Seal — governance evaluation; advances the seal, may evolve `write_policy`. | `governance_policy`. | No |
@@ -200,7 +200,7 @@ When the server processes a submitted batch:
 
 **Code:**
 - `lib/kels/src/types/sad/event.rs` — variants `SadEventKind::Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` with topic strings per [events.md](events.md). Constructors `SadEvent::icp/est/upd/sea/rpr/cnt/dec`; `cnt(previous)` and `dec(previous)` take no content parameter (read `previous.content` and carry forward). `evaluates_governance` returns true for `Sea`/`Rpr`/`Cnt`/`Dec`. Predicates: `is_contest`, `is_decommission`. `validate_structure` enforces the per-kind field rules (forbid content on Icp/Est; require on Upd; etc.). The "must equal `previous.content`" rule for Sea/Rpr/Cnt/Dec is a chain-state check (verifier, not validate_structure).
-- `lib/kels/src/types/sad/verification.rs` — add `is_contested: bool` and `is_decommissioned: bool` fields to `SelVerifier` and `SelVerification`. Set on observing `Cnt` / `Dec` during verification. Surface via accessors. Add the content-preservation check: every Sea/Rpr/Cnt/Dec must have `event.content == previous.content`; reject otherwise.
+- `lib/kels/src/types/sad/verification.rs` — add `is_contested: bool` and `is_decommissioned: bool` fields to `SelVerifier` and `SelVerification`. Set on observing `Cnt` / `Dec` during verification. Surface via accessors. Add the content-preservation check: every Sea/Rpr/Cnt/Dec must have `event.content == previous.content`; reject otherwise. Add the Icp anchoring check: every v0 must have Icp.said anchored under its declared `write_policy` (`PolicyChecker::evaluate_anchored_policy(event.write_policy, event.said)`). The branch's `tracked_write_policy` is seeded only after this check passes.
 - `lib/kels/src/sad_builder.rs::repair()` — drop the A3 → d-1 boundary branch; uniform `boundary = owner_tip.version`. Bundle pending events into the batch. Remove the `require_no_pending_for_repair` gate.
 - `lib/kels/src/sad_builder.rs` — add `contest()` and `decommission()` (no content arg) mirroring `repair`'s pre-flight + bundling shape. Each constructor reads the tip's content and carries it forward.
 - `services/sadstore/src/repository.rs::truncate_and_replace` — replace blanket archive-from-`from_version` with discriminator-driven archive: single page fetch, resume-verifier trust gate, walkback from `Rpr.previous`, archive non-owner page events.
