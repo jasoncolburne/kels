@@ -39,11 +39,30 @@ For per-kind field rules (which fields are required/optional/forbidden per kind)
 
 The `last_governance_version` is the most recent version at which a `Sea` or `Rpr` landed. It is the chain's **evaluation seal** — repair must not truncate at or before it (handlers reject `from_version <= last_governance_version`).
 
-**Once an evaluation lands, the governance satisfaction it proves is final.** Subsequent revocation or poisoning of any KEL anchor used by that evaluation's `governance_policy` does NOT retroactively unsatisfy the past evaluation. The seal locks in the policy state at that version.
+**Once an evaluation lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on `governance_policy`:
 
-This is an accepted security boundary. Without it, a chain's history could be invalidated retroactively by anyone with control over a single anchor — making the chain's terminal states (sealed, contested, decommissioned) unstable. The trade-off is that an anchor controller who later turns adversarial cannot undo their past contributions; only the going-forward effect of `rec`/`cnt` on their KEL applies.
+> **Governance-policy immunity rule.** Any policy referenced as a chain's `governance_policy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` (declaring `governance_policy` at v0), `Est`, or `Sea` (evolving `governance_policy`) event that names a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../security-invariant.md](../security-invariant.md)).
 
-**Caveat**: `rec` or `cnt` on an underlying KEL DOES invalidate that keyholder's authority **going forward** — future evaluations referencing that keyholder will fail. The non-poisonability rule applies only to evaluations already in the chain.
+Since `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), the rule guarantees that no anchor used in a governance evaluation can ever be poisoned. Past evaluations stay satisfied by construction — there is no mechanism by which they could be retroactively unsatisfied.
+
+The rule is the "bake state into data" principle applied to an authorization invariant: any authorized observer can determine from a policy SAID alone whether the seal property holds for chains that reference it. Immunity is structural, not behavioral; it does not depend on evaluator carve-outs or runtime semantics.
+
+**rec / cnt of an underlying KEL.** Recovery or contest of an anchoring KEL doesn't break past evaluations — the `ixn` events that anchored prior `Sea`/`Rpr`/`Cnt`/`Dec` stay in the KEL's chain (`rec` doesn't archive owner-authored events; `cnt` freezes but preserves). The verifier walks each anchoring KEL during re-verification and finds the historical `ixn` naturally. What `rec`/`cnt` does affect is *future* evaluations: a contested KEL accepts no new anchors; a recovered KEL's post-rec controller is the legitimate authority going forward. The seal property is unaffected — only what can be added next changes.
+
+## Trust Caveat — Recovered Anchoring KELs
+
+The seal property and the anchoring model give *structural* guarantees: chain state is deterministic, all nodes agree on terminal states, past evaluations re-verify cleanly. They do **not** give *trust* guarantees against the case where a participating KEL was later recovered.
+
+`Rec` (recovery-after-divergence; distinct from the proactive `Ror`) is by design evidence that the prior signing key was at some point in adversarial hands. The legitimate controller used the recovery key precisely because the signing key was no longer trustworthy. Past anchors made by that pre-rec key stay in the KEL's chain — re-verification finds them — but a consumer cannot tell from the chain alone whether a given pre-rec anchor was placed by the legitimate controller or by the adversary who held the compromised key.
+
+This applies to **any** anchor made by a since-rec'd KEL, regardless of which policy it satisfied:
+
+- A past `Sea` / `Rpr` / `Cnt` / `Dec` whose `governance_policy` was satisfied in part by a now-rec'd KEL — the governance evaluation may have been adversary-driven.
+- A past `Upd` whose `write_policy` was satisfied in part by a now-rec'd KEL — the write authorization may have been adversary-driven.
+
+The chain remains structurally valid in both cases. What changes is the *runtime trust judgement* the consumer must make on top of structural verification: the chain's terminal state, governance evaluations, and historical content should be treated with caution proportionate to the rec history of participating KELs and the impact of the trust decision being made.
+
+This caveat is not a verification-layer concern (verification stays structural and deterministic). It is a consumer concern: when reasoning about trust, walk the participating KELs of relevant past events and weigh the implications of any `rec` events you find.
 
 ## Divergence and Freeze
 

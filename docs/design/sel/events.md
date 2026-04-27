@@ -55,6 +55,8 @@ The verifier's `SadBranchState` tracks the effective `tracked_write_policy` — 
 - `Sea`: optional — present means governance policy evolution (evaluated against the *previous* tracked governance_policy).
 - `Upd` / `Rpr` / `Cnt` / `Dec`: forbidden on the event. To evolve governance_policy after one of these, submit a separate `Sea`.
 
+**Immunity requirement.** Any policy referenced as `governance_policy` — whether at `Icp` (v0), `Est` (v1), or via a `Sea` evolution — MUST have `immune: true`. Non-immune policies are rejected at submit time. This is the structural enforcement of the evaluation seal: governance evaluations are non-poisonable by construction, not by evaluator carve-out. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability) for the rationale.
+
 ### `content` semantics
 
 `Upd` is the **only** kind that introduces or changes `content`. Every other kind that allows content (`Sea`, `Rpr`, `Cnt`, `Dec`) must carry forward the most recent `Upd`'s content value — i.e., `event.content == previous.content`. The verifier enforces this as a chain-state check.
