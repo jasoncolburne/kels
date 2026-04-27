@@ -194,6 +194,12 @@ impl SharedHarness {
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
             std::env::set_var("KELS_NONCE_WINDOW_SECS", "0");
+            // Default per-prefix budget (8/day) is too low for the long-chain
+            // repair regression test, which builds 65+ events on one prefix.
+            // Tests that depend on the gate firing (e.g.,
+            // `rate_limit_runs_above_dedup`) override this back to 8 at the
+            // top of the test body.
+            std::env::set_var("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", "10000");
         }
 
         // --- Spawn KELS ---
@@ -1063,6 +1069,17 @@ async fn rate_limit_runs_above_dedup() {
         return;
     };
 
+    // Harness bumps the per-prefix budget to 10000 for the long-chain test;
+    // restore the documented default of 8 here so the rate-limit gate fires
+    // at the expected boundary. Tests are `#[serial]`, so set/reset is safe.
+    // SAFETY: harness threads aren't reading this env var concurrently —
+    // they call `env_usize(...)` on every request, so the next read picks
+    // up the new value, but `#[serial]` prevents another test from being
+    // mid-flight at the same time.
+    unsafe {
+        std::env::set_var("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", "8");
+    }
+
     let (_prefix, mut kel_builder, policy, sad_client) =
         setup_kel_and_policy(harness, "rate-limit-above-dedup").await;
     let publication_said = upload_publication(&sad_client, "rate-limit-above-dedup").await;
@@ -1107,4 +1124,164 @@ async fn rate_limit_runs_above_dedup() {
         msg.contains("Too many events"),
         "expected per-prefix rate-limit rejection, got: {msg}"
     );
+
+    // Restore the harness-default cap so subsequent tests aren't gated at 8.
+    unsafe {
+        std::env::set_var("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", "10000");
+    }
+}
+
+/// Regression test for round-10 H1: `repair` must work on chains longer
+/// than `MINIMUM_PAGE_SIZE`. Pre-fix, `repair` called `fetch_tail` (capped
+/// at 64) and ran a fresh `SelVerifier::verify_page` over the result. For
+/// chains > 64 events the tail did not include v0, the verifier's
+/// inception-path fired on a non-Icp event, and `verify_prefix` failed.
+/// Post-fix, `repair` calls `client.verify_sad_events` which paginates from
+/// v0 forward — chain length doesn't matter.
+///
+/// Builds a 65-event chain (v0 Icp + v1..v62 Upd + v63 Evl + v64 Upd, with
+/// 1 Evl per governance window), triggers an adversarial extension at v65,
+/// and asserts `repair` stages an Rpr at v65 with `previous = v64.said`.
+#[tokio::test]
+#[serial]
+async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let (_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_policy(harness, "long-chain-repair").await;
+    let publication_said = upload_publication(&sad_client, "long-chain-repair").await;
+
+    let owner_store: Arc<dyn kels_core::SadStore> = Arc::new(kels_core::InMemorySadStore::new());
+    let policy_said = policy.said;
+    let checker = build_checker(harness, policy.clone());
+    let mut builder = SadEventBuilder::new(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker),
+    );
+
+    // v0 (Icp without governance) + v1 (Est, declares governance). Owner
+    // tip starts at v1.
+    let (icp_said, est_said) = builder
+        .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    kel_builder.interact(&est_said).await.unwrap();
+
+    // v2..v62 — 61 Upds. After v1 (Est, counter=1) + 61 Upds, counter=62.
+    // Adding the 62nd Upd would put counter at 63 (the bound) and the next
+    // one would hit `EvaluationRequired`.
+    let mut staged_saids = vec![icp_said, est_said];
+    for i in 2..=62u64 {
+        let content = upload_publication(&sad_client, &format!("long-chain-{}", i)).await;
+        let said = builder.update(content).unwrap();
+        staged_saids.push(said);
+    }
+    assert_eq!(builder.events_since_evaluation(), 62);
+
+    // v63 — Evl resets the counter. With v0+v1+62 Upds+1 Evl = 65 events.
+    let evl_content = upload_publication(&sad_client, "long-chain-evl").await;
+    let evl_said = builder.evaluate(Some(evl_content), None, None).unwrap();
+    staged_saids.push(evl_said);
+
+    // v64 — one more Upd to push the chain past `MINIMUM_PAGE_SIZE = 64`.
+    // The tail fetched server-side would now span v1..v64 (last 64 of 65
+    // events) — pre-fix, that breaks the verifier's inception-path.
+    let v64_content = upload_publication(&sad_client, "long-chain-v64").await;
+    let v64_said = builder.update(v64_content).unwrap();
+    staged_saids.push(v64_said);
+
+    // Anchor every staged event in the KEL before flushing the SEL.
+    // Skip the first two (already anchored above).
+    for said in &staged_saids[2..] {
+        kel_builder.interact(said).await.unwrap();
+    }
+
+    let outcome = builder.flush().await.expect("long-chain flush succeeds");
+    assert!(outcome.applied, "all 65 events committed server-side");
+    assert_eq!(outcome.diverged_at_at_submit, None);
+
+    // Owner's tip is now v64 (the final Upd).
+    let owner_tip = builder
+        .sad_verification()
+        .expect("verified after flush")
+        .current_event()
+        .clone();
+    assert_eq!(owner_tip.version, 64);
+    assert_eq!(owner_tip.said, v64_said);
+
+    // Adversary extends with v65 — bypassing the (single-actor) builder.
+    // This is the linear-extension case (round-10 case taxonomy: A0 / no
+    // divergence on server, just owner's view is stale).
+    let adv_content = upload_publication(&sad_client, "long-chain-adversary").await;
+    let adv_event = SadEvent::upd(&owner_tip, adv_content).unwrap();
+    kel_builder.interact(&adv_event.said).await.unwrap();
+    let r = sad_client
+        .submit_sad_events(std::slice::from_ref(&adv_event))
+        .await
+        .expect("adversary submit accepted");
+    assert!(r.applied);
+    assert_eq!(r.diverged_at, None);
+
+    let sel_prefix = compute_sad_event_prefix(policy_said, TEST_TOPIC).unwrap();
+
+    // Hydrate a fresh repair builder. Owner-local view: cached tip is v64
+    // (owner's last authored event), NOT the adversary's v65.
+    let checker2 = build_checker(harness, policy);
+    let mut repair_builder = SadEventBuilder::with_prefix(
+        Some(sad_client.clone()),
+        Some(Arc::clone(&owner_store)),
+        Some(checker2),
+        &sel_prefix,
+    )
+    .await
+    .expect("with_prefix hydrates owner-local from store");
+
+    let hydrated = repair_builder
+        .sad_verification()
+        .expect("hydrated verification present");
+    assert_eq!(hydrated.diverged_at_version(), None);
+    assert_eq!(hydrated.current_event().version, 64);
+    assert_eq!(hydrated.current_event().said, v64_said);
+
+    // Stage the repair. Pre-fix this would error with `verify_prefix`
+    // (the fetched tail doesn't include v0). Post-fix `verify_sad_events`
+    // paginates from v0 → succeeds → boundary derives from owner-tip vs
+    // server-tip comparison → boundary at v64 → Rpr at v65.
+    let repaired_content = upload_publication(&sad_client, "long-chain-repaired").await;
+    let rpr_said = repair_builder
+        .repair(Some(repaired_content))
+        .await
+        .expect("repair succeeds on long chain");
+
+    let staged = repair_builder.pending_events().last().unwrap();
+    assert_eq!(staged.said, rpr_said);
+    assert_eq!(
+        staged.version, 65,
+        "Rpr at v(K+1) = v65 (boundary = owner's v64)"
+    );
+    assert_eq!(
+        staged.previous,
+        Some(v64_said),
+        "Rpr's previous = v64 (the owner-authored boundary)"
+    );
+
+    kel_builder.interact(&rpr_said).await.unwrap();
+    let outcome = repair_builder
+        .flush()
+        .await
+        .expect("flush of long-chain repair must succeed");
+    assert!(outcome.applied);
+
+    // Server-side: chain is linear after repair (was already linear pre-repair,
+    // just adversary-extended past owner's view).
+    let (effective_after, divergent_after) = sad_client
+        .fetch_sel_effective_said(&sel_prefix)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!divergent_after);
+    assert_eq!(effective_after.to_string(), rpr_said.to_string());
 }

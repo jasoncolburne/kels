@@ -104,9 +104,26 @@ pub trait SadStore: Send + Sync {
 /// (`sel-index/{prefix}.json`) so `load_sel_events` can return owner-authored
 /// events ordered by `(version, kind sort_priority, said)` without scanning
 /// the entire `sad_dir`. The index is populated by `store_sel_event`.
+///
+/// Index writes are atomic and serialized:
+/// - In-process serialization via `index_lock` (a single `tokio::sync::Mutex`
+///   per `FileSadStore` instance) — concurrent `store_sel_event` calls don't
+///   interleave the read-modify-write cycle, so updates can't be lost.
+/// - On-disk atomicity via temp-file + `rename` — a torn write or crash
+///   leaves either the old or new index file intact, never a partial one.
+///
+/// Cross-process synchronization is out of scope: a single `FileSadStore`
+/// instance per process is the supported topology. Two CLI processes
+/// updating the same chain concurrently would still race at the OS level;
+/// the audit doc calls this out as acceptable for the dev/test tier.
 pub struct FileSadStore {
     sad_dir: std::path::PathBuf,
     index_dir: std::path::PathBuf,
+    /// Serializes the read-modify-write cycle in `store_sel_event` so that
+    /// in-process concurrent writers can't interleave and lose entries.
+    /// Held across the `spawn_blocking` boundary because the file I/O is
+    /// what needs serializing, not the JSON computation.
+    index_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -128,7 +145,11 @@ impl FileSadStore {
         })
         .await
         .map_err(|e| KelsError::StorageError(e.to_string()))??;
-        Ok(Self { sad_dir, index_dir })
+        Ok(Self {
+            sad_dir,
+            index_dir,
+            index_lock: tokio::sync::Mutex::new(()),
+        })
     }
 
     fn sad_path(&self, said: &cesr::Digest256) -> std::path::PathBuf {
@@ -233,6 +254,10 @@ impl SadStore for FileSadStore {
             kind_priority: event.kind.sort_priority(),
             said: event.said,
         };
+
+        // Hold the in-process index lock across the read-modify-write cycle
+        // so concurrent writers don't interleave and lose entries.
+        let _guard = self.index_lock.lock().await;
         spawn_blocking(move || {
             let mut entries: Vec<FileSelIndexEntry> = match std::fs::read_to_string(&index_path) {
                 Ok(data) => serde_json::from_str(&data)
@@ -254,8 +279,25 @@ impl SadStore for FileSadStore {
             });
             let serialized = serde_json::to_string_pretty(&entries)
                 .map_err(|e| KelsError::StorageError(e.to_string()))?;
-            std::fs::write(&index_path, serialized)
-                .map_err(|e| KelsError::StorageError(e.to_string()))
+
+            // Atomic write via temp-file + rename. POSIX `rename` is atomic
+            // on the same filesystem, so a torn write or crash leaves either
+            // the old or the new file intact — never a partial one. The
+            // temp file lives in the same directory so the rename is
+            // guaranteed not to cross filesystems.
+            let tmp_path = index_path.with_extension("json.tmp");
+            {
+                use std::io::Write;
+                let mut tmp = std::fs::File::create(&tmp_path)
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+                tmp.write_all(serialized.as_bytes())
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+                tmp.sync_all()
+                    .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            }
+            std::fs::rename(&tmp_path, &index_path)
+                .map_err(|e| KelsError::StorageError(e.to_string()))?;
+            Ok(())
         })
         .await
         .map_err(|e| KelsError::StorageError(e.to_string()))?
@@ -289,10 +331,13 @@ impl SadStore for FileSadStore {
 
         let mut events = Vec::with_capacity(end - start);
         for entry in &entries[start..end] {
-            let value = self
-                .load(&entry.said)
-                .await?
-                .ok_or_else(|| KelsError::NotFound(entry.said.to_string()))?;
+            let value =
+                self.load(&entry.said)
+                    .await?
+                    .ok_or_else(|| KelsError::SadStorePayloadMissing {
+                        prefix: prefix.to_string(),
+                        said: entry.said.to_string(),
+                    })?;
             let event: SadEvent = serde_json::from_value(value)?;
             events.push(event);
         }
@@ -423,10 +468,12 @@ impl SadStore for InMemorySadStore {
         let chunks = self.chunks.read().await;
         let mut events = Vec::with_capacity(end - start);
         for entry in &entries[start..end] {
-            let value = chunks
-                .get(&entry.said)
-                .cloned()
-                .ok_or_else(|| KelsError::NotFound(entry.said.to_string()))?;
+            let value = chunks.get(&entry.said).cloned().ok_or_else(|| {
+                KelsError::SadStorePayloadMissing {
+                    prefix: prefix.to_string(),
+                    said: entry.said.to_string(),
+                }
+            })?;
             let event: SadEvent = serde_json::from_value(value)?;
             events.push(event);
         }
@@ -455,6 +502,7 @@ impl SadStore for InMemorySadStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use cesr::test_digest;
     use tempfile::TempDir;
@@ -659,6 +707,148 @@ mod tests {
         let (saids, has_more) = store.list(None, 100).await.unwrap();
         assert_eq!(saids.len(), 2);
         assert!(!has_more);
+    }
+
+    /// Concurrent `store_sel_event` calls on the same prefix don't lose
+    /// entries — round-10 M1 fix. Pre-fix, the read-modify-write on
+    /// `sel-index/{prefix}.json` had no locking, so two tasks could each
+    /// read the index, append their entry, and clobber each other's
+    /// append on write. Post-fix, the in-process `index_lock` serializes
+    /// writes and the temp-file rename is atomic. Test stages 200 events
+    /// across 4 concurrent tasks, all on the same prefix, and asserts the
+    /// resulting index has exactly 200 entries.
+    #[tokio::test]
+    async fn store_sel_event_concurrent_writers_preserve_all_entries() {
+        use std::sync::Arc;
+
+        use crate::types::SadEvent;
+
+        let temp = TempDir::new().unwrap();
+        let store: Arc<dyn SadStore> = Arc::new(FileSadStore::new(temp.path()).await.unwrap());
+
+        let wp = test_digest("wp");
+        let gp = test_digest("gp");
+        let v0 = SadEvent::icp("kels/concurrent-test", wp, Some(gp)).unwrap();
+        let prefix = v0.prefix;
+
+        // Seed v0 first so all subsequent events chain off a known event.
+        store.store_sel_event(&v0).await.unwrap();
+
+        // Build 200 distinct Upd events extending v0 with different content.
+        // They share v0.previous (each has previous = v0.said) and differ only
+        // in content → different SAIDs. The chain isn't a clean linear chain
+        // (200 events all at v1), but for the index-write race test we only
+        // care that all 200 SAIDs land in the index.
+        let mut events = Vec::with_capacity(200);
+        for i in 0..200u64 {
+            let mut event = SadEvent::upd(&v0, test_digest(&format!("content-{i}"))).unwrap();
+            // Force distinct SAIDs even though the v1 fork shape would
+            // collide on (version, previous). `upd` already differentiates
+            // on content, so each event has a unique SAID.
+            event.version = 1;
+            events.push(event);
+        }
+
+        // Spawn 4 concurrent tasks, each writing 50 events. Tasks interleave
+        // in the tokio runtime; the `index_lock` serializes them at the
+        // file-write boundary.
+        let mut tasks = Vec::new();
+        for chunk in events.chunks(50) {
+            let store = Arc::clone(&store);
+            let chunk: Vec<SadEvent> = chunk.to_vec();
+            tasks.push(tokio::spawn(async move {
+                for event in chunk {
+                    store.store_sel_event(&event).await.unwrap();
+                }
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        // Read the index back. With the round-10 fix all 200 entries are
+        // present (plus v0 from the seed = 201 total). Pre-fix: some
+        // entries lost to the read-modify-write race.
+        let (loaded, has_more) = store.load_sel_events(&prefix, 1000, 0).await.unwrap();
+        assert!(!has_more);
+        assert_eq!(
+            loaded.len(),
+            201,
+            "all 200 staged events plus v0 must be in the index — \
+             pre-M1-fix this would be lower due to the lost-update race"
+        );
+    }
+
+    /// `load_sel_events` raises `SadStorePayloadMissing` (not `NotFound`)
+    /// when the index has an entry but the keyed payload is absent. Round-10
+    /// L1 fix — distinguishes partial local-store corruption from "fresh
+    /// chain" so `with_prefix` propagates rather than silently treating the
+    /// chain as empty.
+    #[tokio::test]
+    async fn load_sel_events_raises_payload_missing_on_partial_corruption() {
+        use crate::types::SadEvent;
+
+        let temp = TempDir::new().unwrap();
+        let store = FileSadStore::new(temp.path()).await.unwrap();
+
+        let wp = test_digest("wp");
+        let gp = test_digest("gp");
+        let v0 = SadEvent::icp("kels/payload-missing-test", wp, Some(gp)).unwrap();
+        let prefix = v0.prefix;
+        let said = v0.said;
+        store.store_sel_event(&v0).await.unwrap();
+
+        // Simulate partial corruption: the index entry for v0 exists, but
+        // the SAID-keyed payload file is gone (manual filesystem
+        // manipulation, partial restore, crash mid-write between the SAID
+        // store and the index update).
+        store.delete(&said).await.unwrap();
+
+        let err = store.load_sel_events(&prefix, 100, 0).await.unwrap_err();
+        match err {
+            KelsError::SadStorePayloadMissing {
+                prefix: reported_prefix,
+                said: reported_said,
+            } => {
+                assert_eq!(reported_prefix, prefix.to_string());
+                assert_eq!(reported_said, said.to_string());
+            }
+            other => panic!("Expected SadStorePayloadMissing, got: {other:?}"),
+        }
+    }
+
+    /// Same as the file-backend test but for `InMemorySadStore`. The
+    /// in-memory backend has the same SAID-keyed-vs-prefix-index split,
+    /// so the same partial-corruption shape applies (e.g., a test that
+    /// manually removes a chunk after `store_sel_event`).
+    #[tokio::test]
+    async fn in_memory_load_sel_events_raises_payload_missing_on_partial_corruption() {
+        use crate::types::SadEvent;
+
+        let store = InMemorySadStore::new();
+
+        let wp = test_digest("wp");
+        let gp = test_digest("gp");
+        let v0 = SadEvent::icp("kels/payload-missing-mem-test", wp, Some(gp)).unwrap();
+        let prefix = v0.prefix;
+        let said = v0.said;
+        store.store_sel_event(&v0).await.unwrap();
+
+        // Surgical deletion: drop the SAID-keyed chunk while leaving the
+        // prefix index intact.
+        store.chunks.write().await.remove(&said);
+
+        let err = store.load_sel_events(&prefix, 100, 0).await.unwrap_err();
+        match err {
+            KelsError::SadStorePayloadMissing {
+                prefix: reported_prefix,
+                said: reported_said,
+            } => {
+                assert_eq!(reported_prefix, prefix.to_string());
+                assert_eq!(reported_said, said.to_string());
+            }
+            other => panic!("Expected SadStorePayloadMissing, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

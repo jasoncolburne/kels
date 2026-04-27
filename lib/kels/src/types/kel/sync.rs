@@ -1799,6 +1799,105 @@ mod tests {
         );
     }
 
+    /// `recover` refuses with `PendingEventsBlockRepair` when the builder
+    /// has a kels_client AND non-empty pending. Round-10 KEL parity with
+    /// SEL's `repair` pending-empty gate. Offline builders (kels_client =
+    /// None) bypass the gate (tests/bench depend on accumulating pending
+    /// for inspection).
+    #[tokio::test]
+    async fn recover_refuses_when_pending_nonempty_and_connected() {
+        // Construct a builder with a localhost-but-unconnected client. The
+        // pending-empty gate fires BEFORE `verify_server_chain_pre_repair`
+        // makes any HTTP call, so an unreachable URL doesn't cause an
+        // earlier error.
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        // Build pending without flushing: incept against the unreachable
+        // client — the inception flush will fail at HTTP. `add_and_flush`
+        // truncates pending on flush failure, so we craft pending another
+        // way: stage incept manually without the flush.
+        // Simpler: use a client-less builder to build incept, then move
+        // those pending events into a connected builder.
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        let pending = offline.pending_events().to_vec();
+        // Manually splice pending into the connected builder. This is the
+        // shape of an A3 stuck-pending state: prior flush errored, pending
+        // remains, owner now wants to recover.
+        for event in pending {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .recover(false)
+            .await
+            .expect_err("recover must refuse when pending is non-empty and connected");
+        assert!(
+            matches!(err, KelsError::PendingEventsBlockRepair(_)),
+            "Expected PendingEventsBlockRepair, got: {err:?}"
+        );
+    }
+
+    /// `contest` refuses with `PendingEventsBlockRepair` under the same
+    /// conditions as `recover`. KEL parity check.
+    #[tokio::test]
+    async fn contest_refuses_when_pending_nonempty_and_connected() {
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        for event in offline.pending_events().to_vec() {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .contest()
+            .await
+            .expect_err("contest must refuse when pending is non-empty and connected");
+        assert!(matches!(err, KelsError::PendingEventsBlockRepair(_)));
+    }
+
+    /// `rotate_recovery` refuses with `PendingEventsBlockRepair` under the
+    /// same conditions. Completes the KEL parity test triplet.
+    #[tokio::test]
+    async fn rotate_recovery_refuses_when_pending_nonempty_and_connected() {
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        for event in offline.pending_events().to_vec() {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .rotate_recovery()
+            .await
+            .expect_err("rotate_recovery must refuse when pending is non-empty and connected");
+        assert!(matches!(err, KelsError::PendingEventsBlockRepair(_)));
+    }
+
+    /// Offline `recover` (kels_client = None) bypasses the pending gate —
+    /// tests/bench rely on accumulating pending events on a client-less
+    /// builder for inspection. Pre-fix without the offline-bypass branch,
+    /// every `recover` test that builds against `KeyEventBuilder::new(_, None)`
+    /// would fail.
+    #[tokio::test]
+    async fn recover_bypasses_pending_gate_in_offline_mode() {
+        let mut builder = KeyEventBuilder::new(random_provider(), None);
+        builder.incept().await.unwrap();
+        // Pending non-empty (offline incept doesn't flush since there's no
+        // client). The gate is bypassed.
+        assert!(!builder.pending_events().is_empty());
+        // recover proceeds and adds the rec event to pending.
+        builder.recover(false).await.unwrap();
+    }
+
     // ==================== KelVerifier — resume from Verification ====================
 
     #[tokio::test]

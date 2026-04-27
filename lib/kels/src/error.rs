@@ -167,6 +167,18 @@ pub enum KelsError {
         "Chain has unverified events: {0} — cannot repair until policy is satisfied (verify the data source and re-run, or re-fetch a clean owner-local view)"
     )]
     ChainHasUnverifiedEvents(String),
+
+    #[error("Pending events block repair/recovery: {0} — discard pending and retry")]
+    PendingEventsBlockRepair(String),
+
+    #[error(
+        "SAD store payload missing for prefix {prefix} — index has SAID {said} but the keyed blob is absent (local-store corruption: manual filesystem manipulation, partial restore, or crash mid-write between SAID storage and index update)"
+    )]
+    // Stored as `String` (qb64 encoding) rather than `cesr::Digest256` to keep
+    // `KelsError` small enough to pass `clippy::result_large_err`. Digest256 is
+    // ~152 bytes; embedding two of them would balloon every `Result<_, KelsError>`
+    // returned by the crate.
+    SadStorePayloadMissing { prefix: String, said: String },
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -289,6 +301,11 @@ mod tests {
             KelsError::SelDivergent { at: 7 },
             KelsError::NothingToRepair,
             KelsError::ChainHasUnverifiedEvents("local store policy_satisfied=false".to_string()),
+            KelsError::PendingEventsBlockRepair("pending non-empty".to_string()),
+            KelsError::SadStorePayloadMissing {
+                prefix: cesr::Digest256::blake3_256(b"prefix").to_string(),
+                said: cesr::Digest256::blake3_256(b"said").to_string(),
+            },
         ];
 
         for err in errors {
