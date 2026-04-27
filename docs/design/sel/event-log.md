@@ -47,22 +47,24 @@ Since `immune: true` makes a policy impervious to poisoning in the evaluator (`e
 
 The rule is the "bake state into data" principle applied to an authorization invariant: any authorized observer can determine from a policy SAID alone whether the seal property holds for chains that reference it. Immunity is structural, not behavioral; it does not depend on evaluator carve-outs or runtime semantics.
 
-**rec / cnt of an underlying KEL.** Recovery or contest of an anchoring KEL doesn't break past evaluations — the `ixn` events that anchored prior `Sea`/`Rpr`/`Cnt`/`Dec` stay in the KEL's chain (`rec` doesn't archive owner-authored events; `cnt` freezes but preserves). The verifier walks each anchoring KEL during re-verification and finds the historical `ixn` naturally. What `rec`/`cnt` does affect is *future* evaluations: a contested KEL accepts no new anchors; a recovered KEL's post-rec controller is the legitimate authority going forward. The seal property is unaffected — only what can be added next changes.
+**rec / cnt of an underlying KEL.** The seal property holds against poisoning by construction (the immunity rule above). It does *not* extend cleanly to recovery: `rec` archives the adversary branch, which removes anchors that the adversary placed during divergence. A past evaluation whose satisfaction depended on adversary-placed anchors may therefore fail re-verification post-rec. Owner-placed anchors survive (`rec` preserves the owner's branch), and `cnt` archives nothing (both branches stay), but in both cases the participating KEL has reached a state that demands consumer-side trust judgement. See [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels) for the full picture.
 
 ## Trust Caveat — Recovered Anchoring KELs
 
-The seal property and the anchoring model give *structural* guarantees: chain state is deterministic, all nodes agree on terminal states, past evaluations re-verify cleanly. They do **not** give *trust* guarantees against the case where a participating KEL was later recovered.
+The seal property and the anchoring model give *structural* guarantees against poisoning (governance-policy immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered — because recovery archives the adversary branch, anchors made on that branch are removed from the live KEL.
 
-`Rec` (recovery-after-divergence; distinct from the proactive `Ror`) is by design evidence that the prior signing key was at some point in adversarial hands. The legitimate controller used the recovery key precisely because the signing key was no longer trustworthy. Past anchors made by that pre-rec key stay in the KEL's chain — re-verification finds them — but a consumer cannot tell from the chain alone whether a given pre-rec anchor was placed by the legitimate controller or by the adversary who held the compromised key.
+`Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the owner's branch stay (`rec` archives only the adversary branch), and anchors on the now-archived adversary branch do not. This applies to anchors of any kind — SEL governance evaluations, SEL writes, credentials.
 
-This applies to **any** anchor made by a since-rec'd KEL, regardless of which policy it satisfied:
+Implications for SEL consumers:
 
-- A past `Sea` / `Rpr` / `Cnt` / `Dec` whose `governance_policy` was satisfied in part by a now-rec'd KEL — the governance evaluation may have been adversary-driven.
-- A past `Upd` whose `write_policy` was satisfied in part by a now-rec'd KEL — the write authorization may have been adversary-driven.
+- A past `Sea` / `Rpr` / `Cnt` / `Dec` or `Upd` whose policy was satisfied entirely by owner-placed anchors: re-verifies cleanly across `rec`. Past evaluation stands.
+- A past event whose satisfaction depended on adversary-placed anchors (now archived): may *fail* re-verification at the relevant version. The recovery mechanism has reverted what the adversary did to the underlying KEL, and that reversal propagates: the SEL's record of what was legitimately authorized is corrected.
 
-The chain remains structurally valid in both cases. What changes is the *runtime trust judgement* the consumer must make on top of structural verification: the chain's terminal state, governance evaluations, and historical content should be treated with caution proportionate to the rec history of participating KELs and the impact of the trust decision being made.
+This is observable, not hidden — the chain mathematics make the post-rec state visible. The consumer's runtime trust judgement is: when a participating KEL has `rec` history, re-verify the SEL and treat past state with caution proportionate to what survives. A chain that re-verifies cleanly post-rec is structurally and practically trustworthy at the verified events. A chain that *fails* to re-verify post-rec has had adversary contributions reverted — the system working as designed — but the chain's terminal state and past evaluations cannot be trusted at face value.
 
-This caveat is not a verification-layer concern (verification stays structural and deterministic). It is a consumer concern: when reasoning about trust, walk the participating KELs of relevant past events and weigh the implications of any `rec` events you find.
+`Cnt` is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past SEL evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case, even if structural re-verification succeeds.
+
+The caveat applies to anchors of any kind — past `Sea` / `Rpr` / `Cnt` / `Dec` (governance) and past `Upd` (write) events from a since-rec'd or since-contested anchoring KEL. The seal property gives stability against poisoning; it does not give stability against the legitimate corrective action of `rec`, nor does it absolve consumers of the runtime trust judgement when participating KELs reach terminal states.
 
 ## Divergence and Freeze
 
