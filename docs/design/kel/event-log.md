@@ -62,12 +62,13 @@ Recovery resolves divergence by archiving adversary-authored events from serial 
 
 ### Builder pre-flight
 
-`KeyEventBuilder::recover()` (also `contest()`, `rotate_recovery()`) runs two pre-flight checks before constructing the dual-signed event:
+`KeyEventBuilder::recover()` (also `contest()`, `rotate_recovery()`, `decommission()`) runs one pre-flight check before constructing the dual-signed event:
 
-- **`require_no_pending_for_repair`** — refuses with `PendingEventsBlockRepair` when the builder has a connected `kels_client` and `pending_events` is non-empty. Offline builders bypass this gate (tests/bench need to inspect pending on a client-less builder).
 - **`verify_server_chain_pre_repair`** — calls `client.verify_key_events(prefix, ..., KelVerifier::new(prefix), ...)` and wraps verifier errors as `ChainHasUnverifiedEvents`. Defense-in-depth: a buggy/malicious server otherwise gets taken at its word when the builder extends from its `get_owner_tail`.
 
-Owner's `Rec` chains from owner's local tip (`get_owner_tail`), not the divergence ancestor. The merge engine handles the boundary detection server-side via the discriminator.
+Pending events are NOT a pre-flight failure. They're owner-staged unflushed events — application-level state used to display in-progress work — and ship in the same batch (see §Pending events bundling). The server verifies bundled pending events on submit like any other event; the verifier's signature and chain-linkage checks are the trust gate, not the builder's gate. Owner's `Rec` chains from the last bundled event (pending tail, missing tail, or `get_owner_tail` if both are empty). The merge engine handles boundary detection server-side via the discriminator.
+
+Whenever pending is non-empty, the application SHOULD display it to the user. Human inspection is the only way to decide what should happen with in-progress work — the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." The library bundles pending into the lifecycle batch by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level and requires inspection.
 
 ### Conditional rot follow-up
 
@@ -84,11 +85,14 @@ Logic: `needs_extra_rot = adversary_rotated && !owner_rotated`. The `Rec` reveal
 
 ### Pending events bundling
 
-Pending events are owner-authored events that the builder staged and signed but hasn't successfully flushed (typically because the adversary's earlier `Rec` archived owner's chain server-side, or a network failure left the local builder ahead of the server). The builder's `find_missing_owner_events` walks owner's local tail backward, calling `event_exists` on the server until it finds the boundary, and resubmits the missing events as part of the recovery batch.
+Two distinct sets of owner events may need to ride along with a lifecycle op:
 
-`recover()` ships `[missing..., Rec, ?Rot]`. The server processes the batch atomically: missing events land first (re-establishing owner's chain), then `Rec` (and optional `Rot`) chains from the new tip.
+- **Missing events** — events that owner has in local store and previously flushed to the server, but which the server's chain no longer contains (typically because the adversary's earlier `Rec` archived them server-side). The builder's `find_missing_owner_events` walks owner's local tail backward, calling `event_exists` on the server until it finds the boundary, and bundles the missing events into the lifecycle batch.
+- **Pending events** — events the builder staged and signed (via `update`, `interact`, etc.) but never successfully flushed. These are application-level in-progress work; the user has explicitly chosen to bundle them by leaving them in pending when they invoke the lifecycle op (the application should display pending and offer discard before submission — see §Builder pre-flight).
 
-This mirrors SEL's repair flow (see [../sel/event-log.md](../sel/event-log.md#pending-events-bundling)).
+`recover()` ships `[missing..., pending..., Rec, ?Rot]`. The server processes the batch atomically: missing events land first (re-establishing owner's chain), then any pending work, then `Rec` (and optional `Rot`) chains from the new tip. Both sets are verified server-side on submit — bundling poses no additional risk vs. flushing them in separate batches.
+
+The cost of discarding pending may be substantial: a flush that involved collecting `ixn` anchors from many KELs (for SEL chains) or coordinating multi-party signatures may have taken meaningful operator effort. Bundling preserves that effort across lifecycle transitions. Mirrors SEL's repair flow (see [../sel/event-log.md](../sel/event-log.md#pending-events-bundling)).
 
 ### Server-side discriminator
 
@@ -162,9 +166,9 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 ### Builder
 
 `KeyEventBuilder::contest()`:
-- Pre-flight: `require_no_pending_for_repair` + `verify_server_chain_pre_repair`.
-- Bundles missing owner events via `find_missing_owner_events` (the adversary's `Rec` may have archived owner's chain server-side).
-- Builds `Cnt` extending the owner's tip; submits `[missing..., Cnt]`.
+- Pre-flight: `verify_server_chain_pre_repair`.
+- Bundles missing owner events via `find_missing_owner_events` (the adversary's `Rec` may have archived owner's chain server-side) AND any pending events the operator left in flight.
+- Builds `Cnt` extending the last bundled event (pending tail, missing tail, or owner tip if both empty); submits `[missing..., pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
 
 ## Decommission (Dec)
@@ -193,7 +197,8 @@ Owner-initiated. No algorithmic merge-engine trigger — the owner runs `KeyEven
 
 `KeyEventBuilder::decommission()`:
 - Same pre-flight as `recover()` / `contest()`.
-- Builds `Dec` extending owner's tip; submits `[missing..., Dec]`.
+- Bundles missing AND pending events.
+- Builds `Dec` extending the last bundled event (or owner tip if no bundling); submits `[missing..., pending..., Dec]`.
 
 ## Merge-Observable Case Taxonomy
 
@@ -218,15 +223,14 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 **Code:**
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
 - `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `diverged_at_serial`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_serial`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
-- `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `require_no_pending_for_repair` + `verify_server_chain_pre_repair` pre-flight (round-10), then builds the appropriate dual-signed event and submits the bundled batch.
+- `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
 - `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. The round-10 backport replaces per-hop DB queries with a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.
 
 **Tests:**
 - `archive_adversary_chain_aborts_on_tampered_page` — page-tamper test; the resume-verifier rejects the page (signature mismatch) and aborts the archival.
-- Existing recovery/contest/archival tests stay green under the page+resume-verify shape.
-- `recover_refuses_when_pending_nonempty_and_connected`, `contest_refuses_when_pending_nonempty_and_connected`, `rotate_recovery_refuses_when_pending_nonempty_and_connected` — pin the round-10 pending gate.
-- `recover_bypasses_pending_gate_in_offline_mode` — pin the offline-mode bypass that tests/bench depend on.
+- `recover_bundles_pending_events_into_batch`, `contest_bundles_pending_events_into_batch`, `rotate_recovery_bundles_pending_into_batch`, `decommission_bundles_pending_into_batch` — pin pending-bundling on each lifecycle op.
+- Existing recovery/contest/archival tests stay green under the page+resume-verify shape with bundled batches.
 
 ## References
 

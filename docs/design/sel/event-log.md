@@ -95,14 +95,16 @@ The whole point of repair is to sync server state to owner's chain — `Rpr.prev
 
 ### Pending events bundling
 
-Pending events (events the builder staged and signed but never successfully flushed — typically because the server rejected the batch with "Chain is divergent — repair required") are owner-authored work that must be preserved. The cost of discarding pending may be substantial: a `governance_policy` aggregating endorsements from many KELs may have collected hundreds of `ixn` anchors at flush time, and re-collecting them is expensive.
+Pending events (events the builder staged but never successfully flushed — typically because the server rejected the batch with "Chain is divergent — repair required") are owner-staged in-progress work. The cost of discarding pending may be substantial: a `governance_policy` aggregating endorsements from many KELs may have collected hundreds of `ixn` anchors at flush time, and re-collecting them is expensive.
 
-`repair()` bundles pending events into the submission batch:
-- The batch ships as `[pending..., Rpr]`.
-- `Rpr` extends the LAST pending event (or the verified tip if pending is empty).
-- The server processes the batch atomically — pending events land first, then `Rpr` adopts them as part of the post-repair chain.
+`repair()` (also `contest()`, `decommission()`) bundles pending events into the submission batch:
+- The batch ships as `[pending..., Rpr/Cnt/Dec]`.
+- The lifecycle event extends the LAST pending event (or the verified tip if pending is empty).
+- The server processes the batch atomically — pending events land first, then the lifecycle event adopts them as part of the post-action chain. Bundled pending events are verified server-side on submit like any other event.
 
-This mirrors KEL's `contest()` flow (`builder.rs:465`) which already bundles `find_missing_owner_events()` for the analogous reason (adversary's `rec` may have archived owner's chain server-side).
+Whenever pending is non-empty, the application SHOULD display it to the user. The library cannot algorithmically decide whether stale-looking pending should bundle or be discarded — that requires human inspection. The library bundles pending by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level.
+
+KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_recovery`/`decommission`) ride `[missing..., pending..., Rec/Cnt/Ror/Dec, ?Rot]`, where `missing` is owner-side events the server's chain no longer has (after adversary archival) and `pending` is owner-staged unflushed work. See [../kel/event-log.md §Pending events bundling](../kel/event-log.md#pending-events-bundling).
 
 > **Future work**: persist pending across CLI sessions so a crash mid-collection doesn't lose accumulated work. Out of scope for the initial implementation; the in-memory pending model suffices once bundling is correct.
 
