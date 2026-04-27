@@ -83,17 +83,17 @@ Repair resolves divergence by archiving adversary-authored events from version `
 
 ### Builder boundary derivation
 
-`SadEventBuilder::repair()` derives the boundary uniformly: `boundary = owner_tip.version`, regardless of A3-vs-linear-extension. The `Rpr` is built as `SadEvent::rpr(boundary, content)`, producing:
+`SadEventBuilder::repair()` derives the boundary uniformly: `boundary = owner_tip.version`, regardless of whether the chain is divergent or merely behind. The `Rpr` is built as `SadEvent::rpr(boundary, content)`, producing:
 - `Rpr.previous = boundary.said`
 - `Rpr.version = boundary.version + 1`
 
-The whole point of repair is to sync server state to owner's chain — `Rpr.previous` is therefore always owner's authentic tip. There is no "A3 → d-1" special case; the same rule covers both pure linear-extension and post-divergence repair.
+The whole point of repair is to sync server state to owner's chain — `Rpr.previous` is therefore always owner's authentic tip. The same rule covers both pure linear-extension (server is behind owner) and post-divergence repair (server has divergent events that need to be archived in favor of owner's branch).
 
 `NothingToRepair` fires when the chain is non-divergent AND `server_tip.version <= owner_tip.version`.
 
 ### Pending events bundling
 
-Pending events (events the builder staged and signed but never successfully flushed — typically because an A3 server response rejected the batch) are owner-authored work that must be preserved. The cost of discarding pending may be substantial: a `governance_policy` aggregating endorsements from many KELs may have collected hundreds of `ixn` anchors at flush time, and re-collecting them is expensive.
+Pending events (events the builder staged and signed but never successfully flushed — typically because the server rejected the batch with "Chain is divergent — repair required") are owner-authored work that must be preserved. The cost of discarding pending may be substantial: a `governance_policy` aggregating endorsements from many KELs may have collected hundreds of `ixn` anchors at flush time, and re-collecting them is expensive.
 
 `repair()` bundles pending events into the submission batch:
 - The batch ships as `[pending..., Rpr]`.
@@ -222,7 +222,7 @@ When the server processes a submitted batch:
 **Code:**
 - `lib/kels/src/types/sad/event.rs` — variants `SadEventKind::Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` with topic strings per [events.md](events.md). Constructors `SadEvent::icp/est/upd/sea/rpr/cnt/dec`; `cnt(previous)` and `dec(previous)` take no content parameter (read `previous.content` and carry forward). `evaluates_governance` returns true for `Sea`/`Rpr`/`Cnt`/`Dec`. Predicates: `is_contest`, `is_decommission`. `validate_structure` enforces the per-kind field rules (forbid content on Icp/Est; require on Upd; etc.). The "must equal `previous.content`" rule for Sea/Rpr/Cnt/Dec is a chain-state check (verifier, not validate_structure).
 - `lib/kels/src/types/sad/verification.rs` — add `is_contested: bool` and `is_decommissioned: bool` fields to `SelVerifier` and `SelVerification`. Set on observing `Cnt` / `Dec` during verification. Surface via accessors. Add the content-preservation check: every Sea/Rpr/Cnt/Dec must have `event.content == previous.content`; reject otherwise. Add the Icp anchoring check: every v0 must have Icp.said anchored under its declared `write_policy` (`PolicyChecker::evaluate_anchored_policy(event.write_policy, event.said)`). The branch's `tracked_write_policy` is seeded only after this check passes.
-- `lib/kels/src/sad_builder.rs::repair()` — drop the A3 → d-1 boundary branch; uniform `boundary = owner_tip.version`. Bundle pending events into the batch. Remove the `require_no_pending_for_repair` gate.
+- `lib/kels/src/sad_builder.rs::repair()` — drop the divergent-vs-linear boundary branch (no `boundary = d - 1` special case); uniform `boundary = owner_tip.version`. Bundle pending events into the batch. Remove the `require_no_pending_for_repair` gate.
 - `lib/kels/src/sad_builder.rs` — add `contest()` and `decommission()` (no content arg) mirroring `repair`'s pre-flight + bundling shape. Each constructor reads the tip's content and carries it forward.
 - `services/sadstore/src/repository.rs::truncate_and_replace` — replace blanket archive-from-`from_version` with discriminator-driven archive: single page fetch, resume-verifier trust gate, walkback from `Rpr.previous`, archive non-owner page events.
 - `services/sadstore/src/handlers.rs` — add `ContestRequired` algorithmic trigger in the normal-event path (write_policy satisfied + version <= last_governance_version). Add `is_contest` / `is_decommission` branches paralleling `is_repair`. Add contested/decommissioned terminal-state rejection at the top of the submit handler.
