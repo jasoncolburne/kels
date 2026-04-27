@@ -13,7 +13,7 @@ SEL verification ensures:
 - Events chain correctly from current state to inception via `previous` links
 - `write_policy` is satisfied by anchoring (per `Endorse(KEL_PREFIX)` resolution)
 - `governance_policy` is satisfied at every `Sea` / `Rpr` / `Cnt` / `Dec`
-- Any policy referenced as `governance_policy` (introduced at Icp v0, Est, or evolved via Sea) has `immune: true` — the verifier rejects the chain otherwise as a structural error (governance-policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
+- Any policy referenced as `write_policy` or `governance_policy` (introduced at Icp v0, Est, or evolved via Sea) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 - The content-preservation rule holds (Sea/Rpr/Cnt/Dec must carry forward `previous.content`)
 - The proactive-evaluation rule holds (`MAX_NON_EVALUATION_EVENTS = 63`)
 
@@ -89,8 +89,10 @@ verify_policy(event, branch):
 
 Policy state is **branch-tracked**:
 
-- `tracked_write_policy` — seeded from v0's `write_policy` declaration *after* the verifier confirms Icp.said is anchored under it. Updated whenever an authorized `Sea` carries a new `write_policy`.
-- `tracked_governance_policy` — seeded from v0's `governance_policy` (if present), or from v1's `Est` (if v0 omitted it). Updated whenever an authorized `Sea` carries a new `governance_policy`. **Immunity check.** Whenever `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as `governance_policy` is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md §1](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups) and cannot trust that the originating node enforced it.
+- `tracked_write_policy` — seeded from v0's `write_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it. Updated whenever an authorized `Sea` carries a new `write_policy` (subject to the same immunity check on the new policy).
+- `tracked_governance_policy` — seeded from v0's `governance_policy` (if present), or from v1's `Est` (if v0 omitted it). Updated whenever an authorized `Sea` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
+
+**Immunity check.** Whenever `tracked_write_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md §1](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups) and cannot trust that the originating node enforced it.
 
 Authorization checks for v1+ are against the *tracked* (effective) values, not the event's own field. This prevents an adversary who satisfies the current `write_policy` from replacing the policy via an Upd-style event: policy replacement requires satisfying the stricter `governance_policy`. For v0 (Icp), the policy resolution is against the event's own declared `write_policy`, since no prior tracked state exists — the inceptor proves membership in the policy they're declaring.
 

@@ -51,15 +51,16 @@ for v0 (Icp): verify Icp.said is anchored under the declared write_policy
 for v1+:      verifier checks anchoring against branch.tracked_write_policy
               or branch.tracked_governance_policy per kind
 
-for events introducing or evolving governance_policy (Icp v0 with G, Est, Sea):
+for events introducing or evolving write_policy or governance_policy
+    (Icp v0, Est, Sea-with-policy-evolution):
     fetch the referenced policy by SAID
-    if not policy.immune: reject with InvalidGovernancePolicy
-              (governance-policy immunity rule — see events.md)
+    if not policy.immune: reject with InvalidPolicy
+              (policy immunity rule — see events.md)
 ```
 
 The Icp authorization gate closes a phishing class where an adversary could otherwise submit a v0 declaring an arbitrary `governance_policy` for a public `(write_policy, topic)` pair — the resulting chain has a different prefix, but a write-authorized party lured into `Upd`-ing on it could later have control rotated out from under them via the adversary's `governance_policy`. Anchoring Icp under `write_policy` ensures only members of the declared policy can incept. See [events.md §Authorization model](events.md#authorization-model).
 
-The governance-policy immunity gate makes the evaluation seal structural: a non-immune policy can never be referenced as `governance_policy`, so no anchor used in a governance evaluation can ever be poisoned. Past evaluations stay satisfied by construction. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability) for the rationale and the contrast with credential-side poison semantics (which stay current-state-aware).
+The policy-immunity gate makes chain stability structural: a non-immune policy can never be referenced as `write_policy` or `governance_policy`, so no anchor used in any chain authorization (write or governance) can ever be poisoned. Past authorizations stay satisfied by construction. To revoke an endorser's authority going forward, evolve the policy via `Sea` rather than poisoning past anchors. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability) for the rationale and the contrast with credential-side poison semantics (which stay current-state-aware).
 
 ### 2. Terminal-State Gate
 
