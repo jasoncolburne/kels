@@ -76,20 +76,22 @@ fn compact_children(
                     continue;
                 }
 
+                // Mutate in place via `get_mut` to preserve the IndexMap's
+                // insertion order. A remove/reinsert cycle (as the previous
+                // implementation used) scrambles multi-field SADs because
+                // serde_json::Map::remove is swap_remove-based, which moves
+                // the last entry into the vacated slot and then re-append
+                // drops the moved key at a new position. Multi-field SADs
+                // like SadEvent end up serializing with a different key
+                // order than the client hashed over, breaking SAID verify.
                 #[allow(clippy::expect_used)]
-                let mut child = value
+                let child = value
                     .as_object_mut()
                     .expect("matched Object variant")
-                    .remove(&key)
-                    .unwrap_or(serde_json::Value::Null);
+                    .get_mut(&key)
+                    .expect("key from snapshot must still be present");
 
-                compact_value(&mut child, collected, remaining_depth - 1)?;
-
-                #[allow(clippy::expect_used)]
-                value
-                    .as_object_mut()
-                    .expect("matched Object variant")
-                    .insert(key, child);
+                compact_value(child, collected, remaining_depth - 1)?;
             }
         }
         serde_json::Value::Array(arr) => {

@@ -1,10 +1,15 @@
 //! Exchange protocol command handlers.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{KeyEventBuilder, KeyProvider, ProviderConfig, VerificationKeyCode};
-use verifiable_storage::{Chained, SelfAddressed};
+use kels_core::{
+    HttpKelSource, KeyEventBuilder, KeyProvider, ProviderConfig, SadEventBuilder, SadStoreClient,
+    VerificationKeyCode,
+};
+use verifiable_storage::SelfAddressed;
 
 use crate::Cli;
 use crate::helpers::*;
@@ -40,6 +45,13 @@ fn parse_kem_algorithm(
     }
 }
 
+/// Build a KEL source for `AnchoredPolicyChecker` pointed at the CLI's KELs
+/// service.
+fn kel_source(cli: &Cli) -> Result<HttpKelSource> {
+    HttpKelSource::new(&cli.kels_url(), "/api/v1/kels/kel/fetch")
+        .context("Failed to build KEL source")
+}
+
 pub(crate) async fn cmd_exchange_publish_key(
     cli: &Cli,
     prefix: &str,
@@ -70,7 +82,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     save_decap_key(&kem_path, &decap_key)?;
     println!("  Decapsulation key saved to {}", kem_path.display());
 
-    // Build EncapsulationKeyPublication SAD object
+    // Build and upload the publication SAD object (payload, not SEL event).
     let mut publication = kels_exchange::EncapsulationKeyPublication {
         said: cesr::Digest256::default(),
         algorithm: kem_algo.to_string(),
@@ -80,8 +92,7 @@ pub(crate) async fn cmd_exchange_publish_key(
         .derive_said()
         .context("SAID derivation failed")?;
 
-    // Upload SAD object
-    let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
+    let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let pub_json = serde_json::to_value(&publication)?;
     sad_client
         .post_sad_object(&pub_json)
@@ -89,60 +100,91 @@ pub(crate) async fn cmd_exchange_publish_key(
         .context("Failed to upload key publication to SADStore")?;
     println!("  Key publication uploaded (SAID: {})", publication.said);
 
-    // Create SadEvent chain (v0 inception + v1 with content)
+    // Build and upload the write/governance policy. Exchange keys currently
+    // reuse the same single-endorser policy for both roles — testing-grade
+    // defaults per sad-events.md "Governance policy reuse".
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let policy = exchange_write_policy(&prefix_digest)?;
     let policy_json = serde_json::to_value(&policy)?;
     sad_client.post_sad_object(&policy_json).await?;
     let write_policy = policy.said;
-    let v0 = kels_core::SadEvent::create(
-        kels_exchange::ENCAP_KEY_KIND.to_string(),
-        kels_core::SadEventKind::Icp,
-        None,
-        None,
-        Some(write_policy),
-        None,
-    )
-    .context("Failed to create inception event")?;
+    let governance_policy = policy.said;
 
-    let mut v1 = v0.clone();
-    v1.content = Some(publication.said);
-    v1.kind = kels_core::SadEventKind::Est;
-    v1.write_policy = None; // Est forbids write_policy
-    v1.governance_policy = Some(write_policy); // first declaration, not evaluated
-    v1.increment().context("Failed to increment event")?;
-
-    // Anchor event SAIDs in the KEL (required for write_policy authorization)
-    let client = create_client(cli).await?;
+    // Stage the SEL via the builder. `incept_deterministic` keeps v0's SAID a
+    // pure function of (topic, write_policy) so `rotate-key` / `lookup-key`
+    // can recompute the prefix without fetching v0.
+    let kels_client = create_client(cli).await?;
     let kel_store = create_kel_store(cli, prefix).await?;
-    let mut builder = KeyEventBuilder::with_dependencies(
+    let mut kel_builder = KeyEventBuilder::with_dependencies(
         provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
+        Some(kels_client),
+        Some(Arc::new(kel_store)),
         Some(&prefix_digest),
     )
     .await?;
-    builder
-        .interact(&v0.said)
+
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(kel_source(cli)?);
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(kels_policy::InMemoryPolicyResolver::new(vec![policy]));
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(kel_source, resolver),
+    );
+
+    let sad_store = Arc::new(create_sad_store(cli).await?);
+    // Inception path — no existing chain to hydrate. `new` is the honest
+    // constructor; rotate-key uses `with_prefix` because it's resuming.
+    let mut sad_builder =
+        SadEventBuilder::new(Some(sad_client.clone()), Some(sad_store), Some(checker));
+
+    let (icp_said, est_said) = sad_builder.incept_deterministic(
+        kels_exchange::ENCAP_KEY_KIND,
+        write_policy,
+        governance_policy,
+        Some(publication.said),
+    )?;
+
+    // Anchor each staged SAID in the KEL before submitting the SEL — the
+    // server's write_policy check finds the anchors via the KEL.
+    kel_builder
+        .interact(&icp_said)
         .await
         .context("Failed to anchor v0 SAID in KEL")?;
-    builder
-        .interact(&v1.said)
+    kel_builder
+        .interact(&est_said)
         .await
         .context("Failed to anchor v1 SAID in KEL")?;
 
-    let events = vec![v0.clone(), v1];
-
-    sad_client
-        .submit_sad_events(&events)
+    let outcome = sad_builder
+        .flush()
         .await
         .context("Failed to submit SAD events")?;
 
+    if !outcome.applied {
+        eprintln!(
+            "{}",
+            "key already published — server reports no new events".yellow()
+        );
+    }
+
+    if let Some(at) = outcome.diverged_at_at_submit {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
+                at
+            )
+            .yellow()
+        );
+    }
+
     println!(
         "{}",
-        format!("Key published! SEL prefix: {}", events[0].prefix)
-            .green()
-            .bold()
+        format!(
+            "Key published! SEL prefix: {}",
+            sad_builder.prefix().expect("prefix established by incept")
+        )
+        .green()
+        .bold()
     );
 
     Ok(())
@@ -173,7 +215,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let kem_path = kem_key_path(cli, prefix)?;
     save_decap_key(&kem_path, &decap_key)?;
 
-    // Build new publication
+    // Build new publication and upload as payload SAD object.
     let mut publication = kels_exchange::EncapsulationKeyPublication {
         said: cesr::Digest256::default(),
         algorithm: kem_algo.to_string(),
@@ -183,11 +225,11 @@ pub(crate) async fn cmd_exchange_rotate_key(
         .derive_said()
         .context("SAID derivation failed")?;
 
-    let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
+    let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let pub_json = serde_json::to_value(&publication)?;
     sad_client.post_sad_object(&pub_json).await?;
 
-    // Fetch current chain to get tip for increment
+    // The policy SAD must exist server-side for verification to resolve it.
     let prefix_digest = cesr::Digest256::from_qb64(prefix).context("Invalid prefix CESR")?;
     let policy = exchange_write_policy(&prefix_digest)?;
     let policy_json = serde_json::to_value(&policy)?;
@@ -196,39 +238,65 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let sel_prefix =
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute SEL prefix")?;
-    let page = sad_client
-        .fetch_sad_events(&sel_prefix, None)
-        .await
-        .context("Failed to fetch current chain")?;
 
-    let tip = page
-        .events
-        .last()
-        .ok_or_else(|| anyhow!("No existing key chain found — use publish-key first"))?;
+    // Hydrate the builder from the server-verified chain state, then stage
+    // the Upd. The checker is owned by the builder; hydration and flush both
+    // pull from the same Arc.
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(kel_source(cli)?);
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(kels_policy::InMemoryPolicyResolver::new(vec![policy]));
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(kel_source, resolver),
+    );
 
-    let mut next = tip.clone();
-    next.content = Some(publication.said);
-    next.kind = kels_core::SadEventKind::Upd;
-    next.write_policy = None; // Upd forbids write_policy
-    next.governance_policy = None;
-    next.increment().context("Failed to increment event")?;
+    let sad_store = Arc::new(create_sad_store(cli).await?);
+    let mut sad_builder = SadEventBuilder::with_prefix(
+        Some(sad_client.clone()),
+        Some(sad_store),
+        Some(checker),
+        &sel_prefix,
+    )
+    .await?;
 
-    // Anchor event SAID in the KEL (required for write_policy authorization)
-    let client = create_client(cli).await?;
+    let upd_said = sad_builder.update(publication.said)?;
+
+    // Anchor the new event's SAID in the KEL before flushing.
+    let kels_client = create_client(cli).await?;
     let kel_store = create_kel_store(cli, prefix).await?;
-    let mut builder = KeyEventBuilder::with_dependencies(
+    let mut kel_builder = KeyEventBuilder::with_dependencies(
         provider,
-        Some(client),
-        Some(std::sync::Arc::new(kel_store)),
+        Some(kels_client),
+        Some(Arc::new(kel_store)),
         Some(&prefix_digest),
     )
     .await?;
-    builder
-        .interact(&next.said)
+    kel_builder
+        .interact(&upd_said)
         .await
         .context("Failed to anchor event SAID in KEL")?;
 
-    sad_client.submit_sad_events(&[next]).await?;
+    let outcome = sad_builder
+        .flush()
+        .await
+        .context("Failed to submit SAD event")?;
+
+    if !outcome.applied {
+        eprintln!(
+            "{}",
+            "rotation event already on server — no new events committed".yellow()
+        );
+    }
+
+    if let Some(at) = outcome.diverged_at_at_submit {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
+                at
+            )
+            .yellow()
+        );
+    }
 
     println!("{}", "Key rotated!".green().bold());
     Ok(())
@@ -242,7 +310,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Resu
         kels_core::compute_sad_event_prefix(write_policy, kels_exchange::ENCAP_KEY_KIND)
             .context("Failed to compute SEL prefix")?;
 
-    let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
+    let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
         .fetch_sad_events(&sel_prefix, None)
         .await

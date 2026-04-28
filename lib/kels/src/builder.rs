@@ -73,7 +73,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         let kel_verification = match (&kel_store, prefix) {
             (Some(store), Some(p)) => {
                 let verification = crate::completed_verification(
-                    &mut crate::StorePageLoader::new(store.as_ref()),
+                    &mut crate::KelStorePageLoader::new(store.as_ref()),
                     p,
                     crate::page_size(),
                     crate::max_pages(),
@@ -201,6 +201,15 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         &self.pending_events
     }
 
+    /// Test-only mutable accessor to `pending_events` so unit tests can
+    /// construct an A3-stuck pending state (connected builder with
+    /// pending events that the prior flush couldn't clear) without
+    /// going through `add_and_flush`.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub fn pending_events_mut_for_test(&mut self) -> &mut Vec<SignedKeyEvent> {
+        &mut self.pending_events
+    }
+
     pub fn prefix(&self) -> Option<&cesr::Digest256> {
         if let Some(first) = self.pending_events.first() {
             return Some(&first.event.prefix);
@@ -218,7 +227,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Ok(());
         };
         let verification = crate::completed_verification(
-            &mut crate::StorePageLoader::new(store.as_ref()),
+            &mut crate::KelStorePageLoader::new(store.as_ref()),
             &prefix,
             crate::page_size(),
             crate::max_pages(),
@@ -289,6 +298,98 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(signed_event)
     }
 
+    /// Batched form of [`interact`]: signs ixns for all `anchors` (auto-inserting
+    /// proactive rors as the non-revealing-event budget requires) and submits
+    /// them in `ceil(N / ~page_size)` round trips instead of one per anchor.
+    /// Returns every event that was appended (ixns plus auto-inserted rors), in
+    /// order.
+    ///
+    /// Chunks are sized so each `add_and_flush` submits at most
+    /// [`crate::page_size`] events; the next anchor opens a new chunk if adding
+    /// it (and a possible ror) would exceed that limit.
+    pub async fn interact_batch(
+        &mut self,
+        anchors: &[cesr::Digest256],
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+        if anchors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let page_size = crate::page_size();
+        let mut all_events: Vec<SignedKeyEvent> = Vec::with_capacity(anchors.len() + 4);
+        let mut idx = 0;
+
+        while idx < anchors.len() {
+            // Re-read state at the top of each chunk: a prior `add_and_flush`
+            // absorbed pending into `kel_verification`, so the count source
+            // shifts. Mirrors `needs_proactive_ror`.
+            let confirmed_count = self
+                .kel_verification
+                .as_ref()
+                .map(|v| v.events_since_last_revealing())
+                .unwrap_or(0);
+            let pending_non_revealing = self
+                .pending_events
+                .iter()
+                .rev()
+                .take_while(|e| !e.event.reveals_recovery_key())
+                .count();
+            let mut events_since_revealing = confirmed_count + pending_non_revealing;
+
+            let mut last_event = self.get_owner_tail().await?.event.clone();
+            let mut chunk: Vec<SignedKeyEvent> = Vec::with_capacity(page_size);
+
+            while idx < anchors.len() {
+                let needs_ror = events_since_revealing >= crate::MAX_NON_REVEALING_EVENTS;
+                let needed = if needs_ror { 2 } else { 1 };
+                if chunk.len() + needed > page_size {
+                    break;
+                }
+
+                if needs_ror {
+                    let signed_ror = match self
+                        .create_signed_recovery_rotation_event(&last_event)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.key_provider.rollback().await?;
+                            return Err(e);
+                        }
+                    };
+                    last_event = signed_ror.event.clone();
+                    chunk.push(signed_ror);
+                    events_since_revealing = 1;
+                }
+
+                let signed_ixn = match self
+                    .create_signed_interaction_event(&last_event, &anchors[idx])
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if self.key_provider.has_staged().await {
+                            self.key_provider.rollback().await?;
+                        }
+                        return Err(e);
+                    }
+                };
+                last_event = signed_ixn.event.clone();
+                chunk.push(signed_ixn);
+                events_since_revealing += 1;
+                idx += 1;
+            }
+
+            self.add_and_flush(&chunk).await?;
+            all_events.extend(chunk);
+        }
+
+        Ok(all_events)
+    }
+
     pub async fn rotate(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
@@ -336,6 +437,15 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Err(KelsError::KelDecommissioned);
         }
 
+        // Recovery-revealing events are user-initiated recovery actions —
+        // mirror SEL's `repair` pre-flight: refuse on pending coexistence,
+        // and verify the server's chain end-to-end before signing. The
+        // verification is defense-in-depth: a buggy/malicious server that
+        // mis-handles invalid chains would otherwise be taken at its word
+        // when we extend from `get_owner_tail`.
+        self.require_no_pending_for_repair()?;
+        self.verify_server_chain_pre_repair().await?;
+
         let last_event = self.get_owner_tail().await?.event.clone();
         let signed_event = match self
             .create_signed_recovery_rotation_event(&last_event)
@@ -366,6 +476,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);
         }
+
+        // Mirror SEL's `repair` pre-flight: refuse on pending coexistence,
+        // and verify the server's chain end-to-end before signing.
+        self.require_no_pending_for_repair()?;
+        self.verify_server_chain_pre_repair().await?;
 
         let last_event = self.get_owner_tail().await?.event.clone();
         let signed_rec_event = match self.create_signed_recovery_event(&last_event).await {
@@ -422,6 +537,11 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
             return Err(KelsError::KelDecommissioned);
         }
 
+        // Mirror SEL's `repair` pre-flight: refuse on pending coexistence,
+        // and verify the server's chain end-to-end before signing.
+        self.require_no_pending_for_repair()?;
+        self.verify_server_chain_pre_repair().await?;
+
         let last_event = self.get_owner_tail().await?.event.clone();
         let signed_event = match self.create_signed_contest_event(&last_event).await {
             Ok(r) => r,
@@ -454,6 +574,64 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
                 _ => Err(e),
             },
             _ => Ok(signed_event),
+        }
+    }
+
+    /// Refuse recovery/contest/ror on non-empty pending. Mirrors SEL's
+    /// `repair` pending-empty gate (round-10 audit L2): combining stale
+    /// pending events with a recovery event would produce a wrong-version
+    /// batch that doesn't heal.
+    ///
+    /// Offline builders (`kels_client = None`) bypass the gate — there's
+    /// no server submit to confuse with stale pending, and tests/bench
+    /// rely on accumulating pending events on a client-less builder for
+    /// inspection. The gate is meaningful only when the builder is
+    /// connected to a server.
+    fn require_no_pending_for_repair(&self) -> Result<(), KelsError> {
+        if self.kels_client.is_none() {
+            return Ok(());
+        }
+        if !self.pending_events.is_empty() {
+            return Err(KelsError::PendingEventsBlockRepair(
+                "recovery/contest/ror requires empty pending state — discard \
+                 pending and retry"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Pre-flight: fetch and fully verify the server's KEL before signing
+    /// a recovery/contest/ror event. Mirrors SEL's `repair` step 3 — full
+    /// chain re-verification on demand. Defense-in-depth against a buggy
+    /// or malicious server that would otherwise be taken at its word when
+    /// owner extends from `get_owner_tail`.
+    ///
+    /// No-ops when `kels_client` is `None` (offline builders / tests).
+    /// Surfaces `KelsError::ChainHasUnverifiedEvents` on signature or
+    /// structural failure, wrapping the underlying verifier error.
+    async fn verify_server_chain_pre_repair(&self) -> Result<(), KelsError> {
+        let Some(client) = &self.kels_client else {
+            return Ok(());
+        };
+        let prefix = *self.prefix().ok_or(KelsError::NotIncepted)?;
+        let kel_source = client.as_kel_source()?;
+        let verifier = crate::KelVerifier::new(&prefix);
+        match crate::verify_key_events(
+            &prefix,
+            &kel_source,
+            verifier,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(KelsError::ChainHasUnverifiedEvents(format!(
+                "server-fetched KEL failed verification: {} — refusing to \
+                 act on unverified server data",
+                e
+            ))),
         }
     }
 

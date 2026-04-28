@@ -57,7 +57,7 @@ Non-divergent KELs have one `BranchTip`. Divergent KELs have one per branch.
 Generic trait for loading pages of signed key events. Decouples the verification logic from the storage backend.
 
 Implementations:
-- `StorePageLoader` — wraps a `KelStore` reference
+- `KelStorePageLoader` — wraps a `KelStore` reference
 - `KelTransaction` — reads under a PostgreSQL advisory lock (for verify-then-write paths)
 - `LockedKelTransaction` — identity service's advisory-locked transaction wrapper
 

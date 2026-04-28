@@ -329,11 +329,36 @@ Best to create an issue and discuss, but PRs are welcome if they are positive ad
 
 ### Architecture and Design
 
-- [KEL Merge Protocol](docs/design/merge.md) — Event submission and merge logic
-- [KEL Verification](docs/design/verification.md) — Integrity and authenticity verification
-- [Streaming Verification](docs/design/streaming-verification-architecture.md) — Paginated verification without full KEL load
-- [Divergence Detection and Recovery](docs/design/divergence-detection.md) — Divergence protocol
-- [Recovery Workflow](docs/design/recovery-workflow.md) — Recovery and reconciliation procedures
+#### KEL (Key Event Log)
+
+- [Per-Kind Reference](docs/design/kel/events.md) — Event kinds, field rules, chain shapes
+- [Lifecycle](docs/design/kel/event-log.md) — States, divergence, recovery, contest, decommission
+- [Merge Protocol](docs/design/kel/merge.md) — Merge engine routing and `MergeTransaction` API
+- [Verification](docs/design/kel/verification.md) — `KelVerifier` algorithm
+- [Reconciliation](docs/design/kel/reconciliation.md) — Multi-node correctness proof matrix
+- [Recovery Workflow](docs/design/kel/recovery-workflow.md) — Operator-facing recovery workflow
+
+#### SEL (SAD Event Log)
+
+- [Per-Kind Reference](docs/design/sel/events.md) — Event kinds, field rules, chain shapes
+- [Lifecycle](docs/design/sel/event-log.md) — States, divergence, repair, contest, decommission
+- [Submit Protocol](docs/design/sel/merge.md) — Submit handler routing and discriminator
+- [Verification](docs/design/sel/verification.md) — `SelVerifier` algorithm
+- [Reconciliation](docs/design/sel/reconciliation.md) — Multi-node correctness proof matrix
+- [Repair Workflow](docs/design/sel/repair-workflow.md) — Operator-facing repair workflow
+- [SAD Store](docs/design/sadstore.md) — Replicated self-addressed data store (object store + chains)
+
+#### IEL (Identity Event Log)
+
+- [Per-Kind Reference](docs/design/iel/events.md) — `Icp` / `Evl` / `Cnt` / `Dec`, field rules, chain shapes
+- [Lifecycle](docs/design/iel/event-log.md) — States, divergence-by-`Cnt`-only resolution, evaluation seal, immunity rule
+- [Submit Protocol](docs/design/iel/merge.md) — Submit handler routing (no `Rpr`, no archival)
+- [Verification](docs/design/iel/verification.md) — `IelVerifier` algorithm and per-kind policy field discipline
+- [Reconciliation](docs/design/iel/reconciliation.md) — Multi-node correctness proof matrix
+
+#### Cross-cutting
+
+- [Streaming Verification](docs/design/streaming-verification-architecture.md) — Paginated verification without full chain load
 - [Security Invariant](docs/design/security-invariant.md) — DB trust model and verification categories
 
 ### Services and Protocols

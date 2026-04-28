@@ -154,13 +154,16 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` new
-/// events would exceed the daily limit. Does NOT update the counter — call
-/// `accrue_prefix_rate_limit` after storage with the actual new event count.
+/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` units
+/// of budget would exceed the daily limit. When `accrue` is `true`, also
+/// charges the budget on success — used by the request gate above the dedup
+/// branch so duplicate-submit campaigns still consume budget. When `false`,
+/// behaves as a pure check (legacy; no current callers).
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
     event_count: u32,
+    accrue: bool,
 ) -> Result<(), String> {
     let now = Instant::now();
     let max_events = max_events_per_prefix_per_day();
@@ -175,22 +178,11 @@ fn check_prefix_rate_limit(
         return Err("Too many events for this SEL prefix".to_string());
     }
 
-    Ok(())
-}
-
-/// Accrue the actual number of new events after storage completes.
-fn accrue_prefix_rate_limit(
-    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
-    prefix: &cesr::Digest256,
-    new_event_count: u32,
-) {
-    let now = Instant::now();
-    let mut entry = limits.entry(*prefix).or_insert((0, now));
-    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
-        entry.0 = 0;
-        entry.1 = now;
+    if accrue {
+        entry.0 += event_count;
     }
-    entry.0 += new_event_count;
+
+    Ok(())
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -450,13 +442,19 @@ pub async fn post_sad_object(
         return (StatusCode::BAD_REQUEST, "SAID derivation failed").into_response();
     }
 
-    let said = value.get_said();
+    let canonical_said = value.get_said();
 
     // HEAD check — short-circuit if already exists (before any MinIO writes)
-    match state.object_store.exists(&said).await {
+    match state.object_store.exists(&canonical_said).await {
         Ok(true) => {
-            debug!("SAD object already exists: {}", said);
-            return (StatusCode::OK, "exists").into_response();
+            debug!("SAD object already exists: {}", canonical_said);
+            return (
+                StatusCode::OK,
+                Json(kels_core::PostSadObjectResponse {
+                    said: canonical_said,
+                }),
+            )
+                .into_response();
         }
         Ok(false) => {}
         Err(e) => {
@@ -491,7 +489,12 @@ pub async fn post_sad_object(
     if let Err(e) = state
         .repo
         .sad_objects
-        .store(&said, custody_said, &state.object_store, &compacted_bytes)
+        .store(
+            &canonical_said,
+            custody_said,
+            &state.object_store,
+            &compacted_bytes,
+        )
         .await
     {
         warn!("Failed to store SAD object: {}", e);
@@ -505,7 +508,7 @@ pub async fn post_sad_object(
                 let mut conn = conn.clone();
                 if let Err(e) = redis::cmd("PUBLISH")
                     .arg("sad_updates")
-                    .arg(said.as_ref())
+                    .arg(canonical_said.as_ref())
                     .query_async::<()>(&mut conn)
                     .await
                 {
@@ -518,7 +521,13 @@ pub async fn post_sad_object(
         }
     }
 
-    (StatusCode::CREATED, "stored").into_response()
+    (
+        StatusCode::CREATED,
+        Json(kels_core::PostSadObjectResponse {
+            said: canonical_said,
+        }),
+    )
+        .into_response()
 }
 
 /// Gossip replication decision for an object.
@@ -1094,7 +1103,7 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     tx: &mut Tx,
     repo: &SadEventRepository,
     prefix: &cesr::Digest256,
-    verifier: &mut kels_core::SelVerifier<'_>,
+    verifier: &mut kels_core::SelVerifier,
 ) -> Result<(), axum::response::Response> {
     let page_size = kels_core::page_size() as u64;
     let mut since: Option<cesr::Digest256> = None;
@@ -1207,29 +1216,45 @@ pub async fn submit_sad_events(
         }
     }
 
+    // Per-SEL-prefix request gate. Runs BEFORE the transaction setup and
+    // dedup query so duplicate-submit campaigns consume budget proportional
+    // to the request's claimed event count, regardless of whether anything
+    // commits server-side. Charges `events.len()` to the per-prefix budget;
+    // a failed request over-charges relative to its commits, which is the
+    // conservative shape we want for an unauthenticated entry point.
+    if let Err(msg) = check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        sel_prefix,
+        events.len() as u32,
+        true,
+    ) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
     let new_event_count;
     let should_publish;
     let mut diverged_at_version: Option<u64> = None;
-    let is_repair;
 
     {
-        let kel_source = match state.kels_client.as_kel_source() {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to build KEL source: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to build KEL source",
-                )
-                    .into_response();
-            }
-        };
-        let policy_resolver = SadStorePolicyResolver {
-            policies: state.repo.clone(),
-            object_store: state.object_store.clone(),
-        };
+        let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> =
+            match state.kels_client.as_kel_source() {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    warn!("Failed to build KEL source: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build KEL source",
+                    )
+                        .into_response();
+                }
+            };
+        let policy_resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+            Arc::new(SadStorePolicyResolver {
+                policies: state.repo.clone(),
+                object_store: state.object_store.clone(),
+            });
 
         let mut tx = match state.repo.sad_events.pool.begin_transaction().await {
             Ok(tx) => tx,
@@ -1273,29 +1298,41 @@ pub async fn submit_sad_events(
         };
 
         if new_events.is_empty() {
+            // Report the chain's *current* divergence state, not "what this
+            // submit changed." A client retrying after a phase-2 / phase-3
+            // failure (Round 4 M1's terminology) has otherwise lost the
+            // original `Some(version)` signal — the first submit's response
+            // never made it to the local token. The normal-path response
+            // populates `diverged_at` from `save_batch`'s `DivergenceCreated`
+            // outcome; this is the symmetric read-side mechanism on the
+            // dedup path. The dedup short-circuit performs no writes, so a
+            // pool-level read alongside the in-flight tx is fine.
+            let diverged_at = match state
+                .repo
+                .sad_events
+                .first_divergent_version(sel_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query first divergent version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
             let response = kels_core::SubmitSadEventsResponse {
-                diverged_at: None,
+                diverged_at,
                 applied: false,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
-        // Per-SEL-prefix daily rate limit (check before, accrue after dedup)
-        if let Err(msg) = check_prefix_rate_limit(
-            &state.prefix_rate_limits,
-            sel_prefix,
-            new_events.len() as u32,
-        ) {
-            let _ = tx.rollback().await;
-            return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-        }
-
         // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
-        is_repair = new_events.iter().any(|r| r.kind.is_repair());
+        let is_repair = new_events.iter().any(|r| r.kind.is_repair());
 
         if is_repair {
             // Query the evaluation seal before truncation — reject repairs behind the seal.
@@ -1344,24 +1381,22 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            // Repair must include an evaluation at or after the divergence point —
-            // an attacker who can only satisfy write_policy cannot repair
-            // (governance_policy is a higher bar).
-            if !new_events
-                .iter()
-                .any(|r| r.version >= from_version && r.kind.evaluates_governance())
-            {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "repair must include an evaluation at or after the divergence point",
-                )
-                    .into_response();
-            }
+            // Repair correctness invariant: `is_repair` ⟹ at least one new
+            // event is `Rpr` ⟹ that event satisfies `evaluates_governance()`
+            // and lives at `version >= from_version` (since `from_version` is
+            // derived from these events). The "repair includes a governance
+            // evaluation" requirement is therefore enforced by the kind
+            // taxonomy — no runtime check needed. If `Rpr` is ever split
+            // into evaluating / non-evaluating subkinds, restore an explicit
+            // check here.
 
             // Now verify the entire chain (post-truncation + repair events) from scratch.
-            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+                Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                    Arc::clone(&kel_source),
+                    Arc::clone(&policy_resolver),
+                ));
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1406,8 +1441,12 @@ pub async fn submit_sad_events(
             should_publish = true;
         } else {
             // Normal path: verify existing chain + new events, then save.
-            let checker = kels_policy::AnchoredPolicyChecker::new(&kel_source, &policy_resolver);
-            let mut verifier = kels_core::SelVerifier::new(sel_prefix, &checker);
+            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+                Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                    Arc::clone(&kel_source),
+                    Arc::clone(&policy_resolver),
+                ));
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1476,8 +1515,9 @@ pub async fn submit_sad_events(
         }
     }
 
-    // Accrue only actual new events to prefix rate limit
-    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
+    // Per-prefix budget was charged pre-flight by `check_prefix_rate_limit`
+    // above — duplicate submits and rejected requests both consume budget at
+    // the rate of their claimed event count, so no post-commit accrual here.
 
     // Check nodes replication policy for gossip
     let event_custody = events.first().and_then(|r| r.custody);
@@ -1575,6 +1615,49 @@ pub async fn get_sad_events(
     }
 }
 
+/// Fetch the tail of a SAD Event Log — the last `limit` events ordered by
+/// `(version ASC, said ASC)`, capped at `MINIMUM_PAGE_SIZE` server-side.
+///
+/// The boundary that `SadEventBuilder::repair`'s adversary-extension walk-back
+/// is searching for is at most `MAX_NON_EVALUATION_EVENTS = 63` hops from the
+/// tip, so this single fetch always suffices regardless of chain length.
+/// Capping at the constant (rather than the operator-tunable `page_size()`)
+/// keeps an attacker probing this endpoint from amplifying response size when
+/// `KELS_PAGE_SIZE` is set higher than the default.
+pub async fn get_sad_events_tail(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadEventTailRequest>,
+) -> impl IntoResponse {
+    let prefix = request.prefix;
+    let max_limit = kels_core::MINIMUM_PAGE_SIZE;
+    let limit = request.limit.unwrap_or(max_limit).clamp(1, max_limit) as u64;
+
+    match state
+        .repo
+        .sad_events
+        .get_stored_tail(prefix.as_ref(), limit)
+        .await
+    {
+        Ok(events) if events.is_empty() => {
+            (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response()
+        }
+        Ok(events) => {
+            // The tail fetch returns the entire suffix the caller asked for —
+            // there is no further page beyond what they got, by definition of
+            // "fetch the last N events." `has_more` is always false.
+            let page = kels_core::SadEventPage {
+                has_more: false,
+                events,
+            };
+            (StatusCode::OK, Json(page)).into_response()
+        }
+        Err(e) => {
+            warn!("Failed to get SAD Event Log tail: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
 pub async fn get_sel_effective_said(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadEventEffectiveSaidRequest>,
@@ -1588,6 +1671,571 @@ pub async fn get_sel_effective_said(
         Ok(None) => (StatusCode::NOT_FOUND, "SAD Event Log not found").into_response(),
         Err(e) => {
             warn!("Failed to get effective SAID: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+// ==================== Identity Event Log (IEL) handlers ====================
+
+/// Page through existing IEL events in a transaction, feeding each page to the
+/// verifier. Mirrors `verify_existing_chain` for the IEL primitive.
+async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
+    tx: &mut Tx,
+    repo: &crate::repository::IdentityEventRepository,
+    prefix: &cesr::Digest256,
+    verifier: &mut kels_core::IelVerifier,
+) -> Result<(), axum::response::Response> {
+    let page_size = kels_core::page_size() as u64;
+    let mut since: Option<cesr::Digest256> = None;
+    loop {
+        let page = repo
+            .fetch_iel_page(
+                tx,
+                prefix.as_ref(),
+                since.as_ref().map(|s| s.as_ref()),
+                Some(page_size),
+            )
+            .await
+            .map_err(|e| {
+                warn!("Failed to fetch IEL chain for verification: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response()
+            })?;
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        since = page.last().map(|e| e.said);
+        verifier.verify_page(&page).await.map_err(|e| {
+            warn!("IEL chain verification failed: {}", e);
+            (
+                StatusCode::CONFLICT,
+                format!("IEL chain verification failed: {}", e),
+            )
+                .into_response()
+        })?;
+        if (page_len as u64) < page_size {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Describe the soft-fail that flipped `verification.policy_satisfied=false`,
+/// branching on which kind in `new_events` triggered it. The verifier soft-fails
+/// on Icp anchor (against declared `auth_policy`) and on Cnt/Dec governance
+/// anchor (against the chain's tracked `governance_policy`); Evl governance is
+/// hard-fail and surfaces earlier as a verification error rather than via this
+/// gate. The previous one-line message hard-coded the Icp shape and misled
+/// operators when an unauthorized Cnt/Dec landed.
+fn describe_iel_policy_failure(
+    new_events: &[kels_core::IdentityEvent],
+    iel_prefix: &cesr::Digest256,
+) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    for event in new_events {
+        match event.kind {
+            kels_core::IdentityEventKind::Icp => clauses.push(format!(
+                "Icp {} must be anchored under its declared auth_policy",
+                event.said
+            )),
+            kels_core::IdentityEventKind::Cnt => clauses.push(format!(
+                "Cnt {} must be authorized under the chain's tracked governance_policy",
+                event.said
+            )),
+            kels_core::IdentityEventKind::Dec => clauses.push(format!(
+                "Dec {} must be authorized under the chain's tracked governance_policy",
+                event.said
+            )),
+            // Evl governance failure aborts verification with a hard error
+            // before reaching the policy_satisfied gate.
+            kels_core::IdentityEventKind::Evl => {}
+        }
+    }
+    if clauses.is_empty() {
+        return format!(
+            "IEL {} re-verification surfaced an anchor failure on the existing chain",
+            iel_prefix
+        );
+    }
+    clauses.join("; ")
+}
+
+/// Submit IEL events. Routes per `docs/design/iel/merge.md §4`:
+///
+/// 1. Structural validation (SAID, prefix, `validate_structure`, Icp prefix).
+/// 2. Terminal-state gate (Cnt → `ContestedIel`, Dec → `IelDecommissioned`).
+/// 3. Dedup.
+/// 4. Verify existing chain + new events (catches immunity violations,
+///    Cnt/Dec policy preservation, Icp self-anchoring soft-fail, Evl/Cnt/Dec
+///    governance anchoring).
+/// 5. Routing — Cnt always wins; divergent rejects non-Cnt; Dec only on
+///    non-divergent; sealed-Evl gets `ContestRequired`; otherwise normal
+///    append (overlap creates fork).
+/// 6. Publish effective SAID to gossip on state mutation.
+pub async fn submit_identity_events(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(events): Json<Vec<kels_core::IdentityEvent>>,
+) -> impl IntoResponse {
+    if events.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
+    }
+
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    let iel_prefix = &events[0].prefix;
+    if events.iter().any(|e| e.prefix != *iel_prefix) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "All IEL events must have the same prefix",
+        )
+            .into_response();
+    }
+
+    // SAID + per-kind structural validation.
+    for e in &events {
+        if e.verify_said().is_err() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("IEL event SAID verification failed: {}", e.said),
+            )
+                .into_response();
+        }
+        if let Err(reason) = e.validate_structure() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid IEL event {}: {}", e.said, reason),
+            )
+                .into_response();
+        }
+    }
+
+    // Verify Icp prefix derivation if v0 is present in the batch.
+    if let Some(v0) = events.iter().find(|e| e.version == 0)
+        && v0.verify_prefix().is_err()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "IEL Icp prefix derivation verification failed",
+        )
+            .into_response();
+    }
+
+    if let Err(msg) = check_prefix_rate_limit(
+        &state.prefix_rate_limits,
+        iel_prefix,
+        events.len() as u32,
+        true,
+    ) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    let new_event_count;
+    let should_publish;
+    let mut diverged_at_version: Option<u64> = None;
+
+    {
+        let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> =
+            match state.kels_client.as_kel_source() {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    warn!("Failed to build KEL source: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build KEL source",
+                    )
+                        .into_response();
+                }
+            };
+        let policy_resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+            Arc::new(SadStorePolicyResolver {
+                policies: state.repo.clone(),
+                object_store: state.object_store.clone(),
+            });
+
+        let mut tx = match state.repo.iel_events.pool.begin_transaction().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                warn!("Failed to begin transaction: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+
+        if let Err(e) = tx.acquire_advisory_lock(iel_prefix.as_ref()).await {
+            warn!("Failed to acquire advisory lock: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+        }
+
+        // Dedup: filter events whose SAIDs are already in the chain.
+        let new_events: Vec<kels_core::IdentityEvent> = {
+            let submitted_saids: Vec<String> = events.iter().map(|e| e.said.to_string()).collect();
+            let query = verifiable_storage_postgres::Query::<kels_core::IdentityEvent>::for_table(
+                "iel_events",
+            )
+            .r#in("said", submitted_saids);
+            let existing_saids: std::collections::HashSet<cesr::Digest256> =
+                match tx.fetch(query).await {
+                    Ok(existing) => existing
+                        .into_iter()
+                        .map(|e: kels_core::IdentityEvent| e.said)
+                        .collect(),
+                    Err(e) => {
+                        warn!("Failed to query existing IEL SAIDs: {}", e);
+                        let _ = tx.rollback().await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                            .into_response();
+                    }
+                };
+            events
+                .iter()
+                .filter(|e| !existing_saids.contains(&e.said))
+                .cloned()
+                .collect()
+        };
+
+        if new_events.is_empty() {
+            // All-duplicates short-circuit: report current divergence.
+            let diverged_at = match state
+                .repo
+                .iel_events
+                .first_divergent_version(iel_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query first divergent version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+            if let Err(e) = tx.commit().await {
+                warn!("Failed to commit transaction: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+            let response = kels_core::SubmitIdentityEventsResponse {
+                applied: false,
+                diverged_at,
+            };
+            return (StatusCode::CREATED, Json(response)).into_response();
+        }
+
+        // Terminal-state gate. These checks fire before routing — terminal
+        // chains accept no further events of any kind.
+        let is_contested = match state.repo.iel_events.is_contested(iel_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query is_contested: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        if is_contested {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "IEL {} is contested — no further events accepted",
+                    iel_prefix
+                ),
+            )
+                .into_response();
+        }
+        let is_decommissioned = match state.repo.iel_events.is_decommissioned(iel_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query is_decommissioned: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        if is_decommissioned {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "IEL {} is decommissioned — no further events accepted",
+                    iel_prefix
+                ),
+            )
+                .into_response();
+        }
+
+        // Snapshot pre-batch chain state BEFORE running the verifier. The
+        // verifier sees `existing + new_events` and would mark the chain
+        // divergent if the new batch creates a fork (overlap-creates-fork is
+        // a *normal* path, not divergent-rejection). The design's
+        // "divergent → ContestRequired" rule applies to chains that were
+        // *already* divergent before this batch, not to batches that create
+        // divergence. Same shape for the seal: the post-finish seal includes
+        // the new batch's Evls and would self-trigger the algorithmic
+        // ContestRequired check.
+        let pre_batch_seal = match state
+            .repo
+            .iel_events
+            .last_governance_version(&mut tx, iel_prefix)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query IEL pre-batch seal: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        let pre_batch_divergent = match state.repo.iel_events.is_divergent(iel_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query IEL pre-batch divergence: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+
+        // Build verifier; verify the existing chain + the new batch. The
+        // verifier surfaces immunity violations, Cnt/Dec policy preservation,
+        // Icp self-anchoring (soft), and Evl/Cnt/Dec governance anchoring.
+        let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+            Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                Arc::clone(&kel_source),
+                Arc::clone(&policy_resolver),
+            ));
+        let mut verifier = kels_core::IelVerifier::new(Some(iel_prefix), checker);
+        if let Err(response) =
+            verify_existing_iel_chain(&mut tx, &state.repo.iel_events, iel_prefix, &mut verifier)
+                .await
+        {
+            let _ = tx.rollback().await;
+            return response;
+        }
+        if let Err(e) = verifier.verify_page(&new_events).await {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("IEL event verification failed: {}", e),
+            )
+                .into_response();
+        }
+        let verification = match verifier.finish().await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("IEL chain verification failed: {}", e),
+                )
+                    .into_response();
+            }
+        };
+
+        if !verification.policy_satisfied() {
+            let _ = tx.rollback().await;
+            let reason = describe_iel_policy_failure(&new_events, iel_prefix);
+            return (
+                StatusCode::FORBIDDEN,
+                format!("IEL anchoring not satisfied — {}", reason),
+            )
+                .into_response();
+        }
+
+        // Routing per `docs/design/iel/merge.md §4`. Order matters: Cnt always
+        // wins (works on divergent or linear chains, the only divergence
+        // resolver). Divergent-rejection comes BEFORE Dec so Dec on a divergent
+        // chain returns ContestRequired. Sealed-Evl returns ContestRequired
+        // (algorithmic). Otherwise normal append (overlap creates fork).
+        let is_contest = new_events.iter().any(|e| e.kind.is_contest());
+        let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
+        // Use the pre-batch divergence + seal state for routing, not the
+        // post-finish view: the verifier processes existing + new events
+        // together, so a batch that *creates* a fork (overlap, valid) shows
+        // up as divergent post-finish, but the design routes it via
+        // save_batch's overlap-creates-fork path, not divergent-rejection.
+        let chain_divergent = pre_batch_divergent;
+        let last_gp_version = pre_batch_seal;
+
+        if is_contest {
+            for event in &new_events {
+                if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {
+                    warn!("Failed to insert IEL Cnt: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+            new_event_count = new_events.len() as u32;
+            should_publish = true;
+        } else if chain_divergent {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                "Contest required: IEL is divergent — only Cnt resolves a divergent IEL",
+            )
+                .into_response();
+        } else if is_decommission {
+            for event in &new_events {
+                if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {
+                    warn!("Failed to insert IEL Dec: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+            new_event_count = new_events.len() as u32;
+            should_publish = true;
+        } else {
+            // Algorithmic ContestRequired: Evl at version <= seal AND chain not divergent.
+            if let Some(seal) = last_gp_version {
+                for event in &new_events {
+                    if !event.kind.is_terminal() && event.version <= seal {
+                        let _ = tx.rollback().await;
+                        return (
+                            StatusCode::FORBIDDEN,
+                            format!(
+                                "Contest required: IEL Evl at version {} lands at or before evaluation seal {}",
+                                event.version, seal
+                            ),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // Normal append. `save_batch` handles overlap-creates-fork.
+            match state
+                .repo
+                .iel_events
+                .save_batch(&mut tx, &new_events, last_gp_version)
+                .await
+            {
+                Ok(crate::repository::SaveBatchResult::Accepted { new_count }) => {
+                    new_event_count = new_count;
+                    should_publish = new_count > 0;
+                }
+                Ok(crate::repository::SaveBatchResult::DivergenceCreated {
+                    new_count,
+                    diverged_at_version: v,
+                }) => {
+                    diverged_at_version = Some(v);
+                    new_event_count = new_count;
+                    should_publish = new_count > 0;
+                }
+                Err(e) => {
+                    warn!("Failed to save IEL batch: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+        }
+
+        if let Err(e) = tx.commit().await {
+            warn!("Failed to commit IEL transaction: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+        }
+    }
+
+    if should_publish {
+        let effective_said = match state.repo.iel_events.effective_said(iel_prefix).await {
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "Failed to compute IEL effective SAID for {}: {}",
+                    iel_prefix, e
+                );
+                None
+            }
+        };
+        if let (Some(conn), Some(said)) = (&state.redis_conn, &effective_said) {
+            let mut conn = conn.clone();
+            let message = format!("{}:{}", iel_prefix, said);
+            if let Err(e) = redis::cmd("PUBLISH")
+                .arg("iel_updates")
+                .arg(&message)
+                .query_async::<()>(&mut conn)
+                .await
+            {
+                warn!("Failed to publish IEL update: {}", e);
+            }
+        }
+    }
+
+    let response = kels_core::SubmitIdentityEventsResponse {
+        diverged_at: diverged_at_version,
+        applied: new_event_count > 0,
+    };
+    (StatusCode::CREATED, Json(response)).into_response()
+}
+
+/// Fetch a page of IEL events ordered
+/// `(version ASC, kind sort_priority ASC, said ASC)`.
+pub async fn get_identity_events(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::IdentityEventPageRequest>,
+) -> impl IntoResponse {
+    let prefix = request.prefix;
+    let page_size = kels_core::page_size();
+    let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
+    let since_str = request.since.as_ref().map(|s| s.as_ref());
+
+    let mut tx = match state.repo.iel_events.pool.begin_transaction().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            warn!("Failed to begin IEL fetch transaction: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+        }
+    };
+
+    let result = state
+        .repo
+        .iel_events
+        .fetch_iel_page(&mut tx, prefix.as_ref(), since_str, Some(limit + 1))
+        .await;
+    let _ = tx.commit().await;
+
+    match result {
+        Ok(events) if events.is_empty() => (StatusCode::NOT_FOUND, "IEL not found").into_response(),
+        Ok(events) => {
+            let has_more = events.len() as u64 > limit;
+            let events: Vec<_> = events.into_iter().take(limit as usize).collect();
+            let page = kels_core::IdentityEventPage { has_more, events };
+            (StatusCode::OK, Json(page)).into_response()
+        }
+        Err(e) => {
+            warn!("Failed to fetch IEL events: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+/// Check whether a specific IEL event SAID exists on the server.
+pub async fn identity_event_exists(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::IdentityEventExistsRequest>,
+) -> impl IntoResponse {
+    match state.repo.iel_events.event_exists(&request.said).await {
+        Ok(true) => (StatusCode::OK, "exists").into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        Err(e) => {
+            warn!("Failed to check IEL event exists: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
+/// Fetch the effective SAID of an IEL chain.
+pub async fn get_iel_effective_said(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::IdentityEventEffectiveSaidRequest>,
+) -> impl IntoResponse {
+    match state.repo.iel_events.effective_said(&request.prefix).await {
+        Ok(Some((said, divergent))) => (
+            StatusCode::OK,
+            Json(kels_core::EffectiveSaidResponse { said, divergent }),
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "IEL not found").into_response(),
+        Err(e) => {
+            warn!("Failed to get IEL effective SAID: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
         }
     }

@@ -1,6 +1,19 @@
-# KERI vs KELS: Comparative Security Analysis for DKMI Usage Contexts
+# KERI vs KELS: Architecture and Security Comparison
 
 This document compares KERI (Key Event Receipt Infrastructure) and KELS (Key Event Log System) across their security properties, architectural decisions, and suitability for various Decentralized Key Management Infrastructure (DKMI) scenarios. Analysis reflects security best practices as of 2026, including post-quantum readiness, zero-trust architecture, and supply chain integrity considerations.
+
+## Scope
+
+KERI is a DKMI. KELS started as one and grew past it. Where KERI stops at the Key Event Log, KELS layers:
+
+- **KEL** — the DKMI primitive. Direct KERI analogue; the focus of most of this document.
+- **SEL** (SAD Event Log) — a general append-only verifiable event log for arbitrary Self-Addressing Data, governed by a policy DSL. No KERI analogue. Identity chains, exchange-key chains, custody envelopes, and credential-anchor chains are all SELs.
+- **Policy DSL** — `endorse`, `threshold`, `weighted`, `delegate`, nested `policy` references, with soft/hard/immune poisoning. Governance composes *across* independent identities rather than being embedded as a multisig threshold *within* one identifier.
+- **Credentials, exchange, mail, federation** — layered consumers of the above, not built-in DKMI features.
+
+The sharpest statement of the split (expanded in §8): KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three independent identities collectively endorse something per a policy. That decoupling is what makes KELS a substrate rather than just another DKMI.
+
+Direct comparison in this document focuses on the DKMI layer because that is where an apples-to-apples comparison is meaningful. Where KELS extends beyond KERI's scope (SELs, policy, credentials, exchange, mail, federation), sections note this explicitly.
 
 ## Protocol Overview
 
@@ -27,6 +40,8 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 KELS is a federated key event system that shares KERI's foundational concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust. KELS **stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem. It introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics. Replication uses a custom gossip protocol (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts. Trust anchors are compile-time registry prefixes with multi-party voting for peer lifecycle.
 
 KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification attacks.
+
+Beyond the DKMI layer, KELS adds **SELs** (SAD Event Logs) — a generic append-only verifiable event log for arbitrary Self-Addressing Data, governed by a composable policy DSL. The DSL provides `endorse(kel_prefix)`, `threshold(k, [...])`, `weighted(k, [... : weight])`, `delegate(DELEGATOR, DELEGATE)`, and nested `policy(SAID)` references, with soft/hard/immune poisoning for withdrawing endorsements. Where a KEL manages keys for a single device, SELs compose key management across multiple identities into higher-level primitives: identity chains, exchange-key (encap-key) chains, custody envelopes, and credential-anchor chains are all SELs with policy-governed write and governance lifecycles. KERI has no analogue at this layer — ACDC credentials and TEL registries are credential-specific data structures rather than a general event-log substrate, and tholder thresholds live within a single identifier's keys rather than composing across identities.
 
 ---
 

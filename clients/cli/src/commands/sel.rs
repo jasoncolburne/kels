@@ -15,15 +15,32 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, file: &PathBuf) -> Result<()> {
         serde_json::from_str(&data).context("Failed to parse SadEvent JSON")?;
 
     let client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
-    client
+    let response = client
         .submit_sad_events(&events)
         .await
         .context("Failed to submit SAD events")?;
 
-    println!(
-        "{}",
-        format!("{} SAD event(s) submitted", events.len()).green()
-    );
+    if response.applied {
+        println!(
+            "{}",
+            format!("{} SAD event(s) submitted", events.len()).green()
+        );
+    } else {
+        println!(
+            "{}",
+            "no new events submitted (all already present on server)".yellow()
+        );
+    }
+    if let Some(at) = response.diverged_at {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: SEL diverged at version {} — stage a repair to resolve",
+                at
+            )
+            .yellow()
+        );
+    }
     Ok(())
 }
 

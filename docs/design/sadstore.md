@@ -25,7 +25,7 @@ Fields:
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in MinIO (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
-- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Evl` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`. See `docs/design/sad-events.md` for the per-kind matrix.
+- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Sea` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`/`Cnt`/`Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
 
 ### Deterministic Prefix
 
@@ -61,35 +61,27 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
 - **SAD events**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the event's SAID in their KELs. Consumers verify the anchoring when they use the data.
 
-## Divergence and Repair
+## Chain Lifecycle
 
-When two conflicting events exist at the same version (e.g., from concurrent writes), both are stored and the chain is **frozen** — no further appends are accepted until the divergence is repaired. v0 divergence is rejected (inception events are fully deterministic).
+A SEL chain transitions through states (Active → Divergent → Contested / Decommissioned) driven by the events in the chain itself, not external flags. The **effective SAID** for a chain is its gossip-visible identity:
+- Linear chain: the tip event's SAID.
+- Divergent chain: `hash_effective_said("divergent:{prefix}")` — synthetic, deterministic, cross-node-consistent.
+- Contested chain: `hash_effective_said("contested:{prefix}")` — terminal.
+- Decommissioned chain: the `Dec` event's SAID — terminal owner-initiated end.
 
-The **effective SAID** for a chain represents its current state:
-- Non-divergent: the tip event's SAID
-- Divergent: `hash_effective_said("divergent:{prefix}")` — a synthetic deterministic SAID so all nodes agree on the frozen state
-
-### Repair
-
-The chain owner repairs divergence by submitting a batch that includes a `Rpr` event. The handler auto-detects Rpr events and takes the repair path:
-
-1. The batch starts at the divergent version
-2. `truncate_and_replace` deletes all events at and after that version
-3. Replacement events are inserted with structural integrity checks (predecessor linkage, sequential versions, consistent topic). `write_policy` may legitimately evolve across versions via `Evl`, so it is not checked for invariance — the verifier tracks its evolution via branch state.
-
-Displaced events are archived to `sad_event_archives` (mirror table). A `sad_event_repairs` entry is created as an audit event, and `sel_repair_events` links each repair to the archived events it displaced. Repair history and displaced events are queryable via the chain repair endpoints.
+For the full chain lifecycle (divergence detection, repair via discriminator, contest, decommission, evaluation seal, anchor non-poisonability rule, server-observable case taxonomy), see [sel/event-log.md](sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
 
 ### Repair Propagation
 
-When a repair succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects repair from `Rpr` events in the submitted batch and takes the repair path, replacing their divergent state.
+When a repair, contest, or decommission succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects the lifecycle transition from the kinds present in the batch (`Rpr` / `Cnt` / `Dec`) and applies the matching path.
 
-If a node misses the gossip repair message (e.g., it was offline), the owner submits the repair directly to that node.
+If a node misses the gossip message (e.g., it was offline), the owner submits the events directly to that node.
 
 ## Verification
 
-The `SadEventVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Evl`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Sea`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever an `Evl` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip event's raw field. See [sad-events.md](sad-events.md) for the semantics of the governance-related accessors (chain-wide vs. branch-scoped).
+Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`, `is_contested()`, `is_decommissioned()`, `diverged_at_version()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever a `Sea` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip event's raw field. The `is_contested` / `is_decommissioned` / `diverged_at_version` accessors expose lifecycle state — see [sel/event-log.md](sel/event-log.md) for the state model.
 
 ## Policy Evaluation Modes
 

@@ -58,15 +58,35 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 # Redis for pub/sub announcements
 redis = { version = "1.1", features = ["tokio-comp", "connection-manager"] }
 
+# SQL queries that don't fit ColumnQuery's GROUP BY / aggregate shape
+# (e.g., MIN(version) over a HAVING-filtered set of grouped versions). Already
+# transitive via verifiable-storage-postgres; adding as a direct dep so the
+# repository can call sqlx::query_scalar without going through PgPool::inner()
+# at every call site.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+
 [dev-dependencies]
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", features = ["test-utils"] }
 chrono = "0.4"
 tokio-test = "0.4"
 testcontainers = "0.27"
 ctor = "0.4"
-testcontainers-modules = { version = "0.15", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serial_test = "3"
+# Full-stack integration tests: sad_builder_tests drives both services.
+# The package is named `kels` (services/kels/Cargo.toml); the library target
+# it exports is `kels_service`, which is what `use` statements reference.
+#
+# Why: full-stack integration tests in tests/sad_builder_tests.rs need to
+# spawn a live KELS service — the AnchoredPolicyChecker walks a real KEL to
+# verify anchors, and there's no test-mode bypass on the policy check at the
+# service boundary. This inverts the usual "services don't depend on services"
+# rule, but only at dev-deps (no runtime impact). If the test-build cost
+# becomes painful, the principled fix is to extract a `kels-test-harness`
+# crate exposing the test-spawning surface — file as a follow-up at that
+# point, not pre-emptively.
+kels = { path = "../../services/kels" }
 
 [lints.clippy]
 unwrap_used = "deny"

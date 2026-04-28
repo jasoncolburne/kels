@@ -108,8 +108,25 @@ pub enum KelsError {
     #[error("Contested KEL: {0}")]
     ContestedKel(String),
 
-    #[error("Contest required: recovery key revealed")]
-    ContestRequired,
+    #[error("Contested IEL: {0}")]
+    ContestedIel(String),
+
+    #[error("IEL is decommissioned: {0}")]
+    IelDecommissioned(String),
+
+    #[error(
+        "IEL is divergent: {0} — only `Cnt` resolves an IEL; bound an SE event to a non-divergent branch state instead"
+    )]
+    IelDivergent(String),
+
+    #[error("Invalid IEL: {0}")]
+    InvalidIel(String),
+
+    #[error("Policy {policy} is not immune — write/governance/auth policies must be immune")]
+    NotImmunePolicy { policy: String },
+
+    #[error("Contest required: {reason}")]
+    ContestRequired { reason: String },
 
     #[error("KEL diverged at: {0}")]
     Diverged(String),
@@ -149,6 +166,62 @@ pub enum KelsError {
 
     #[error("Invalid disclosure expression: {0}")]
     InvalidDisclosure(String),
+
+    #[error("Evaluation required: would exceed non-evaluation event bound")]
+    EvaluationRequired,
+
+    #[error(
+        "SAD Event Log diverged at version {at} — stage a repair to resolve before further updates"
+    )]
+    SelDivergent { at: u64 },
+
+    #[error(
+        "Nothing to repair — chain is linear and the cached tip matches the local store's owner-authored tip"
+    )]
+    NothingToRepair,
+
+    #[error(
+        "Chain has unverified events: {0} — cannot repair until policy is satisfied (verify the data source and re-run, or re-fetch a clean owner-local view)"
+    )]
+    ChainHasUnverifiedEvents(String),
+
+    #[error("Pending events block repair/recovery: {0} — discard pending and retry")]
+    PendingEventsBlockRepair(String),
+
+    #[error(
+        "SAD store payload missing for prefix {prefix} — index has SAID {said} but the keyed blob is absent (local-store corruption: manual filesystem manipulation, partial restore, or crash mid-write between SAID storage and index update)"
+    )]
+    // Stored as `String` (qb64 encoding) rather than `cesr::Digest256` to keep
+    // `KelsError` small enough to pass `clippy::result_large_err`. Digest256 is
+    // ~152 bytes; embedding two of them would balloon every `Result<_, KelsError>`
+    // returned by the crate.
+    SadStorePayloadMissing { prefix: String, said: String },
+}
+
+impl KelsError {
+    /// Construct `ContestRequired` from a KEL-side reason. The three flavors
+    /// (`_kel`, `_sel`, `_iel`) point at the same variant — the helper exists
+    /// for call-site readability so a reader can tell which primitive's
+    /// contest-trigger fired without reading the reason string.
+    pub fn contest_required_kel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
+
+    /// Construct `ContestRequired` from an SEL-side reason.
+    pub fn contest_required_sel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
+
+    /// Construct `ContestRequired` from an IEL-side reason.
+    pub fn contest_required_iel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -254,7 +327,16 @@ mod tests {
             KelsError::CacheError("cache error".to_string()),
             KelsError::StorageError("storage error".to_string()),
             KelsError::ContestedKel("contested".to_string()),
-            KelsError::ContestRequired,
+            KelsError::ContestedIel("iel contested".to_string()),
+            KelsError::IelDecommissioned("iel decommissioned".to_string()),
+            KelsError::IelDivergent("iel diverged at v=7".to_string()),
+            KelsError::InvalidIel("bad iel".to_string()),
+            KelsError::NotImmunePolicy {
+                policy: cesr::Digest256::blake3_256(b"policy").to_string(),
+            },
+            KelsError::contest_required_kel("recovery key revealed"),
+            KelsError::contest_required_sel("sealed past submitter view"),
+            KelsError::contest_required_iel("only Cnt resolves a divergent IEL"),
             KelsError::Diverged("diverged".to_string()),
             KelsError::Divergent,
             KelsError::Frozen,
@@ -267,6 +349,15 @@ mod tests {
             KelsError::NoReadyNodes,
             KelsError::RegistryFailure("all failed".to_string()),
             KelsError::InvalidDisclosure("bad expression".to_string()),
+            KelsError::EvaluationRequired,
+            KelsError::SelDivergent { at: 7 },
+            KelsError::NothingToRepair,
+            KelsError::ChainHasUnverifiedEvents("local store policy_satisfied=false".to_string()),
+            KelsError::PendingEventsBlockRepair("pending non-empty".to_string()),
+            KelsError::SadStorePayloadMissing {
+                prefix: cesr::Digest256::blake3_256(b"prefix").to_string(),
+                said: cesr::Digest256::blake3_256(b"said").to_string(),
+            },
         ];
 
         for err in errors {

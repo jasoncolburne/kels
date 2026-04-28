@@ -417,15 +417,8 @@ async fn test_submit_event_invalid_said_rejected() {
     };
 
     // Create an event but tamper with the SAID
-    let mut event = SadEvent::create(
-        "kels/v1/test-kind".to_string(),
-        kels_core::SadEventKind::Icp,
-        None,
-        None,
-        Some(test_digest("kel-test-prefix")),
-        None,
-    )
-    .unwrap();
+    let mut event =
+        SadEvent::icp("kels/v1/test-kind", test_digest("kel-test-prefix"), None).unwrap();
     event.topic = "tampered".to_string(); // Tamper after SAID computation
 
     let events = vec![event];

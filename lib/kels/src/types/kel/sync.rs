@@ -30,16 +30,16 @@ pub trait PageLoader: Send + Sync {
 }
 
 /// `KelStore` adapter for `PageLoader` — wraps a shared reference.
-pub struct StorePageLoader<'a>(&'a dyn KelStore);
+pub struct KelStorePageLoader<'a>(&'a dyn KelStore);
 
-impl<'a> StorePageLoader<'a> {
+impl<'a> KelStorePageLoader<'a> {
     pub fn new(store: &'a dyn KelStore) -> Self {
         Self(store)
     }
 }
 
 #[async_trait]
-impl PageLoader for StorePageLoader<'_> {
+impl PageLoader for KelStorePageLoader<'_> {
     async fn load_page(
         &mut self,
         prefix: &cesr::Digest256,
@@ -99,7 +99,7 @@ impl PagedKelSource for StoreKelSource<'_> {
 /// `anchor_saids` optionally registers SAIDs to check for anchoring during the walk.
 /// Results are available via `KelVerification::anchored_saids()` / `anchors_all_saids()`.
 ///
-/// Use `StorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
+/// Use `KelStorePageLoader` to wrap a `&dyn KelStore`, or implement `PageLoader` on a
 /// locked transaction wrapper to read under advisory lock.
 pub async fn completed_verification(
     loader: &mut dyn PageLoader,
@@ -343,7 +343,7 @@ impl PagedKelSink for HttpKelSink {
                 KelsError::ServerError(e.to_string(), crate::types::ErrorCode::InternalError)
             })?;
             if err.code == crate::types::ErrorCode::ContestRequired {
-                Err(KelsError::ContestRequired)
+                Err(KelsError::contest_required_kel(err.error))
             } else {
                 Err(KelsError::ServerError(err.error, err.code))
             }
@@ -964,7 +964,7 @@ mod tests {
 
         // Verify — spans 3+ pages
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             100,
@@ -1031,7 +1031,7 @@ mod tests {
 
         // Verify with paginated reads — should detect divergence
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             100,
@@ -1060,7 +1060,7 @@ mod tests {
 
         // Check for an anchor that exists
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             100,
@@ -1074,7 +1074,7 @@ mod tests {
 
         // Check for an anchor that doesn't exist
         let kel_verification2 = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             100,
@@ -1108,7 +1108,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events max, but we have 21
         let result = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1680,7 +1680,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events, we have exactly 10
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1713,7 +1713,7 @@ mod tests {
 
         // Page size 5, max 2 pages = 10 events, we have 11
         let result = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             2,
@@ -1797,6 +1797,105 @@ mod tests {
                 .event
                 .reveals_recovery_key()
         );
+    }
+
+    /// `recover` refuses with `PendingEventsBlockRepair` when the builder
+    /// has a kels_client AND non-empty pending. Round-10 KEL parity with
+    /// SEL's `repair` pending-empty gate. Offline builders (kels_client =
+    /// None) bypass the gate (tests/bench depend on accumulating pending
+    /// for inspection).
+    #[tokio::test]
+    async fn recover_refuses_when_pending_nonempty_and_connected() {
+        // Construct a builder with a localhost-but-unconnected client. The
+        // pending-empty gate fires BEFORE `verify_server_chain_pre_repair`
+        // makes any HTTP call, so an unreachable URL doesn't cause an
+        // earlier error.
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        // Build pending without flushing: incept against the unreachable
+        // client — the inception flush will fail at HTTP. `add_and_flush`
+        // truncates pending on flush failure, so we craft pending another
+        // way: stage incept manually without the flush.
+        // Simpler: use a client-less builder to build incept, then move
+        // those pending events into a connected builder.
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        let pending = offline.pending_events().to_vec();
+        // Manually splice pending into the connected builder. This is the
+        // shape of an A3 stuck-pending state: prior flush errored, pending
+        // remains, owner now wants to recover.
+        for event in pending {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .recover(false)
+            .await
+            .expect_err("recover must refuse when pending is non-empty and connected");
+        assert!(
+            matches!(err, KelsError::PendingEventsBlockRepair(_)),
+            "Expected PendingEventsBlockRepair, got: {err:?}"
+        );
+    }
+
+    /// `contest` refuses with `PendingEventsBlockRepair` under the same
+    /// conditions as `recover`. KEL parity check.
+    #[tokio::test]
+    async fn contest_refuses_when_pending_nonempty_and_connected() {
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        for event in offline.pending_events().to_vec() {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .contest()
+            .await
+            .expect_err("contest must refuse when pending is non-empty and connected");
+        assert!(matches!(err, KelsError::PendingEventsBlockRepair(_)));
+    }
+
+    /// `rotate_recovery` refuses with `PendingEventsBlockRepair` under the
+    /// same conditions. Completes the KEL parity test triplet.
+    #[tokio::test]
+    async fn rotate_recovery_refuses_when_pending_nonempty_and_connected() {
+        let kels_client =
+            crate::client::KelsClient::new("http://127.0.0.1:1").expect("client constructible");
+        let mut builder = KeyEventBuilder::new(random_provider(), Some(kels_client));
+
+        let mut offline = KeyEventBuilder::new(random_provider(), None);
+        offline.incept().await.unwrap();
+        for event in offline.pending_events().to_vec() {
+            builder.pending_events_mut_for_test().push(event);
+        }
+
+        let err = builder
+            .rotate_recovery()
+            .await
+            .expect_err("rotate_recovery must refuse when pending is non-empty and connected");
+        assert!(matches!(err, KelsError::PendingEventsBlockRepair(_)));
+    }
+
+    /// Offline `recover` (kels_client = None) bypasses the pending gate —
+    /// tests/bench rely on accumulating pending events on a client-less
+    /// builder for inspection. Pre-fix without the offline-bypass branch,
+    /// every `recover` test that builds against `KeyEventBuilder::new(_, None)`
+    /// would fail.
+    #[tokio::test]
+    async fn recover_bypasses_pending_gate_in_offline_mode() {
+        let mut builder = KeyEventBuilder::new(random_provider(), None);
+        builder.incept().await.unwrap();
+        // Pending non-empty (offline incept doesn't flush since there's no
+        // client). The gate is bypassed.
+        assert!(!builder.pending_events().is_empty());
+        // recover proceeds and adds the rec event to pending.
+        builder.recover(false).await.unwrap();
     }
 
     // ==================== KelVerifier — resume from Verification ====================
@@ -1929,7 +2028,7 @@ mod tests {
         store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2001,7 +2100,7 @@ mod tests {
         store.overwrite(&prefix, &events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2049,7 +2148,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             page_size,
             10,
@@ -2098,7 +2197,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2506,7 +2605,7 @@ mod tests {
         store.overwrite(&prefix, &all_events).await.unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             7,
             10,
@@ -2567,7 +2666,7 @@ mod tests {
 
         // Verify divergence
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             crate::page_size(),
             10,
@@ -2661,7 +2760,7 @@ mod tests {
     async fn test_empty_kel_verification() {
         let store = MemoryStore::new();
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &test_digest("nonexistent-prefix"),
             crate::page_size(),
             10,
@@ -2758,7 +2857,7 @@ mod tests {
             .unwrap();
 
         let kel_verification = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             3, // very small pages
             100,
@@ -3357,7 +3456,7 @@ mod tests {
 
         // Phase 1: verify with anchor check
         let kel_verification1 = completed_verification(
-            &mut StorePageLoader::new(&store),
+            &mut KelStorePageLoader::new(&store),
             &prefix,
             5,
             100,

@@ -35,6 +35,20 @@ pub struct SadEventPageRequest {
     pub limit: Option<usize>,
 }
 
+/// Request body for fetching the tail of a SAD Event Log.
+///
+/// Returns the last `limit` events ordered by `(version DESC, said DESC)`,
+/// then reversed so the page reads `(version ASC, said ASC)` for caller
+/// convenience. Lets `SadEventBuilder::repair` find the truncation boundary
+/// in a single round-trip regardless of chain length — bounded by
+/// `MINIMUM_PAGE_SIZE` server-side because that's exactly what the
+/// adversary-extension walk-back can possibly need.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SadEventTailRequest {
+    pub prefix: cesr::Digest256,
+    pub limit: Option<usize>,
+}
+
 /// Request body for fetching the effective SAID of a SAD Event Log.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SadEventEffectiveSaidRequest {
@@ -49,6 +63,20 @@ pub struct SubmitSadEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,
+}
+
+/// Response from a successful SAD object submission.
+///
+/// Carries the **canonical** SAID under which the server stored the object —
+/// after compaction of any inline nested SADs. Clients submitting an expanded-form
+/// SAD cannot recompute this without redoing the server's compaction, so the
+/// server returns it authoritatively. Returned on both 200 ("exists") and 201
+/// ("stored") responses; pre-compacted submissions will see this equal to the
+/// SAID they computed locally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostSadObjectResponse {
+    pub said: cesr::Digest256,
 }
 
 /// Request body for listing repairs for a SAD Event Log.

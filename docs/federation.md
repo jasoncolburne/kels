@@ -237,7 +237,7 @@ After approval, the peer is deactivated and moved from active to inactive in the
 - KELs survive registry restarts since they are stored in the local PostgreSQL database
 - Recovery propagates naturally: identity recovers → push/AE loop picks up → each member verifies independently via `save_with_merge`
 - See [Registry Removal](design/registry-removal.md) for decommission procedures
-- See [Recovery Workflow](design/recovery-workflow.md) for the recovery architecture
+- See [Recovery Workflow](design/kel/recovery-workflow.md) for the recovery architecture
 
 ## Disaster Recovery
 

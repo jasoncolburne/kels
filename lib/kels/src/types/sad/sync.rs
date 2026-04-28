@@ -5,15 +5,25 @@
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
+//! For owner-local hydration over a `SadStore` (no server round-trip), use
+//! `SelPageLoader` + `SadStorePageLoader` + `sel_completed_verification` —
+//! parallels KEL's `PageLoader` / `KelStorePageLoader` / `completed_verification`
+//! at `lib/kels/src/types/kel/sync.rs`.
+//!
 //! Public functions:
 //! - `verify_sad_events` — structural + policy verification via `PolicyChecker`
 //! - `forward_sad_events` — forward without verification, supports delta via `since`
+//! - `sel_completed_verification` — owner-local verification via `SelPageLoader`
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
-use super::event::{SadEvent, SadEventPage, SadEventVerification};
+use super::event::{SadEvent, SadEventPage, SelVerification};
 use super::verification::SelVerifier;
+use crate::store::SadStore;
+use crate::types::PolicyChecker;
 use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
@@ -29,12 +39,135 @@ pub trait PagedSadSource: Send + Sync {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+
+    /// Fetch the tail of a chain — the last `limit` events ordered by
+    /// `(version ASC, said ASC)`.
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back as
+    /// a single round-trip alternative to forward-paginating the whole chain.
+    /// Default implementation returns `Unsupported` so legacy sources don't
+    /// silently degrade — callers that need tail fetch should depend on a
+    /// source that overrides this. `HttpSadSource` provides the production
+    /// implementation; test mocks override as needed.
+    async fn fetch_tail(
+        &self,
+        _prefix: &cesr::Digest256,
+        _limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        Err(KelsError::OfflineMode(
+            "PagedSadSource::fetch_tail not implemented by this source".into(),
+        ))
+    }
 }
 
 /// Destination for SAD events (e.g., local SADStore).
 #[async_trait]
 pub trait PagedSadSink: Send + Sync {
     async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError>;
+}
+
+// ==================== Owner-local Page Loader ====================
+
+/// Trait for loading offset-paginated SAD events for a given chain prefix.
+///
+/// The offset-based parallel of `PagedSadSource` (which is cursor/`since`-based
+/// for HTTP transfer). Mirrors KEL's `PageLoader`
+/// (`lib/kels/src/types/kel/sync.rs`) — implemented by `SadStorePageLoader`
+/// over a `&dyn SadStore`, or by transaction wrappers that read under
+/// advisory locks.
+#[async_trait]
+pub trait SelPageLoader: Send + Sync {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+}
+
+/// `SadStore` adapter for `SelPageLoader` — wraps a shared reference to a
+/// `SadStore`. Pairs with the trait's `load_sel_events` method, which is
+/// populated by `store_sel_event` calls during `SadEventBuilder::flush`.
+///
+/// Mirrors KEL's `KelStorePageLoader` (`lib/kels/src/types/kel/sync.rs`).
+pub struct SadStorePageLoader<'a>(&'a dyn SadStore);
+
+impl<'a> SadStorePageLoader<'a> {
+    pub fn new(store: &'a dyn SadStore) -> Self {
+        Self(store)
+    }
+}
+
+#[async_trait]
+impl SelPageLoader for SadStorePageLoader<'_> {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        self.0.load_sel_events(prefix, limit, offset).await
+    }
+}
+
+/// Verify a full SEL using paginated reads from a local store, returning a
+/// trusted owner-local `SelVerification`.
+///
+/// Mirrors KEL's `completed_verification` (`lib/kels/src/types/kel/sync.rs`).
+/// Walks pages via `loader.load_page`, runs `SelVerifier::verify_page` per
+/// page, and returns the proof-of-verification token. `max_pages` limits
+/// resource exhaustion — fails secure if exceeded.
+///
+/// **Owner-local invariant.** Loader-fed pages contain only owner-authored
+/// events (the `store_sel_event` writers populate the prefix index, the
+/// repair flow does not). The resulting `SelVerification` reflects owner's
+/// view; server state is consulted at action time, not here.
+pub async fn sel_completed_verification(
+    loader: &mut dyn SelPageLoader,
+    prefix: &cesr::Digest256,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<SelVerification, KelsError> {
+    let mut verifier = SelVerifier::new(Some(prefix), checker);
+    let mut offset: u64 = 0;
+    let mut exhausted = false;
+    let mut saw_any = false;
+    let limit = page_size as u64;
+
+    for _ in 0..max_pages {
+        let (events, has_more) = loader.load_page(prefix, limit, offset).await?;
+
+        if events.is_empty() {
+            exhausted = true;
+            break;
+        }
+
+        saw_any = true;
+        let advanced = events.len() as u64;
+        verifier.verify_page(&events).await?;
+        offset += advanced;
+
+        if !has_more {
+            exhausted = true;
+            break;
+        }
+    }
+
+    // Fail secure: if we ran out of pages before exhausting the source,
+    // return an error rather than a partial SelVerification.
+    if !exhausted {
+        return Err(KelsError::InvalidKel(format!(
+            "SEL for {} exceeds max_pages limit ({}) — verification incomplete",
+            prefix, max_pages,
+        )));
+    }
+
+    if !saw_any {
+        return Err(KelsError::NotFound(prefix.to_string()));
+    }
+
+    verifier.finish().await
 }
 
 // ==================== Sink Implementations ====================
@@ -96,6 +229,29 @@ impl PagedSadSource for HttpSadSource {
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
+
+    async fn fetch_tail(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        let url = format!("{}/api/v1/sad/events/tail", self.base_url);
+        let body = crate::SadEventTailRequest {
+            prefix: *prefix,
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let page: SadEventPage = resp.json().await?;
+            Ok(page.events)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(Vec::new())
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
 }
 
 /// HTTP-based sink that submits SAD events to a SADStore service.
@@ -128,6 +284,11 @@ impl PagedSadSink for HttpSadSink {
         let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
+            // Drain the body to honor `SubmitSadEventsResponse`'s `#[must_use]`.
+            // Forwarding/sync isn't owner-driven, so the divergence/applied
+            // signals aren't actionable here — owner submission goes through
+            // `SadStoreClient::submit_sad_events`, which surfaces the response.
+            let _ = resp.json::<crate::SubmitSadEventsResponse>().await;
             Ok(())
         } else if resp.status() == reqwest::StatusCode::CONFLICT {
             // Chain already divergent on remote — that's fine, skip
@@ -148,11 +309,11 @@ impl PagedSadSink for HttpSadSink {
 /// found (two events at the same version), switches to collection mode,
 /// accumulates all remaining events, then submits them via
 /// `send_divergent_sad_events` in an order the remote can accept.
-async fn transfer_sad_events<'a>(
+async fn transfer_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     sink: &(dyn PagedSadSink + Sync),
-    mut verifier: Option<&mut SelVerifier<'a>>,
+    mut verifier: Option<&mut SelVerifier>,
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
@@ -354,11 +515,11 @@ async fn send_divergent_sad_events(
 pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
-    checker: &(dyn super::verification::PolicyChecker + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
     page_size: usize,
     max_pages: usize,
-) -> Result<SadEventVerification, KelsError> {
-    let mut verifier = SelVerifier::new(prefix, checker);
+) -> Result<SelVerification, KelsError> {
+    let mut verifier = SelVerifier::new(Some(prefix), checker);
     transfer_sad_events(
         prefix,
         source,
@@ -387,24 +548,27 @@ pub async fn forward_sad_events(
 
 #[cfg(test)]
 #[allow(clippy::panic)]
+// The single test here stages a divergent chain to exercise
+// page-boundary divergence detection. `SadEventBuilder` is single-actor
+// and refuses divergent state by design, so the fixture is hand-built.
 mod tests {
-    use verifiable_storage::Chained;
-
-    use super::super::event::SadEventKind;
     use super::*;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
     }
 
-    /// In-memory source that serves events in pages, simulating page-boundary splits.
-    struct VecSadSource {
+    /// In-memory paginated-only source that serves events in pages,
+    /// simulating page-boundary splits for divergence-detection tests.
+    /// Does not implement `fetch_tail` — for repair-walk-back tests that
+    /// need it, see `RepairTestSadSource` in `lib/kels/src/sad_builder.rs`.
+    struct PagedVecSadSource {
         events: Vec<SadEvent>,
         page_size: usize,
     }
 
     #[async_trait]
-    impl PagedSadSource for VecSadSource {
+    impl PagedSadSource for PagedVecSadSource {
         async fn fetch_page(
             &self,
             _prefix: &cesr::Digest256,
@@ -459,29 +623,12 @@ mod tests {
         let gp = test_digest(b"governance-policy");
 
         // Build a chain: v0 (declares governance_policy), v1, then two events at v2 (divergence)
-        let v0 = SadEvent::create(
-            "kels/test".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.kind = SadEventKind::Upd;
-        v1.content = Some(test_digest(b"content1"));
-        v1.increment().unwrap();
+        let v0 = SadEvent::icp("kels/test", wp, Some(gp)).unwrap();
+        let v1 = SadEvent::upd(&v0, test_digest(b"content1")).unwrap();
 
         // Two conflicting v2 events (same previous = v1.said)
-        let mut v2_a = v1.clone();
-        v2_a.content = Some(test_digest(b"content2a"));
-        v2_a.increment().unwrap();
-
-        let mut v2_b = v1.clone();
-        v2_b.content = Some(test_digest(b"content2b"));
-        v2_b.increment().unwrap();
+        let v2_a = SadEvent::upd(&v1, test_digest(b"content2a")).unwrap();
+        let v2_b = SadEvent::upd(&v1, test_digest(b"content2b")).unwrap();
 
         let prefix = v0.prefix;
 
@@ -489,7 +636,7 @@ mod tests {
         // Divergence is within page 2 — no boundary split.
         // Now test page_size=3: page 1 = [v0, v1, v2_a], held-back = v2_a,
         // page 2 starts with v2_b which has same version → divergence at boundary.
-        let source = VecSadSource {
+        let source = PagedVecSadSource {
             events: vec![v0, v1, v2_a.clone(), v2_b.clone()],
             page_size: 3,
         };

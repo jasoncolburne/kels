@@ -43,6 +43,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sad/events", post(handlers::submit_sad_events))
         .route("/api/v1/sad/events/fetch", post(handlers::get_sad_events))
         .route(
+            "/api/v1/sad/events/tail",
+            post(handlers::get_sad_events_tail),
+        )
+        .route(
             "/api/v1/sad/events/effective-said",
             post(handlers::get_sel_effective_said),
         )
@@ -59,6 +63,20 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/sad/events/prefixes",
             post(handlers::list_sel_prefixes),
+        )
+        // Identity Event Log (IEL) events
+        .route("/api/v1/iel/events", post(handlers::submit_identity_events))
+        .route(
+            "/api/v1/iel/events/fetch",
+            post(handlers::get_identity_events),
+        )
+        .route(
+            "/api/v1/iel/events/exists",
+            post(handlers::identity_event_exists),
+        )
+        .route(
+            "/api/v1/iel/events/effective-said",
+            post(handlers::get_iel_effective_said),
         );
 
     if *TEST_ENDPOINTS_ENABLED {

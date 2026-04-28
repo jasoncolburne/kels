@@ -591,6 +591,29 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
+    // Start IEL Redis subscriber (listens for IEL updates; broadcasts to gossip)
+    let iel_redis_command_tx = command_tx.clone();
+    let iel_redis_url = config.redis_url.clone();
+    let iel_redis_recently_stored = recently_stored.clone();
+    let iel_redis_local_kel_prefix = local_kel_prefix;
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sync::run_iel_redis_subscriber(
+                &iel_redis_url,
+                iel_redis_local_kel_prefix,
+                iel_redis_command_tx.clone(),
+                iel_redis_recently_stored.clone(),
+            )
+            .await
+            {
+                error!("IEL Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("IEL Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+
     // Start mail Redis subscriber
     let mail_redis_command_tx = command_tx.clone();
     let mail_redis_url = config.redis_url.clone();
@@ -639,6 +662,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Derive topic IDs and join with bootstrap peers
     let topic_id = gossip_layer::topic_id_from_name(&config.topic);
     let sad_topic_id = gossip_layer::topic_id_from_name(gossip_layer::SAD_TOPIC);
+    let iel_topic_id = gossip_layer::topic_id_from_name(gossip_layer::IEL_TOPIC);
     let mail_topic_id = gossip_layer::topic_id_from_name(gossip_layer::MAIL_TOPIC);
     gossip_instance
         .join(topic_id, peer_addrs.clone())
@@ -648,6 +672,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .join(sad_topic_id, peer_addrs.clone())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join SAD gossip topic: {}", e)))?;
+    gossip_instance
+        .join(iel_topic_id, peer_addrs.clone())
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to join IEL gossip topic: {}", e)))?;
     gossip_instance
         .join(mail_topic_id, peer_addrs)
         .await
@@ -662,6 +690,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             gossip_instance_clone,
             topic_id,
             sad_topic_id,
+            iel_topic_id,
             mail_topic_id,
             command_rx,
             event_tx,

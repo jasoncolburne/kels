@@ -3,12 +3,13 @@
 //! Client for the replicated SAD store service.
 //! Provides methods for both Layer 1 (SAD objects) and Layer 2 (SAD events).
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use verifiable_storage::SelfAddressed;
 
 use crate::{
-    KelsError, SadEventPage, SadEventRepairPage, SadEventVerification,
+    KelsError, PostSadObjectResponse, SadEventPage, SadEventRepairPage, SelVerification,
+    SubmitSadEventsResponse,
     error::read_error_body,
     types::{EffectiveSaidResponse, ErrorCode},
 };
@@ -37,11 +38,21 @@ impl SadStoreClient {
     }
 
     /// Create an `HttpSadSource` for this client's events endpoint.
+    ///
+    /// Constructs a fresh `reqwest::Client` (with its own connection pool)
+    /// rather than sharing this `SadStoreClient`'s. Acceptable for one-off
+    /// flows like `SadEventBuilder::repair` (called once per repair); if a
+    /// caller invokes this in a hot loop, refactor to share the underlying
+    /// `reqwest::Client` to reuse pooled connections.
     pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
         crate::HttpSadSource::new(&self.base_url)
     }
 
     /// Create an `HttpSadSink` for this client's events endpoint.
+    ///
+    /// Constructs a fresh `reqwest::Client` per call — see `as_sad_source` for
+    /// the same trade-off note. Gossip/sync flows that call this repeatedly
+    /// would benefit from sharing the underlying client.
     pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
         crate::HttpSadSink::new(&self.base_url)
     }
@@ -73,11 +84,13 @@ impl SadStoreClient {
         &self,
         object: &serde_json::Value,
     ) -> Result<cesr::Digest256, KelsError> {
+        // Pre-flight: catches tampered or partially-constructed payloads before
+        // they hit the wire. The returned SAID is the *server's* canonical one
+        // (post-compaction), which differs from the client-computed value when
+        // the submission is in expanded form.
         object.verify_said().map_err(|e| {
             KelsError::VerificationFailed(format!("Object SAID verification failed: {}", e))
         })?;
-
-        let said = object.get_said();
 
         let url = format!("{}/api/v1/sad", self.base_url);
         let body = serde_json::to_vec(object)?;
@@ -91,7 +104,8 @@ impl SadStoreClient {
             .await?;
 
         if resp.status().is_success() {
-            Ok(said)
+            let parsed: PostSadObjectResponse = resp.json().await?;
+            Ok(parsed.said)
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -198,12 +212,22 @@ impl SadStoreClient {
     /// Authorization is via KEL anchoring: each event's SAID must be anchored
     /// via ixn by `write_policy` endorsers in their KELs. There are no per-event
     /// signatures — the server validates anchoring against the endorsers' KELs.
-    pub async fn submit_sad_events(&self, events: &[crate::SadEvent]) -> Result<(), KelsError> {
+    ///
+    /// Returns the server-reported `SubmitSadEventsResponse`. The `diverged_at`
+    /// field carries the server's authoritative divergence signal — a fork
+    /// created by a concurrent writer at submission time would be invisible to
+    /// the local verifier (which only sees the owner's batch). Callers that
+    /// build on the local verification token (`SadEventBuilder::flush`) must
+    /// propagate this to avoid silent state drift.
+    pub async fn submit_sad_events(
+        &self,
+        events: &[crate::SadEvent],
+    ) -> Result<SubmitSadEventsResponse, KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
 
         if resp.status().is_success() {
-            Ok(())
+            Ok(resp.json().await?)
         } else {
             let text = read_error_body(resp).await?;
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
@@ -225,6 +249,35 @@ impl SadStoreClient {
             prefix: *prefix,
             since: since.copied(),
             limit: None,
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(prefix.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch the tail of a SAD Event Log — the last `limit` events ordered by
+    /// `(version ASC, said ASC)`. Server caps `limit` at `page_size()`.
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back to
+    /// pull only the chain segment the walk could possibly need (bounded by
+    /// `MAX_NON_EVALUATION_EVENTS = 63` per the governance invariant), in a
+    /// single round-trip independent of chain length.
+    pub async fn fetch_sad_events_tail(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: usize,
+    ) -> Result<SadEventPage, KelsError> {
+        let url = format!("{}/api/v1/sad/events/tail", self.base_url);
+        let body = crate::SadEventTailRequest {
+            prefix: *prefix,
+            limit: Some(limit),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
 
@@ -358,11 +411,110 @@ impl SadStoreClient {
     pub async fn verify_sad_events(
         &self,
         prefix: &cesr::Digest256,
-        checker: &(dyn crate::PolicyChecker + Sync),
-    ) -> Result<SadEventVerification, KelsError> {
+        checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
+    ) -> Result<SelVerification, KelsError> {
         crate::verify_sad_events(
             prefix,
             &self.as_sad_source()?,
+            checker,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await
+    }
+
+    // ==================== Identity Event Log (IEL) ====================
+
+    /// Construct an `HttpIelSource` for paging through an IEL on this server.
+    ///
+    /// Constructs a fresh `reqwest::Client` per call (mirrors `as_sad_source`).
+    pub fn as_iel_source(&self) -> Result<crate::HttpIelSource, KelsError> {
+        crate::HttpIelSource::new(&self.base_url)
+    }
+
+    /// Construct an `HttpIelSink` for posting IEL event batches to this server.
+    pub fn as_iel_sink(&self) -> Result<crate::HttpIelSink, KelsError> {
+        crate::HttpIelSink::new(&self.base_url)
+    }
+
+    /// Submit an IEL event batch.
+    pub async fn submit_identity_events(
+        &self,
+        events: &[crate::IdentityEvent],
+    ) -> Result<crate::SubmitIdentityEventsResponse, KelsError> {
+        let url = format!("{}/api/v1/iel/events", self.base_url);
+        let resp = self.client.post(&url).json(events).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch a page of IEL events.
+    pub async fn fetch_identity_events(
+        &self,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+    ) -> Result<crate::IdentityEventPage, KelsError> {
+        let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
+        let body = crate::IdentityEventPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: None,
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(prefix.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Get the effective SAID and divergence status for an IEL prefix.
+    pub async fn fetch_iel_effective_said(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(String, bool)>, KelsError> {
+        let url = format!("{}/api/v1/iel/events/effective-said", self.base_url);
+        let body = crate::IdentityEventEffectiveSaidRequest { prefix: *prefix };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let body: EffectiveSaidResponse = resp.json().await?;
+            Ok(Some((body.said.to_string(), body.divergent)))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Check whether a specific IEL event SAID exists on the server.
+    pub async fn identity_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
+        let url = format!("{}/api/v1/iel/events/exists", self.base_url);
+        let body = crate::IdentityEventExistsRequest { said: *said };
+        let resp = self.client.post(&url).json(&body).send().await?;
+        Ok(resp.status().is_success())
+    }
+
+    /// Verify an IEL by paging through this server. Returns the verification
+    /// token. Mirrors `verify_sad_events` for IEL.
+    pub async fn verify_identity_events(
+        &self,
+        prefix: &cesr::Digest256,
+        checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
+    ) -> Result<crate::IelVerification, KelsError> {
+        crate::verify_identity_events(
+            prefix,
+            &self.as_iel_source()?,
             checker,
             crate::page_size(),
             crate::max_pages(),

@@ -5,6 +5,7 @@
 - `make` verifies changes (fmt, deny, clippy, test, build). Never use naked cargo commands.
 - When landing a rename, add retired tokens to `.terminology-forbidden` so `make lint-terminology` catches future regressions.
 - `make coverage` for per-file coverage. Individual targets: `make fmt`, `make clippy`, etc.
+- `TEST_ARGS` on `make test` / `make test-verbose` forwards flags to `cargo test` for iterating on one suite (`TEST_ARGS="--test sad_builder_tests"`) or one package (`TEST_ARGS="-p kels-core"`). Use while iterating; still run the full `make` before calling a change done.
 - **`make` is slow (minutes). Run it ONCE and tee output to a file**, then grep/tail the file repeatedly instead of re-running: `make 2>&1 | tee /tmp/make.log`. Do not run `make | tail -N` then `make | grep foo` then `make | head -N` — you just burned 3× the time for one build.
 - Dependency crates at `../verifiable-storage-rs`, `../cacheable`, `../cesr-rs`.
 - When adding a `lib/` crate dependency, update Garden config and Dockerfile too.
@@ -41,11 +42,11 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/verification.md`, `docs/design/streaming-verification-architecture.md`.
+**KEL** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/kel/events.md`, `docs/design/kel/verification.md`, `docs/design/streaming-verification-architecture.md`.
 
-**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/divergence-detection.md`, `docs/design/recovery-workflow.md`, `docs/design/reconciliation.md`.
+**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/kel/event-log.md`, `docs/design/kel/recovery-workflow.md`, `docs/design/kel/reconciliation.md`.
 
-**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/merge.md`.
+**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/kel/merge.md`.
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
@@ -57,14 +58,16 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/federation-state-machine.md`, `docs/design/secure-registration.md`, `docs/design/registry-removal.md`, `docs/design/rejection-threshold.md`.
 
-**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sad-events.md`.
+**SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sel/events.md`, `docs/design/sel/event-log.md`.
+
+**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); terminal via `Cnt` (contest, the only divergence resolver — IEL has no `Rpr`) or `Dec` (decommission). Every non-`Icp` event is governance-authorized; every introduced/evolved policy must be `immune: true`. Hosted in `services/sadstore/` alongside SE; `iel_events` table, `/api/v1/iel/events*` routes, `iel_updates` Redis channel, `kels/gossip/v1/topics/iel` gossip topic. See `docs/design/iel/events.md`, `docs/design/iel/event-log.md`, `docs/design/iel/verification.md`, `docs/design/iel/merge.md`.
 
 ## Architecture
 
 ### Services
 
 - **kels** — KEL submission and retrieval
-- **sadstore** — content-addressed data store (MinIO + PostgreSQL). See `docs/design/sadstore.md`
+- **sadstore** — content-addressed data store (MinIO + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/sadstore.md`, `docs/design/iel/`
 - **gossip** — KEL/SAD sync between peers (HyParView + PlumTree). See `docs/gossip.md`
 - **registry** — peer lifecycle via OpenRaft. See `docs/registry.md`
 - **identity** — node KEL and signing keys

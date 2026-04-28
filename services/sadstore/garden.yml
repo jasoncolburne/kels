@@ -12,6 +12,7 @@ include:
   - lib/kels/**/*
   - lib/derive/**/*
   - lib/policy/**/*
+  - services/kels/**/*  # dev-dep of sadstore for full-stack integration tests
   - services/sadstore/**/*
   - project.garden.yml
 

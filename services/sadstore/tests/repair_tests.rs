@@ -10,7 +10,7 @@ use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels_core::SadEvent;
+use kels_core::{SadEvent, SadEventBuilder};
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -138,32 +138,25 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, events: &[SadEvent]
     tx.commit().await.unwrap();
 }
 
-/// Build a chain of v0..v(count-1).
-fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadEvent> {
-    let mut events = Vec::with_capacity(count);
-    let kel_digest = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let mut event = SadEvent::create(
-        kind.to_string(),
-        kels_core::SadEventKind::Icp,
-        None,
-        None,
-        Some(kel_digest),
-        None,
-    )
-    .unwrap();
-    events.push(event.clone());
-
-    event.kind = kels_core::SadEventKind::Upd;
-    event.write_policy = None; // Upd forbids write_policy
-    for i in 1..count {
-        event.content = Some(cesr::Digest256::blake3_256(
-            format!("content_{}", i).as_bytes(),
-        ));
-        event.increment().unwrap();
-        events.push(event.clone());
+/// Build a chain of `count` events using the standard "discoverable" shape:
+/// bare v0 `Icp` + v1 `Est` (governance declaration) + subsequent `Upd` events.
+/// Matches what real callers produce via `incept_deterministic`, so these
+/// repository tests exercise realistic chain layouts rather than
+/// governance-absent shapes the verifier would reject.
+fn build_chain(kel_prefix: &str, topic: &str, count: usize) -> Vec<SadEvent> {
+    assert!(
+        count >= 2,
+        "build_chain requires count >= 2 (v0 Icp + v1 Est)"
+    );
+    let wp = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
+    let gp = cesr::Digest256::blake3_256(format!("{}-gp", kel_prefix).as_bytes());
+    let mut builder = SadEventBuilder::new(None, None, None);
+    builder.incept_deterministic(topic, wp, gp, None).unwrap();
+    for i in 2..count {
+        let content = cesr::Digest256::blake3_256(format!("content_{}", i).as_bytes());
+        builder.update(content).unwrap();
     }
-
-    events
+    builder.pending_events().to_vec()
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
@@ -172,7 +165,7 @@ fn build_chain(kel_prefix: &str, kind: &str, count: usize) -> Vec<SadEvent> {
 fn build_replacement(
     previous_said: &cesr::Digest256,
     prefix: &cesr::Digest256,
-    kind: &str,
+    topic: &str,
     from_version: u64,
     count: usize,
     content_tag: &str,
@@ -184,7 +177,7 @@ fn build_replacement(
         prefix: *prefix,
         previous: Some(*previous_said),
         version: from_version,
-        topic: kind.to_string(),
+        topic: topic.to_string(),
         content: Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
@@ -235,10 +228,10 @@ async fn test_save_batch_and_truncate_and_replace() {
     };
 
     let kel_prefix = "Erepair_test_kel_1______________________________";
-    let kind = "kels/v1/test-repair";
+    let topic = "kels/v1/test-repair";
 
     // Save a 5-event chain: v0..v4
-    let chain = build_chain(kel_prefix, kind, 5);
+    let chain = build_chain(kel_prefix, topic, 5);
     assert_eq!(save_batch_txn(&repo, &chain).await, 5);
 
     let prefix = chain[0].prefix;
@@ -255,7 +248,7 @@ async fn test_save_batch_and_truncate_and_replace() {
 
     // Build replacement from v3 (replacing v3 and v4 with 2 new events)
     let previous_said = &chain[2].said; // v2 is the last kept event
-    let replacement = build_replacement(previous_said, &prefix, kind, 3, 2, "replacement");
+    let replacement = build_replacement(previous_said, &prefix, topic, 3, 2, "replacement");
 
     truncate_and_replace_txn(&repo, &replacement).await;
 
@@ -335,20 +328,20 @@ async fn test_get_repairs_pagination() {
     };
 
     let kel_prefix = "Erepair_pagination_kel__________________________";
-    let kind = "kels/v1/test-paginate";
+    let topic = "kels/v1/test-paginate";
 
     // Save a 5-event chain
-    let chain = build_chain(kel_prefix, kind, 5);
+    let chain = build_chain(kel_prefix, topic, 5);
     save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
 
     // First repair: replace from v4
-    let r1 = build_replacement(&chain[3].said, &prefix, kind, 4, 1, "repair_a");
+    let r1 = build_replacement(&chain[3].said, &prefix, topic, 4, 1, "repair_a");
     truncate_and_replace_txn(&repo, &r1).await;
 
     // Second repair: replace from v4 again (replacing the first replacement)
-    let r2 = build_replacement(&chain[3].said, &prefix, kind, 4, 1, "repair_b");
+    let r2 = build_replacement(&chain[3].said, &prefix, topic, 4, 1, "repair_b");
     truncate_and_replace_txn(&repo, &r2).await;
 
     // Paginate with limit=1
@@ -380,14 +373,14 @@ async fn test_get_repair_events_pagination() {
     };
 
     let kel_prefix = "Erepair_rec_paginate_kel________________________";
-    let kind = "kels/v1/test-recpage";
+    let topic = "kels/v1/test-recpage";
 
     // Save a 4-event chain, replace from v1 (archiving v1, v2, v3 = 3 events)
-    let chain = build_chain(kel_prefix, kind, 4);
+    let chain = build_chain(kel_prefix, topic, 4);
     save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
-    let replacement = build_replacement(&chain[0].said, &prefix, kind, 1, 3, "replacement");
+    let replacement = build_replacement(&chain[0].said, &prefix, topic, 1, 3, "replacement");
     truncate_and_replace_txn(&repo, &replacement).await;
 
     let (repairs, _) = repo
@@ -440,18 +433,18 @@ async fn test_truncate_and_replace_from_v0() {
     };
 
     let kel_prefix = "Erepair_full_replace_kel________________________";
-    let kind = "kels/v1/test-fullrepl";
+    let topic = "kels/v1/test-fullrepl";
 
     // Save a 3-event chain
-    let chain = build_chain(kel_prefix, kind, 3);
+    let chain = build_chain(kel_prefix, topic, 3);
     save_batch_txn(&repo, &chain).await;
 
     let prefix = chain[0].prefix;
 
     // Replace the entire chain from v0
     // For v0 replacement, the event needs no previous and must re-derive the prefix
-    let new_chain = build_chain(kel_prefix, kind, 2);
-    // The new chain has the same prefix (deterministic from kel_prefix + kind)
+    let new_chain = build_chain(kel_prefix, topic, 2);
+    // The new chain has the same prefix (deterministic from kel_prefix + topic)
     assert_eq!(new_chain[0].prefix, prefix);
 
     truncate_and_replace_txn(&repo, &new_chain).await;

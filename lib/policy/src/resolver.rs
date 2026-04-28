@@ -6,7 +6,7 @@ use crate::{Policy, error::PolicyError};
 
 /// Trait for resolving nested policy references by SAID.
 #[async_trait]
-pub trait PolicyResolver: Sync {
+pub trait PolicyResolver: Send + Sync {
     async fn resolve_policy(&self, said: &cesr::Digest256) -> Result<Policy, PolicyError>;
 }
 
