@@ -37,6 +37,7 @@ use testcontainers::{
 };
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
 use tokio::{sync::OnceCell, time::sleep};
+use verifiable_storage::SelfAddressed;
 
 const TEST_CONTAINER_LABEL: (&str, &str) = ("kels-test", "true");
 const TEST_TOPIC: &str = "kels/iel/v1/identity/test";
@@ -337,15 +338,9 @@ fn iel_prefix_for(
 /// so without a body-text check a regression on a different rejection path
 /// (storage flake, structural error, anchor failure) would still pass.
 #[track_caller]
-fn assert_err_contains<T: std::fmt::Debug>(
-    resp: &Result<T, kels_core::KelsError>,
-    fragment: &str,
-) {
+fn assert_err_contains<T: std::fmt::Debug>(resp: &Result<T, kels_core::KelsError>, fragment: &str) {
     match resp {
-        Ok(v) => panic!(
-            "expected error containing {:?}, got Ok({:?})",
-            fragment, v
-        ),
+        Ok(v) => panic!("expected error containing {:?}, got Ok({:?})", fragment, v),
         Err(e) => {
             let s = e.to_string();
             assert!(
@@ -877,6 +872,84 @@ async fn duplicate_icp_dedups_idempotently() {
         !second.applied,
         "duplicate Icp must report applied=false (no-op dedup)"
     );
+}
+
+/// X-2 field discipline (`docs/design/iel/events.md` §"Per-Kind Policy Field
+/// Discipline"): `Cnt` must preserve `auth_policy`. The verifier rejects any
+/// change as a hard verification error before the routing layer ever sees the
+/// event. Verifier unit tests cover this in isolation; this test pins the
+/// production rejection path through the live submit handler so a future
+/// refactor that bypasses the verifier (e.g., a fast-path that skips field
+/// discipline) is caught at integration level.
+#[tokio::test]
+#[serial]
+async fn submit_rejects_cnt_with_evolved_auth_policy() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy_a, sad_client) =
+        setup_kel_and_immune_policy(harness, "x2-cnt-auth").await;
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "x2-cnt-auth-b").await;
+
+    // Land normal Icp + Evl with policy_a.
+    let v0 = IdentityEvent::icp(policy_a.said, policy_a.said, TEST_TOPIC).unwrap();
+    let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+    kel_builder.interact(&v0.said).await.unwrap();
+    kel_builder.interact(&v1.said).await.unwrap();
+    let _ = sad_client
+        .submit_identity_events(&[v0.clone(), v1.clone()])
+        .await
+        .expect("baseline Icp + Evl must land");
+
+    // Hand-construct a Cnt that evolves `auth_policy` to policy_b. Re-derive
+    // SAID after tampering so SAID verification passes; anchor it under
+    // policy_a so governance check passes — the rejection must come from the
+    // field-discipline check, not the policy gate.
+    let mut tampered_cnt = IdentityEvent::cnt(&v1).unwrap();
+    tampered_cnt.auth_policy = policy_b.said;
+    tampered_cnt
+        .derive_said()
+        .expect("re-derive Cnt SAID after tampering");
+    kel_builder.interact(&tampered_cnt.said).await.unwrap();
+
+    let resp = sad_client.submit_identity_events(&[tampered_cnt]).await;
+    // Verifier emits "IEL kels/iel/v1/events/cnt event <said> must preserve
+    // auth_policy (got <new>, expected <orig>)".
+    assert_err_contains(&resp, "must preserve auth_policy");
+}
+
+/// Paired with `submit_rejects_cnt_with_evolved_auth_policy` for the
+/// `governance_policy` field on `Dec`. Same X-2 rule, terminal kind.
+#[tokio::test]
+#[serial]
+async fn submit_rejects_dec_with_evolved_governance_policy() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy_a, sad_client) =
+        setup_kel_and_immune_policy(harness, "x2-dec-gov").await;
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "x2-dec-gov-b").await;
+
+    let v0 = IdentityEvent::icp(policy_a.said, policy_a.said, TEST_TOPIC).unwrap();
+    let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+    kel_builder.interact(&v0.said).await.unwrap();
+    kel_builder.interact(&v1.said).await.unwrap();
+    let _ = sad_client
+        .submit_identity_events(&[v0.clone(), v1.clone()])
+        .await
+        .expect("baseline Icp + Evl must land");
+
+    let mut tampered_dec = IdentityEvent::dec(&v1).unwrap();
+    tampered_dec.governance_policy = policy_b.said;
+    tampered_dec
+        .derive_said()
+        .expect("re-derive Dec SAID after tampering");
+    kel_builder.interact(&tampered_dec.said).await.unwrap();
+
+    let resp = sad_client.submit_identity_events(&[tampered_dec]).await;
+    assert_err_contains(&resp, "must preserve governance_policy");
 }
 
 // ==================== Helper: upload immune policy ====================

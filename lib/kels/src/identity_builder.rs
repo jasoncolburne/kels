@@ -667,12 +667,9 @@ mod tests {
         let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
         let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
 
-        let (verification, lower_said) = divergent_v1_verification(
-            &[v0, v1_a.clone(), v1_b.clone()],
-            v1_a.said,
-            v1_b.said,
-        )
-        .await;
+        let (verification, lower_said) =
+            divergent_v1_verification(&[v0, v1_a.clone(), v1_b.clone()], v1_a.said, v1_b.said)
+                .await;
 
         let mut b = IdentityEventBuilder::new(None, None, None);
         b.iel_verification = Some(verification);
@@ -704,12 +701,9 @@ mod tests {
         let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
 
         // Reversed order: v1_b before v1_a.
-        let (verification, lower_said) = divergent_v1_verification(
-            &[v0, v1_b.clone(), v1_a.clone()],
-            v1_a.said,
-            v1_b.said,
-        )
-        .await;
+        let (verification, lower_said) =
+            divergent_v1_verification(&[v0, v1_b.clone(), v1_a.clone()], v1_a.said, v1_b.said)
+                .await;
 
         let mut b = IdentityEventBuilder::new(None, None, None);
         b.iel_verification = Some(verification);
