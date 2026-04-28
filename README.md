@@ -348,6 +348,14 @@ Best to create an issue and discuss, but PRs are welcome if they are positive ad
 - [Repair Workflow](docs/design/sel/repair-workflow.md) — Operator-facing repair workflow
 - [SAD Store](docs/design/sadstore.md) — Replicated self-addressed data store (object store + chains)
 
+#### IEL (Identity Event Log)
+
+- [Per-Kind Reference](docs/design/iel/events.md) — `Icp` / `Evl` / `Cnt` / `Dec`, field rules, chain shapes
+- [Lifecycle](docs/design/iel/event-log.md) — States, divergence-by-`Cnt`-only resolution, evaluation seal, immunity rule
+- [Submit Protocol](docs/design/iel/merge.md) — Submit handler routing (no `Rpr`, no archival)
+- [Verification](docs/design/iel/verification.md) — `IelVerifier` algorithm and per-kind policy field discipline
+- [Reconciliation](docs/design/iel/reconciliation.md) — Multi-node correctness proof matrix
+
 #### Cross-cutting
 
 - [Streaming Verification](docs/design/streaming-verification-architecture.md) — Paginated verification without full chain load

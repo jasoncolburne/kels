@@ -60,12 +60,14 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **SAD Event Log** — append-only, versioned, policy-governed data chain in SADStore. Each event links to the previous via SAID and is authorized by `write_policy`. Governance policy bounds divergence. See `docs/design/sel/events.md`, `docs/design/sel/event-log.md`.
 
+**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); terminal via `Cnt` (contest, the only divergence resolver — IEL has no `Rpr`) or `Dec` (decommission). Every non-`Icp` event is governance-authorized; every introduced/evolved policy must be `immune: true`. Hosted in `services/sadstore/` alongside SE; `iel_events` table, `/api/v1/iel/events*` routes, `iel_updates` Redis channel, `kels/gossip/v1/topics/iel` gossip topic. See `docs/design/iel/events.md`, `docs/design/iel/event-log.md`, `docs/design/iel/verification.md`, `docs/design/iel/merge.md`.
+
 ## Architecture
 
 ### Services
 
 - **kels** — KEL submission and retrieval
-- **sadstore** — content-addressed data store (MinIO + PostgreSQL). See `docs/design/sadstore.md`
+- **sadstore** — content-addressed data store (MinIO + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/sadstore.md`, `docs/design/iel/`
 - **gossip** — KEL/SAD sync between peers (HyParView + PlumTree). See `docs/gossip.md`
 - **registry** — peer lifecycle via OpenRaft. See `docs/registry.md`
 - **identity** — node KEL and signing keys
