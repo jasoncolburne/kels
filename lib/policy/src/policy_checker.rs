@@ -1,21 +1,22 @@
 //! Canonical `PolicyChecker` implementation backed by KEL anchoring.
 //!
-//! Evaluates write_policy satisfaction by checking that the endorsers required
-//! by the policy have anchored the event's SAID in their KELs.
+//! Evaluates policy satisfaction by checking that the endorsers required by
+//! the policy have anchored the queried SAID in their KELs.
 
 use std::sync::Arc;
 
-use kels_core::{KelsError, PagedKelSource, PolicyChecker, SadEvent};
+use kels_core::{KelsError, PagedKelSource, PolicyChecker};
 
 use crate::{evaluate_anchored_policy, resolver::PolicyResolver};
 
 /// `PolicyChecker` backed by `evaluate_anchored_policy`.
 ///
-/// For v0 inception: resolves the event's `write_policy`, checks that
-/// endorsers anchored `event.said` per that policy.
+/// `is_anchored(said, policy)` resolves the policy via the configured resolver
+/// and checks that the endorsers it names anchored `said` in their KELs. The
+/// caller decides which `(said, policy)` pair to evaluate; for chain verifiers
+/// that's typically `(event.said, branch_or_event_policy)`.
 ///
-/// For v1+ advances: resolves `previous_policy`, checks that endorsers
-/// anchored `new_event.said` per the previous policy.
+/// `is_immune(policy)` resolves the policy and reports its immunity flag.
 ///
 /// Owns its dependencies via `Arc` so the checker is `'static` and can be
 /// stashed in `Arc<dyn PolicyChecker + Send + Sync>` on `SadEventBuilder` or
@@ -40,40 +41,28 @@ impl AnchoredPolicyChecker {
 
 #[async_trait::async_trait]
 impl PolicyChecker for AnchoredPolicyChecker {
-    async fn satisfies(
+    async fn is_anchored(
         &self,
-        new_event: &SadEvent,
-        previous_policy: &cesr::Digest256,
+        said: &cesr::Digest256,
+        policy: &cesr::Digest256,
     ) -> Result<bool, KelsError> {
         let policy = self
             .resolver
-            .resolve_policy(previous_policy)
+            .resolve_policy(policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, &new_event.said, &*self.kel_source, &*self.resolver)
-            .await
-        {
+        match evaluate_anchored_policy(&policy, said, &*self.kel_source, &*self.resolver).await {
             Ok(v) => Ok(v.is_satisfied),
             Err(e) => Err(KelsError::VerificationFailed(e.to_string())),
         }
     }
 
-    async fn self_satisfies(&self, event: &SadEvent) -> Result<bool, KelsError> {
-        let write_policy = event.write_policy.as_ref().ok_or_else(|| {
-            KelsError::VerificationFailed(
-                "Icp event missing write_policy — validate_structure should have rejected".into(),
-            )
-        })?;
-        let policy = self
+    async fn is_immune(&self, policy: &cesr::Digest256) -> Result<bool, KelsError> {
+        let resolved = self
             .resolver
-            .resolve_policy(write_policy)
+            .resolve_policy(policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, &event.said, &*self.kel_source, &*self.resolver)
-            .await
-        {
-            Ok(v) => Ok(v.is_satisfied),
-            Err(e) => Err(KelsError::VerificationFailed(e.to_string())),
-        }
+        Ok(resolved.is_immune())
     }
 }

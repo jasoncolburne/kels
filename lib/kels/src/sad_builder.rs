@@ -863,10 +863,14 @@ mod tests {
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
+        async fn is_anchored(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
             Ok(true)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }

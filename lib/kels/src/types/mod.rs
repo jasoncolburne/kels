@@ -5,6 +5,7 @@ mod error;
 mod federation;
 mod gossip;
 mod kel;
+mod policy_checker;
 mod sad;
 mod sync;
 
@@ -13,6 +14,7 @@ pub use error::*;
 pub use federation::*;
 pub use gossip::*;
 pub use kel::*;
+pub use policy_checker::*;
 pub use sad::*;
 pub use sync::*;
 

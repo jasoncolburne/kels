@@ -21,8 +21,9 @@ use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
 use super::event::{SadEvent, SadEventPage, SelVerification};
-use super::verification::{PolicyChecker, SelVerifier};
+use super::verification::SelVerifier;
 use crate::store::SadStore;
+use crate::types::PolicyChecker;
 use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
@@ -514,7 +515,7 @@ async fn send_divergent_sad_events(
 pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
-    checker: Arc<dyn super::verification::PolicyChecker + Send + Sync>,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
     page_size: usize,
     max_pages: usize,
 ) -> Result<SelVerification, KelsError> {

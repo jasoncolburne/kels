@@ -5,42 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use verifiable_storage::{Chained, SelfAddressed};
 
 use super::event::{SadBranchTip, SadEvent, SadEventKind};
-use crate::KelsError;
-
-// ==================== Policy Checker Trait ====================
-
-/// Trait for checking policy satisfaction during chain verification.
-///
-/// `SelVerifier` calls this at each generation:
-/// - v0: `self_satisfies(event)` — the inception must be authorized by its own write_policy
-/// - v1+: `satisfies(event, &branch.tracked_write_policy)` — each advance must be authorized
-///   by the branch's currently-tracked write_policy (seeded by v0, updated when Evl carries
-///   a new write_policy *and* the evolution was authorized). Called unconditionally,
-///   whether or not the policy changed. The returned value also gates whether the verifier
-///   advances branch-state (tracked write_policy, tracked governance_policy, establishment
-///   version, last governance version); a returned `false` freezes all policy-related state
-///   on the branch for this event.
-///
-/// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
-/// calls `evaluate_anchored_policy` to check KEL anchoring).
-#[async_trait::async_trait]
-pub trait PolicyChecker: Send + Sync {
-    /// Check if the advance to `new_event` is authorized by `previous_policy`.
-    ///
-    /// Evaluates `previous_policy` via anchoring — the endorsers required by
-    /// `previous_policy` must have anchored `new_event.said` in their KELs.
-    async fn satisfies(
-        &self,
-        new_event: &SadEvent,
-        previous_policy: &cesr::Digest256,
-    ) -> Result<bool, KelsError>;
-
-    /// Check if v0 inception with this event is authorized.
-    ///
-    /// Evaluates `event.write_policy` via anchoring — endorsers must have
-    /// anchored `event.said` in their KELs.
-    async fn self_satisfies(&self, event: &SadEvent) -> Result<bool, KelsError>;
-}
+use crate::{KelsError, types::PolicyChecker};
 
 // ==================== Incremental Chain Verification ====================
 //
@@ -175,8 +140,14 @@ impl SelVerifier {
             let event = &events[0];
             event.verify_prefix()?;
 
-            // Policy check: v0 must self-satisfy
-            if !self.checker.self_satisfies(event).await? {
+            // Policy check: v0 must be anchored under its own declared write_policy.
+            // validate_structure guarantees Some(write_policy) on Icp.
+            #[allow(clippy::expect_used)]
+            let auth_policy = event
+                .write_policy
+                .as_ref()
+                .expect("Icp event must have write_policy per validate_structure");
+            if !self.checker.is_anchored(&event.said, auth_policy).await? {
                 self.policy_satisfied = false;
             }
 
@@ -264,7 +235,7 @@ impl SelVerifier {
             // `policy_satisfied` flag being checked.
             let write_policy_satisfied = self
                 .checker
-                .satisfies(event, &branch.tracked_write_policy)
+                .is_anchored(&event.said, &branch.tracked_write_policy)
                 .await?;
             if !write_policy_satisfied {
                 self.policy_satisfied = false;
@@ -331,7 +302,7 @@ impl SelVerifier {
                         ))
                     })?;
 
-                    if !self.checker.satisfies(event, tracked).await? {
+                    if !self.checker.is_anchored(&event.said, tracked).await? {
                         return Err(KelsError::VerificationFailed(format!(
                             "SAD event {} governance policy not satisfied",
                             event.said,
@@ -586,10 +557,14 @@ mod tests {
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
+        async fn is_anchored(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
             Ok(true)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
@@ -597,22 +572,15 @@ mod tests {
     struct RejectingChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for RejectingChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
+        async fn is_anchored(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
             Ok(false)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
-        }
-    }
-
-    struct RejectInceptionChecker;
-    #[async_trait::async_trait]
-    impl PolicyChecker for RejectInceptionChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
-            Ok(true)
-        }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
-            Ok(false)
         }
     }
 
@@ -629,14 +597,14 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl PolicyChecker for AcceptEvaluationRejectWriteChecker {
-        async fn satisfies(
+        async fn is_anchored(
             &self,
-            _: &SadEvent,
+            _: &cesr::Digest256,
             policy: &cesr::Digest256,
         ) -> Result<bool, KelsError> {
             Ok(*policy == self.governance_policy)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
@@ -975,28 +943,31 @@ mod tests {
         v1_b.governance_policy = Some(gp_attacker);
         v1_b.increment().unwrap();
 
-        // Checker accepts the wp soft check only for events whose
-        // governance_policy is gp_legit. Est doesn't trigger the governance hard
+        // Checker accepts the wp soft check only for the legitimate Est SAID
+        // (v1_a); v0 and v1_b soft-fail. Est doesn't trigger the governance hard
         // check, so this is the only checker call path exercised per event.
+        // (v0 soft-failing is incidental — the test only asserts post-state, and
+        // the unconditional tracked_write_policy seed at v0 still happens.)
         struct AcceptLegitEstChecker {
-            legit_gp: cesr::Digest256,
+            legit_said: cesr::Digest256,
         }
         #[async_trait::async_trait]
         impl PolicyChecker for AcceptLegitEstChecker {
-            async fn satisfies(
+            async fn is_anchored(
                 &self,
-                event: &SadEvent,
+                said: &cesr::Digest256,
                 _: &cesr::Digest256,
             ) -> Result<bool, KelsError> {
-                Ok(event.governance_policy == Some(self.legit_gp))
+                Ok(*said == self.legit_said)
             }
-            async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
                 Ok(true)
             }
         }
 
-        let checker: Arc<dyn PolicyChecker + Send + Sync> =
-            Arc::new(AcceptLegitEstChecker { legit_gp: gp_legit });
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AcceptLegitEstChecker {
+            legit_said: v1_a.said,
+        });
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier
             .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
@@ -1204,7 +1175,7 @@ mod tests {
         let wp = test_digest(b"write-policy");
         let v0 = create_v0_with_evaluation(wp);
 
-        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectInceptionChecker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker);
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0]).await.unwrap();
         let verification = verifier.finish().await.unwrap();

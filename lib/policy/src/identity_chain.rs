@@ -124,29 +124,36 @@ mod tests {
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
+        async fn is_anchored(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
             Ok(true)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
 
-    /// Accepts the soft wp check for `Est` (so governance_policy can establish)
-    /// but rejects it for every other kind — lets the test build a chain where
-    /// `policy_satisfied()` is false while the governance_policy is still
-    /// established (required after the R6 Est-arm defense-in-depth gate).
-    struct RejectAdvanceChecker;
+    /// Accepts the soft wp check for the legitimate `Est` SAID (so
+    /// governance_policy can establish) but rejects it for every other event.
+    /// Lets the test build a chain where `policy_satisfied()` is false while
+    /// the governance_policy is still established (required after the R6
+    /// Est-arm defense-in-depth gate).
+    struct AcceptOnlySaidChecker {
+        accepted_said: cesr::Digest256,
+    }
     #[async_trait::async_trait]
-    impl PolicyChecker for RejectAdvanceChecker {
-        async fn satisfies(
+    impl PolicyChecker for AcceptOnlySaidChecker {
+        async fn is_anchored(
             &self,
-            event: &SadEvent,
+            said: &cesr::Digest256,
             _: &cesr::Digest256,
         ) -> Result<bool, KelsError> {
-            Ok(event.kind == SadEventKind::Est)
+            Ok(*said == self.accepted_said)
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
@@ -289,14 +296,16 @@ mod tests {
         let policy2 = test_policy("policy-2");
         let v0 = create(&policy1).unwrap();
 
-        // v1: Est establishes governance_policy (RejectAdvanceChecker accepts Est
-        // so the R6 Est-arm gate permits the governance_policy advance).
+        // v1: Est establishes governance_policy (the checker accepts only v1's
+        // SAID, so the R6 Est-arm gate permits the governance_policy advance
+        // here while every other anchoring check soft-fails).
         let mut v1 = v0.clone();
         add_governance_declaration(&mut v1);
         v1.increment().unwrap();
 
-        // v2: Upd that soft-fails the wp check under RejectAdvanceChecker —
-        // this is what makes policy_satisfied() false on the final verification.
+        // v2: Upd that soft-fails the wp check (v2.said is not in the accepted
+        // set) — this is what makes policy_satisfied() false on the final
+        // verification.
         let mut v2 = v1.clone();
         v2.content = Some(cesr::Digest256::blake3_256(b"content"));
         v2.kind = SadEventKind::Upd;
@@ -304,7 +313,9 @@ mod tests {
         v2.governance_policy = None;
         v2.increment().unwrap();
 
-        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectAdvanceChecker);
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AcceptOnlySaidChecker {
+            accepted_said: v1.said,
+        });
         let mut verifier = SelVerifier::new(Some(&v0.prefix), Arc::clone(&checker));
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let verification = verifier.finish().await.unwrap();
