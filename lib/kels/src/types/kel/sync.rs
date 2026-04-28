@@ -343,7 +343,7 @@ impl PagedKelSink for HttpKelSink {
                 KelsError::ServerError(e.to_string(), crate::types::ErrorCode::InternalError)
             })?;
             if err.code == crate::types::ErrorCode::ContestRequired {
-                Err(KelsError::ContestRequired)
+                Err(KelsError::contest_required_kel(err.error))
             } else {
                 Err(KelsError::ServerError(err.error, err.code))
             }

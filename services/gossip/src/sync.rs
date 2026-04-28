@@ -757,7 +757,7 @@ impl SyncHandler {
                     );
                     return Ok(());
                 }
-                Err(KelsError::ContestRequired) => {
+                Err(KelsError::ContestRequired { .. }) => {
                     debug!(
                         "KEL {} requires contest, cannot accept forwarded events from {}",
                         announcement.prefix, kels_url

@@ -872,7 +872,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .has_recovery_revealing_events_since(first_serial)
                 .await?
             {
-                return Err(KelsError::ContestRequired);
+                return Err(KelsError::contest_required_kel("recovery key revealed"));
             }
 
             let first_previous = new_events[0].event.previous.as_ref().ok_or_else(|| {
@@ -1031,7 +1031,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 self.verify_divergent_at(diverged_at).await?;
                 return Ok((KelMergeResult::Contested, Some(diverged_at)));
             } else {
-                return Err(KelsError::ContestRequired);
+                return Err(KelsError::contest_required_kel("recovery key revealed"));
             }
         }
 
@@ -1189,7 +1189,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                 .has_recovery_revealing_events_since(diverged_at)
                 .await?
             {
-                return Err(KelsError::ContestRequired);
+                return Err(KelsError::contest_required_kel("recovery key revealed"));
             }
         } else {
             // Owner has events at the divergence serial.
@@ -1218,7 +1218,7 @@ impl<T: TransactionExecutor> MergeTransaction<T> {
                         .has_recovery_revealing_events_since(diverged_at + 1)
                         .await?)
             {
-                return Err(KelsError::ContestRequired);
+                return Err(KelsError::contest_required_kel("recovery key revealed"));
             }
         }
         Ok(())

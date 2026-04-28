@@ -310,7 +310,7 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
         KelsError::DivergenceDetected { .. } => KelsStatus::DivergenceDetected,
         KelsError::SelDivergent { .. } => KelsStatus::DivergenceDetected,
-        KelsError::ContestRequired => KelsStatus::ContestRequired,
+        KelsError::ContestRequired { .. } => KelsStatus::ContestRequired,
         KelsError::HttpError(_) | KelsError::ServerError(..) => KelsStatus::NetworkError,
         _ => KelsStatus::Error,
     }
@@ -972,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_contest_required() {
-        let err = KelsError::ContestRequired;
+        let err = KelsError::contest_required_kel("test");
         assert_eq!(map_error_to_status(&err), KelsStatus::ContestRequired);
     }
 
