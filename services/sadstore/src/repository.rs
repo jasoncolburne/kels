@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use kels_core::{Custody, SadEvent, SadEventRepair, SelRepairEvent};
+use kels_core::{
+    Custody, IdentityEvent, IdentityEventKind, SadEvent, SadEventRepair, SelRepairEvent,
+};
 use kels_policy::Policy;
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
@@ -809,6 +811,341 @@ impl PolicyRepository {
     }
 }
 
+// ============================================================
+// Identity Event Log (IEL) repository
+// ============================================================
+//
+// Mirrors `SadEventRepository` for the IEL primitive. IEL has no `Rpr`,
+// no archive table, and no `truncate_and_replace`. Divergence is preserved
+// in-place; only `Cnt` resolves it. See `docs/design/iel/event-log.md`.
+
+#[derive(Stored)]
+#[stored(item_type = IdentityEvent, table = "iel_events", chained = true)]
+pub struct IdentityEventRepository {
+    pub pool: PgPool,
+}
+
+impl IdentityEventRepository {
+    /// Insert a batch of events under a caller-managed transaction.
+    ///
+    /// Caller must hold an advisory lock on the IEL prefix.
+    ///
+    /// Behavior mirrors `SadEventRepository::save_batch`:
+    /// - Rejects appends to a divergent chain. The contest path bypasses this
+    ///   method (it inserts `Cnt` directly via `insert_in`) — see Gap 5.
+    /// - On version collision, inserts the single forking event and returns
+    ///   `DivergenceCreated`; remaining events are discarded.
+    /// - Rejects forks at or before the evaluation seal (governance-sealed).
+    pub async fn save_batch<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        events: &[IdentityEvent],
+        last_governance_version: Option<u64>,
+    ) -> Result<SaveBatchResult, StorageError> {
+        if events.is_empty() {
+            return Ok(SaveBatchResult::Accepted { new_count: 0 });
+        }
+
+        let prefix = events[0].prefix;
+
+        // Reject appends to frozen chains (divergent).
+        let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("version")
+            .limit(1);
+        let counts: Vec<i64> = tx.fetch_grouped_count(divergence_query).await?;
+        if counts.first().is_some_and(|&c| c > 1) {
+            return Err(StorageError::StorageError(
+                "Chain is divergent — only Cnt resolves an IEL".to_string(),
+            ));
+        }
+
+        // Dedup: SAIDs already in the chain.
+        let existing_saids: HashSet<cesr::Digest256> = {
+            let saids: Vec<String> = events.iter().map(|e| e.said.to_string()).collect();
+            let query =
+                verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                    .r#in("said", saids);
+            tx.fetch(query)
+                .await?
+                .into_iter()
+                .map(|e: IdentityEvent| e.said)
+                .collect()
+        };
+
+        // Occupied versions for overlap detection.
+        let mut occupied_versions: HashSet<u64> = {
+            let batch_versions: Vec<i64> = events
+                .iter()
+                .map(|e| e.version as i64)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let query = ColumnQuery::new(Self::TABLE_NAME, "version")
+                .eq("prefix", &prefix)
+                .r#in("version", batch_versions);
+            tx.fetch_column_i64(query)
+                .await?
+                .into_iter()
+                .map(|v| v as u64)
+                .collect()
+        };
+
+        let mut count = 0u32;
+        for event in events {
+            if existing_saids.contains(&event.said) {
+                continue;
+            }
+
+            if occupied_versions.contains(&event.version) {
+                if let Some(gp_version) = last_governance_version
+                    && event.version <= gp_version
+                {
+                    return Err(StorageError::StorageError(format!(
+                        "Cannot fork at version {} — sealed by governance evaluation at version {}",
+                        event.version, gp_version,
+                    )));
+                }
+                self.insert_in(tx, event.clone()).await?;
+                count += 1;
+                return Ok(SaveBatchResult::DivergenceCreated {
+                    new_count: count,
+                    diverged_at_version: event.version,
+                });
+            }
+
+            self.insert_in(tx, event.clone()).await?;
+            occupied_versions.insert(event.version);
+            count += 1;
+        }
+
+        Ok(SaveBatchResult::Accepted { new_count: count })
+    }
+
+    /// Insert a single event under a caller-managed transaction without the
+    /// divergent-chain check. Used by the contest path where `Cnt` is the
+    /// only allowed event on a divergent chain. Caller must hold an advisory
+    /// lock on the prefix and must have verified the event is structurally
+    /// valid + governance-authorized.
+    pub async fn insert_event<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        event: &IdentityEvent,
+    ) -> Result<(), StorageError> {
+        self.insert_in(tx, event.clone()).await?;
+        Ok(())
+    }
+
+    /// Lowest version at which more than one event exists for this prefix, or
+    /// `None` if every version is single-rowed. Same shape as
+    /// `SadEventRepository::first_divergent_version`.
+    pub async fn first_divergent_version(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<u64>, StorageError> {
+        let row: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(version) FROM (\
+                SELECT version FROM iel_events \
+                WHERE prefix = $1 \
+                GROUP BY version HAVING COUNT(*) > 1\
+             ) AS divergent_versions",
+        )
+        .bind(prefix.to_string())
+        .fetch_optional(self.pool.inner())
+        .await
+        .map_err(|e| StorageError::StorageError(e.to_string()))?
+        .flatten();
+        Ok(row.map(|v| v as u64))
+    }
+
+    /// Version of the most recent `Evl` event on the chain (the evaluation
+    /// seal). `Cnt` and `Dec` are terminal and do NOT advance the seal.
+    pub async fn last_governance_version<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<u64>, StorageError> {
+        let query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .eq("kind", IdentityEventKind::Evl.as_str())
+                .order_by("version", verifiable_storage::Order::Desc)
+                .limit(1);
+        let events: Vec<IdentityEvent> = tx.fetch(query).await?;
+        Ok(events.first().map(|e| e.version))
+    }
+
+    /// True iff the chain has any `Cnt` event.
+    pub async fn is_contested(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .eq("kind", IdentityEventKind::Cnt.as_str())
+                .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
+    }
+
+    /// True iff the chain has any `Dec` event.
+    pub async fn is_decommissioned(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .eq("kind", IdentityEventKind::Dec.as_str())
+                .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
+    }
+
+    /// True iff any version on this prefix has more than one event.
+    pub async fn is_divergent(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
+        let query = ColumnQuery::new(Self::TABLE_NAME, "*")
+            .filter(Filter::Eq(
+                "prefix".to_string(),
+                Value::String(prefix.to_string()),
+            ))
+            .group_by("version")
+            .limit(1);
+        let counts: Vec<i64> = self.pool.fetch_grouped_count(query).await?;
+        Ok(counts.first().is_some_and(|&c| c > 1))
+    }
+
+    /// True iff an event with the given SAID exists.
+    pub async fn event_exists(&self, said: &cesr::Digest256) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("said", said.as_ref())
+                .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
+    }
+
+    /// Get IEL events for a prefix, ordered
+    /// `(version ASC, kind sort_priority ASC, said ASC)` with optional
+    /// exclusive `since_said` cursor and limit. Same shape as
+    /// `SadEventRepository::get_stored_in`.
+    pub async fn fetch_iel_page<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        prefix: &str,
+        since_said: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<IdentityEvent>, StorageError> {
+        let since_position: Option<(u64, IdentityEventKind, cesr::Digest256)> = if let Some(said) =
+            since_said
+        {
+            let cursor_query =
+                verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                    .eq("said", said)
+                    .limit(1);
+            tx.fetch(cursor_query)
+                .await?
+                .into_iter()
+                .next()
+                .map(|r| (r.version, r.kind, r.said))
+        } else {
+            None
+        };
+
+        let mut query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .order_by("version", verifiable_storage_postgres::Order::Asc)
+                .order_by_case(
+                    "kind",
+                    &IdentityEventKind::sort_priority_mapping(),
+                    verifiable_storage_postgres::Order::Asc,
+                )
+                .order_by("said", verifiable_storage_postgres::Order::Asc);
+
+        if let Some((version, _, _)) = &since_position {
+            query = query.gte("version", *version);
+        }
+
+        if let Some(limit) = limit {
+            let fetch_limit = if since_position.is_some() {
+                limit + 2
+            } else {
+                limit
+            };
+            query = query.limit(fetch_limit);
+        }
+
+        let mut events: Vec<IdentityEvent> = tx.fetch(query).await?;
+
+        if let Some((version, kind, said)) = &since_position {
+            let skipped = events.len();
+            let since_priority = kind.sort_priority();
+            events.retain(|e| {
+                let e_priority = e.kind.sort_priority();
+                e.version > *version
+                    || (e.version == *version && e_priority > since_priority)
+                    || (e.version == *version && e_priority == since_priority && e.said > *said)
+            });
+            let skipped = skipped - events.len();
+            if skipped > 2 {
+                return Err(StorageError::StorageError(format!(
+                    "IEL chain integrity violation: {} events skipped at version {} for prefix {} — possible DB tampering",
+                    skipped, version, prefix
+                )));
+            }
+
+            if let Some(limit) = limit {
+                events.truncate(limit as usize);
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Get the effective SAID for an IEL prefix.
+    ///
+    /// - Decommissioned → the `Dec` event's SAID (mirrors KEL `dec` shape).
+    /// - Contested → `hash_effective_said("contested:{prefix}")`.
+    /// - Divergent (non-terminal) → `hash_effective_said("divergent:{prefix}")`.
+    /// - Linear → tip event SAID.
+    /// - Empty → `None`.
+    pub async fn effective_said(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(cesr::Digest256, bool)>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        // Decommissioned takes precedence: the Dec event itself is the
+        // effective SAID. (A Dec lands on a non-divergent chain by routing
+        // rule, so we don't need to gate on divergence here.)
+        let dec_query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .eq("kind", IdentityEventKind::Dec.as_str())
+                .order_by("version", verifiable_storage::Order::Desc)
+                .limit(1);
+        let dec: Vec<IdentityEvent> = self.pool.fetch(dec_query).await?;
+        if let Some(dec_event) = dec.first() {
+            return Ok(Some((dec_event.said, false)));
+        }
+
+        if self.is_contested(prefix).await? {
+            let said = kels_core::hash_effective_said(&format!("contested:{}", prefix));
+            return Ok(Some((said, true)));
+        }
+
+        if self.is_divergent(prefix).await? {
+            let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix));
+            return Ok(Some((said, true)));
+        }
+
+        let latest = self.get_latest(prefix).await?;
+        Ok(latest.map(|e| (e.said, false)))
+    }
+}
+
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct SadStoreRepository {
@@ -816,4 +1153,5 @@ pub struct SadStoreRepository {
     pub sad_objects: SadObjectIndex,
     pub custodies: CustodyRepository,
     pub policies: PolicyRepository,
+    pub iel_events: IdentityEventRepository,
 }
