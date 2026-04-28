@@ -843,42 +843,39 @@ async fn submit_evl_at_sealed_version_returns_contest_required() {
     assert_err_contains(&resp, "seal");
 }
 
+/// Pin that re-submitting the same Icp is an idempotent no-op (server dedups
+/// by SAID rather than rejecting the second batch).
+///
+/// The actual v0-divergence rule (two distinct SAIDs at v=0 for the same
+/// prefix is rejected) lives in the verifier's first-generation handling and
+/// is covered by `v0_divergence_rejected` in
+/// `lib/kels/src/types/iel/verification.rs` — it has no honest integration
+/// expression because the public `IdentityEvent::icp` constructor pins the
+/// SAID by the (auth, gov, topic) inputs that also pin the prefix.
 #[tokio::test]
 #[serial]
-async fn verifier_rejects_v0_divergence() {
+async fn duplicate_icp_dedups_idempotently() {
     let Some(harness) = get_harness().await else {
         return;
     };
     let (_kel_prefix, mut kel_builder, policy_a, sad_client) =
-        setup_kel_and_immune_policy(harness, "v0-divergence").await;
-    // Two distinct v0 events for the *same* prefix would have to share
-    // (auth_policy, governance_policy, topic). They can't differ in those
-    // inputs without changing prefix. So submitting two distinct Icps with
-    // different inputs creates two DIFFERENT prefixes — that's not v0
-    // divergence on a single chain. The actual v0-divergence shape is a
-    // protocol bug (two distinct SAIDs at v=0 for the same prefix). The
-    // verifier rejects this in its first-generation handling. Cover it by
-    // submitting two Icps with identical (auth, gov, topic) but different
-    // SAIDs — impossible by construction without bypassing `IdentityEvent::icp`.
-    //
-    // Instead, exercise the invariant indirectly: the server's submit_handler
-    // dedups by SAID (so two submissions of the SAME Icp succeed) and the
-    // verifier on the local side rejects any v0-divergent chain. There's no
-    // honest way to construct such a state via the public API. This test
-    // pins that submitting the same Icp twice is idempotent — the closest
-    // observable expression of "v0 is special-cased."
+        setup_kel_and_immune_policy(harness, "duplicate-icp-dedup").await;
+
     let v0 = IdentityEvent::icp(policy_a.said, policy_a.said, TEST_TOPIC).unwrap();
     kel_builder.interact(&v0.said).await.unwrap();
-    let _ = sad_client
+    let first = sad_client
         .submit_identity_events(std::slice::from_ref(&v0))
         .await
         .expect("first Icp submit");
-    let resp = sad_client
+    assert!(first.applied, "first Icp must report applied=true");
+
+    let second = sad_client
         .submit_identity_events(std::slice::from_ref(&v0))
-        .await;
+        .await
+        .expect("duplicate Icp submit must succeed (dedup), not create v0 divergence");
     assert!(
-        resp.is_ok(),
-        "duplicate Icp submit must succeed (dedup), not create v0 divergence"
+        !second.applied,
+        "duplicate Icp must report applied=false (no-op dedup)"
     );
 }
 
