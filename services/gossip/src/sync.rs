@@ -22,7 +22,7 @@ use thiserror::Error;
 
 use crate::{
     allowlist::SharedAllowlist,
-    types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement},
+    types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement},
 };
 
 /// Tracks prefix:said pairs recently stored via gossip to prevent feedback loops.
@@ -204,6 +204,72 @@ pub async fn run_sad_redis_subscriber(
     Ok(())
 }
 
+/// Redis pub/sub channel for IEL updates.
+const IEL_PUBSUB_CHANNEL: &str = "iel_updates";
+
+/// Runs the Redis subscriber for IEL updates. The submit handler publishes
+/// `{prefix}:{effective_said}` on this channel; the subscriber broadcasts an
+/// `IelAnnouncement` over the gossip network.
+pub async fn run_iel_redis_subscriber(
+    redis_url: &str,
+    local_kel_prefix: cesr::Digest256,
+    command_tx: mpsc::Sender<GossipCommand>,
+    recently_stored: RecentlyStoredFromGossip,
+) -> Result<(), SyncError> {
+    let client = redis::Client::open(redis_url)?;
+    let mut pubsub = client.get_async_pubsub().await?;
+
+    pubsub.subscribe(IEL_PUBSUB_CHANNEL).await?;
+    info!("Subscribed to Redis channel: {}", IEL_PUBSUB_CHANNEL);
+
+    let mut stream = pubsub.on_message();
+    while let Some(msg) = stream.next().await {
+        let payload: String = match msg.get_payload() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to get IEL Redis message payload: {}", e);
+                continue;
+            }
+        };
+
+        debug!(payload = %payload, "IEL Redis message received");
+
+        // Feedback-loop prevention: same `iel:{prefix}:{said}` key the inbound
+        // handler inserts before forwarding events locally.
+        {
+            let mut guard = recently_stored.write().await;
+            guard.retain(|_, instant| instant.elapsed() < RECENTLY_STORED_TTL);
+            let cache_key = format!("iel:{}", payload);
+            if guard.contains_key(&cache_key) {
+                debug!(cache_key = %cache_key, "Skipping IEL Redis message (recently stored from gossip)");
+                continue;
+            }
+        }
+
+        let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) else {
+            warn!(payload = %payload, "Failed to parse IEL update payload");
+            continue;
+        };
+        let announcement = IelAnnouncement {
+            prefix: ann.prefix,
+            said: ann.said,
+            origin: local_kel_prefix,
+        };
+
+        if command_tx
+            .send(GossipCommand::Iel(announcement))
+            .await
+            .is_err()
+        {
+            error!("Failed to send IEL announce command - channel closed");
+            return Err(SyncError::ChannelClosed);
+        }
+    }
+
+    warn!("IEL Redis subscriber stream ended");
+    Ok(())
+}
+
 /// Redis pub/sub channel for mail updates
 const MAIL_PUBSUB_CHANNEL: &str = "mail_updates";
 
@@ -349,6 +415,9 @@ impl SyncHandler {
                 announcement: message,
             } => {
                 self.handle_sad_announcement(message).await;
+            }
+            GossipEvent::IelAnnouncementReceived { announcement } => {
+                self.handle_iel_announcement(announcement).await;
             }
             GossipEvent::MailAnnouncementReceived { announcement } => {
                 self.handle_mail_announcement(announcement).await;
@@ -568,6 +637,135 @@ impl SyncHandler {
                 warn!(
                     "Failed to replicate SAD Event Log {} from {}: {}",
                     sel_prefix, origin, e
+                );
+            }
+        }
+    }
+
+    /// Handle an IEL gossip announcement — fetch the chain if our local
+    /// effective SAID differs.
+    ///
+    /// Mirrors `handle_sel_announcement` but simpler: IEL has no `Rpr`, so
+    /// the divergence-aware page transfer logic that SE uses isn't needed —
+    /// the IEL submit handler dedupes by SAID, routes terminals (`Cnt`/`Dec`)
+    /// to their own paths, and routes `Evl` batches to `save_batch` (which
+    /// handles overlap-creates-fork). Sending the full chain is safe.
+    async fn handle_iel_announcement(&self, announcement: IelAnnouncement) {
+        let IelAnnouncement {
+            prefix: iel_prefix,
+            said: remote_said,
+            origin,
+        } = announcement;
+
+        let Some(sadstore_url) = self.get_peer_sadstore_url(&origin).await else {
+            debug!("No SADStore URL for IEL origin peer {}", origin);
+            return;
+        };
+
+        let local_client = self.sadstore_client.clone();
+
+        let local_said = match local_client.fetch_iel_effective_said(&iel_prefix).await {
+            Ok(Some((said, _))) => Some(said),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "Failed to get local IEL effective SAID for {}: {}",
+                    iel_prefix, e
+                );
+                None
+            }
+        };
+
+        debug!(
+            iel_prefix = %iel_prefix,
+            remote_said = %remote_said,
+            local_said = ?local_said,
+            origin = %origin,
+            "IEL announcement received"
+        );
+
+        if local_said.as_deref() == Some(remote_said.as_ref()) {
+            debug!("IEL {} already in sync", iel_prefix);
+            return;
+        }
+
+        // Feedback-loop key. The submit handler publishes
+        // `{prefix}:{effective_said}` to `iel_updates`; the Redis subscriber
+        // checks `iel:{prefix}:{said}` against this cache.
+        let cache_key = format!("iel:{}:{}", iel_prefix, remote_said);
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
+
+        let remote_client = match kels_core::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build HTTP client for IEL sync: {}", e);
+                return;
+            }
+        };
+
+        // Delta from our local tip when both sides agree on a real event SAID;
+        // otherwise pull the full chain (the local submit handler will route
+        // any terminal events correctly).
+        let remote_is_real_event = local_client
+            .identity_event_exists(&remote_said)
+            .await
+            .unwrap_or(false);
+        let since_digest = if !remote_is_real_event {
+            None
+        } else {
+            local_said
+                .as_deref()
+                .and_then(|s| match cesr::Digest256::from_qb64(s) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        warn!("Failed to parse local IEL SAID for delta sync {}: {}", s, e);
+                        None
+                    }
+                })
+        };
+
+        let source = match remote_client.as_iel_source() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP IEL source: {}", e);
+                return;
+            }
+        };
+        let sink = match local_client.as_iel_sink() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to build HTTP IEL sink: {}", e);
+                return;
+            }
+        };
+
+        debug!(
+            iel_prefix = %iel_prefix,
+            since = ?since_digest,
+            "Fetching IEL from peer"
+        );
+
+        match kels_core::forward_identity_events(
+            &iel_prefix,
+            &source,
+            &sink,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            since_digest.as_ref(),
+        )
+        .await
+        {
+            Ok(()) => {
+                debug!(iel_prefix = %iel_prefix, "IEL replicated successfully");
+            }
+            Err(e) => {
+                self.recently_stored.write().await.remove(&cache_key);
+                warn!(
+                    "Failed to replicate IEL {} from {}: {}",
+                    iel_prefix, origin, e
                 );
             }
         }

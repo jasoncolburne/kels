@@ -37,6 +37,14 @@ pub trait PagedIelSource: Send + Sync {
     ) -> Result<(Vec<IdentityEvent>, bool), KelsError>;
 }
 
+/// Destination for a batch of Identity Event Log events. The HTTP impl posts
+/// to the IEL submit endpoint; the local-store impl writes through to an
+/// `IdentityStore`. Mirrors `PagedSadSink` for SE.
+#[async_trait]
+pub trait PagedIelSink: Send + Sync {
+    async fn store_page(&self, events: &[IdentityEvent]) -> Result<(), KelsError>;
+}
+
 // ==================== Owner-local Page Loader ====================
 
 /// Trait for loading offset-paginated IEL events for a given chain prefix.
@@ -122,6 +130,92 @@ impl PagedIelSource for HttpIelSource {
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
+}
+
+// ==================== HTTP Sink ====================
+
+/// HTTP-backed `PagedIelSink`. POSTs each page to the IEL submit endpoint
+/// (`/api/v1/iel/events`). Mirrors `HttpSadSink`.
+pub struct HttpIelSink {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpIelSink {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
+        })
+    }
+}
+
+#[async_trait]
+impl PagedIelSink for HttpIelSink {
+    async fn store_page(&self, events: &[IdentityEvent]) -> Result<(), KelsError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let url = format!("{}/api/v1/iel/events", self.base_url);
+        let resp = self.client.post(&url).json(events).send().await?;
+
+        if resp.status().is_success() {
+            // Drain the body to honor `SubmitIdentityEventsResponse`'s `#[must_use]`.
+            // Forwarding/sync isn't owner-driven, so the divergence/applied
+            // signals aren't actionable here — owner submission goes through
+            // `SadStoreClient::submit_identity_events`, which surfaces the response.
+            let _ = resp
+                .json::<crate::types::SubmitIdentityEventsResponse>()
+                .await;
+            Ok(())
+        } else if resp.status() == reqwest::StatusCode::CONFLICT
+            || resp.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            // Chain already terminal or divergent on remote — gossip pulls are
+            // best-effort; skip rather than fail. The submit handler's routing
+            // is the authority on what's accepted.
+            Ok(())
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+}
+
+/// Forward a remote IEL chain into a local sink, paged. Mirrors
+/// `forward_sad_events` but without the divergence-aware held-back logic
+/// (IEL has no `Rpr`; the server's submit handler routes each batch — Cnt on
+/// divergent goes to contest, non-Cnt batch on divergent gets `ContestRequired`).
+pub async fn forward_identity_events(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedIelSource + Sync),
+    sink: &(dyn PagedIelSink + Sync),
+    page_size: usize,
+    max_pages: usize,
+    since: Option<&cesr::Digest256>,
+) -> Result<(), KelsError> {
+    let mut current_since = since.copied();
+    for _ in 0..max_pages {
+        let (events, has_more) = source
+            .fetch_page(prefix, current_since.as_ref(), page_size)
+            .await?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        sink.store_page(&events).await?;
+        if !has_more {
+            return Ok(());
+        }
+        current_since = events.last().map(|e| e.said);
+    }
+    Err(KelsError::InvalidIel(format!(
+        "IEL forward exceeded max_pages limit ({}) for {}",
+        max_pages, prefix,
+    )))
 }
 
 // ==================== Verification Helpers ====================

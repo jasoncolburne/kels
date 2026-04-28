@@ -432,6 +432,11 @@ impl SadStoreClient {
         crate::HttpIelSource::new(&self.base_url)
     }
 
+    /// Construct an `HttpIelSink` for posting IEL event batches to this server.
+    pub fn as_iel_sink(&self) -> Result<crate::HttpIelSink, KelsError> {
+        crate::HttpIelSink::new(&self.base_url)
+    }
+
     /// Submit an IEL event batch.
     pub async fn submit_identity_events(
         &self,
