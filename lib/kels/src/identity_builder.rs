@@ -629,4 +629,97 @@ mod tests {
             .expect_err("expected terminal-state rejection");
         assert!(matches!(err, KelsError::InvalidIel(_)));
     }
+
+    /// Build an `IelVerification` for a divergent chain at v=1 by running the
+    /// real `IelVerifier` over `[v0, v1_a, v1_b]` (any order — the verifier
+    /// sorts branches by tip SAID at `finish`, which is the load-bearing
+    /// invariant `choose_terminal_anchor` relies on). Returns the verification
+    /// plus the lower-SAID branch tip for the assertion.
+    async fn divergent_v1_verification(
+        events: &[IdentityEvent],
+        v1_a_said: cesr::Digest256,
+        v1_b_said: cesr::Digest256,
+    ) -> (IelVerification, cesr::Digest256) {
+        let prefix = events[0].prefix;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AlwaysPassChecker);
+        let mut verifier = IelVerifier::new(Some(&prefix), checker);
+        verifier.verify_page(events).await.unwrap();
+        let verification = verifier.finish().await.unwrap();
+        assert!(
+            verification.is_divergent(),
+            "fixture must produce a divergent chain"
+        );
+        let lower = std::cmp::min(v1_a_said, v1_b_said);
+        (verification, lower)
+    }
+
+    /// `contest()` on a divergent chain MUST extend the lower-SAID branch tip
+    /// — the rule is load-bearing for federation convergence on contested
+    /// state (`docs/design/iel/event-log.md` §"Choosing a branch tip"). Without
+    /// it, two builders running on different nodes could stage `Cnt` events
+    /// against different branches and split-brain on the contested state.
+    #[tokio::test]
+    async fn contest_on_divergent_chain_extends_lower_said_branch() {
+        let auth_a = test_digest(b"auth-1");
+        let auth_b = test_digest(b"auth-2");
+        let gov = test_digest(b"gov");
+        let v0 = IdentityEvent::icp(auth_a, gov, TEST_TOPIC).unwrap();
+        let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
+
+        let (verification, lower_said) = divergent_v1_verification(
+            &[v0, v1_a.clone(), v1_b.clone()],
+            v1_a.said,
+            v1_b.said,
+        )
+        .await;
+
+        let mut b = IdentityEventBuilder::new(None, None, None);
+        b.iel_verification = Some(verification);
+
+        let cnt_said = b.contest().await.unwrap();
+        let cnt = b.pending_events().last().unwrap();
+        assert_eq!(cnt.kind, IdentityEventKind::Cnt);
+        assert_eq!(cnt.said, cnt_said);
+        assert_eq!(cnt.version, 2);
+        assert_eq!(
+            cnt.previous,
+            Some(lower_said),
+            "Cnt must extend the lower-SAID branch tip on a divergent chain"
+        );
+    }
+
+    /// Paired with `contest_on_divergent_chain_extends_lower_said_branch`:
+    /// feeds the same divergent generation to the verifier in reversed order.
+    /// `IelVerifier::finish` sorts branches by tip SAID, so the choice must be
+    /// invariant under input-vec order — pins that the rule is about SAID
+    /// ordering, not "first event seen wins".
+    #[tokio::test]
+    async fn contest_on_divergent_chain_lower_said_invariant_to_input_order() {
+        let auth_a = test_digest(b"auth-1");
+        let auth_b = test_digest(b"auth-2");
+        let gov = test_digest(b"gov");
+        let v0 = IdentityEvent::icp(auth_a, gov, TEST_TOPIC).unwrap();
+        let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
+
+        // Reversed order: v1_b before v1_a.
+        let (verification, lower_said) = divergent_v1_verification(
+            &[v0, v1_b.clone(), v1_a.clone()],
+            v1_a.said,
+            v1_b.said,
+        )
+        .await;
+
+        let mut b = IdentityEventBuilder::new(None, None, None);
+        b.iel_verification = Some(verification);
+
+        b.contest().await.unwrap();
+        let cnt = b.pending_events().last().unwrap();
+        assert_eq!(
+            cnt.previous,
+            Some(lower_said),
+            "Cnt previous must be lower SAID regardless of input order"
+        );
+    }
 }
