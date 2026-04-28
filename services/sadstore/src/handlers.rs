@@ -1923,6 +1923,37 @@ pub async fn submit_identity_events(
                 .into_response();
         }
 
+        // Snapshot pre-batch chain state BEFORE running the verifier. The
+        // verifier sees `existing + new_events` and would mark the chain
+        // divergent if the new batch creates a fork (overlap-creates-fork is
+        // a *normal* path, not divergent-rejection). The design's
+        // "divergent → ContestRequired" rule applies to chains that were
+        // *already* divergent before this batch, not to batches that create
+        // divergence. Same shape for the seal: the post-finish seal includes
+        // the new batch's Evls and would self-trigger the algorithmic
+        // ContestRequired check.
+        let pre_batch_seal = match state
+            .repo
+            .iel_events
+            .last_governance_version(&mut tx, iel_prefix)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query IEL pre-batch seal: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        let pre_batch_divergent = match state.repo.iel_events.is_divergent(iel_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query IEL pre-batch divergence: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+
         // Build verifier; verify the existing chain + the new batch. The
         // verifier surfaces immunity violations, Cnt/Dec policy preservation,
         // Icp self-anchoring (soft), and Evl/Cnt/Dec governance anchoring.
@@ -1975,8 +2006,13 @@ pub async fn submit_identity_events(
         // (algorithmic). Otherwise normal append (overlap creates fork).
         let is_contest = new_events.iter().any(|e| e.kind.is_contest());
         let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
-        let chain_divergent = verification.is_divergent();
-        let last_gp_version = verification.last_governance_version();
+        // Use the pre-batch divergence + seal state for routing, not the
+        // post-finish view: the verifier processes existing + new events
+        // together, so a batch that *creates* a fork (overlap, valid) shows
+        // up as divergent post-finish, but the design routes it via
+        // save_batch's overlap-creates-fork path, not divergent-rejection.
+        let chain_divergent = pre_batch_divergent;
+        let last_gp_version = pre_batch_seal;
 
         if is_contest {
             for event in &new_events {

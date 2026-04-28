@@ -263,44 +263,17 @@ impl IdentityEventBuilder {
             }
         }
 
-        // Terminal events alter chain state in ways the incremental absorb
-        // can't reflect (e.g., is_contested / is_decommissioned). Rehydrate
-        // from the local store post-flush. Mirrors SE's `was_repair` rehydrate.
-        let was_terminal = self.pending_events.iter().any(|e| e.kind.is_terminal());
+        // Absorb pending into the verified state. Unlike SE, IEL has no Rpr
+        // and no archival — terminal events (`Cnt` / `Dec`) just extend the
+        // chain. The verifier's resume + verify_page path correctly sets
+        // `is_contested` / `is_decommissioned` via flush_generation, so no
+        // special terminal rehydrate is needed.
+        self.absorb_pending().await?;
 
-        if was_terminal {
-            #[allow(clippy::expect_used)]
-            let prefix = *self
-                .prefix()
-                .expect("terminal flush has prefix from pending or verification");
-            #[allow(clippy::expect_used)]
-            let checker = Arc::clone(self.checker.as_ref().expect(
-                "terminal flush requires a PolicyChecker (validated at flush entry by absorb_pending)",
-            ));
-            #[allow(clippy::expect_used)]
-            let store = self
-                .iel_store
-                .as_ref()
-                .expect("terminal flush requires iel_store (validated at flush entry)");
-            let mut loader = crate::IdentityStorePageLoader::new(store.as_ref());
-            let fresh = crate::iel_completed_verification(
-                &mut loader,
-                &prefix,
-                checker,
-                crate::page_size(),
-                crate::max_pages(),
-            )
-            .await?;
-            self.iel_verification = Some(fresh);
-            self.pending_events.clear();
-        } else {
-            self.absorb_pending().await?;
-
-            if let Some(at) = response.diverged_at
-                && let Some(v) = self.iel_verification.as_mut()
-            {
-                v.set_diverged_at_version(at);
-            }
+        if let Some(at) = response.diverged_at
+            && let Some(v) = self.iel_verification.as_mut()
+        {
+            v.set_diverged_at_version(at);
         }
 
         Ok(FlushIdentityOutcome {

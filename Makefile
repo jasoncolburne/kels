@@ -129,11 +129,15 @@ lint-terminology:
 #   make test TEST_ARGS="-p kels-core"               # run one package
 #   make test TEST_ARGS="some_test_name"             # filter by name
 # When unset, runs the full workspace suite as before.
+#
+# Optional RUST_LOG passthrough for tracing output (use with test-verbose):
+#   make test-verbose TEST_ARGS="--test foo" RUST_LOG=debug
+#   make test-verbose TEST_ARGS="--test foo" RUST_LOG="info,kels_sadstore=debug"
 test:
 	cargo test --workspace --all-features $(TEST_ARGS)
 
 test-verbose:
-	cargo test --workspace --all-features $(TEST_ARGS) -- --nocapture
+	RUST_LOG="$(RUST_LOG)" cargo test --workspace --all-features $(TEST_ARGS) -- --nocapture
 
 # Files excluded from coverage (can't be meaningfully unit tested):
 # - Binary mains (main.rs, admin.rs) - entry points only
