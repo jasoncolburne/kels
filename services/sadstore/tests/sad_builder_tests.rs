@@ -1167,8 +1167,6 @@ async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
-    kel_builder.interact(&icp_said).await.unwrap();
-    kel_builder.interact(&est_said).await.unwrap();
 
     // v2..v62 — 61 Upds. After v1 (Est, counter=1) + 61 Upds, counter=62.
     // Adding the 62nd Upd would put counter at 63 (the bound) and the next
@@ -1193,11 +1191,10 @@ async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
     let v64_said = builder.update(v64_content).unwrap();
     staged_saids.push(v64_said);
 
-    // Anchor every staged event in the KEL before flushing the SEL.
-    // Skip the first two (already anchored above).
-    for said in &staged_saids[2..] {
-        kel_builder.interact(said).await.unwrap();
-    }
+    // Anchor every staged event in the KEL before flushing the SEL. Two
+    // chunked submissions (page_size = 64 — 65 anchors plus one auto-ror
+    // splits across two batches) instead of 65 sequential interacts.
+    kel_builder.interact_batch(&staged_saids).await.unwrap();
 
     let outcome = builder.flush().await.expect("long-chain flush succeeds");
     assert!(outcome.applied, "all 65 events committed server-side");

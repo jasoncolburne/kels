@@ -298,6 +298,98 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
         Ok(signed_event)
     }
 
+    /// Batched form of [`interact`]: signs ixns for all `anchors` (auto-inserting
+    /// proactive rors as the non-revealing-event budget requires) and submits
+    /// them in `ceil(N / ~page_size)` round trips instead of one per anchor.
+    /// Returns every event that was appended (ixns plus auto-inserted rors), in
+    /// order.
+    ///
+    /// Chunks are sized so each `add_and_flush` submits at most
+    /// [`crate::page_size`] events; the next anchor opens a new chunk if adding
+    /// it (and a possible ror) would exceed that limit.
+    pub async fn interact_batch(
+        &mut self,
+        anchors: &[cesr::Digest256],
+    ) -> Result<Vec<SignedKeyEvent>, KelsError> {
+        if self.is_decommissioned() {
+            return Err(KelsError::KelDecommissioned);
+        }
+        if anchors.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let page_size = crate::page_size();
+        let mut all_events: Vec<SignedKeyEvent> = Vec::with_capacity(anchors.len() + 4);
+        let mut idx = 0;
+
+        while idx < anchors.len() {
+            // Re-read state at the top of each chunk: a prior `add_and_flush`
+            // absorbed pending into `kel_verification`, so the count source
+            // shifts. Mirrors `needs_proactive_ror`.
+            let confirmed_count = self
+                .kel_verification
+                .as_ref()
+                .map(|v| v.events_since_last_revealing())
+                .unwrap_or(0);
+            let pending_non_revealing = self
+                .pending_events
+                .iter()
+                .rev()
+                .take_while(|e| !e.event.reveals_recovery_key())
+                .count();
+            let mut events_since_revealing = confirmed_count + pending_non_revealing;
+
+            let mut last_event = self.get_owner_tail().await?.event.clone();
+            let mut chunk: Vec<SignedKeyEvent> = Vec::with_capacity(page_size);
+
+            while idx < anchors.len() {
+                let needs_ror = events_since_revealing >= crate::MAX_NON_REVEALING_EVENTS;
+                let needed = if needs_ror { 2 } else { 1 };
+                if chunk.len() + needed > page_size {
+                    break;
+                }
+
+                if needs_ror {
+                    let signed_ror = match self
+                        .create_signed_recovery_rotation_event(&last_event)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.key_provider.rollback().await?;
+                            return Err(e);
+                        }
+                    };
+                    last_event = signed_ror.event.clone();
+                    chunk.push(signed_ror);
+                    events_since_revealing = 1;
+                }
+
+                let signed_ixn = match self
+                    .create_signed_interaction_event(&last_event, &anchors[idx])
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if self.key_provider.has_staged().await {
+                            self.key_provider.rollback().await?;
+                        }
+                        return Err(e);
+                    }
+                };
+                last_event = signed_ixn.event.clone();
+                chunk.push(signed_ixn);
+                events_since_revealing += 1;
+                idx += 1;
+            }
+
+            self.add_and_flush(&chunk).await?;
+            all_events.extend(chunk);
+        }
+
+        Ok(all_events)
+    }
+
     pub async fn rotate(&mut self) -> Result<SignedKeyEvent, KelsError> {
         if self.is_decommissioned() {
             return Err(KelsError::KelDecommissioned);

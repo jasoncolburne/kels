@@ -13,6 +13,10 @@ ignore = [
     # rand 0.8 pulled in transitively by sqlx-postgres; we don't use ThreadRng.
     # Remove when sqlx upgrades past rand 0.8.
     "RUSTSEC-2026-0097",
+    # PAX Header Desynchronization in astral-tokio-tar by testcontainers; test only.
+    "RUSTSEC-2026-0112",
+    # `unpack_in` can chmod arbitrary directories by following symlinks by testcontainers; test only.
+    "RUSTSEC-2026-0113",
 ]
 
 [licenses]

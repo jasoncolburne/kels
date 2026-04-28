@@ -134,7 +134,7 @@ lint-terminology:
 #   make test-verbose TEST_ARGS="--test foo" RUST_LOG=debug
 #   make test-verbose TEST_ARGS="--test foo" RUST_LOG="info,kels_sadstore=debug"
 test:
-	cargo test --workspace --all-features $(TEST_ARGS)
+	cargo test --workspace --release --all-features $(TEST_ARGS)
 
 test-verbose:
 	RUST_LOG="$(RUST_LOG)" cargo test --workspace --all-features $(TEST_ARGS) -- --nocapture
