@@ -10,5 +10,7 @@
 //! Design: `docs/design/iel/{events,event-log,verification,merge,reconciliation}.md`.
 
 mod event;
+mod verification;
 
 pub use event::*;
+pub use verification::*;
