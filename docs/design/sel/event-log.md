@@ -149,7 +149,7 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
 ### Builder
 
 `SadEventBuilder::contest()`:
-- Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification).
+- Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification). KEL's parallel helper is named `verify_server_chain_pre_repair` (`lib/kels/src/builder.rs:521`); same role, different name. The `_action` suffix is more general (covers contest/decommission/repair); rename of KEL's helper is a candidate for round 13's KEL pending-bundling work.
 - Bundles pending events into the batch.
 - Builds `Cnt` extending the last bundled event (pending tail, or verified tip if pending empty); submits `[pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.

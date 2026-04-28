@@ -81,24 +81,16 @@ The same rules apply across all ingestion paths. KELS data is path-agnostic: an 
 
 For an SE event at v1+:
 - `identity_event` references an IEL event in the IEL's authentic chain (`prefix == SE.identity`).
-- That IEL event declared (`Icp`) or evolved (`Sea`) the relevant policy — `auth_policy` for `Upd`; `governance_policy` for `Sea`/`Rpr`/`Cnt`/`Dec`.
-- The IEL is not divergent at the bound event's branch.
+- That IEL event resolves to a tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`) via the IEL's branch state at that event.
+- **The bound IEL event is acceptable iff** (a) the IEL is non-divergent, OR (b) the IEL is divergent AND `bound_event.version < first_divergent_version` (the bound event lives in the pre-divergence shared portion of the chain, which both branches agree on). A bound IEL event whose version is at-or-after the IEL's `first_divergent_version` is rejected with `IelDivergent` because the IEL doesn't have a single authoritative state at that point.
 - SE.said is anchored under the resolved policy.
 - **Monotonic on SE chain**: `identity_event` is at-or-after the SE chain's prior `last_identity_event` in IEL chain order. The chain ratchets forward; no rebinding to stale IEL events.
 
 Past SE events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchor (KEL ixn) is timeless.
 
-#### What monotonicity blocks and what it doesn't
+#### Monotonicity gaps and consumer-side discipline
 
-Monotonic-on-SE-chain prevents an adversary from "rolling back" the chain — once the chain is bound to IEL_v5, no new event can bind to anything earlier. On actively-maintained chains, the legitimate operator's recent events have ratcheted `last_identity_event` to a recent IEL state; an adversary with stale (revoked-since) authority cannot insert new events bound to their old IEL state.
-
-Monotonic does NOT prevent:
-- **Brand-new chain races.** Before `last_identity_event` is set, an adversary can submit `[Icp, Upd_stale]` first and establish the chain with stale binding. Recovery: legitimate operator's next Upd (with current binding) lands at v2 and ratchets `last_identity_event` forward; subsequent stale-bound events are rejected. Adversary's stale v1 event remains in chain history but is buried by subsequent Upds (consumer-side reads "latest content").
-- **Stale governance termination.** An adversary with stale governance authority can submit `Cnt` or `Dec` if the chain hasn't been bound past their stale event. Mitigation: **operator discipline** — after IEL evolves governance, owner submits a `Sea` on each dependent SE chain to ratchet `last_identity_event` forward to the current IEL event. After ratchet, stale-bound `Cnt`/`Dec` fail monotonic and are rejected. The vulnerable window is "between IEL governance evolution and the SE Sea ratchets" — bounded by gossip latency plus operator reaction time.
-
-#### Consumer-side discipline
-
-A consumer reading the SE chain can detect stale-bound events by checking whether the bound IEL event's declared policy is still IEL's currently-tracked policy. If not, the SE event was authorized under a now-revoked policy — the consumer can filter, treat with caution, or reject per their use-case rules. The chain mathematics make this visible; no protocol change is required.
+The full analysis of what monotonic-on-SE-chain blocks (and the two scenarios it doesn't — brand-new chain races, stale governance termination), the operator-discipline mitigation (ratchet via `Sea` after IEL governance evolution), and the consumer-side stale-binding detection rule lives in [../iel/event-log.md §What monotonicity blocks (and what it doesn't)](../iel/event-log.md#what-monotonicity-blocks-and-what-it-doesnt) and the surrounding sections. That doc is the canonical home for cross-chain validation prose; this section is a pointer to avoid drift.
 
 ### `content` semantics
 

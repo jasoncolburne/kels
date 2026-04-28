@@ -43,7 +43,7 @@ The `last_recovery_revealing_serial` is the most recent serial at which a `Rec`/
 
 This is an accepted security boundary. Without it, a chain's history could be invalidated retroactively by anyone who later comes to control the revealed key material — making the chain's terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward effect (the recovery key is now spent — future divergent events must be resolved by `Cnt`) applies.
 
-KEL's recovery-revelation seal is the structural analog of SEL's evaluation seal (see [../sel/event-log.md](../sel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
+KEL's recovery-revelation seal is the structural analog of IEL's and SEL's evaluation seal (see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
 
 ## Divergence and Freeze
 

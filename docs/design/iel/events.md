@@ -19,37 +19,47 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 ## Per-Kind Field Rules
 
-`IdentityEvent::validate_structure()` enforces these. The verifier adds chain-state checks on top (e.g., immunity check on every introduced/evolved policy).
+`IdentityEvent::validate_structure()` enforces version and `previous` rules. Per-kind policy-field discipline (carry-forward vs. evolution vs. declaration) is enforced by the **verifier** — not by `validate_structure` — because the discipline depends on chain-state context (the previous event's policy values) which structural validation alone cannot see.
 
-| Kind | version | previous | auth_policy | governance_policy | authorization |
-|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | **required** | **required** | self (auth_policy) |
-| `Evl` | `>= 1` | required | optional | optional | governance |
-| `Cnt` | `>= 1` | required | forbidden | forbidden | governance |
-| `Dec` | `>= 1` | required | forbidden | forbidden | governance |
+| Kind | version | previous | auth_policy | governance_policy | sort_priority | authorization |
+|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (auth_policy) |
+| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved | 1 | governance |
+| `Cnt` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 2 | governance |
+| `Dec` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 3 | governance |
+
+`auth_policy` and `governance_policy` are non-`Option` `Digest256` fields on every `IdentityEvent` — the chain's tracked policy state is always present in every event, never absent. "Preserved" means the field's value must equal the value on the predecessor event; "evolved" means it differs (and the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Declared" applies only at `Icp` where there is no predecessor — the inceptor declares both fields directly.
 
 (No `content` field on any kind. IEL events do not carry content.)
+
+### Per-Kind Policy Field Discipline
+
+Every IEL event carries `auth_policy` and `governance_policy`. The verifier checks the per-kind discipline as part of branch-state validation:
+
+- **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `auth_policy`.
+- **`Evl`**: may carry the same values as the predecessor (no evolution — `Evl` is a pure governance attestation that advances `last_governance_version` without changing tracked policies) OR may carry different values (an evolution; the verifier records the new tracked policies after confirming the new policy is immune and the Evl is anchored under the *previous* tracked governance_policy). Either field can evolve independently.
+- **`Cnt` / `Dec`**: must carry the same values as the predecessor. The verifier rejects any Cnt/Dec whose `auth_policy` or `governance_policy` differs from the predecessor's as a structural-equivalent error (the design's "forbidden field on terminal kinds" rule, enforced at the verifier rather than at `validate_structure` because the predecessor's values are needed to make the comparison).
 
 ### Satisfaction model
 
 The "authorization" column names which policy must be satisfied for the verifier to accept the event:
 
-- **Icp** must satisfy the `auth_policy` it declares. The inceptor proves membership in the policy they're naming by anchoring `Icp.said` under that policy. Identity chains aren't third-party-discoverable, so the prefix derivation `(auth_policy, governance_policy, topic) → prefix` is private to the inceptor — there's no phishing class equivalent to today's SEL Icp gate (which guards against an adversary submitting an Icp on a public `(write_policy, topic)` pair). The anchoring requirement remains as a structural authentication of the inceptor against the policy they declare.
-- **Evl / Cnt / Dec** must satisfy the branch's tracked `governance_policy` — the higher bar. They do NOT separately need to satisfy `auth_policy`: a properly-crafted `governance_policy` should subsume `auth_policy`. See [event-log.md](event-log.md#authorization-asymmetry-vs-kel-cnt) for the rationale, which mirrors today's SEL.
+- **Icp** must satisfy the `auth_policy` it declares. The inceptor proves membership in the policy they're naming by anchoring `Icp.said` under that policy. Identity chains aren't third-party-discoverable, so the prefix derivation `(auth_policy, governance_policy, topic) → prefix` is private to the inceptor — there's no phishing class equivalent to today's SEL Icp gate. The anchoring requirement remains as a structural authentication of the inceptor against the policy they declare.
+- **Evl / Cnt / Dec** must satisfy the branch's tracked `governance_policy` — the higher bar. They do NOT separately need to satisfy `auth_policy`: a properly-crafted `governance_policy` should subsume `auth_policy`. See [event-log.md §Authorization Asymmetry vs. KEL Cnt](event-log.md#authorization-asymmetry-vs-kel-cnt) for the rationale.
 
 ### `auth_policy` semantics
 
-- `Icp`: required as a **field** (seeds the IEL prefix — prefix = Blake3 of v0 template with said+prefix blanked) AND as the **authorization gate** (Icp.said must be anchored under the declared `auth_policy`).
-- `Evl`: optional — present means policy evolution (evaluated against `governance_policy`, the higher bar). Absent means the policy is unchanged across the Evl.
-- `Cnt` / `Dec`: forbidden as a field. (`Cnt` and `Dec` are terminal — there is no "after" on which to evolve.)
+- `Icp`: declared as a **field** (seeds the IEL prefix — prefix = Blake3 of v0 template with said+prefix blanked) AND serves as the **authorization gate** (Icp.said must be anchored under the declared `auth_policy`).
+- `Evl`: present on every event; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`).
+- `Cnt` / `Dec`: present on every event; must be preserved (== previous). Verifier rejects evolution at terminal kinds.
 
-The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever a `Evl` carries a new `auth_policy`. Authorization for an SE event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
+The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SE event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
 
 ### `governance_policy` semantics
 
-- `Icp`: required. Identity chains always declare governance at v0 (no Est dance).
-- `Evl`: optional — present means governance policy evolution (evaluated against the *previous* tracked governance_policy).
-- `Cnt` / `Dec`: forbidden as a field. (Terminal — no "after.")
+- `Icp`: declared. Identity chains always declare governance at v0 (no Est dance).
+- `Evl`: present on every event; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy).
+- `Cnt` / `Dec`: present on every event; must be preserved.
 
 ### Policy immunity requirement
 

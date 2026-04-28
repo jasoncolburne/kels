@@ -148,6 +148,17 @@ The caveat applies to anchors of any kind — IEL events (governance), and trans
 
 Contest is the terminal state for IEL — reachable from divergence (any `Cnt` resolves a divergent chain to contested) or directly from active state (operator chooses to terminate).
 
+### Authorization Asymmetry vs. KEL Cnt
+
+KEL `Cnt` requires **dual signatures** — both signing key (preimage of prior `rotation_hash`) and recovery key (preimage of prior `recovery_hash`). IEL `Cnt` requires only `governance_policy` satisfaction; it does NOT separately require `auth_policy`. The asymmetry is structural, not arbitrary:
+
+- KEL's signing key and recovery key are **independent cryptographic primitives**. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual-signature on terminal events.
+- IEL's `governance_policy` is a **policy** — a composable predicate that can be crafted to be inclusive of `auth_policy`. A properly-designed IEL has `governance_policy` that subsumes `auth_policy` (any party who could satisfy `auth_policy` can also satisfy `governance_policy`, but not vice versa). Hence single-policy gate on terminal events: governance is the higher bar and inclusion of auth is a chain-design property.
+
+If an IEL is misconfigured such that `governance_policy` does NOT subsume `auth_policy` (i.e., a party authorized to write under `auth_policy` cannot terminate under `governance_policy`), that's a chain-design error — not a case the kind structure should defend against. The design assumes the immunity rule plus a sane policy hierarchy; chains that violate that hierarchy are operating outside the supported model.
+
+The symmetry of *intent* — terminal authority assertion — is preserved on both sides. The mechanism differs because the underlying primitives differ. Same logic applies to SEL `Cnt` (see [../sel/events.md](../sel/events.md)).
+
 ### Server semantics
 
 - Verify `Cnt`'s structure, governance authorization.
@@ -160,7 +171,7 @@ Contest is the terminal state for IEL — reachable from divergence (any `Cnt` r
 `IdentityEventBuilder::contest()`:
 - Pre-flight: full chain re-verification.
 - Bundles pending events into the batch (mirrors SEL).
-- Builds `Cnt` extending the appropriate tip (or one of the divergent tips, if divergent).
+- Builds `Cnt` extending the appropriate tip. **On a divergent chain, the builder selects the lower-SAID tip** (deterministic across nodes; the choice is operationally invisible because both branches are preserved post-Cnt regardless). Without this rule, builders on different nodes could pick different tips and produce two distinct `Cnt` events at the same divergent version, doubling the divergence into a "doubly contested" state — avoidable with the deterministic selection.
 
 ### Cascading effect on dependent SE chains
 

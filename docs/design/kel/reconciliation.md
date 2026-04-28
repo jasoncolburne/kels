@@ -70,13 +70,13 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 
 "Normal (owner)" means the sink has the legitimate owner's non-divergent chain. "Normal (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
 
-| Source | Sink: Empty | Sink: Normal (owner) | Sink: Normal (adversary) | Sink: Divergent | Sink: Contested |
-|--------|-------------|---------------------|-------------------------|----------------|----------------|
-| **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` |
-| **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` |
-| **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedKel` |
-| **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ |
-| **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` |
+| Source | Sink: Empty | Sink: Normal (owner) | Sink: Normal (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
+|--------|-------------|---------------------|-------------------------|----------------|----------------|----------------------|
+| **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` | `KelDecommissioned` |
+| **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (divergent, awaiting recovery) | `ContestedKel` | `KelDecommissioned` |
+| **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedKel` | `KelDecommissioned` |
+| **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `KelDecommissioned` (sink dec'd before cnt arrived; sink stays dec'd) |
+| **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` | Effective SAIDs match (Dec.said) ✓ |
 
 ### Effective SAID convergence
 

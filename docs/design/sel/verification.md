@@ -204,32 +204,33 @@ struct SelVerifier {
 
 ### PolicyChecker extension
 
-The `PolicyChecker` trait is extended to support cross-chain resolution:
+The `PolicyChecker` trait (post-Gap-0 shape: `is_anchored(said, policy)` + `is_immune(policy)`, defined in `lib/kels/src/types/policy_checker.rs`) is extended with cross-chain helpers for SE binding resolution:
 
 ```rust
 trait PolicyChecker: Send + Sync {
-    // Existing — anchor-evaluation against a resolved policy
-    async fn evaluate_anchored_policy(&self, policy: &Digest256, said: &Digest256)
+    // Base methods (Gap 0 — defined for KEL/IEL/SEL):
+    async fn is_anchored(&self, said: &Digest256, policy: &Digest256)
+        -> Result<bool, KelsError>;
+    async fn is_immune(&self, policy: &Digest256)
         -> Result<bool, KelsError>;
 
-    // New — fetch and resolve an IEL event by SAID
+    // Cross-chain: fetch a specific IEL event by SAID
     async fn fetch_iel_event(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<IdentityEvent, KelsError>;
 
-    // New — resolve the relevant policy at an IEL event (walking back if the named
-    // event doesn't carry the field, finding the most recent event that did)
+    // Cross-chain: resolve the tracked policy at an IEL event (walks back from
+    // the named event, finding the most recent prior IEL event that established
+    // the relevant policy field — auth_policy or governance_policy)
     async fn resolve_auth_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
-
-    // New — immunity check (still required at SE-side merge for new IEL bindings,
-    // even though the rule lives on IEL — defense in depth and bootstrap)
-    async fn is_immune(&self, policy: &Digest256) -> Result<bool, KelsError>;
 }
 ```
 
-The implementations cache aggressively (one IEL event fetch per binding; immunity flag checked once per policy SAID).
+The SE merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SE-side would be defense-in-depth that drifts. SE trusts the IEL gate. (`is_immune` remains on the trait for IEL's own use — both at IEL submit time and IEL verification time.)
+
+The implementations cache aggressively: one IEL event fetch per binding; tracked-policy resolution memoized per `(identity, iel_event_said, policy_kind)` triple.
 
 ### Paginated Verification Helpers
 

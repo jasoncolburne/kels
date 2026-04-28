@@ -48,7 +48,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Empty** (`[Icp]` alone) | n/a | n/a | n/a | n/a | n/a — rejected as `IncompleteInception` |
 | **Empty** (`[Icp, Upd]` minimum) | Append ✓ if Upd's `identity_event` resolves to bound IEL and anchor satisfies IEL-resolved auth_policy; reject `BadIdentityBinding` otherwise | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (auth_policy gated via IEL) | Append ✓ (governance_policy gated via IEL) | Reject `RepairRequired` if not divergent (or `NothingToRepair` from builder); else discriminator-driven repair ✓ | Append ✓ (only legal when seal-past-version on existing branch — see ContestRequired) | Append ✓ |
-| **Active, sealed** (Upd at version ≤ `last_governance_version`) | `ContestRequired` | n/a (Sea is governance-authorized; bypasses) | n/a | Contest ✓ (extends owner tip; chain becomes Contested) | n/a |
+| **Active, sealed** (Upd at version ≤ `last_governance_version`) | `ContestRequired` | `ContestRequired` (Sea is non-terminal; algorithmic trigger fires for any non-terminal, non-Rpr event at version ≤ seal) | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ (extends owner tip; chain becomes Contested) | Append ✓ (Dec is terminal; algorithmic trigger excludes terminal kinds; chain terminates cleanly) |
 | **Divergent** | Reject `RepairRequired` | Reject `RepairRequired` | Discriminator-driven repair ✓ | Reject `RepairRequired` (no governance-revealing event yet — repair, don't contest) | Reject `RepairRequired` |
 | **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` (seal already advanced; can't repair, must contest) | Contest ✓ | `ContestRequired` |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
@@ -78,13 +78,13 @@ When chain state transitions, the submit handler publishes the new effective SAI
 
 Each cell describes what happens when gossip syncs a chain from a source node (row) to a sink node (column). The source publishes its effective SAID; the sink (if it observes a mismatch) fetches the full chain via HTTP and submits to its local handler.
 
-| Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested |
-|--------|-------------|----------------------|--------------------------|-----------------|-----------------|
-| **Active** | Full chain appended ✓ (incl. mandatory `[Icp, Upd]` opening) | Duplicates, no-op ✓ | Overlap → divergence ✓ | `RepairRequired` | `ContestedSel` |
-| **Repaired** | Full clean chain ✓ | `Rpr` batch detected → discriminator-driven repair ✓ | `Rpr` batch → repair archives sink's adversary chain ✓ | `Rpr` batch → repair ✓ | `ContestedSel` |
-| **Divergent** | Both fork events appended ✓ (chain becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedSel` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ |
-| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `RepairRequired` (until repair lands) | `ContestedSel` |
+| Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
+|--------|-------------|----------------------|--------------------------|-----------------|-----------------|----------------------|
+| **Active** | Full chain appended ✓ (incl. mandatory `[Icp, Upd]` opening) | Duplicates, no-op ✓ | Overlap → divergence ✓ | `RepairRequired` | `ContestedSel` | `DecommissionedSel` |
+| **Repaired** | Full clean chain ✓ | `Rpr` batch detected → discriminator-driven repair ✓ | `Rpr` batch → repair archives sink's adversary chain ✓ | `Rpr` batch → repair ✓ | `ContestedSel` | `DecommissionedSel` |
+| **Divergent** | Both fork events appended ✓ (chain becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedSel` | `DecommissionedSel` |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `DecommissionedSel` (sink Dec'd first; gossip Cnt rejected) |
+| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `RepairRequired` (until repair lands) | `ContestedSel` | Effective SAIDs match (Dec.said) ✓ |
 
 The matrix is smaller than KEL's because SEL's gossip layer doesn't reorder — full-chain fetch always converges. There is no `send_divergent_events` analogue.
 

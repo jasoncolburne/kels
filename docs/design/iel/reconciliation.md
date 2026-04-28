@@ -38,7 +38,7 @@ What happens when a client submits events to the submit handler on a single node
 |-----------|-----|-----|-------------------|-----|
 | **Empty** | Append ✓ if `auth_policy` satisfied (Icp.said anchored under declared auth_policy); reject otherwise | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ (governance-authorized) | Append ✓ (terminates the chain) | Append ✓ (terminates the chain) |
-| **Active, sealed** (governance event at version ≤ `last_governance_version` would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | n/a |
+| **Active, sealed** (governance event at version ≤ `last_governance_version` would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal version; chain terminates cleanly) |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestRequired` (no Rpr on IEL) | Contest ✓ (extends one branch's tip; chain becomes Contested) | `ContestRequired` (Dec doesn't resolve divergence; only Cnt does) |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
@@ -62,12 +62,12 @@ When chain state transitions, the submit handler publishes the new effective SAI
 
 Each cell describes what happens when gossip syncs a chain from a source node (row) to a sink node (column).
 
-| Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Divergent | Sink: Contested |
-|--------|-------------|--------------|--------------------------------------|-----------------|-----------------|
-| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ (sink stores both branches) | Duplicates of one branch, no-op for that branch ✓ | `ContestedIel` (sink terminal; gossip ignored) |
-| **Divergent** | Both fork events appended ✓ (sink becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓; full anti-entropy may reconcile any-missing-branch-events | `ContestedIel` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | Effective SAIDs match ✓ |
-| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch routes to decommission ✓ | Overlap detected, `Dec` in chain → decommission ✓ | `Dec` does NOT resolve divergent state on IEL — but `Dec` extending one branch on a divergent IEL is itself a structurally-novel case: the receiving node has divergent state; gossip's `Dec` extends one branch; the chain becomes "divergent + decommissioned." Per merge.md routing, `Dec` on a divergent IEL is rejected with `ContestRequired` (only `Cnt` resolves divergence). | `ContestedIel` |
+| Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
+|--------|-------------|--------------|--------------------------------------|-----------------|-----------------|----------------------|
+| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ (sink stores both branches) | Duplicates of one branch, no-op for that branch ✓ | `ContestedIel` (sink terminal; gossip ignored) | `IelDecommissioned` (sink terminal; gossip ignored) |
+| **Divergent** | Both fork events appended ✓ (sink becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓; full anti-entropy may reconcile any-missing-branch-events | `ContestedIel` | `IelDecommissioned` |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | Effective SAIDs match ✓ | `IelDecommissioned` (sink Dec'd before Cnt arrived; sink stays Dec'd; Cnt rejected) |
+| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch routes to decommission ✓ | Overlap detected, `Dec` in chain → decommission ✓ | `Dec` does not resolve divergence — gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission. | `ContestedIel` | Effective SAIDs match (or both terminal-frozen at the Dec event SAID); no-op |
 
 The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest-or-decommission-or-stay-divergent.
 

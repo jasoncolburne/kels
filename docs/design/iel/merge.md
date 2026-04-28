@@ -87,14 +87,16 @@ let is_contest = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 
 if is_contest        → contest path (insert + mark contested; works on divergent or linear)
-else if is_decommission → decommission path (insert + mark decommissioned)
 else if chain is divergent → reject ContestRequired
-else if normal-event AND version ≤ last_governance_version AND policy satisfied → reject ContestRequired
+else if is_decommission → decommission path (insert + mark decommissioned; non-divergent only)
+else if event.version ≤ last_governance_version AND policy satisfied AND non-terminal AND not divergent → reject ContestRequired
 else if event creates a fork (overlap) → insert single forking event, freeze
 else → normal append
 ```
 
-Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL accepts only `Cnt` (or `Dec`); everything else returns `ContestRequired`.
+Order matters: `Cnt` always wins (works on divergent and linear chains — it's the only resolution for a divergent IEL). The divergent-rejection branch comes BEFORE `is_decommission` so `Dec` on a divergent chain is rejected with `ContestRequired`. `Dec` is "owner-initiated clean termination," but a divergent chain isn't clean — only `Cnt` honestly resolves divergence.
+
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL accepts only `Cnt`; everything else returns `ContestRequired`.
 
 ### 5. Contest Path
 
