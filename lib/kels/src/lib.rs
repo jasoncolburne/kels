@@ -42,6 +42,7 @@ pub mod client;
 pub mod crypto;
 pub mod disclosure;
 pub mod error;
+pub mod identity_builder;
 pub mod merge;
 pub mod repository;
 pub mod sad;
@@ -78,6 +79,7 @@ pub use crypto::{
 };
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
+pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use sad::{
@@ -93,24 +95,25 @@ pub use store::{
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
     CompletedProposalsResponse, Custody, CustodyValidationError, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, EventSignature, FederationStatus, HttpKelSink, HttpKelSource, HttpSadSink,
-    HttpSadSource, IdentityBranchTip, IdentityEvent, IdentityEventEffectiveSaidRequest,
-    IdentityEventExistsRequest, IdentityEventKind, IdentityEventPage, IdentityEventPageRequest,
-    IdentityKelPageRequest, IdentityStorePageLoader, IelPageLoader, IelVerification, IelVerifier,
-    KelEffectiveSaidRequest, KelEventExistsRequest, KelMergeResult, KelPageRequest,
-    KelRecoveriesRequest, KelRecoveryEvent, KelRecoveryEventsRequest, KelStorePageLoader,
-    KelVerification, KelVerifier, KeyEvent, KeyEventKind, KeyEventSignature, NodeSet, PageLoader,
-    PagedIelSource, PagedKelSink, PagedKelSource, PagedSadSink, PagedSadSource,
-    PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory, PeerRemovalProposal,
-    PeersResponse, PolicyChecker, PostSadObjectResponse, PrefixListResponse, PrefixState, Proposal,
-    ProposalHistory, ProposalRequest, ProposalResponse, ProposalStatus, ProposalWithVotes,
-    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
-    RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory, RemovalWithVotes, SadBranchTip,
-    SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage,
-    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventTailRequest, SadFetchRequest,
-    SadObjectEntry, SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest,
-    SadStorePageLoader, SelPageLoader, SelRepairEvent, SelVerification, SelVerifier,
-    SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource,
+    ErrorResponse, EventSignature, FederationStatus, HttpIelSource, HttpKelSink, HttpKelSource,
+    HttpSadSink, HttpSadSource, IdentityBranchTip, IdentityEvent,
+    IdentityEventEffectiveSaidRequest, IdentityEventExistsRequest, IdentityEventKind,
+    IdentityEventPage, IdentityEventPageRequest, IdentityKelPageRequest, IdentityStorePageLoader,
+    IelPageLoader, IelVerification, IelVerifier, KelEffectiveSaidRequest, KelEventExistsRequest,
+    KelMergeResult, KelPageRequest, KelRecoveriesRequest, KelRecoveryEvent,
+    KelRecoveryEventsRequest, KelStorePageLoader, KelVerification, KelVerifier, KeyEvent,
+    KeyEventKind, KeyEventSignature, NodeSet, PageLoader, PagedIelSource, PagedKelSink,
+    PagedKelSource, PagedSadSink, PagedSadSource, PaginatedSelfAddressedRequest, Peer,
+    PeerAdditionProposal, PeerHistory, PeerRemovalProposal, PeersResponse, PolicyChecker,
+    PostSadObjectResponse, PrefixListResponse, PrefixState, Proposal, ProposalHistory,
+    ProposalRequest, ProposalResponse, ProposalStatus, ProposalWithVotes, ProposalWithVotesMethods,
+    REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState, RaftVote, RecoveryRecord,
+    RecoveryRecordPage, RemovalHistory, RemovalWithVotes, SadBranchTip, SadCustodyContext,
+    SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage, SadEventPageRequest,
+    SadEventRepair, SadEventRepairPage, SadEventTailRequest, SadFetchRequest, SadObjectEntry,
+    SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SadStorePageLoader,
+    SelPageLoader, SelRepairEvent, SelVerification, SelVerifier, SignedKeyEvent,
+    SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource,
     SubmitIdentityEventsResponse, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
     completed_verification, compute_approval_threshold, compute_identity_event_prefix,
     compute_rotation_hash, compute_sad_event_prefix, forward_key_events, forward_sad_events,

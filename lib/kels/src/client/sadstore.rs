@@ -422,4 +422,98 @@ impl SadStoreClient {
         )
         .await
     }
+
+    // ==================== Identity Event Log (IEL) ====================
+
+    /// Construct an `HttpIelSource` for paging through an IEL on this server.
+    ///
+    /// Constructs a fresh `reqwest::Client` per call (mirrors `as_sad_source`).
+    pub fn as_iel_source(&self) -> Result<crate::HttpIelSource, KelsError> {
+        crate::HttpIelSource::new(&self.base_url)
+    }
+
+    /// Submit an IEL event batch.
+    pub async fn submit_identity_events(
+        &self,
+        events: &[crate::IdentityEvent],
+    ) -> Result<crate::SubmitIdentityEventsResponse, KelsError> {
+        let url = format!("{}/api/v1/iel/events", self.base_url);
+        let resp = self.client.post(&url).json(events).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Fetch a page of IEL events.
+    pub async fn fetch_identity_events(
+        &self,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+    ) -> Result<crate::IdentityEventPage, KelsError> {
+        let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
+        let body = crate::IdentityEventPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: None,
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(prefix.to_string()))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Get the effective SAID and divergence status for an IEL prefix.
+    pub async fn fetch_iel_effective_said(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<(String, bool)>, KelsError> {
+        let url = format!("{}/api/v1/iel/events/effective-said", self.base_url);
+        let body = crate::IdentityEventEffectiveSaidRequest { prefix: *prefix };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let body: EffectiveSaidResponse = resp.json().await?;
+            Ok(Some((body.said.to_string(), body.divergent)))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
+    /// Check whether a specific IEL event SAID exists on the server.
+    pub async fn identity_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
+        let url = format!("{}/api/v1/iel/events/exists", self.base_url);
+        let body = crate::IdentityEventExistsRequest { said: *said };
+        let resp = self.client.post(&url).json(&body).send().await?;
+        Ok(resp.status().is_success())
+    }
+
+    /// Verify an IEL by paging through this server. Returns the verification
+    /// token. Mirrors `verify_sad_events` for IEL.
+    pub async fn verify_identity_events(
+        &self,
+        prefix: &cesr::Digest256,
+        checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
+    ) -> Result<crate::IelVerification, KelsError> {
+        crate::verify_identity_events(
+            prefix,
+            &self.as_iel_source()?,
+            checker,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await
+    }
 }

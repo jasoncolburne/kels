@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use super::event::IdentityEvent;
 use super::verification::{IelVerification, IelVerifier};
 use crate::KelsError;
+use crate::error::read_error_body;
 use crate::store::IdentityStore;
-use crate::types::{ErrorCode, PolicyChecker};
+use crate::types::{ErrorCode, IdentityEventPage, IdentityEventPageRequest, PolicyChecker};
 
 // ==================== Source Trait ====================
 
@@ -71,6 +72,55 @@ impl IelPageLoader for IdentityStorePageLoader<'_> {
         offset: u64,
     ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
         self.0.load_iel_events(prefix, limit, offset).await
+    }
+}
+
+// ==================== HTTP Source ====================
+
+/// HTTP-backed `PagedIelSource`. Mirrors `HttpSadSource`.
+pub struct HttpIelSource {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpIelSource {
+    pub fn new(base_url: &str) -> Result<Self, KelsError> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
+        })
+    }
+}
+
+#[async_trait]
+impl PagedIelSource for HttpIelSource {
+    async fn fetch_page(
+        &self,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+        let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
+        let body = IdentityEventPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let page: IdentityEventPage = resp.json().await?;
+            Ok((page.events, page.has_more))
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok((Vec::new(), false))
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
     }
 }
 
