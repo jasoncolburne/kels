@@ -1721,6 +1721,46 @@ async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
     Ok(())
 }
 
+/// Describe the soft-fail that flipped `verification.policy_satisfied=false`,
+/// branching on which kind in `new_events` triggered it. The verifier soft-fails
+/// on Icp anchor (against declared `auth_policy`) and on Cnt/Dec governance
+/// anchor (against the chain's tracked `governance_policy`); Evl governance is
+/// hard-fail and surfaces earlier as a verification error rather than via this
+/// gate. The previous one-line message hard-coded the Icp shape and misled
+/// operators when an unauthorized Cnt/Dec landed.
+fn describe_iel_policy_failure(
+    new_events: &[kels_core::IdentityEvent],
+    iel_prefix: &cesr::Digest256,
+) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    for event in new_events {
+        match event.kind {
+            kels_core::IdentityEventKind::Icp => clauses.push(format!(
+                "Icp {} must be anchored under its declared auth_policy",
+                event.said
+            )),
+            kels_core::IdentityEventKind::Cnt => clauses.push(format!(
+                "Cnt {} must be authorized under the chain's tracked governance_policy",
+                event.said
+            )),
+            kels_core::IdentityEventKind::Dec => clauses.push(format!(
+                "Dec {} must be authorized under the chain's tracked governance_policy",
+                event.said
+            )),
+            // Evl governance failure aborts verification with a hard error
+            // before reaching the policy_satisfied gate.
+            kels_core::IdentityEventKind::Evl => {}
+        }
+    }
+    if clauses.is_empty() {
+        return format!(
+            "IEL {} re-verification surfaced an anchor failure on the existing chain",
+            iel_prefix
+        );
+    }
+    clauses.join("; ")
+}
+
 /// Submit IEL events. Routes per `docs/design/iel/merge.md §4`:
 ///
 /// 1. Structural validation (SAID, prefix, `validate_structure`, Icp prefix).
@@ -1992,9 +2032,10 @@ pub async fn submit_identity_events(
 
         if !verification.policy_satisfied() {
             let _ = tx.rollback().await;
+            let reason = describe_iel_policy_failure(&new_events, iel_prefix);
             return (
                 StatusCode::FORBIDDEN,
-                "IEL anchoring not satisfied — Icp must be anchored under its declared auth_policy",
+                format!("IEL anchoring not satisfied — {}", reason),
             )
                 .into_response();
         }
