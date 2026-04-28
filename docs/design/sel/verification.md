@@ -1,29 +1,33 @@
 # SEL Verification Protocol
 
-This document describes the verification protocol used to validate the integrity and policy-satisfaction of a SAD Event Log (SEL). It is the SEL counterpart to [../kel/verification.md](../kel/verification.md).
+This document describes the verification protocol used to validate the integrity and authorization of a SAD Event Log (SEL). It is the SEL counterpart to [../iel/verification.md](../iel/verification.md) and [../kel/verification.md](../kel/verification.md).
 
 ## Overview
 
 SEL verification ensures:
 - Events match their explicit per-kind schemas (`SadEvent::validate_structure`)
 - Versions start at 0 and increment by 1 with no gaps
-- The inception event has a valid prefix (derives from `write_policy` + `topic`)
+- The inception event has a valid prefix (derives from `(identity, topic)`)
 - All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
-- `write_policy` is satisfied by anchoring (per `Endorse(KEL_PREFIX)` resolution)
-- `governance_policy` is satisfied at every `Sea` / `Rpr` / `Cnt` / `Dec`
-- Any policy referenced as `write_policy` or `governance_policy` (introduced at Icp v0, Est, or evolved via Sea) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
+- Topic is consistent across the chain
 - The content-preservation rule holds (Sea/Rpr/Cnt/Dec must carry forward `previous.content`)
 - The proactive-evaluation rule holds (`MAX_NON_EVALUATION_EVENTS = 63`)
+- Every v1+ event's `identity_event` references a real IEL event in the chain bound at inception (`prefix == identity`)
+- Authorization for v1+ events resolves through the bound IEL event's declared/evolved policy:
+  - `Upd` → IEL's tracked `auth_policy` at the bound event
+  - `Sea` / `Rpr` / `Cnt` / `Dec` → IEL's tracked `governance_policy` at the bound event
+- Anchoring of the SE event's SAID under the resolved IEL policy
+- Monotonic-on-SE-chain: each event's `identity_event` is at-or-after the chain's prior `last_identity_event` in IEL chain order
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
 
-Unlike KEL, SEL has no per-event signature verification — authorization is via the *anchoring model*: `write_policy` and `governance_policy` resolve to KEL prefixes whose `ixn` events anchor the SAD event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
+Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SE event's SAID. The verifier resolves the IEL-side policies through a `PolicyChecker` extended for cross-chain resolution.
 
 ## Verification Algorithm
 
-`SelVerifier` (`lib/kels/src/types/sad/verification.rs`) processes events in a single forward pass, verifying structure and policy satisfaction simultaneously. Events must arrive in `version ASC, kind sort_priority ASC, said ASC` order with complete generations.
+`SelVerifier` (`lib/kels/src/types/sad/verification.rs`) processes events in a single forward pass. Events must arrive in `version ASC, kind sort_priority ASC, said ASC` order with complete generations.
 
 ### Per-Event Checks
 
@@ -45,7 +49,7 @@ verify_event(event):
     if event.version != expected_version:
         return Error("Version gap or regression")
 
-    // 5. Chain continuity (previous pointer matches a known branch tip)
+    // 5. Chain continuity
     match event to a branch via event.previous
     if no matching branch:
         return Error("Previous SAID not found")
@@ -68,60 +72,87 @@ verify_generation(events_at_version):
 
     for each event:
         match to branch via event.previous
-        verify policy satisfaction for that branch
+        verify cross-chain authorization for that branch (v1+ events)
 ```
 
-### Policy Resolution
+### Authorization Resolution (v1+ events)
 
-When an event requires policy satisfaction, the verifier resolves the relevant policy via the `PolicyChecker`:
+When an event requires authorization, the verifier resolves through the bound IEL event:
 
 ```
-verify_policy(event, branch):
+verify_authorization(event, branch):
+    // Inception is permissionless — no authorization gate at v0
+    if event.kind == Icp:
+        return Ok
+
+    // Confirm identity_event references a real IEL event with matching prefix
+    iel_event = checker.fetch_iel_event(branch.identity, event.identity_event)
+    if iel_event is None or iel_event.prefix != branch.identity:
+        return Error("identity_event does not resolve to bound IEL")
+
+    // Pick the relevant policy from the IEL event
     policy = match event.kind:
-        Icp           → event.write_policy (the policy declared at v0; no prior tracked state)
-        Est, Upd      → branch.tracked_write_policy
-        Sea, Rpr, Cnt, Dec → branch.tracked_governance_policy
+        Upd                  → iel_event.auth_policy_or_carried_forward
+        Sea, Rpr, Cnt, Dec   → iel_event.governance_policy_or_carried_forward
 
-    // Anchoring model: policy resolves to Endorse(KEL_PREFIX) nodes;
-    // each must have an ixn anchor in the named KEL anchoring this event's SAID.
-    PolicyChecker::evaluate_anchored_policy(policy, event.said) → bool
+    // The IEL event must declare/evolve the relevant policy.
+    // (Cross-chain helper resolves "the auth_policy that was tracked at IEL_X" —
+    //  if iel_event itself doesn't carry the field, walk back through IEL until
+    //  finding the most recent event that did.)
+
+    // Verify the SE event's anchoring under that policy
+    if !checker.evaluate_anchored_policy(policy, event.said):
+        return Error("Authorization failed")
+
+    // Monotonic ratchet
+    if event.identity_event ranks before branch.last_identity_event in IEL order:
+        return Error("identity_event regression — non-monotonic")
+    branch.last_identity_event = event.identity_event
 ```
 
-Policy state is **branch-tracked**:
+The "ranks before" comparison requires walking the IEL chain (or comparing cached per-event-version metadata). The IEL is structurally a linear chain (or divergent — in which case the bound event must be on a single resolvable branch).
 
-- `tracked_write_policy` — seeded from v0's `write_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it. Updated whenever an authorized `Sea` carries a new `write_policy` (subject to the same immunity check on the new policy).
-- `tracked_governance_policy` — seeded from v0's `governance_policy` (if present), or from v1's `Est` (if v0 omitted it). Updated whenever an authorized `Sea` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
+### Inception Batch Rule (verifier-level note)
 
-**Immunity check.** Whenever `tracked_write_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md §1](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups) and cannot trust that the originating node enforced it.
+The inception batch rule `[Icp, Upd]` minimum is enforced at the **submit handler**, not in the verifier per se. The verifier walks events as they exist; if the chain has only an `Icp` with no v1, that's "incomplete" rather than "invalid." The submit handler is what prevents an Icp-alone batch from landing in storage in the first place. See [merge.md](merge.md).
 
-Authorization checks for v1+ are against the *tracked* (effective) values, not the event's own field. This prevents an adversary who satisfies the current `write_policy` from replacing the policy via an Upd-style event: policy replacement requires satisfying the stricter `governance_policy`. For v0 (Icp), the policy resolution is against the event's own declared `write_policy`, since no prior tracked state exists — the inceptor proves membership in the policy they're declaring.
+### Branch State
 
-### Content Preservation
+```
+struct SadBranchTip {
+    tip: SadEvent,                        // current tip event
+    identity: Digest256,                  // bound IEL prefix (set at Icp)
+    last_identity_event: Option<Digest256>, // ratchet — highest IEL event bound across the branch
+    events_since_evaluation: u64,
+    last_governance_version: Option<u64>,
+}
+```
 
-Every `Sea` / `Rpr` / `Cnt` / `Dec` must satisfy `event.content == previous.content`. The verifier rejects any such event whose content differs from its predecessor's. `Upd` is the sole content-mutating kind; `Icp` and `Est` forbid content entirely.
+There is **no** `tracked_write_policy` or `tracked_governance_policy` on SE branch state. Authorization policies live on IEL; SE branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
 
 ## Verification Return Value
 
-`SelVerifier::finish()` produces a `SelVerification` token — the proof-of-verification type:
+`SelVerifier::finish()` produces a `SelVerification` token:
 
 ```
 SelVerification:
     prefix: Digest256
-    branches: Vec<BranchTip>            // one per branch (1 = linear, N = divergent)
+    branches: Vec<BranchTip>            // 1 = linear, 2 = divergent
     diverged_at_version: Option<u64>
     is_contested: bool
     is_decommissioned: bool
-    last_governance_version: Option<u64>  // version of most recent Sea/Rpr (the seal)
+    last_governance_version: Option<u64>  // version of most recent Sea/Rpr
+    last_identity_event: Option<Digest256> // chain's highest-bound IEL event
 ```
 
-Accessors (per [../sadstore.md §Verification](../sadstore.md)):
+Accessors:
 
 - `current_event()` → `None` if divergent
 - `current_content()` → `None` if divergent
-- `prefix()`, `topic()`
-- `write_policy()` → branch's tracked (effective) write policy
-- `policy_satisfied()` — overall policy satisfaction across the chain
-- `last_governance_version()`, `establishment_version()`
+- `prefix()`, `topic()`, `identity()` → the bound IEL prefix
+- `last_identity_event()` → the chain's highest-bound IEL event (across branches)
+- `policy_satisfied()` — overall authorization satisfaction across the chain
+- `last_governance_version()`
 - `is_contested()`, `is_decommissioned()`, `diverged_at_version()`
 
 ## Key Properties Verified
@@ -129,15 +160,16 @@ Accessors (per [../sadstore.md §Verification](../sadstore.md)):
 | Property | Verification Method |
 |----------|---------------------|
 | SAID integrity | Recompute and compare |
-| Prefix derivation | Inception prefix recomputed from `write_policy + topic` and compared |
+| Prefix derivation | Inception prefix recomputed from `(identity, topic)` and compared |
 | Prefix consistency | All events have same prefix |
 | Event chaining | `previous` field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
 | Version monotonicity | Each event's version equals predecessor's version + 1 |
 | Inception version | Inception (no `previous`) must have version 0 |
 | Topic consistency | All events on a branch share the same topic |
-| `write_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_write_policy, event.said)` |
-| `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Sea/Rpr/Cnt/Dec |
+| `identity_event` binding | Resolves to an IEL event with matching prefix |
+| Authorization | `evaluate_anchored_policy(IEL-resolved-policy, event.said)` |
+| Monotonic identity ratchet | `event.identity_event >= branch.last_identity_event` in IEL chain order |
 | Content preservation | `event.content == previous.content` for Sea/Rpr/Cnt/Dec |
 | Proactive evaluation | At most `MAX_NON_EVALUATION_EVENTS = 63` non-evaluation events between Sea/Rpr/Cnt/Dec |
 
@@ -145,18 +177,18 @@ Accessors (per [../sadstore.md §Verification](../sadstore.md)):
 
 Verification does NOT fail on divergence. Instead:
 - Divergence is detected and tracked in the `SelVerification` token (`is_divergent()`, `diverged_at_version()`)
-- All branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
+- Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler resolves divergence via `Rpr` (see [merge.md](merge.md))
 
 ## Streaming Verification (SelVerifier)
 
-`SelVerifier` walks forward through events page by page, verifying integrity and policy satisfaction without loading the full chain into memory. It supports both linear and divergent chains by tracking per-branch state.
+`SelVerifier` walks forward through events page by page, verifying integrity and authorization without loading the full chain into memory.
 
 ```
 struct SelVerifier {
     prefix: Digest256,
-    checker: Arc<dyn PolicyChecker>,
-    branches: HashMap<Digest256, BranchState>,   // keyed by tip SAID
+    checker: Arc<dyn PolicyChecker>,    // extended to resolve IEL events for binding
+    branches: HashMap<Digest256, BranchState>,
     last_verified_version: Option<u64>,
     diverged_at_version: Option<u64>,
     is_contested: bool,
@@ -168,47 +200,56 @@ struct SelVerifier {
 ### Constructors
 
 - `SelVerifier::new(Some(prefix), checker)` — Start from inception. Full verification of untrusted chains.
-- `SelVerifier::resume(prefix, &SelVerification, checker)` — Resume from a verified `SelVerification` token. Used by the submit handler's discriminator path to verify a single page without re-verifying the whole chain. Symmetric to `KelVerifier::resume`.
+- `SelVerifier::resume(prefix, &SelVerification, checker)` — Resume from a verified `SelVerification` token. Used by the submit handler's discriminator path to verify a single page without re-verifying the whole chain.
 
-### Usage
+### PolicyChecker extension
+
+The `PolicyChecker` trait is extended to support cross-chain resolution:
 
 ```rust
-let mut verifier = SelVerifier::new(Some(&prefix), checker);
-loop {
-    let (events, has_more) = source.fetch_page(prefix, since, limit).await?;
-    verifier.verify_page(&events).await?;
-    if !has_more { break; }
-    since = events.last().map(|e| &e.said);
+trait PolicyChecker: Send + Sync {
+    // Existing — anchor-evaluation against a resolved policy
+    async fn evaluate_anchored_policy(&self, policy: &Digest256, said: &Digest256)
+        -> Result<bool, KelsError>;
+
+    // New — fetch and resolve an IEL event by SAID
+    async fn fetch_iel_event(&self, identity: &Digest256, iel_event_said: &Digest256)
+        -> Result<IdentityEvent, KelsError>;
+
+    // New — resolve the relevant policy at an IEL event (walking back if the named
+    // event doesn't carry the field, finding the most recent event that did)
+    async fn resolve_auth_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
+        -> Result<Digest256, KelsError>;
+    async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
+        -> Result<Digest256, KelsError>;
+
+    // New — immunity check (still required at SE-side merge for new IEL bindings,
+    // even though the rule lives on IEL — defense in depth and bootstrap)
+    async fn is_immune(&self, policy: &Digest256) -> Result<bool, KelsError>;
 }
-let verification = verifier.finish().await?;
 ```
+
+The implementations cache aggressively (one IEL event fetch per binding; immunity flag checked once per policy SAID).
 
 ### Paginated Verification Helpers
 
 Two top-level helpers in `lib/kels/src/types/sad/sync.rs`:
 
-- **`verify_sad_events(client, prefix, checker)`** — Pages through a remote SADStore via `HttpSadSource`, verifying each page. Returns a trusted `SelVerification` token. Used by the builder's `repair`/`contest`/`decommission` pre-flight gate (see [event-log.md §Builder pre-flight](event-log.md) for the discriminator's use of this).
-- **`sel_completed_verification(loader, prefix, page_size, max_pages)`** — Pages through a `SelPageLoader` (typically `SadStorePageLoader` over a local `SadStore`), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations spanning pages. Returns a trusted `SelVerification` token.
+- **`verify_sad_events(client, prefix, checker)`** — Pages through a remote SADStore, verifying each page. Returns a trusted `SelVerification` token.
+- **`sel_completed_verification(loader, prefix, page_size, max_pages)`** — Pages through a `SelPageLoader`, calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations spanning pages.
 
-The `max_pages` parameter prevents resource exhaustion (default bounded by environment).
+## Path-Agnostic Validation
 
-### Per-Event Checks
-
-1. SAID integrity (`event.verify()`)
-2. Prefix matches verifier's prefix
-3. Version continuity (events arrive in generation order)
-4. Previous-pointer continuity (event chains from a known branch tip)
-5. Structure validation (`validate_structure`)
-6. Topic consistency
-7. Content preservation (Sea/Rpr/Cnt/Dec must equal `previous.content`)
-8. Policy satisfaction via `PolicyChecker` (write_policy or governance_policy per kind)
+The validation rules above apply identically at submit, gossip ingestion, bootstrap, and re-verification. KELS data is path-agnostic — a SE event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. See [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules) for the cross-chain rationale.
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, evaluation seal, anchor non-poisonability.
+- [event-log.md](event-log.md) — Chain lifecycle, repair, contest, decommission.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.
+- [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SE).
+- [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle (immunity rule, anchor stability).
 - [../policy.md](../policy.md) — Policy DSL and anchoring model.
 - [../streaming-verification-architecture.md](../streaming-verification-architecture.md) — Cross-side streaming-verification architecture.
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.
