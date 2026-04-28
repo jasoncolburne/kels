@@ -331,6 +331,33 @@ fn iel_prefix_for(
         .expect("compute IEL prefix")
 }
 
+/// Assert a `SadStoreClient` call returned an error whose `Display` contains
+/// `fragment`. Tightens tests that previously asserted only `is_err()` — the
+/// client maps every non-success response to `KelsError::ServerError(text, _)`,
+/// so without a body-text check a regression on a different rejection path
+/// (storage flake, structural error, anchor failure) would still pass.
+#[track_caller]
+fn assert_err_contains<T: std::fmt::Debug>(
+    resp: &Result<T, kels_core::KelsError>,
+    fragment: &str,
+) {
+    match resp {
+        Ok(v) => panic!(
+            "expected error containing {:?}, got Ok({:?})",
+            fragment, v
+        ),
+        Err(e) => {
+            let s = e.to_string();
+            assert!(
+                s.contains(fragment),
+                "expected error to contain {:?}; got: {}",
+                fragment,
+                s
+            );
+        }
+    }
+}
+
 /// Build, anchor, and submit one IEL `Icp` end-to-end. Returns the builder (with
 /// verification populated) for further use.
 async fn incept_and_flush(
@@ -499,11 +526,10 @@ async fn contest_terminates_chain() {
     let resp = sad_client
         .submit_identity_events(std::slice::from_ref(&evl_event))
         .await;
-    assert!(
-        resp.is_err(),
-        "submit after Cnt should fail; got {:?}",
-        resp
-    );
+    // Terminal-state gate: server returns "IEL <prefix> is contested — no
+    // further events accepted" once a Cnt has landed.
+    assert_err_contains(&resp, "is contested");
+    assert_err_contains(&resp, "no further events accepted");
 }
 
 #[tokio::test]
@@ -540,11 +566,10 @@ async fn decommission_terminates_chain() {
     let resp = sad_client
         .submit_identity_events(std::slice::from_ref(&evl_event))
         .await;
-    assert!(
-        resp.is_err(),
-        "submit after Dec should fail; got {:?}",
-        resp
-    );
+    // Terminal-state gate: server returns "IEL <prefix> is decommissioned — no
+    // further events accepted" once a Dec has landed.
+    assert_err_contains(&resp, "is decommissioned");
+    assert_err_contains(&resp, "no further events accepted");
 }
 
 #[tokio::test]
@@ -579,15 +604,13 @@ async fn divergent_chain_rejects_non_cnt_with_contest_required() {
     assert_eq!(resp_first.diverged_at, Some(1));
 
     // Subsequent Evl extending v1_a — the chain is divergent so this must
-    // be rejected (ContestRequired surfaces as a 403 ServerError).
+    // be rejected. The server returns "Contest required: IEL is divergent —
+    // only Cnt resolves a divergent IEL".
     let v2 = IdentityEvent::evl(&v1_a, None, None).unwrap();
     kel_builder.interact(&v2.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v2]).await;
-    assert!(
-        resp.is_err(),
-        "Evl on divergent chain should be rejected; got {:?}",
-        resp
-    );
+    assert_err_contains(&resp, "Contest required");
+    assert_err_contains(&resp, "divergent");
 }
 
 #[tokio::test]
@@ -612,15 +635,15 @@ async fn divergent_chain_rejects_dec_with_contest_required() {
         .await
         .expect("submit divergent batch");
 
-    // Dec on a divergent chain must be rejected — only Cnt resolves divergence.
+    // Dec on a divergent chain must be rejected — only Cnt resolves
+    // divergence. The X-1 routing rule ensures the divergent-rejection branch
+    // fires before is_decommission, so we get "Contest required: ... divergent"
+    // rather than acceptance or a generic 4xx.
     let dec = IdentityEvent::dec(&v1_a).unwrap();
     kel_builder.interact(&dec.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[dec]).await;
-    assert!(
-        resp.is_err(),
-        "Dec on divergent chain should be rejected; got {:?}",
-        resp
-    );
+    assert_err_contains(&resp, "Contest required");
+    assert_err_contains(&resp, "divergent");
 }
 
 #[tokio::test]
@@ -655,19 +678,20 @@ async fn divergent_chain_accepts_cnt_terminates() {
     let cnt = IdentityEvent::cnt(lower).unwrap();
     kel_builder.interact(&cnt.said).await.unwrap();
 
-    let _ = sad_client
+    // Cnt on a divergent chain must succeed AND mark the chain applied.
+    let cnt_resp = sad_client
         .submit_identity_events(&[cnt])
         .await
         .expect("Cnt on divergent IEL accepted");
+    assert!(cnt_resp.applied, "Cnt should report applied=true");
 
-    // Subsequent submission rejected.
+    // Subsequent submission rejected — the chain is now contested, so the
+    // terminal-state gate fires before any routing.
     let evl_extra = IdentityEvent::evl(&v1_a, None, None).unwrap();
     kel_builder.interact(&evl_extra.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[evl_extra]).await;
-    assert!(
-        resp.is_err(),
-        "Evl after Cnt on divergent chain should be rejected"
-    );
+    assert_err_contains(&resp, "is contested");
+    assert_err_contains(&resp, "no further events accepted");
 }
 
 #[tokio::test]
@@ -685,13 +709,11 @@ async fn submit_rejects_non_immune_auth_policy_at_icp() {
     )
     .await;
 
-    // Icp with non-immune auth_policy — server must reject before anchoring matters.
+    // Icp with non-immune auth_policy — server must reject before anchoring
+    // matters. Verifier emits "IEL Icp <said> declares non-immune auth_policy".
     let v0 = IdentityEvent::icp(non_immune.said, immune_policy.said, TEST_TOPIC).unwrap();
     let resp = sad_client.submit_identity_events(&[v0]).await;
-    assert!(
-        resp.is_err(),
-        "Icp with non-immune auth_policy must be rejected"
-    );
+    assert_err_contains(&resp, "non-immune auth_policy");
 }
 
 #[tokio::test]
@@ -711,10 +733,7 @@ async fn submit_rejects_non_immune_governance_policy_at_icp() {
 
     let v0 = IdentityEvent::icp(immune_policy.said, non_immune.said, TEST_TOPIC).unwrap();
     let resp = sad_client.submit_identity_events(&[v0]).await;
-    assert!(
-        resp.is_err(),
-        "Icp with non-immune governance_policy must be rejected"
-    );
+    assert_err_contains(&resp, "non-immune governance_policy");
 }
 
 #[tokio::test]
@@ -739,14 +758,12 @@ async fn submit_rejects_non_immune_auth_policy_at_evl_evolution() {
         .await
         .unwrap();
 
-    // Evl evolving auth_policy to non-immune — must be rejected.
+    // Evl evolving auth_policy to non-immune — must be rejected. Verifier
+    // emits "IEL Evl <said> evolves auth_policy to non-immune".
     let v1 = IdentityEvent::evl(&v0, Some(non_immune.said), None).unwrap();
     kel_builder.interact(&v1.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v1]).await;
-    assert!(
-        resp.is_err(),
-        "Evl evolving to non-immune auth_policy must be rejected"
-    );
+    assert_err_contains(&resp, "evolves auth_policy to non-immune");
 }
 
 #[tokio::test]
@@ -771,10 +788,7 @@ async fn submit_rejects_non_immune_governance_policy_at_evl_evolution() {
     let v1 = IdentityEvent::evl(&v0, None, Some(non_immune.said)).unwrap();
     kel_builder.interact(&v1.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v1]).await;
-    assert!(
-        resp.is_err(),
-        "Evl evolving to non-immune governance_policy must be rejected"
-    );
+    assert_err_contains(&resp, "evolves governance_policy to non-immune");
 }
 
 #[tokio::test]
@@ -788,13 +802,12 @@ async fn submit_rejects_icp_not_anchored_under_declared_auth_policy() {
 
     // Submit Icp WITHOUT calling kel_builder.interact — the auth_policy
     // requires `endorse(KEL_PREFIX)` to anchor the Icp.said in this KEL, and
-    // we deliberately skip that step.
+    // we deliberately skip that step. Handler returns "IEL anchoring not
+    // satisfied — Icp must be anchored under its declared auth_policy".
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
     let resp = sad_client.submit_identity_events(&[v0]).await;
-    assert!(
-        resp.is_err(),
-        "Icp without anchoring under declared auth_policy must be rejected"
-    );
+    assert_err_contains(&resp, "anchoring not satisfied");
+    assert_err_contains(&resp, "auth_policy");
 }
 
 #[tokio::test]
@@ -824,10 +837,10 @@ async fn submit_evl_at_sealed_version_returns_contest_required() {
     let v1_alt = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     kel_builder.interact(&v1_alt.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v1_alt]).await;
-    assert!(
-        resp.is_err(),
-        "Evl at sealed version must return ContestRequired"
-    );
+    // Algorithmic ContestRequired: handler returns "Contest required: IEL Evl
+    // at version <v> lands at or before evaluation seal <s>".
+    assert_err_contains(&resp, "Contest required");
+    assert_err_contains(&resp, "seal");
 }
 
 #[tokio::test]
