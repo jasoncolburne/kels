@@ -10,7 +10,9 @@
 //! Design: `docs/design/iel/{events,event-log,verification,merge,reconciliation}.md`.
 
 mod event;
+mod sync;
 mod verification;
 
 pub use event::*;
+pub use sync::*;
 pub use verification::*;
