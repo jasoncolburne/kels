@@ -21,10 +21,13 @@
 //! - Icp anchor check against `event.auth_policy` is **soft** — failure sets
 //!   `policy_satisfied=false` but does not abort verification (mirrors SEL Icp).
 //! - Evl governance check is **hard** — anchor failure aborts verification.
-//! - Cnt/Dec governance check is **soft** for the terminal-flag advance — a
-//!   governance-failed Cnt/Dec sets `policy_satisfied=false` and does NOT
-//!   mark the chain `is_contested` / `is_decommissioned`. The structural
-//!   "must preserve policies" check is still hard.
+//! - Cnt/Dec governance check is **soft** — a governance-failed Cnt/Dec sets
+//!   `policy_satisfied=false` but the chain's terminal flags
+//!   (`is_contested` / `is_decommissioned`) are set unconditionally based on
+//!   chain CONTENT (per `docs/design/iel/event-log.md` §"Chain States" —
+//!   "at least one Cnt/Dec event in the chain"). Authorization status is
+//!   conveyed via `policy_satisfied`. The structural "must preserve policies"
+//!   check is still hard.
 //! - Immunity violations at Icp or Evl evolution are **hard**.
 
 use std::{
@@ -158,12 +161,16 @@ impl IelVerification {
         self.branches.len() > 1
     }
 
-    /// True when an authorized `Cnt` event has landed on the chain.
+    /// True when at least one `Cnt` event is in the chain. Reflects chain
+    /// CONTENT per `docs/design/iel/event-log.md` §"Chain States" — set
+    /// unconditionally on any landed `Cnt`, regardless of whether its
+    /// governance check passed. Authorization status is in `policy_satisfied`.
     pub fn is_contested(&self) -> bool {
         self.is_contested
     }
 
-    /// True when an authorized `Dec` event has landed on the chain.
+    /// True when at least one `Dec` event is in the chain. Same content-based
+    /// semantics as `is_contested`.
     pub fn is_decommissioned(&self) -> bool {
         self.is_decommissioned
     }
@@ -422,9 +429,10 @@ impl IelVerifier {
 
             // Anchor check against the branch's tracked governance_policy.
             // For Evl this is hard-fail (per SEL parity for governance kinds).
-            // For Cnt/Dec we record the result and gate the terminal-flag
-            // advance on it (soft-fail on the flag; the event is still in the
-            // chain because the merge handler accepted it).
+            // For Cnt/Dec we record the result and surface it via
+            // `policy_satisfied`; the terminal flags are content-based (set
+            // unconditionally below) per `docs/design/iel/event-log.md`
+            // §"Chain States".
             let governance_satisfied = self
                 .checker
                 .is_anchored(&event.said, &branch.tracked_governance_policy)
@@ -493,13 +501,20 @@ impl IelVerifier {
                         )));
                     }
 
-                    // Soft governance check for terminal-flag advance.
-                    if !governance_satisfied {
-                        self.policy_satisfied = false;
-                    } else if event.kind.is_contest() {
+                    // Terminal flags reflect chain CONTENT (any Cnt/Dec event
+                    // sets them) per `docs/design/iel/event-log.md` §"Chain
+                    // States". Authorization status is conveyed separately via
+                    // `policy_satisfied` so SE consumers reading the
+                    // verification token see "this chain is terminated" even
+                    // when the terminating event was governance-failed at
+                    // verification time.
+                    if event.kind.is_contest() {
                         self.is_contested = true;
                     } else {
                         self.is_decommissioned = true;
+                    }
+                    if !governance_satisfied {
+                        self.policy_satisfied = false;
                     }
 
                     new_branches.insert(
@@ -785,15 +800,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn governance_failed_cnt_does_not_mark_terminal() {
+    async fn governance_failed_cnt_marks_terminal_but_unsatisfied() {
         let auth = test_digest(b"auth-policy");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
         let cnt = IdentityEvent::cnt(&v0).unwrap();
 
-        // Anchor rejects every (said, policy). Icp soft-fails (policy_satisfied=false);
-        // Cnt's governance check soft-fails — the chain must NOT be marked
-        // contested.
+        // Anchor rejects every (said, policy). Icp soft-fails
+        // (policy_satisfied=false); Cnt's governance check soft-fails. Per
+        // design (`docs/design/iel/event-log.md` §"Chain States"), the
+        // terminal flag is content-based: a chain with any Cnt event is
+        // contested regardless of authorization. Auth status is in
+        // policy_satisfied.
         let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AnchorRejectChecker);
         let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
         verifier
@@ -802,13 +820,16 @@ mod tests {
             .unwrap();
         let v = verifier.finish().await.unwrap();
 
-        assert!(!v.is_contested());
+        assert!(v.is_contested(), "Cnt content alone marks chain contested");
         assert!(!v.is_decommissioned());
-        assert!(!v.policy_satisfied());
+        assert!(
+            !v.policy_satisfied(),
+            "governance soft-fail surfaces via policy_satisfied"
+        );
     }
 
     #[tokio::test]
-    async fn governance_failed_dec_does_not_mark_terminal() {
+    async fn governance_failed_dec_marks_terminal_but_unsatisfied() {
         let auth = test_digest(b"auth-policy");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
@@ -822,8 +843,15 @@ mod tests {
             .unwrap();
         let v = verifier.finish().await.unwrap();
 
-        assert!(!v.is_decommissioned());
-        assert!(!v.policy_satisfied());
+        assert!(
+            v.is_decommissioned(),
+            "Dec content alone marks chain decommissioned"
+        );
+        assert!(!v.is_contested());
+        assert!(
+            !v.policy_satisfied(),
+            "governance soft-fail surfaces via policy_satisfied"
+        );
     }
 
     // ---------- Cnt / Dec must preserve policies ----------
