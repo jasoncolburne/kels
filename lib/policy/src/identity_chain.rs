@@ -114,9 +114,12 @@ pub fn compute_identity_prefix(initial_policy: &Policy) -> Result<cesr::Digest25
 // wrong-topic test stay hand-built: they produce intermediate partial states or
 // cross-topic shapes that the builder refuses by design.
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
-    use kels_core::{KelsError, PolicyChecker, SadEventBuilder, SadEventKind, SelVerifier};
+    use kels_core::{
+        IdentityEvent, IelChainPosition, IelResolver, KelsError, PolicyChecker, SadEventBuilder,
+        SadEventKind, SelVerifier,
+    };
     use verifiable_storage::Chained;
 
     use super::*;
@@ -155,6 +158,66 @@ mod tests {
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
+        }
+    }
+
+    /// Minimal `IelResolver` test stub — every method returns `InvalidIel`.
+    /// Tests that exercise IEL resolution provide their own narrower fake
+    /// (the trait surface is small enough that per-test-module fakes mirror
+    /// the existing `PolicyChecker` test-fake pattern). This stub exists so
+    /// the trait compiles alongside the existing `PolicyChecker` fakes,
+    /// satisfying Gap 0's "minimal stubs satisfying just the trait surface"
+    /// requirement.
+    #[allow(dead_code)]
+    struct UnreachableIelResolver;
+    #[async_trait::async_trait]
+    impl IelResolver for UnreachableIelResolver {
+        async fn fetch_iel_event(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<IdentityEvent, KelsError> {
+            Err(KelsError::InvalidIel(
+                "UnreachableIelResolver::fetch_iel_event called from a test that did not \
+                 substitute a real fake"
+                    .to_string(),
+            ))
+        }
+
+        async fn resolve_auth_policy_at(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            Err(KelsError::InvalidIel(
+                "UnreachableIelResolver::resolve_auth_policy_at called from a test that did \
+                 not substitute a real fake"
+                    .to_string(),
+            ))
+        }
+
+        async fn resolve_governance_policy_at(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            Err(KelsError::InvalidIel(
+                "UnreachableIelResolver::resolve_governance_policy_at called from a test that \
+                 did not substitute a real fake"
+                    .to_string(),
+            ))
+        }
+
+        async fn iel_chain_positions(
+            &self,
+            _: &cesr::Digest256,
+            _: &[cesr::Digest256],
+        ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError> {
+            Err(KelsError::InvalidIel(
+                "UnreachableIelResolver::iel_chain_positions called from a test that did not \
+                 substitute a real fake"
+                    .to_string(),
+            ))
         }
     }
 

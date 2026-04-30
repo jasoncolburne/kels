@@ -7,6 +7,7 @@ pub(crate) mod ast;
 pub(crate) mod error;
 pub(crate) mod evaluator;
 pub(crate) mod identity_chain;
+pub(crate) mod iel_resolver;
 pub mod json_api;
 pub(crate) mod parser;
 pub(crate) mod policy;
@@ -21,6 +22,7 @@ pub use identity_chain::{
     IDENTITY_CHAIN_TOPIC, advance as advance_identity_chain, compute_identity_prefix,
     create as create_identity_chain,
 };
+pub use iel_resolver::AnchoredIelResolver;
 pub use parser::{canonicalize, parse};
 pub use policy::Policy;
 pub use policy_checker::AnchoredPolicyChecker;
