@@ -174,18 +174,24 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 
 When the merge engine processes a submitted batch (full routing logic in [merge.md](merge.md); the exhaustive matrix and multi-node correctness proof are in [reconciliation.md](reconciliation.md); summarized here for lifecycle correlation):
 
+Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** iff `last_governance_version >= first_divergent_version`; otherwise **unsealed**.
+
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | non-terminal events | Append. Seal advances on `Sea`/`Rpr`. |
 | Linear, overlap (fork) | non-`Rpr`/`Cnt`/`Dec` | Insert single forking event, freeze. `Diverged`. |
-| Divergent | `Rpr` | Discriminator-driven repair. `Repaired`. |
-| Divergent | non-`Rpr`/`Cnt`/`Dec` | `RepairRequired`. Chain unchanged. |
-| Linear, post-evaluation-seal | non-terminal event with valid auth | `ContestRequired { reason }`. |
-| Any non-terminal | `Cnt` | Insert, mark contested. |
-| Any non-terminal | `Dec` | Insert, mark decommissioned. |
+| Linear, post-evaluation-seal | non-terminal/non-`Rpr` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger; excludes `Cnt`/`Dec` — terminal — which append cleanly). |
+| Linear (any) | `Cnt` | Insert, mark contested. |
+| Linear (any) | `Dec` | Insert, mark decommissioned. |
+| Divergent (unsealed) | `Rpr` | Discriminator-driven repair. `Repaired`. |
+| Divergent (unsealed) | `Upd`/`Sea`/`Cnt`/`Dec` | `RepairRequired`. Chain unchanged. (No governance-revealing event yet — `Rpr` is the natural resolver.) |
+| Divergent (sealed) | `Cnt` | Insert (extends lower-SAID branch tip), mark contested. (Only legitimate resolver — `Rpr` cannot truncate behind the seal.) |
+| Divergent (sealed) | `Upd`/`Sea`/`Rpr`/`Dec` | `ContestRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
 | Decommissioned | any | Rejected with `DecommissionedSel`. |
 | Inception batch missing Upd at v1 | `[Icp]` alone, or `[Icp, Sea/Cnt/Dec]` | Rejected — inception batch rule (see events.md). |
+
+The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).
 
 ## Implementation Map
 

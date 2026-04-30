@@ -389,6 +389,10 @@ impl SadEventBuilder {
         self.require_incepted()?;
         self.require_non_terminal()?;
 
+        // server_view intentionally discarded: contest is valid on every
+        // non-terminal state (linear, sealed, divergent-sealed) — a
+        // builder-side fail-fast would block legitimate use. The handler
+        // delivers the precise terminal-state error if anything's amiss.
         let _server_view = self.verify_server_chain_pre_action().await?;
 
         let cnt_previous = self.choose_terminal_anchor(false)?;

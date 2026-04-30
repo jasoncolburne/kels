@@ -340,6 +340,8 @@ Best to create an issue and discuss, but PRs are welcome if they are positive ad
 
 #### SEL (SAD Event Log)
 
+> Identity-rooted under [IEL](#iel-identity-event-log) — each SE chain binds at inception to a specific IEL via `identity`; every v1+ event resolves its authorization via the IEL event referenced by `identity_event`.
+
 - [Per-Kind Reference](docs/design/sel/events.md) — Event kinds, field rules, chain shapes
 - [Lifecycle](docs/design/sel/event-log.md) — States, divergence, repair, contest, decommission
 - [Submit Protocol](docs/design/sel/merge.md) — Submit handler routing and discriminator
