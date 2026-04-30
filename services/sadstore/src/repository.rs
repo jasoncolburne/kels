@@ -131,6 +131,23 @@ impl SadEventRepository {
         Ok(SaveBatchResult::Accepted { new_count: count })
     }
 
+    /// Insert a single event under a caller-managed transaction without the
+    /// divergent-chain check. Used by the round-12 contest / decommission
+    /// paths where `Cnt` / `Dec` are the only events allowed to land on a
+    /// (sealed-)divergent chain. Caller must hold an advisory lock on the
+    /// prefix and must have verified the event is structurally valid +
+    /// IEL-resolved-governance-authorized (the verifier surfaces SOFT-pass
+    /// vs HARD-pass; terminal flags are content-based on the chain).
+    /// Mirrors `IdentityEventRepository::insert_event`.
+    pub async fn insert_event<Tx: TransactionExecutor>(
+        &self,
+        tx: &mut Tx,
+        event: &SadEvent,
+    ) -> Result<(), StorageError> {
+        self.insert_in(tx, event.clone()).await?;
+        Ok(())
+    }
+
     /// Truncate events at and after the first replacement's version and insert replacements.
     ///
     /// Used to repair divergent chains. Archives displaced events, creates a repair

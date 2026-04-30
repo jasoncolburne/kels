@@ -24,58 +24,154 @@ use crate::{
     repository::{SadEventRepository, SadStoreRepository},
 };
 
-/// Round-12 Gap 2 placeholder `IelResolver` for the SE submit handler.
+/// In-process `IelResolver` backed directly by `IdentityEventRepository`.
 ///
-/// The handler's verifier construction (`SelVerifier::new`) needs an
-/// `IelResolver` after Gap 2's signature change. Gap 4 rewrites this whole
-/// submit-handler routing block under the new sealed/unsealed matrix and
-/// will plug in a real in-process resolver wrapping the IEL repository.
-/// Until then this stub errors on every call so any code path that
-/// actually exercises cross-chain auth here fails loudly.
-struct PlaceholderIelResolver;
+/// The SE submit handler runs in the same process as the IEL repository,
+/// so cross-chain reads go through this struct rather than through
+/// `lib/policy::AnchoredIelResolver` (which page-walks an HTTP source).
+/// This impl issues per-SAID lookups against the IEL events table and
+/// gates `resolve_*_at` on `first_divergent_version` per the trait
+/// contract.
+///
+/// Round-12 deviation: `iel_chain_positions` populates
+/// `branch_marker = Some(event.said)` for post-divergence events instead
+/// of walking back to the divergence point. Documented in
+/// `/Users/jason/.claude-plan-round12-deviations.md` (Gap 0 entry); under
+/// round-12 verifier discipline, post-divergence events are structurally
+/// unreachable as ratchet inputs, so the precision loss is invisible.
+struct RepositoryIelResolver {
+    repo: Arc<crate::repository::SadStoreRepository>,
+}
+
+impl RepositoryIelResolver {
+    fn new(repo: Arc<crate::repository::SadStoreRepository>) -> Self {
+        Self { repo }
+    }
+
+    async fn fetch_event_by_said(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<Option<kels_core::IdentityEvent>, kels_core::KelsError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query =
+            verifiable_storage_postgres::Query::<kels_core::IdentityEvent>::for_table("iel_events")
+                .eq("said", said.as_ref())
+                .limit(1);
+        self.repo
+            .iel_events
+            .pool
+            .fetch(query)
+            .await
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
+            .map(|mut v| v.pop())
+    }
+}
 
 #[async_trait::async_trait]
-impl kels_core::IelResolver for PlaceholderIelResolver {
+impl kels_core::IelResolver for RepositoryIelResolver {
     async fn fetch_iel_event(
         &self,
-        _: &cesr::Digest256,
-        _: &cesr::Digest256,
+        identity: &cesr::Digest256,
+        iel_event_said: &cesr::Digest256,
     ) -> Result<kels_core::IdentityEvent, kels_core::KelsError> {
-        Err(kels_core::KelsError::InvalidIel(
-            "PlaceholderIelResolver: Gap 4 rewires the SE submit handler with a real \
-             in-process IelResolver"
-                .to_string(),
-        ))
+        let event = self.fetch_event_by_said(iel_event_said).await?.ok_or_else(|| {
+            kels_core::KelsError::InvalidIel(format!(
+                "IEL event {} not found in IEL {}",
+                iel_event_said, identity
+            ))
+        })?;
+        if event.prefix != *identity {
+            return Err(kels_core::KelsError::InvalidIel(format!(
+                "IEL event {} has prefix {} but expected identity {}",
+                iel_event_said, event.prefix, identity
+            )));
+        }
+        Ok(event)
     }
+
     async fn resolve_auth_policy_at(
         &self,
-        _: &cesr::Digest256,
-        _: &cesr::Digest256,
+        identity: &cesr::Digest256,
+        iel_event_said: &cesr::Digest256,
     ) -> Result<cesr::Digest256, kels_core::KelsError> {
-        Err(kels_core::KelsError::InvalidIel(
-            "PlaceholderIelResolver::resolve_auth_policy_at — Gap 4 wires this".to_string(),
-        ))
+        let event = self.fetch_iel_event(identity, iel_event_said).await?;
+        let divergent_at = self
+            .repo
+            .iel_events
+            .first_divergent_version(identity)
+            .await
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+        if let Some(d) = divergent_at
+            && event.version >= d
+        {
+            return Err(kels_core::KelsError::IelDivergent(format!(
+                "IEL event {} bound at version {} sits at-or-after divergence {}",
+                iel_event_said, event.version, d
+            )));
+        }
+        Ok(event.auth_policy)
     }
+
     async fn resolve_governance_policy_at(
         &self,
-        _: &cesr::Digest256,
-        _: &cesr::Digest256,
+        identity: &cesr::Digest256,
+        iel_event_said: &cesr::Digest256,
     ) -> Result<cesr::Digest256, kels_core::KelsError> {
-        Err(kels_core::KelsError::InvalidIel(
-            "PlaceholderIelResolver::resolve_governance_policy_at — Gap 4 wires this".to_string(),
-        ))
+        let event = self.fetch_iel_event(identity, iel_event_said).await?;
+        let divergent_at = self
+            .repo
+            .iel_events
+            .first_divergent_version(identity)
+            .await
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+        if let Some(d) = divergent_at
+            && event.version >= d
+        {
+            return Err(kels_core::KelsError::IelDivergent(format!(
+                "IEL event {} bound at version {} sits at-or-after divergence {}",
+                iel_event_said, event.version, d
+            )));
+        }
+        Ok(event.governance_policy)
     }
+
     async fn iel_chain_positions(
         &self,
-        _: &cesr::Digest256,
-        _: &[cesr::Digest256],
+        identity: &cesr::Digest256,
+        saids: &[cesr::Digest256],
     ) -> Result<
         std::collections::HashMap<cesr::Digest256, kels_core::IelChainPosition>,
         kels_core::KelsError,
     > {
-        Err(kels_core::KelsError::InvalidIel(
-            "PlaceholderIelResolver::iel_chain_positions — Gap 4 wires this".to_string(),
-        ))
+        if saids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let divergent_at = self
+            .repo
+            .iel_events
+            .first_divergent_version(identity)
+            .await
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+
+        let mut out = std::collections::HashMap::new();
+        for said in saids {
+            let event = self.fetch_iel_event(identity, said).await?;
+            let branch_marker = match divergent_at {
+                Some(d) if event.version >= d => Some(*said),
+                _ => None,
+            };
+            out.insert(
+                *said,
+                kels_core::IelChainPosition {
+                    version: event.version,
+                    kind: event.kind,
+                    said: *said,
+                    branch_marker,
+                },
+            );
+        }
+        Ok(out)
     }
 }
 
@@ -1286,6 +1382,29 @@ pub async fn submit_sad_events(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
+    // Round-12 inception batch rule: a batch that contains an `Icp` MUST
+    // also contain an `Upd` at v1. Enforced here at the submit handler
+    // (per-batch rule, not per-event — `validate_structure` can't see this).
+    // The Icp itself stays dedup-idempotent across submitters; only fresh
+    // inceptions without their paired v1 Upd are rejected.
+    //
+    // Round-12 deviation: Gap 6 introduces `KelsError::IncompleteInception`;
+    // until then we surface the rule violation as a generic
+    // `BAD_REQUEST` with a descriptive body. The body fragment
+    // "incomplete inception" is the load-bearing client signal.
+    let has_icp = events.iter().any(|e| e.kind.is_inception());
+    let has_v1_upd = events
+        .iter()
+        .any(|e| e.version == 1 && e.kind == kels_core::SadEventKind::Upd);
+    if has_icp && !has_v1_upd {
+        return (
+            StatusCode::BAD_REQUEST,
+            "incomplete inception: a batch containing Icp must also contain an Upd at v1"
+                .to_string(),
+        )
+            .into_response();
+    }
+
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
     let new_event_count;
@@ -1386,27 +1505,140 @@ pub async fn submit_sad_events(
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
-        // Detect repair from post-dedup events — only genuinely new Rpr events trigger repair.
-        let is_repair = new_events.iter().any(|r| r.kind.is_repair());
+        // Round-12 pre-batch state snapshots. The verifier sees existing+new
+        // events together, so a batch that *creates* a fork (overlap) shows
+        // up as divergent post-finish; we route based on the chain state
+        // BEFORE the new batch lands. Mirrors the IEL handler's hygiene
+        // (round-11 IEL fix that surfaced this self-triggering trap).
+        let pre_batch_first_divergent = match state
+            .repo
+            .sad_events
+            .first_divergent_version(sel_prefix)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query first divergent version: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        let pre_batch_seal = match state
+            .repo
+            .sad_events
+            .last_governance_version(&mut tx, sel_prefix)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query SE pre-batch seal: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        let pre_batch_contested = match state.repo.sad_events.is_contested(sel_prefix).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query SE is_contested: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+        let pre_batch_decommissioned = match state
+            .repo
+            .sad_events
+            .is_decommissioned(sel_prefix)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to query SE is_decommissioned: {}", e);
+                let _ = tx.rollback().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+            }
+        };
+
+        // Terminal-state gates: a contested or decommissioned SE chain
+        // accepts no further events of any kind. Mirrors the IEL handler.
+        if pre_batch_contested {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                format!("SE {} is contested — no further events accepted", sel_prefix),
+            )
+                .into_response();
+        }
+        if pre_batch_decommissioned {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "SE {} is decommissioned — no further events accepted",
+                    sel_prefix
+                ),
+            )
+                .into_response();
+        }
+
+        // Sealed/unsealed predicate per
+        // `docs/design/sel/reconciliation.md §Local Submissions Matrix`:
+        // a chain is *sealed-divergent* iff the divergence point is at-or-
+        // before the most recent governance evaluation
+        // (`first_divergent_version <= last_governance_version`). The seal
+        // freezes the chain past that version, so `Rpr` (which truncates)
+        // can no longer resolve the divergence — only `Cnt` can.
+        let is_divergent = pre_batch_first_divergent.is_some();
+        let is_sealed_divergent = matches!(
+            (pre_batch_first_divergent, pre_batch_seal),
+            (Some(div), Some(seal)) if seal >= div
+        );
+
+        // Per-kind detection on the batch (post-dedup). For `is_repair` we
+        // intentionally use post-dedup events: only genuinely new `Rpr`
+        // events trigger the repair path. `is_contest` / `is_decommission`
+        // follow the same convention.
+        let is_repair = new_events.iter().any(|e| e.kind.is_repair());
+        let is_contest = new_events.iter().any(|e| e.kind.is_contest());
+        let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
+
+        // Build the verifier (shared across all routing branches that need
+        // to verify the chain). `RepositoryIelResolver` reads the in-process
+        // IEL repository directly so cross-chain auth works without HTTP.
+        let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+            Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                Arc::clone(&kel_source),
+                Arc::clone(&policy_resolver),
+            ));
+        let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+            Arc::new(RepositoryIelResolver::new(state.repo.clone()));
 
         if is_repair {
-            // Query the evaluation seal before truncation — reject repairs behind the seal.
-            let last_gp_version = match state
-                .repo
-                .sad_events
-                .last_governance_version(&mut tx, sel_prefix)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("Failed to query last governance version: {}", e);
-                    let _ = tx.rollback().await;
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
-                }
-            };
+            // Routing matrix step 1: `is_repair`.
+            // - Divergent-sealed → `ContestRequired` (Rpr can't truncate
+            //   at-or-behind the seal).
+            // - Linear (clean or seal-past-tip) and divergent-unsealed →
+            //   `truncate_and_replace`. The linear-seal-past-tip case
+            //   keeps the generic "Cannot repair at version X — sealed
+            //   by evaluation at version Y" error; only the
+            //   divergent-sealed case converts to `ContestRequired`.
+            if is_sealed_divergent {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "Contest required: SE {} is sealed-divergent at version {} (seal {}) \
+                         — Rpr cannot truncate behind the seal; must Cnt instead",
+                        sel_prefix,
+                        pre_batch_first_divergent.unwrap_or(0),
+                        pre_batch_seal.unwrap_or(0),
+                    ),
+                )
+                    .into_response();
+            }
 
-            // Repair path: truncate/archive first, then verify remaining + repair events.
-            // truncate_and_replace does the archival within this transaction.
+            // Truncate / archive within this tx, then verify the
+            // post-truncation chain (which is now linear from v0 to the
+            // Rpr).
             let from_version = match state
                 .repo
                 .sad_events
@@ -1421,39 +1653,28 @@ pub async fn submit_sad_events(
                 }
             };
 
-            // Repair must not truncate behind the evaluation seal
-            if let Some(gp_version) = last_gp_version
-                && from_version <= gp_version
+            // Repair must not truncate behind the seal — guards the
+            // linear-seal-past-tip case. Generic error message preserved.
+            if let Some(seal) = pre_batch_seal
+                && from_version <= seal
             {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
                         "Cannot repair at version {} — sealed by evaluation at version {}",
-                        from_version, gp_version
+                        from_version, seal
                     ),
                 )
                     .into_response();
             }
 
-            // Repair correctness invariant: `is_repair` ⟹ at least one new
-            // event is `Rpr` ⟹ that event satisfies `evaluates_governance()`
-            // and lives at `version >= from_version` (since `from_version` is
-            // derived from these events). The "repair includes a governance
-            // evaluation" requirement is therefore enforced by the kind
-            // taxonomy — no runtime check needed. If `Rpr` is ever split
-            // into evaluating / non-evaluating subkinds, restore an explicit
-            // check here.
-
             // Now verify the entire chain (post-truncation + repair events) from scratch.
-            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
-                Arc::new(kels_policy::AnchoredPolicyChecker::new(
-                    Arc::clone(&kel_source),
-                    Arc::clone(&policy_resolver),
-                ));
-            let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
-                Arc::new(PlaceholderIelResolver);
-            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker, iel_resolver);
+            let mut verifier = kels_core::SelVerifier::new(
+                Some(sel_prefix),
+                Arc::clone(&checker),
+                Arc::clone(&iel_resolver),
+            );
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1476,45 +1697,44 @@ pub async fn submit_sad_events(
 
             if !verification.policy_satisfied() {
                 let _ = tx.rollback().await;
-                return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
-            }
-
-            // Round-12 Gap 1 stub: SE no longer carries `establishment_version`
-            // (governance lives on IEL). Gap 4 reworks this routing block
-            // entirely under the new sealed/unsealed matrix
-            // (`docs/design/sel/reconciliation.md §Local Submissions
-            // Matrix`); until then, the historical establishment seal check
-            // is gated on the seal that DOES still exist —
-            // `last_governance_version`. This preserves linear-chain
-            // refusal semantics on already-sealed chains while removing the
-            // dropped accessor.
-            if let Some(seal_version) = verification.last_governance_version()
-                && from_version <= seal_version
-            {
-                let _ = tx.rollback().await;
                 return (
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "Cannot repair at version {} — sealed by governance \
-                         evaluation at version {}",
-                        from_version, seal_version
-                    ),
+                    StatusCode::FORBIDDEN,
+                    "SE Rpr not anchored under IEL-resolved governance_policy",
                 )
                     .into_response();
             }
 
             new_event_count = new_events.len() as u32;
             should_publish = true;
-        } else {
-            // Normal path: verify existing chain + new events, then save.
-            let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
-                Arc::new(kels_policy::AnchoredPolicyChecker::new(
-                    Arc::clone(&kel_source),
-                    Arc::clone(&policy_resolver),
-                ));
-            let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
-                Arc::new(PlaceholderIelResolver);
-            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker, iel_resolver);
+        } else if is_contest {
+            // Routing matrix step 2: `is_contest`.
+            // - Linear → contest path (works always).
+            // - Divergent-unsealed → `RepairRequired` (Rpr is the natural
+            //   resolver; Cnt is reserved for sealed-divergent).
+            // - Divergent-sealed → contest path (Rpr can't truncate
+            //   behind the seal, so Cnt is the only legitimate resolver).
+            if is_divergent && !is_sealed_divergent {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "Repair required: SE {} is unsealed-divergent — must Rpr, not Cnt",
+                        sel_prefix
+                    ),
+                )
+                    .into_response();
+            }
+
+            // Verify chain with new events. Cnt has SOFT governance auth —
+            // a govfailed Cnt still lands; the verifier surfaces the
+            // chain-content-based `is_contested=true` and propagates
+            // `policy_satisfied=false`. We do NOT gate on
+            // `policy_satisfied` here.
+            let mut verifier = kels_core::SelVerifier::new(
+                Some(sel_prefix),
+                Arc::clone(&checker),
+                Arc::clone(&iel_resolver),
+            );
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1522,7 +1742,6 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return response;
             }
-
             if let Err(e) = verifier.verify_page(&new_events).await {
                 let _ = tx.rollback().await;
                 return (
@@ -1531,7 +1750,154 @@ pub async fn submit_sad_events(
                 )
                     .into_response();
             }
+            if let Err(e) = verifier.finish().await {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Chain verification failed: {}", e),
+                )
+                    .into_response();
+            }
 
+            // Insert each Cnt with `insert_event` (mirrors IEL Cnt path):
+            // bypasses `save_batch`'s divergent-rejection so a Cnt can land
+            // on a sealed-divergent chain.
+            for event in &new_events {
+                if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
+                    warn!("Failed to insert SE Cnt: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+            new_event_count = new_events.len() as u32;
+            should_publish = true;
+        } else if is_decommission {
+            // Routing matrix step 3: `is_decommission`.
+            // - Linear → decommission path.
+            // - Divergent-unsealed → `RepairRequired`.
+            // - Divergent-sealed → `ContestRequired` (Dec can't resolve a
+            //   sealed divergence; operator must Cnt instead).
+            if is_divergent && !is_sealed_divergent {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "Repair required: SE {} is unsealed-divergent — must Rpr, not Dec",
+                        sel_prefix
+                    ),
+                )
+                    .into_response();
+            }
+            if is_sealed_divergent {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "Contest required: SE {} is sealed-divergent — Dec cannot \
+                         resolve a sealed divergence; must Cnt instead",
+                        sel_prefix
+                    ),
+                )
+                    .into_response();
+            }
+
+            // Linear path: verify chain + new events (SOFT for Dec — same
+            // reasoning as Cnt above), then insert.
+            let mut verifier = kels_core::SelVerifier::new(
+                Some(sel_prefix),
+                Arc::clone(&checker),
+                Arc::clone(&iel_resolver),
+            );
+            if let Err(response) =
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
+                    .await
+            {
+                let _ = tx.rollback().await;
+                return response;
+            }
+            if let Err(e) = verifier.verify_page(&new_events).await {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("SAD event verification failed: {}", e),
+                )
+                    .into_response();
+            }
+            if let Err(e) = verifier.finish().await {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Chain verification failed: {}", e),
+                )
+                    .into_response();
+            }
+
+            for event in &new_events {
+                if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
+                    warn!("Failed to insert SE Dec: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                }
+            }
+            new_event_count = new_events.len() as u32;
+            should_publish = true;
+        } else {
+            // Routing matrix step 4 + 5 + 6/7: non-terminal, non-Rpr —
+            // `Upd` and `Sea` only at this point (Icp landed alone or
+            // alongside its v1 Upd is also handled here; the inception
+            // batch rule already enforced the v1-Upd requirement).
+            //
+            // Step 4 (chain divergent + non-terminal + non-Rpr):
+            //   - divergent-unsealed → RepairRequired
+            //   - divergent-sealed → ContestRequired
+            if is_divergent {
+                if is_sealed_divergent {
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "Contest required: SE {} is sealed-divergent — neither Rpr \
+                             nor normal append can resolve; must Cnt instead",
+                            sel_prefix
+                        ),
+                    )
+                        .into_response();
+                } else {
+                    let _ = tx.rollback().await;
+                    return (
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "Repair required: SE {} is unsealed-divergent — \
+                             cannot extend a divergent chain; must Rpr first",
+                            sel_prefix
+                        ),
+                    )
+                        .into_response();
+                }
+            }
+
+            // Linear chain. Verify existing + new; HARD for Upd/Sea so
+            // policy_satisfied=false aborts.
+            let mut verifier = kels_core::SelVerifier::new(
+                Some(sel_prefix),
+                Arc::clone(&checker),
+                Arc::clone(&iel_resolver),
+            );
+            if let Err(response) =
+                verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
+                    .await
+            {
+                let _ = tx.rollback().await;
+                return response;
+            }
+            if let Err(e) = verifier.verify_page(&new_events).await {
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("SAD event verification failed: {}", e),
+                )
+                    .into_response();
+            }
             let verification = match verifier.finish().await {
                 Ok(v) => v,
                 Err(e) => {
@@ -1546,13 +1912,47 @@ pub async fn submit_sad_events(
 
             if !verification.policy_satisfied() {
                 let _ = tx.rollback().await;
-                return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    "SE event not anchored under IEL-resolved policy",
+                )
+                    .into_response();
             }
 
+            // Step 5 (algorithmic ContestRequired): non-terminal AND
+            // non-Rpr AND `event.version <= last_governance_version` AND
+            // kind-relevant authorization passed (verifier returned
+            // policy_satisfied=true above) AND not divergent.
+            // This catches the linear-sealed-past-version case
+            // — the divergent-sealed case is already caught above.
+            if let Some(seal) = pre_batch_seal {
+                for event in &new_events {
+                    if !event.kind.is_terminal()
+                        && !event.kind.is_repair()
+                        && event.version <= seal
+                    {
+                        let _ = tx.rollback().await;
+                        return (
+                            StatusCode::FORBIDDEN,
+                            format!(
+                                "Contest required: SE {} event at version {} lands at-or-before \
+                                 governance seal {} — must Cnt instead",
+                                event.kind, event.version, seal
+                            ),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // Step 6 / 7: save_batch. `save_batch` handles the
+            // overlap-creates-fork case (a single forking event lands and
+            // the chain freezes); on a clean linear chain it's a
+            // straight append.
             match state
                 .repo
                 .sad_events
-                .save_batch(&mut tx, &new_events, verification.last_governance_version())
+                .save_batch(&mut tx, &new_events, pre_batch_seal)
                 .await
             {
                 Ok(result) => {
