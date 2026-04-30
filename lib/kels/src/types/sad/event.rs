@@ -554,7 +554,9 @@ impl SelVerification {
         if self.branches.len() != 1 {
             return None;
         }
-        self.branches.first().and_then(|b| b.last_identity_event.as_ref())
+        self.branches
+            .first()
+            .and_then(|b| b.last_identity_event.as_ref())
     }
 
     /// The lowest version at which divergence was first observed, or `None`

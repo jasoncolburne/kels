@@ -42,8 +42,8 @@ pub mod client;
 pub mod crypto;
 pub mod disclosure;
 pub mod error;
-pub mod iel_resolver;
 pub mod identity_builder;
+pub mod iel_resolver;
 pub mod merge;
 pub mod repository;
 pub mod sad;
@@ -68,7 +68,6 @@ pub use hardware::{
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use cesr::VerificationKeyCode;
-pub use iel_resolver::AnchoredIelResolver;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, NodeStatus, PeerSigner, RotateMode,
@@ -82,6 +81,7 @@ pub use crypto::{
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
 pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
+pub use iel_resolver::AnchoredIelResolver;
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use sad::{

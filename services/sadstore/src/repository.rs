@@ -400,10 +400,7 @@ impl SadEventRepository {
 
     /// True iff the chain has any `Dec` event. Mirrors
     /// `IdentityEventRepository::is_decommissioned`.
-    pub async fn is_decommissioned(
-        &self,
-        prefix: &cesr::Digest256,
-    ) -> Result<bool, StorageError> {
+    pub async fn is_decommissioned(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
         use verifiable_storage_postgres::QueryExecutor;
 
         let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
@@ -697,10 +694,9 @@ impl SadEventRepository {
         }
 
         // Pass 2 — set of prefixes that have at least one Cnt event.
-        let cnt_query =
-            verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
-                .r#in("prefix", page_prefixes.clone())
-                .eq("kind", kels_core::SadEventKind::Cnt.as_str());
+        let cnt_query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .r#in("prefix", page_prefixes.clone())
+            .eq("kind", kels_core::SadEventKind::Cnt.as_str());
         let cnt_events: Vec<SadEvent> = self.pool.fetch(cnt_query).await?;
         let contested_prefixes: HashSet<cesr::Digest256> =
             cnt_events.into_iter().map(|e| e.prefix).collect();
@@ -723,11 +719,9 @@ impl SadEventRepository {
             if let Some(dec_said) = dec_by_prefix.get(&state.prefix) {
                 state.said = *dec_said;
             } else if contested_prefixes.contains(&state.prefix) {
-                state.said =
-                    kels_core::hash_effective_said(&format!("contested:{}", state.prefix));
+                state.said = kels_core::hash_effective_said(&format!("contested:{}", state.prefix));
             } else if divergent_prefixes.contains(state.prefix.as_ref()) {
-                state.said =
-                    kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
+                state.said = kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
             }
         }
 

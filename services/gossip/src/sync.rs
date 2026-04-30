@@ -1765,12 +1765,9 @@ pub async fn run_sad_anti_entropy_loop(
                     // Round-12 Gap 8 lifecycle parity with KEL Phase 1:
                     // track whether any peer's effective SAID differs from
                     // local. If none do → `NoOp` (clear stale entry; no
-                    // retry). HTTP-success on the sync call is no longer
-                    // the success signal — we re-fetch local effective SAID
-                    // afterwards and only declare `Repaired` when the
-                    // chain actually advanced. A 200/202 followed by
-                    // server-side rejection leaves the chain unchanged →
-                    // continue to the next peer (or end → `Failed`).
+                    // retry). The success signal differs by sync direction
+                    // (see PUSH/PULL branches below); KEL Phase 1 is
+                    // PULL-only and so was the original mirror.
                     let mut any_peer_differs = false;
 
                     for (_, sadstore_url) in &ordered_peers {
@@ -1804,8 +1801,8 @@ pub async fn run_sad_anti_entropy_loop(
                             .await
                             .unwrap_or(false);
 
-                        let sync_ok = if we_have_remote {
-                            // We're ahead — push to remote
+                        if we_have_remote {
+                            // We're ahead — push to remote.
                             let use_repair = remote_divergent && !local_divergent;
                             let Ok(local_source) = local.as_sad_source() else {
                                 continue;
@@ -1832,7 +1829,18 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            kels_core::forward_sad_events(
+                            // PUSH success criterion: HTTP-2xx from
+                            // `forward_sad_events`. The remote's submit
+                            // handler runs the verifier inside the request/
+                            // response cycle, so verifier rejection surfaces
+                            // as a 4xx and `HttpSadSink::store_page`
+                            // converts it into `Err`. A successful PUSH
+                            // therefore genuinely means the remote accepted
+                            // and advanced, even though our local SAID
+                            // didn't change. Don't re-fetch local SAID
+                            // here — that's the PULL-shaped check and on
+                            // PUSH it would always return false.
+                            if kels_core::forward_sad_events(
                                 prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1842,8 +1850,11 @@ pub async fn run_sad_anti_entropy_loop(
                             )
                             .await
                             .is_ok()
+                            {
+                                return (prefix, source, retries, RepairResult::Repaired);
+                            }
                         } else {
-                            // Remote is ahead — pull from remote
+                            // Remote is ahead — pull from remote.
                             let use_repair = local_divergent && !remote_divergent;
                             let Ok(remote_source) = remote.as_sad_source() else {
                                 continue;
@@ -1867,7 +1878,15 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            kels_core::forward_sad_events(
+                            // PULL success criterion: HTTP-2xx is not
+                            // sufficient. The local sink's submit handler
+                            // runs the verifier *after* the HTTP layer
+                            // returns 2xx, so verifier rejection leaves the
+                            // chain unchanged silently. Re-fetch local
+                            // effective SAID and declare `Repaired` only
+                            // on actual advancement; otherwise continue to
+                            // the next peer.
+                            if kels_core::forward_sad_events(
                                 prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1876,29 +1895,20 @@ pub async fn run_sad_anti_entropy_loop(
                                 since_digest.as_ref(),
                             )
                             .await
-                            .is_ok()
-                        };
-
-                        // Round-12 Gap 8: HTTP-success ≠ state-advancement.
-                        // The receiver can 200/202 a sync request and then
-                        // reject events at verification time, leaving the
-                        // local chain unchanged. Re-fetch local effective
-                        // SAID; declare `Repaired` only on actual change.
-                        if !sync_ok {
-                            continue;
+                            .is_err()
+                            {
+                                continue;
+                            }
+                            let new_said = local
+                                .fetch_sel_effective_said(prefix)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|(s, _)| s);
+                            if new_said != local_said {
+                                return (prefix, source, retries, RepairResult::Repaired);
+                            }
                         }
-                        let new_said = local
-                            .fetch_sel_effective_said(prefix)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|(s, _)| s);
-                        if new_said != local_said {
-                            return (prefix, source, retries, RepairResult::Repaired);
-                        }
-                        // HTTP-success but state unchanged — continue to
-                        // the next peer (the events were rejected at the
-                        // sink's verifier). Don't return Repaired.
                     }
 
                     if any_peer_differs {

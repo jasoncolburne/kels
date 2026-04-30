@@ -259,10 +259,8 @@ impl SelVerifier {
             branch.identity
         };
 
-        let mut needed_saids: Vec<cesr::Digest256> = events
-            .iter()
-            .filter_map(|e| e.identity_event)
-            .collect();
+        let mut needed_saids: Vec<cesr::Digest256> =
+            events.iter().filter_map(|e| e.identity_event).collect();
         for branch in self.branches.values() {
             if let Some(said) = branch.last_identity_event {
                 needed_saids.push(said);
@@ -348,10 +346,7 @@ impl SelVerifier {
                         .resolve_auth_policy_at(&branch.identity, &identity_event_said)
                         .await
                 }
-                SadEventKind::Sea
-                | SadEventKind::Rpr
-                | SadEventKind::Cnt
-                | SadEventKind::Dec => {
+                SadEventKind::Sea | SadEventKind::Rpr | SadEventKind::Cnt | SadEventKind::Dec => {
                     self.iel_resolver
                         .resolve_governance_policy_at(&branch.identity, &identity_event_said)
                         .await
@@ -450,7 +445,10 @@ impl SelVerifier {
             let (new_last_governance_version, new_events_since_evaluation) = match event.kind {
                 SadEventKind::Upd => {
                     // Non-evaluation event; counter advances.
-                    (branch.last_governance_version, branch.events_since_evaluation + 1)
+                    (
+                        branch.last_governance_version,
+                        branch.events_since_evaluation + 1,
+                    )
                 }
                 SadEventKind::Sea | SadEventKind::Rpr => {
                     // Authorized governance evaluation; advances seal,
@@ -465,7 +463,10 @@ impl SelVerifier {
                     } else {
                         self.is_decommissioned = true;
                     }
-                    (branch.last_governance_version, branch.events_since_evaluation)
+                    (
+                        branch.last_governance_version,
+                        branch.events_since_evaluation,
+                    )
                 }
                 SadEventKind::Icp => unreachable!("Icp handled above"),
             };
@@ -772,9 +773,9 @@ mod tests {
             for said in saids {
                 let entry = self.events.get(said).ok_or_else(|| {
                     KelsError::BadIdentityBinding(format!(
-                    "FakeIelResolver: no event for SAID {}",
-                    said
-                ))
+                        "FakeIelResolver: no event for SAID {}",
+                        said
+                    ))
                 })?;
                 let branch_marker = match self.first_divergent_version {
                     Some(d) if entry.version >= d => Some(*said),
@@ -1191,9 +1192,11 @@ mod tests {
         let v0 = make_icp(identity);
         let v1 = make_upd(&v0, iel_icp, b"c1");
 
-        let mut verifier =
-            SelVerifier::new(Some(&v0.prefix), always_pass(), Arc::clone(&resolver));
-        verifier.verify_page(&[v0.clone(), v1.clone()]).await.unwrap();
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), Arc::clone(&resolver));
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
         let token1 = verifier.finish().await.unwrap();
         assert_eq!(token1.branches()[0].last_identity_event, Some(iel_icp));
 

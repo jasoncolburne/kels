@@ -75,12 +75,15 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         identity: &cesr::Digest256,
         iel_event_said: &cesr::Digest256,
     ) -> Result<kels_core::IdentityEvent, kels_core::KelsError> {
-        let event = self.fetch_event_by_said(iel_event_said).await?.ok_or_else(|| {
-            kels_core::KelsError::BadIdentityBinding(format!(
-                "IEL event {} not found in IEL {}",
-                iel_event_said, identity
-            ))
-        })?;
+        let event = self
+            .fetch_event_by_said(iel_event_said)
+            .await?
+            .ok_or_else(|| {
+                kels_core::KelsError::BadIdentityBinding(format!(
+                    "IEL event {} not found in IEL {}",
+                    iel_event_said, identity
+                ))
+            })?;
         if event.prefix != *identity {
             return Err(kels_core::KelsError::BadIdentityBinding(format!(
                 "IEL event {} has prefix {} but expected identity {} \
@@ -1542,19 +1545,15 @@ pub async fn submit_sad_events(
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
         };
-        let pre_batch_decommissioned = match state
-            .repo
-            .sad_events
-            .is_decommissioned(sel_prefix)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to query SE is_decommissioned: {}", e);
-                let _ = tx.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
-            }
-        };
+        let pre_batch_decommissioned =
+            match state.repo.sad_events.is_decommissioned(sel_prefix).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query SE is_decommissioned: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
 
         // Terminal-state gates: a contested or decommissioned SE chain
         // accepts no further events of any kind. Mirrors the IEL handler.
@@ -1562,7 +1561,10 @@ pub async fn submit_sad_events(
             let _ = tx.rollback().await;
             return (
                 StatusCode::FORBIDDEN,
-                format!("SE {} is contested — no further events accepted", sel_prefix),
+                format!(
+                    "SE {} is contested — no further events accepted",
+                    sel_prefix
+                ),
             )
                 .into_response();
         }
@@ -1925,9 +1927,7 @@ pub async fn submit_sad_events(
             // — the divergent-sealed case is already caught above.
             if let Some(seal) = pre_batch_seal {
                 for event in &new_events {
-                    if !event.kind.is_terminal()
-                        && !event.kind.is_repair()
-                        && event.version <= seal
+                    if !event.kind.is_terminal() && !event.kind.is_repair() && event.version <= seal
                     {
                         let _ = tx.rollback().await;
                         return (

@@ -320,11 +320,8 @@ async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
     let checker = build_checker(harness, policy.clone());
 
     // --- IEL: incept via IdentityEventBuilder, anchor in KEL, flush. ---
-    let mut iel_builder = IdentityEventBuilder::new(
-        Some(sad_client.clone()),
-        None,
-        Some(Arc::clone(&checker)),
-    );
+    let mut iel_builder =
+        IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(Arc::clone(&checker)));
     let iel_topic = format!("{}/{}", TEST_IEL_TOPIC, label);
     let iel_icp_said = iel_builder
         .incept(policy.said, policy.said, iel_topic)
@@ -389,7 +386,10 @@ fn assert_err_contains<T: std::fmt::Debug>(
     context: &str,
 ) {
     match result {
-        Ok(value) => panic!("{}: expected error containing {:?}, got Ok({:?})", context, fragment, value),
+        Ok(value) => panic!(
+            "{}: expected error containing {:?}, got Ok({:?})",
+            context, fragment, value
+        ),
         Err(err) => {
             let msg = err.to_string();
             assert!(
@@ -552,11 +552,14 @@ async fn create_iel_divergence(
     // these synthetic policies.
     let fake_endorser_a = Digest256::blake3_256(format!("fake-endorser-a-{label}").as_bytes());
     let fake_endorser_b = Digest256::blake3_256(format!("fake-endorser-b-{label}").as_bytes());
-    let policy_a = Policy::build(&format!("endorse({})", fake_endorser_a), None, true)
-        .expect("policy a");
-    let policy_b = Policy::build(&format!("endorse({})", fake_endorser_b), None, true)
-        .expect("policy b");
-    assert_ne!(policy_a.said, policy_b.said, "[{label}] policies must differ");
+    let policy_a =
+        Policy::build(&format!("endorse({})", fake_endorser_a), None, true).expect("policy a");
+    let policy_b =
+        Policy::build(&format!("endorse({})", fake_endorser_b), None, true).expect("policy b");
+    assert_ne!(
+        policy_a.said, policy_b.said,
+        "[{label}] policies must differ"
+    );
 
     setup
         .sad_client
@@ -637,11 +640,7 @@ async fn verify_chain_with_policies(
 
 /// Seal the SE chain with a `Sea` event. Mutates the chain on the
 /// server; returns the seal event's SAID.
-async fn seal_se_chain(
-    setup: &mut Setup,
-    v1_or_later: &SadEvent,
-    label: &str,
-) -> SadEvent {
+async fn seal_se_chain(setup: &mut Setup, v1_or_later: &SadEvent, label: &str) -> SadEvent {
     let sea = SadEvent::sea(v1_or_later, setup.iel_icp_said).expect("build Sea");
     setup
         .kel_builder
@@ -840,7 +839,10 @@ async fn submit_lands_govfailed_cnt_chain_becomes_contested_with_policy_unsatisf
         .submit_sad_events(std::slice::from_ref(&cnt))
         .await
         .expect("Cnt should land via SOFT path despite govfail");
-    assert!(resp.applied, "Cnt must commit (terminal-event SOFT mapping)");
+    assert!(
+        resp.applied,
+        "Cnt must commit (terminal-event SOFT mapping)"
+    );
 
     // Verify the chain end-to-end: terminal flag content-based,
     // policy_satisfied=false. Chain effective SAID is the Dec/Cnt's own
@@ -903,18 +905,17 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
 
     let prefix = *builder.prefix().expect("prefix");
     let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
-    assert!(v.is_decommissioned(), "is_decommissioned must be set content-based");
+    assert!(
+        v.is_decommissioned(),
+        "is_decommissioned must be set content-based"
+    );
     assert!(!v.is_contested());
     assert!(!v.policy_satisfied());
 
     // Subsequent submits refused with "is decommissioned".
     let further_content = upload_content(&setup.sad_client, "post-dec").await;
-    let further_upd = SadEvent::upd(
-        v.current_event(),
-        setup.iel_icp_said,
-        further_content,
-    )
-    .expect("build Upd");
+    let further_upd =
+        SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).expect("build Upd");
     let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
     assert_err_contains(
         result,
@@ -964,7 +965,11 @@ async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
         .interact_batch(&[v2_a.said, v2_b.said])
         .await
         .unwrap();
-    let _ = setup.sad_client.submit_sad_events(&[v2_a]).await.expect("v2_a");
+    let _ = setup
+        .sad_client
+        .submit_sad_events(&[v2_a])
+        .await
+        .expect("v2_a");
     let div_resp = setup
         .sad_client
         .submit_sad_events(&[v2_b])
@@ -1080,19 +1085,18 @@ async fn contest_terminates_chain() {
 
     let prefix = *builder.prefix().expect("prefix");
     let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
-    assert!(v.is_contested(), "is_contested must be true after Cnt lands");
+    assert!(
+        v.is_contested(),
+        "is_contested must be true after Cnt lands"
+    );
     assert!(
         v.policy_satisfied(),
         "anchored Cnt has governance auth — policy_satisfied stays true"
     );
 
     let further_content = upload_content(&setup.sad_client, "post-contest").await;
-    let further_upd = SadEvent::upd(
-        v.current_event(),
-        setup.iel_icp_said,
-        further_content,
-    )
-    .unwrap();
+    let further_upd =
+        SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
     let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
     assert_err_contains(
         result,
@@ -1128,10 +1132,7 @@ async fn decommission_terminates_chain() {
         .unwrap();
     let _ = builder.flush().await.expect("flush incept");
 
-    let dec_said = builder
-        .decommission()
-        .await
-        .expect("stage Dec via builder");
+    let dec_said = builder.decommission().await.expect("stage Dec via builder");
     setup
         .kel_builder
         .interact(&dec_said)
@@ -1147,12 +1148,8 @@ async fn decommission_terminates_chain() {
     assert!(v.policy_satisfied(), "anchored Dec has governance auth");
 
     let further_content = upload_content(&setup.sad_client, "post-dec").await;
-    let further_upd = SadEvent::upd(
-        v.current_event(),
-        setup.iel_icp_said,
-        further_content,
-    )
-    .unwrap();
+    let further_upd =
+        SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
     let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
     assert_err_contains(
         result,
@@ -1178,8 +1175,7 @@ async fn builder_decommission_fail_fasts_on_divergent_chain() {
     // refreshed `with_prefix` builder can hydrate the owner's view from
     // local. Server-side divergence (created below) is detected at
     // `decommission()` time via `verify_server_chain_pre_action`.
-    let owner_store: Arc<dyn kels_core::SadStore> =
-        Arc::new(kels_core::InMemorySadStore::new());
+    let owner_store: Arc<dyn kels_core::SadStore> = Arc::new(kels_core::InMemorySadStore::new());
 
     let mut builder = SadEventBuilder::new(
         Some(setup.sad_client.clone()),
@@ -1227,10 +1223,7 @@ async fn builder_decommission_fail_fasts_on_divergent_chain() {
     .expect("with_prefix on divergent chain");
     let result = div_builder.decommission().await;
     assert!(
-        matches!(
-            result,
-            Err(KelsError::DecommissionBlockedByDivergence(_))
-        ),
+        matches!(result, Err(KelsError::DecommissionBlockedByDivergence(_))),
         "decommission on divergent must error DecommissionBlockedByDivergence, got {:?}",
         result
     );
@@ -1255,12 +1248,10 @@ fn compute_sad_event_prefix_uses_identity_and_topic() {
     assert_eq!(p1, p2, "deterministic on identical inputs");
 
     let id2 = Digest256::blake3_256(b"identity-B");
-    let p_other_id =
-        kels_core::compute_sad_event_prefix(id2, "kels/sad/v1/topic-1").unwrap();
+    let p_other_id = kels_core::compute_sad_event_prefix(id2, "kels/sad/v1/topic-1").unwrap();
     assert_ne!(p1, p_other_id, "different identity → different prefix");
 
-    let p_other_topic =
-        kels_core::compute_sad_event_prefix(id, "kels/sad/v1/topic-2").unwrap();
+    let p_other_topic = kels_core::compute_sad_event_prefix(id, "kels/sad/v1/topic-2").unwrap();
     assert_ne!(p1, p_other_topic, "different topic → different prefix");
 
     // Round-trip: build an Icp with the same inputs and verify its
@@ -1434,7 +1425,10 @@ async fn submit_lands_iel_divergent_cnt_chain_becomes_contested_with_policy_unsa
     )
     .await;
     assert!(v.is_contested(), "is_contested set content-based");
-    assert!(!v.policy_satisfied(), "IelDivergent soft path → policy_satisfied=false");
+    assert!(
+        !v.policy_satisfied(),
+        "IelDivergent soft path → policy_satisfied=false"
+    );
 }
 
 /// `Dec` binding to a divergent-IEL post-divergence event → SOFT path
@@ -1818,7 +1812,10 @@ async fn active_sealed_chain_accepts_dec_terminates_decommissioned() {
     let prefix = dec.prefix;
     let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
     assert!(v.is_decommissioned());
-    assert!(v.policy_satisfied(), "anchored Dec post-seal stays policy-satisfied");
+    assert!(
+        v.policy_satisfied(),
+        "anchored Dec post-seal stays policy-satisfied"
+    );
 }
 
 /// Upd binds to a later IEL Evl after the IEL evolved post-Icp →
@@ -1869,11 +1866,8 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
 // scope via this dead helper so a future in-process gossip test can
 // use them without re-importing.
 #[allow(dead_code)]
-fn _gossip_cases_deferred_to_deployment_test() -> (
-    Option<IdentityEvent>,
-    Option<IelVerification>,
-    fn(),
-) {
+fn _gossip_cases_deferred_to_deployment_test()
+-> (Option<IdentityEvent>, Option<IelVerification>, fn()) {
     (None, None, || {})
 }
 

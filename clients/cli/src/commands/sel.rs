@@ -57,8 +57,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, prefix: &str) -> Result<()> {
 }
 
 pub(crate) fn cmd_sel_prefix(identity: &str, topic: &str) -> Result<()> {
-    let identity_digest =
-        cesr::Digest256::from_qb64(identity).context("Invalid identity CESR")?;
+    let identity_digest = cesr::Digest256::from_qb64(identity).context("Invalid identity CESR")?;
     let prefix = kels_core::compute_sad_event_prefix(identity_digest, topic)
         .context("Failed to compute SEL prefix")?;
     println!("{}", prefix);

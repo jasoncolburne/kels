@@ -201,9 +201,7 @@ pub enum KelsError {
     /// `Upd` at v1. The inception batch rule (`docs/design/sel/events.md`)
     /// requires `[Icp, Upd, ...]` minimum so every chain is born with both
     /// content and an IEL binding; lone-Icp batches are rejected.
-    #[error(
-        "Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1"
-    )]
+    #[error("Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1")]
     IncompleteInception(String),
 
     /// Round-12: an SE event's `identity_event` binding is structurally

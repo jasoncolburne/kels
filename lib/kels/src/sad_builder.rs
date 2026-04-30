@@ -36,7 +36,9 @@ use crate::{
     AnchoredIelResolver, KelsError,
     client::SadStoreClient,
     store::SadStore,
-    types::{IdentityEventKind, IelResolver, PolicyChecker, SadEvent, SelVerification, SelVerifier},
+    types::{
+        IdentityEventKind, IelResolver, PolicyChecker, SadEvent, SelVerification, SelVerifier,
+    },
 };
 
 /// Outcome of a successful `SadEventBuilder::flush`.
@@ -188,9 +190,7 @@ impl SadEventBuilder {
             // `Icp` and any governance-evaluating kind reset the counter;
             // everything else (only `Upd` in practice) increments. Folded
             // into one arm to satisfy `clippy::if_same_then_else`.
-            if event.kind == crate::types::SadEventKind::Icp
-                || event.kind.evaluates_governance()
-            {
+            if event.kind == crate::types::SadEventKind::Icp || event.kind.evaluates_governance() {
                 count = 0;
             } else {
                 count += 1;
@@ -288,9 +288,12 @@ impl SadEventBuilder {
         self.require_incepted()?;
         self.require_non_terminal()?;
 
-        let server_view = self.verify_server_chain_pre_action().await?.ok_or_else(|| {
-            KelsError::OfflineMode("repair requires sad_client + checker for pre-flight".into())
-        })?;
+        let server_view = self
+            .verify_server_chain_pre_action()
+            .await?
+            .ok_or_else(|| {
+                KelsError::OfflineMode("repair requires sad_client + checker for pre-flight".into())
+            })?;
 
         if !server_view.policy_satisfied() {
             return Err(KelsError::ChainHasUnverifiedEvents(
@@ -415,8 +418,7 @@ impl SadEventBuilder {
 
         if self.is_divergent_view(server_view.as_ref()) {
             return Err(KelsError::DecommissionBlockedByDivergence(
-                "chain is divergent — use contest() (sealed) or repair() (unsealed) instead"
-                    .into(),
+                "chain is divergent — use contest() (sealed) or repair() (unsealed) instead".into(),
             ));
         }
 
@@ -538,9 +540,7 @@ impl SadEventBuilder {
     /// `checker`. Errors if either is missing. Used per-verify-call —
     /// the `iel_client` (= `sad_client`) is the durable handle; the
     /// resolver is ephemeral.
-    fn build_iel_resolver(
-        &self,
-    ) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
+    fn build_iel_resolver(&self) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
         let client = self.sad_client.as_ref().ok_or_else(|| {
             KelsError::OfflineMode("IelResolver construction requires a SadStoreClient".into())
         })?;
@@ -568,9 +568,7 @@ impl SadEventBuilder {
     /// Verify the server's view of the chain. Returns `None` if any of
     /// `sad_client` / `checker` / `prefix` is missing (offline-staging
     /// flows). Mirrors `IdentityEventBuilder::verify_server_chain_pre_action`.
-    async fn verify_server_chain_pre_action(
-        &self,
-    ) -> Result<Option<SelVerification>, KelsError> {
+    async fn verify_server_chain_pre_action(&self) -> Result<Option<SelVerification>, KelsError> {
         let (Some(client), Some(checker), Some(prefix)) = (
             self.sad_client.as_ref(),
             self.checker.as_ref(),
@@ -595,14 +593,10 @@ impl SadEventBuilder {
         identity: &cesr::Digest256,
     ) -> Result<cesr::Digest256, KelsError> {
         let client = self.sad_client.as_ref().ok_or_else(|| {
-            KelsError::OfflineMode(
-                "fetch_current_iel_binding requires a SadStoreClient".into(),
-            )
+            KelsError::OfflineMode("fetch_current_iel_binding requires a SadStoreClient".into())
         })?;
         let checker = self.checker.as_ref().ok_or_else(|| {
-            KelsError::OfflineMode(
-                "fetch_current_iel_binding requires a PolicyChecker".into(),
-            )
+            KelsError::OfflineMode("fetch_current_iel_binding requires a PolicyChecker".into())
         })?;
         let verification = client
             .verify_identity_events(identity, Arc::clone(checker))
@@ -630,7 +624,10 @@ impl SadEventBuilder {
         // carry policy state forward). Terminal IEL kinds (Cnt / Dec)
         // shouldn't be reachable here because we just gated on
         // `is_contested` / `is_decommissioned`, but stay defensive.
-        if matches!(current.kind, IdentityEventKind::Cnt | IdentityEventKind::Dec) {
+        if matches!(
+            current.kind,
+            IdentityEventKind::Cnt | IdentityEventKind::Dec
+        ) {
             return Err(KelsError::InvalidIel(format!(
                 "IEL {}'s current event is terminal kind {} — cannot bind SE \
                  events to a terminated IEL",
@@ -665,9 +662,7 @@ impl SadEventBuilder {
             // tip SAID at `SelVerifier::finish`, so the first entry is
             // the lower-SAID one.
             let branch = view.branches().first().ok_or_else(|| {
-                KelsError::InvalidKel(
-                    "verification has no branches — impossible per finish".into(),
-                )
+                KelsError::InvalidKel("verification has no branches — impossible per finish".into())
             })?;
             return Ok(branch.tip.clone());
         }
@@ -725,8 +720,7 @@ impl SadEventBuilder {
     fn require_non_terminal(&self) -> Result<(), KelsError> {
         if self.is_terminal() {
             return Err(KelsError::InvalidKel(
-                "chain has already terminated (Cnt or Dec) — no further events accepted"
-                    .into(),
+                "chain has already terminated (Cnt or Dec) — no further events accepted".into(),
             ));
         }
         Ok(())

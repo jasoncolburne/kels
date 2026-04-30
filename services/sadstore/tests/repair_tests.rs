@@ -147,10 +147,12 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, events: &[SadEvent]
 /// builder's staging methods; Gap 10 will swap this back to the
 /// `incept_chain` flow once Gap 5 ships.
 fn build_chain(kel_prefix: &str, topic: &str, count: usize) -> Vec<SadEvent> {
-    assert!(count >= 2, "build_chain requires count >= 2 (v0 Icp + v1 Upd)");
+    assert!(
+        count >= 2,
+        "build_chain requires count >= 2 (v0 Icp + v1 Upd)"
+    );
     let identity = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let iel_evt =
-        cesr::Digest256::blake3_256(format!("{}-iel-event-stub", kel_prefix).as_bytes());
+    let iel_evt = cesr::Digest256::blake3_256(format!("{}-iel-event-stub", kel_prefix).as_bytes());
 
     let mut events = Vec::with_capacity(count);
     let v0 = SadEvent::icp(topic, identity).unwrap();
