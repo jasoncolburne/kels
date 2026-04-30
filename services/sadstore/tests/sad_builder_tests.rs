@@ -281,6 +281,11 @@ struct Setup {
     /// Type-erased policy checker bound to the harness's KEL service.
     /// Cloning is cheap (`Arc`); per-builder construction uses `Arc::clone`.
     checker: Arc<dyn PolicyChecker + Send + Sync>,
+    /// The original endorse(KEL_PREFIX) policy used for both auth +
+    /// governance on the IEL Icp. Tests that introduce additional
+    /// policies (e.g., via `create_iel_divergence`) thread this through
+    /// `verify_chain_with_policies` to seed the in-memory resolver.
+    policy: Policy,
 }
 
 async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
@@ -346,6 +351,7 @@ async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
         iel_icp_said,
         sad_client,
         checker,
+        policy,
     }
 }
 
@@ -438,6 +444,245 @@ async fn verify_chain(
         .verify_sad_events(prefix, Arc::clone(&setup.checker), resolver)
         .await
         .expect("verify chain")
+}
+
+/// Stage and flush a fresh `[Icp, Upd]` SE chain bound to the IEL in
+/// `setup`. Returns the v1 (Upd) event for callers that need to extend
+/// the chain further.
+async fn establish_se_chain(setup: &mut Setup, label: &str) -> SadEvent {
+    let content = upload_content(&setup.sad_client, label).await;
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        None,
+        Some(Arc::clone(&setup.checker)),
+    );
+    let (icp_said, upd_said) = builder
+        .incept_chain(setup.iel_prefix, TEST_TOPIC, content)
+        .await
+        .unwrap_or_else(|e| panic!("incept_chain [{}]: {:?}", label, e));
+    setup
+        .kel_builder
+        .interact_batch(&[icp_said, upd_said])
+        .await
+        .unwrap_or_else(|e| panic!("anchor incept [{}]: {:?}", label, e));
+    let _ = builder
+        .flush()
+        .await
+        .unwrap_or_else(|e| panic!("flush incept [{}]: {:?}", label, e));
+    builder.last_event().cloned().expect("v1 tip after flush")
+}
+
+/// Evolve the IEL one step: stage an `Evl` carrying the existing
+/// auth/governance policies forward, anchor in the KEL, submit. Returns
+/// the new IEL event's SAID.
+///
+/// Hand-built rather than via `IdentityEventBuilder::with_prefix` because
+/// `with_prefix` would need an `IdentityStore` to hydrate from, and the
+/// test harness skips that to keep setup lean.
+async fn evolve_iel(setup: &mut Setup, _label: &str) -> Digest256 {
+    use kels_core::IdentityEventKind;
+    use verifiable_storage::Chained;
+
+    let iel_chain: Vec<IdentityEvent> = setup
+        .sad_client
+        .fetch_identity_events(&setup.iel_prefix, None)
+        .await
+        .expect("fetch IEL")
+        .events;
+    let tip = iel_chain.into_iter().last().expect("non-empty IEL");
+
+    let mut evl = tip.clone();
+    evl.kind = IdentityEventKind::Evl;
+    // Carry-forward unchanged: same auth_policy / governance_policy.
+    evl.increment().unwrap();
+
+    setup.kel_builder.interact(&evl.said).await.unwrap();
+    let _ = setup
+        .sad_client
+        .submit_identity_events(std::slice::from_ref(&evl))
+        .await
+        .expect("submit IEL Evl");
+    evl.said
+}
+
+/// Create IEL divergence: two competing v1 `Evl` events at the same
+/// version, submitted in **one batch** so the IEL handler's per-batch
+/// `save_batch` overlap-creates-fork path fires before the seal-check
+/// would block subsequent submissions.
+///
+/// The two Evls differ via a `poison` discriminator on the auth_policy
+/// (same endorse-form expression, different `poison` value → different
+/// SAIDs, both satisfiable under the same KEL endorser). Both new
+/// policies are immune so the IEL Evl immunity check passes.
+///
+/// Returns `(evl_a_said, evl_b_said, vec_of_new_policies)`. Tests that
+/// run `verify_chain` post-divergence should pass the new policies via
+/// `verify_chain_with_policies` so the test's `InMemoryPolicyResolver`
+/// can resolve them during IEL re-verification.
+async fn create_iel_divergence(
+    setup: &mut Setup,
+    label: &str,
+) -> (Digest256, Digest256, Vec<Policy>) {
+    use kels_core::IdentityEventKind;
+    use verifiable_storage::Chained;
+
+    let iel_chain: Vec<IdentityEvent> = setup
+        .sad_client
+        .fetch_identity_events(&setup.iel_prefix, None)
+        .await
+        .expect("fetch IEL")
+        .events;
+    assert_eq!(
+        iel_chain.len(),
+        1,
+        "[{label}] expected single Icp before divergence"
+    );
+    let icp = iel_chain.into_iter().next().unwrap();
+
+    // Build two policies that differ in their endorse-target. Both
+    // must be IMMUNE (per IEL verifier rule on evolved policies); the
+    // round-12 `Policy::build` rejects `Some(poison)` paired with
+    // `immune=true` (mutually exclusive), so we differentiate via the
+    // expression itself. The endorse target is a synthetic Digest256
+    // unique to this test label — never used as a real KEL prefix, so
+    // the policies are unsatisfiable in practice. That's fine: this
+    // helper only needs the IEL Evls to LAND (governance check uses
+    // the original tracked policy; immunity check passes since
+    // `immune=true`). No SE chain we build here ever extends under
+    // these synthetic policies.
+    let fake_endorser_a = Digest256::blake3_256(format!("fake-endorser-a-{label}").as_bytes());
+    let fake_endorser_b = Digest256::blake3_256(format!("fake-endorser-b-{label}").as_bytes());
+    let policy_a = Policy::build(&format!("endorse({})", fake_endorser_a), None, true)
+        .expect("policy a");
+    let policy_b = Policy::build(&format!("endorse({})", fake_endorser_b), None, true)
+        .expect("policy b");
+    assert_ne!(policy_a.said, policy_b.said, "[{label}] policies must differ");
+
+    setup
+        .sad_client
+        .post_sad_object(&serde_json::to_value(&policy_a).unwrap())
+        .await
+        .expect("upload policy a");
+    setup
+        .sad_client
+        .post_sad_object(&serde_json::to_value(&policy_b).unwrap())
+        .await
+        .expect("upload policy b");
+
+    let mut evl_a = icp.clone();
+    evl_a.kind = IdentityEventKind::Evl;
+    evl_a.auth_policy = policy_a.said;
+    evl_a.increment().unwrap();
+
+    let mut evl_b = icp.clone();
+    evl_b.kind = IdentityEventKind::Evl;
+    evl_b.auth_policy = policy_b.said;
+    evl_b.increment().unwrap();
+
+    setup
+        .kel_builder
+        .interact_batch(&[evl_a.said, evl_b.said])
+        .await
+        .unwrap_or_else(|e| panic!("anchor IEL Evl divergent [{label}]: {e:?}"));
+
+    // Submit BOTH Evls in one batch. `save_batch` sees pre-batch
+    // seal=None so the second Evl triggers overlap-creates-fork. If
+    // we submitted them in separate batches, after the first lands
+    // pre-batch seal becomes 1 → the second hits the seal-check and
+    // gets rejected with "Cannot fork at version 1 — sealed".
+    let _ = setup
+        .sad_client
+        .submit_identity_events(&[evl_a.clone(), evl_b.clone()])
+        .await
+        .unwrap_or_else(|e| panic!("submit IEL Evl batch [{label}]: {e:?}"));
+
+    (evl_a.said, evl_b.said, vec![policy_a, policy_b])
+}
+
+/// Verify a chain with extra policies registered in the
+/// `InMemoryPolicyResolver`. Used by IelDivergent tests where
+/// `create_iel_divergence` introduces new policies that the default
+/// `setup.checker` doesn't know about.
+async fn verify_chain_with_policies(
+    sad_client: &SadStoreClient,
+    harness: &SharedHarness,
+    base_policy: Policy,
+    extra: Vec<Policy>,
+    prefix: &Digest256,
+) -> kels_core::SelVerification {
+    use kels_core::{AnchoredIelResolver, IelResolver, PagedIelSource};
+    let mut all = vec![base_policy];
+    all.extend(extra);
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = Arc::new(
+        kels_core::HttpKelSource::new(&harness.kels_url, "/api/v1/kels/kel/fetch")
+            .expect("kel source"),
+    );
+    let resolver_inner: Arc<dyn PolicyResolver + Send + Sync> =
+        Arc::new(InMemoryPolicyResolver::new(all));
+    let checker: Arc<dyn PolicyChecker + Send + Sync> =
+        Arc::new(AnchoredPolicyChecker::new(kel_source, resolver_inner));
+    let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
+        Arc::new(sad_client.as_iel_source().expect("iel source"));
+    let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(AnchoredIelResolver::new(
+        iel_source,
+        Arc::clone(&checker),
+        kels_core::page_size(),
+        kels_core::max_pages(),
+    ));
+    sad_client
+        .verify_sad_events(prefix, checker, iel_resolver)
+        .await
+        .expect("verify chain with policies")
+}
+
+/// Seal the SE chain with a `Sea` event. Mutates the chain on the
+/// server; returns the seal event's SAID.
+async fn seal_se_chain(
+    setup: &mut Setup,
+    v1_or_later: &SadEvent,
+    label: &str,
+) -> SadEvent {
+    let sea = SadEvent::sea(v1_or_later, setup.iel_icp_said).expect("build Sea");
+    setup
+        .kel_builder
+        .interact(&sea.said)
+        .await
+        .unwrap_or_else(|e| panic!("anchor Sea [{label}]: {e:?}"));
+    let _ = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&sea))
+        .await
+        .unwrap_or_else(|e| panic!("submit Sea [{label}]: {e:?}"));
+    sea
+}
+
+/// Submit two competing Upd events at the next version to create
+/// server-side divergence on the SE chain. Returns the two events.
+async fn create_se_divergence(
+    setup: &mut Setup,
+    tip: &SadEvent,
+    label: &str,
+) -> (SadEvent, SadEvent) {
+    let content_a = upload_content(&setup.sad_client, &format!("{label}-a")).await;
+    let content_b = upload_content(&setup.sad_client, &format!("{label}-b")).await;
+    let v_a = SadEvent::upd(tip, setup.iel_icp_said, content_a).unwrap();
+    let v_b = SadEvent::upd(tip, setup.iel_icp_said, content_b).unwrap();
+    setup
+        .kel_builder
+        .interact_batch(&[v_a.said, v_b.said])
+        .await
+        .unwrap();
+    let _ = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&v_a))
+        .await
+        .unwrap();
+    let _ = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&v_b))
+        .await
+        .unwrap();
+    (v_a, v_b)
 }
 
 // ==================== Tests ====================
@@ -991,13 +1236,640 @@ async fn builder_decommission_fail_fasts_on_divergent_chain() {
     );
 }
 
+// ==================== Gap 10b: remaining taxonomy ====================
+//
+// The cases below complete the round-12 plan's prescribed test list,
+// minus the four gossip-propagation cases (which require a 2-SADStore
+// harness — deferred to deployment-test sweep).
+
+/// Pin the prefix-derivation contract: `compute_sad_event_prefix(identity, topic)`
+/// returns the same digest the server's verifier checks against.
+/// Pure-Rust unit test — no harness needed; lives in this file alongside
+/// the full-stack tests because the contract is the foundation they
+/// rest on.
+#[test]
+fn compute_sad_event_prefix_uses_identity_and_topic() {
+    let id = Digest256::blake3_256(b"identity-A");
+    let p1 = kels_core::compute_sad_event_prefix(id, "kels/sad/v1/topic-1").unwrap();
+    let p2 = kels_core::compute_sad_event_prefix(id, "kels/sad/v1/topic-1").unwrap();
+    assert_eq!(p1, p2, "deterministic on identical inputs");
+
+    let id2 = Digest256::blake3_256(b"identity-B");
+    let p_other_id =
+        kels_core::compute_sad_event_prefix(id2, "kels/sad/v1/topic-1").unwrap();
+    assert_ne!(p1, p_other_id, "different identity → different prefix");
+
+    let p_other_topic =
+        kels_core::compute_sad_event_prefix(id, "kels/sad/v1/topic-2").unwrap();
+    assert_ne!(p1, p_other_topic, "different topic → different prefix");
+
+    // Round-trip: build an Icp with the same inputs and verify its
+    // prefix matches the standalone helper.
+    let icp = SadEvent::icp("kels/sad/v1/topic-1", id).unwrap();
+    assert_eq!(icp.prefix, p1, "Icp prefix derivation matches helper");
+}
+
+/// `Upd` whose `identity_event` doesn't exist in the IEL → server
+/// rejects with `BadIdentityBinding`-class error. The CESR digest of an
+/// unrelated label can't be in any IEL's `policy_history`, so the
+/// resolver returns `BadIdentityBinding` (not found).
+#[tokio::test]
+#[serial]
+async fn update_rejects_when_identity_event_unknown_in_iel() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "upd-unknown-iel-event").await;
+    let v1 = establish_se_chain(&mut setup, "upd-unknown-iel-event").await;
+
+    // Bind to a SAID that isn't any IEL event.
+    let bogus_iel_event = Digest256::blake3_256(b"not-an-iel-event-for-this-identity");
+    let content = upload_content(&setup.sad_client, "post-bogus").await;
+    let upd = SadEvent::upd(&v1, bogus_iel_event, content).unwrap();
+    setup.kel_builder.interact(&upd.said).await.unwrap();
+
+    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    assert_err_contains(
+        result,
+        "Bad identity binding",
+        "unknown identity_event must surface BadIdentityBinding",
+    );
+}
+
+/// `Upd` whose `identity_event` exists but lives in a DIFFERENT IEL
+/// (prefix mismatch) → `BadIdentityBinding`. Defense-in-depth against
+/// cross-IEL contamination.
+#[tokio::test]
+#[serial]
+async fn update_rejects_when_identity_event_prefix_mismatches_branch_identity() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    // Setup #1: chain bound to IEL-A.
+    let mut setup_a = setup_kel_iel_policy(harness, "upd-prefix-mismatch-A").await;
+    let v1 = establish_se_chain(&mut setup_a, "upd-prefix-mismatch-A").await;
+
+    // Setup #2: a separate IEL-B (same KEL would conflict; use a
+    // different label so a fresh KEL is created). The `iel_icp_said`
+    // returned belongs to IEL-B and is NOT in IEL-A's `policy_history`.
+    let setup_b = setup_kel_iel_policy(harness, "upd-prefix-mismatch-B").await;
+
+    // Bind setup_a's chain to setup_b's IEL Icp — prefix mismatch.
+    let content = upload_content(&setup_a.sad_client, "cross-iel").await;
+    let upd = SadEvent::upd(&v1, setup_b.iel_icp_said, content).unwrap();
+    setup_a.kel_builder.interact(&upd.said).await.unwrap();
+
+    let result = setup_a.sad_client.submit_sad_events(&[upd]).await;
+    assert_err_contains(
+        result,
+        "Bad identity binding",
+        "cross-IEL identity_event must surface BadIdentityBinding",
+    );
+}
+
+/// `Upd` whose `identity_event` regresses the chain's monotonic ratchet
+/// in IEL chain order → `BadIdentityBinding(monotonic)`. Sequence: bind
+/// v1 to a later IEL Evl, then bind v2 to the earlier IEL Icp (regression).
+#[tokio::test]
+#[serial]
+async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "monotonic-regression").await;
+
+    // Evolve the IEL once to give us a later Evl event to bind v1 to.
+    let iel_evl_said = evolve_iel(&mut setup, "monotonic-regression").await;
+
+    // Build the SE chain manually so v1 binds to the LATER IEL event
+    // (Evl), then attempt v2 binding to the EARLIER IEL Icp.
+    let initial_content = upload_content(&setup.sad_client, "monotonic-init").await;
+    let icp = SadEvent::icp(TEST_TOPIC, setup.iel_prefix).unwrap();
+    let upd = SadEvent::upd(&icp, iel_evl_said, initial_content).unwrap();
+    setup
+        .kel_builder
+        .interact_batch(&[icp.said, upd.said])
+        .await
+        .unwrap();
+    let _ = setup
+        .sad_client
+        .submit_sad_events(&[icp.clone(), upd.clone()])
+        .await
+        .expect("incept ratcheted to IEL Evl");
+
+    // v2 binds to the EARLIER IEL Icp → regression.
+    let regress_content = upload_content(&setup.sad_client, "monotonic-regress").await;
+    let v2 = SadEvent::upd(&upd, setup.iel_icp_said, regress_content).unwrap();
+    setup.kel_builder.interact(&v2.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[v2]).await;
+    assert_err_contains(
+        result,
+        "regresses prior ratchet",
+        "ratchet regression must surface BadIdentityBinding(monotonic)",
+    );
+}
+
+/// `Upd` binding to a divergent-IEL post-divergence event → HARD reject
+/// with `IelDivergent`. The Upd is an advancement event; it cannot rest
+/// on an unstable IEL state.
+#[tokio::test]
+#[serial]
+async fn update_rejects_when_bound_iel_event_lives_on_divergent_iel_branch() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "iel-divergent-upd").await;
+
+    // 1. Establish a clean SE chain so we have a v1 tip.
+    let v1 = establish_se_chain(&mut setup, "iel-divergent-upd-base").await;
+
+    // 2. Create IEL divergence at v1 (two competing Evl events).
+    let (evl_a, _evl_b, _new_policies) =
+        create_iel_divergence(&mut setup, "iel-divergent-upd").await;
+
+    // 3. Bind a new SE Upd to one of the post-divergence IEL events.
+    //    HARD reject expected.
+    let content = upload_content(&setup.sad_client, "post-iel-div").await;
+    let upd = SadEvent::upd(&v1, evl_a, content).unwrap();
+    setup.kel_builder.interact(&upd.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    assert_err_contains(
+        result,
+        "IEL is divergent",
+        "Upd binding to post-divergence IEL event must HARD-fail",
+    );
+}
+
+/// `Cnt` binding to a divergent-IEL post-divergence event → SOFT path
+/// lands; chain becomes contested; `policy_satisfied=false`.
+/// Symmetric to the anchor-fail soft case in Gap 10a.
+#[tokio::test]
+#[serial]
+async fn submit_lands_iel_divergent_cnt_chain_becomes_contested_with_policy_unsatisfied() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "iel-divergent-soft-cnt").await;
+    let v1 = establish_se_chain(&mut setup, "iel-divergent-soft-cnt").await;
+    let (evl_a, _evl_b, new_policies) =
+        create_iel_divergence(&mut setup, "iel-divergent-soft-cnt").await;
+
+    // Cnt bound to a post-divergence IEL event — SOFT.
+    let cnt = SadEvent::cnt(&v1, evl_a).unwrap();
+    setup.kel_builder.interact(&cnt.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&cnt))
+        .await
+        .expect("Cnt soft-passes IelDivergent for terminal kinds");
+    assert!(resp.applied);
+
+    let prefix = cnt.prefix;
+    let v = verify_chain_with_policies(
+        &setup.sad_client,
+        harness,
+        setup.policy.clone(),
+        new_policies,
+        &prefix,
+    )
+    .await;
+    assert!(v.is_contested(), "is_contested set content-based");
+    assert!(!v.policy_satisfied(), "IelDivergent soft path → policy_satisfied=false");
+}
+
+/// `Dec` binding to a divergent-IEL post-divergence event → SOFT path
+/// lands; chain becomes decommissioned; `policy_satisfied=false`.
+#[tokio::test]
+#[serial]
+async fn submit_lands_iel_divergent_dec_chain_becomes_decommissioned_with_policy_unsatisfied() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "iel-divergent-soft-dec").await;
+    let v1 = establish_se_chain(&mut setup, "iel-divergent-soft-dec").await;
+    let (evl_a, _evl_b, new_policies) =
+        create_iel_divergence(&mut setup, "iel-divergent-soft-dec").await;
+
+    let dec = SadEvent::dec(&v1, evl_a).unwrap();
+    setup.kel_builder.interact(&dec.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&dec))
+        .await
+        .expect("Dec soft-passes IelDivergent for terminal kinds");
+    assert!(resp.applied);
+
+    let prefix = dec.prefix;
+    let v = verify_chain_with_policies(
+        &setup.sad_client,
+        harness,
+        setup.policy.clone(),
+        new_policies,
+        &prefix,
+    )
+    .await;
+    assert!(v.is_decommissioned(), "is_decommissioned set content-based");
+    assert!(!v.is_contested());
+    assert!(!v.policy_satisfied());
+}
+
+/// Pre-divergence shared IEL events resolve cleanly even when the IEL
+/// is divergent: an SE Upd binding to the IEL Icp (pre-divergence)
+/// succeeds even after the IEL has diverged at v1.
+#[tokio::test]
+#[serial]
+async fn pre_divergence_iel_event_resolves_even_when_iel_is_divergent() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "iel-divergent-pre-shared").await;
+    let v1 = establish_se_chain(&mut setup, "iel-divergent-pre-shared").await;
+    let _ = create_iel_divergence(&mut setup, "iel-divergent-pre-shared").await;
+
+    // Bind v2 to the IEL Icp — pre-divergence shared event. HARD pass.
+    let content = upload_content(&setup.sad_client, "pre-div-content").await;
+    let v2 = SadEvent::upd(&v1, setup.iel_icp_said, content).unwrap();
+    setup.kel_builder.interact(&v2.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(&[v2])
+        .await
+        .expect("pre-divergence IEL Icp resolves cleanly");
+    assert!(resp.applied);
+}
+
+/// `Sea` advances `last_governance_version` and ratchets
+/// `last_identity_event` forward.
+#[tokio::test]
+#[serial]
+async fn seal_advances_last_governance_version_and_ratchets() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "seal-advances").await;
+
+    // Evolve the IEL so we have a later non-terminal IEL event to bind
+    // the seal to (round-12 builder picks the most recent IEL Icp/Evl).
+    let iel_evl_said = evolve_iel(&mut setup, "seal-advances").await;
+
+    let v1 = establish_se_chain(&mut setup, "seal-advances").await;
+
+    // Build the seal directly so we control the binding (the builder's
+    // `seal()` would also pick the latest IEL Evl; this manual path
+    // makes the binding explicit in the test body).
+    let sea = SadEvent::sea(&v1, iel_evl_said).unwrap();
+    setup.kel_builder.interact(&sea.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&sea))
+        .await
+        .expect("Sea lands");
+    assert!(resp.applied);
+
+    let prefix = sea.prefix;
+    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    assert_eq!(
+        v.last_governance_version(),
+        Some(sea.version),
+        "Sea must advance last_governance_version to the seal's version"
+    );
+    assert_eq!(
+        v.last_identity_event(),
+        Some(&iel_evl_said),
+        "Sea must ratchet last_identity_event to the bound IEL Evl"
+    );
+    assert!(v.policy_satisfied());
+}
+
+/// Repair after divergence: chain has [Icp, Upd], two competing v2
+/// events create divergence, owner Rpr at v2 with `previous = v1.said`
+/// resolves it. Server's `truncate_and_replace` archives both v2 forks
+/// and inserts the Rpr.
+#[tokio::test]
+#[serial]
+async fn repair_resolves_divergence_archives_adversary_events() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "repair-divergence").await;
+    let v1 = establish_se_chain(&mut setup, "repair-divergence").await;
+
+    // Create SE divergence.
+    let (_v_a, _v_b) = create_se_divergence(&mut setup, &v1, "repair-divergence").await;
+
+    // Build Rpr at v2 with previous = v1.said. Server's is_repair path
+    // archives the two v2 forks and inserts the Rpr.
+    let rpr = SadEvent::rpr(&v1, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&rpr.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&rpr))
+        .await
+        .expect("Rpr lands");
+    assert!(resp.applied);
+
+    let prefix = rpr.prefix;
+    let chain = fetch_chain(&setup.sad_client, &prefix).await;
+    // Post-repair the chain is linear: [Icp, Upd, Rpr]; the two v2
+    // forks were archived.
+    assert_eq!(chain.len(), 3, "post-repair chain should be linear");
+    assert_eq!(chain[2].kind, kels_core::SadEventKind::Rpr);
+    assert_eq!(chain[2].said, rpr.said);
+}
+
+/// `Cnt` on a sealed-divergent chain: lands. Sealed-divergent means
+/// `first_divergent_version <= last_governance_version` — `Rpr` cannot
+/// truncate behind the seal, so `Cnt` is the only legitimate resolver.
+///
+/// **Single-node-untestable** (5-test family below): the sealed-divergent
+/// state requires a fork at-or-behind the seal, but
+/// `SadEventRepository::save_batch`'s seal check rejects exactly that
+/// case ("Cannot fork at version X — sealed by evaluation at version Y").
+/// In production the state arises transiently across federation when
+/// node-A authors a Sea at the same version where node-B authored a
+/// competing Upd before the two synced. Single-node tests can't
+/// reproduce that race; a future Gap 10c could either (a) add a
+/// test-only insert API that bypasses the seal-check, or (b) build a
+/// 2-SADStore harness with gossip wiring. Until then the routing
+/// branches are exercised at unit level (Gap 4 routing matrix in
+/// `services/sadstore/src/handlers.rs::submit_sad_events`) and via
+/// the Heisenbug deployment-test sweep.
+#[tokio::test]
+#[serial]
+#[ignore = "single-node harness can't reach sealed-divergent state — see doc"]
+async fn sealed_divergent_chain_accepts_cnt_terminates_with_contested() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "sealed-div-accepts-cnt").await;
+    let v1 = establish_se_chain(&mut setup, "sealed-div-accepts-cnt").await;
+
+    // Seal first (advances last_governance_version to v2), THEN diverge
+    // by submitting two competing v3 events — divergence at v3, seal at
+    // v2 → sealed-divergent (seal >= div).
+    let sea = seal_se_chain(&mut setup, &v1, "sealed-div-accepts-cnt").await;
+    let (_v3a, _v3b) = create_se_divergence(&mut setup, &sea, "sealed-div-accepts-cnt").await;
+
+    // Cnt extending the lower-SAID branch tip lands.
+    let prefix = sea.prefix;
+    let chain = fetch_chain(&setup.sad_client, &prefix).await;
+    let post_seal_tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
+    let cnt = SadEvent::cnt(&post_seal_tip, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&cnt.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&cnt))
+        .await
+        .expect("Cnt accepts on sealed-divergent");
+    assert!(resp.applied);
+
+    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    assert!(v.is_contested());
+}
+
+/// `Dec` on a sealed-divergent chain: rejected with `ContestRequired`.
+/// Dec cannot resolve a sealed divergence; operator must Cnt instead.
+///
+/// See `sealed_divergent_chain_accepts_cnt_terminates_with_contested`
+/// for why this 5-test family is `#[ignore]`'d in single-node testing.
+#[tokio::test]
+#[serial]
+#[ignore = "single-node harness can't reach sealed-divergent state"]
+async fn sealed_divergent_chain_rejects_dec_with_contest_required() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "sealed-div-rejects-dec").await;
+    let v1 = establish_se_chain(&mut setup, "sealed-div-rejects-dec").await;
+    let sea = seal_se_chain(&mut setup, &v1, "sealed-div-rejects-dec").await;
+    let (_v3a, _v3b) = create_se_divergence(&mut setup, &sea, "sealed-div-rejects-dec").await;
+
+    let prefix = sea.prefix;
+    let chain = fetch_chain(&setup.sad_client, &prefix).await;
+    let tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
+    let dec = SadEvent::dec(&tip, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&dec.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[dec]).await;
+    assert_err_contains(
+        result,
+        "Contest required",
+        "Dec on sealed-divergent must route to Cnt",
+    );
+}
+
+/// `Upd` on a sealed-divergent chain: rejected with `ContestRequired`.
+/// Cannot Rpr behind the seal AND cannot extend a divergent chain → Cnt
+/// is the only legitimate next move.
+///
+/// See `sealed_divergent_chain_accepts_cnt_terminates_with_contested`
+/// for why this 5-test family is `#[ignore]`'d in single-node testing.
+#[tokio::test]
+#[serial]
+#[ignore = "single-node harness can't reach sealed-divergent state"]
+async fn sealed_divergent_chain_rejects_upd_with_contest_required() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "sealed-div-rejects-upd").await;
+    let v1 = establish_se_chain(&mut setup, "sealed-div-rejects-upd").await;
+    let sea = seal_se_chain(&mut setup, &v1, "sealed-div-rejects-upd").await;
+    let (_v3a, _v3b) = create_se_divergence(&mut setup, &sea, "sealed-div-rejects-upd").await;
+
+    let prefix = sea.prefix;
+    let chain = fetch_chain(&setup.sad_client, &prefix).await;
+    let tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
+    let content = upload_content(&setup.sad_client, "sealed-div-upd").await;
+    let upd = SadEvent::upd(&tip, setup.iel_icp_said, content).unwrap();
+    setup.kel_builder.interact(&upd.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    assert_err_contains(
+        result,
+        "Contest required",
+        "Upd on sealed-divergent must route to Cnt",
+    );
+}
+
+/// `Sea` on a sealed-divergent chain: rejected with `ContestRequired`.
+///
+/// See `sealed_divergent_chain_accepts_cnt_terminates_with_contested`
+/// for why this 5-test family is `#[ignore]`'d in single-node testing.
+#[tokio::test]
+#[serial]
+#[ignore = "single-node harness can't reach sealed-divergent state"]
+async fn sealed_divergent_chain_rejects_sea_with_contest_required() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "sealed-div-rejects-sea").await;
+    let v1 = establish_se_chain(&mut setup, "sealed-div-rejects-sea").await;
+    let sea = seal_se_chain(&mut setup, &v1, "sealed-div-rejects-sea").await;
+    let (_v3a, _v3b) = create_se_divergence(&mut setup, &sea, "sealed-div-rejects-sea").await;
+
+    let prefix = sea.prefix;
+    let chain = fetch_chain(&setup.sad_client, &prefix).await;
+    let tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
+    let sea2 = SadEvent::sea(&tip, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&sea2.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[sea2]).await;
+    assert_err_contains(
+        result,
+        "Contest required",
+        "Sea on sealed-divergent must route to Cnt",
+    );
+}
+
+/// `Rpr` on a sealed-divergent chain: rejected with `ContestRequired`.
+/// The sealed-divergent state foreclosed Rpr's resolution path.
+///
+/// See `sealed_divergent_chain_accepts_cnt_terminates_with_contested`
+/// for why this 5-test family is `#[ignore]`'d in single-node testing.
+#[tokio::test]
+#[serial]
+#[ignore = "single-node harness can't reach sealed-divergent state"]
+async fn sealed_divergent_chain_rejects_rpr_with_contest_required() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "sealed-div-rejects-rpr").await;
+    let v1 = establish_se_chain(&mut setup, "sealed-div-rejects-rpr").await;
+    let sea = seal_se_chain(&mut setup, &v1, "sealed-div-rejects-rpr").await;
+    let (_v3a, _v3b) = create_se_divergence(&mut setup, &sea, "sealed-div-rejects-rpr").await;
+
+    // Build Rpr at v3 (or whatever version below the seal) — should
+    // reject with ContestRequired since seal is past it.
+    let rpr = SadEvent::rpr(&sea, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&rpr.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[rpr]).await;
+    assert_err_contains(
+        result,
+        "Contest required",
+        "Rpr on sealed-divergent must route to Cnt",
+    );
+}
+
+/// Algorithmic ContestRequired: linear-sealed chain, Upd authored at
+/// `version <= last_governance_version` (= the seal). The verifier
+/// passes the auth check (Upd is anchored), but the routing matrix's
+/// step-5 algorithmic trigger fires → 403 with "Contest required".
+///
+/// Setup: extend the chain past the seal so we have something to land,
+/// but also re-author at-or-below the seal. Easiest construction:
+/// build the chain to v3 (Icp, Upd, Sea, Upd) cleanly, then submit a
+/// SECOND Upd at v3 — same version as the latest event, would create a
+/// fork at v3 EXCEPT the matrix routes pre-batch divergence through
+/// algorithmic trigger before save_batch sees it.
+///
+/// Pre-batch: chain is linear with seal at v2 (Sea). Authoring an Upd
+/// at v2 (= seal version) triggers the algorithmic check.
+#[tokio::test]
+#[serial]
+async fn contest_after_seal_via_algorithmic_trigger() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "algorithmic-contest").await;
+    let v1 = establish_se_chain(&mut setup, "algorithmic-contest").await;
+
+    // Seal at v2.
+    let sea = seal_se_chain(&mut setup, &v1, "algorithmic-contest").await;
+    assert_eq!(sea.version, 2);
+
+    // Author an Upd extending v1 → version = 2, same as sea. The chain
+    // is linear (sea is the only event at v2), so the algorithmic
+    // step-5 trigger fires (kind-relevant auth_policy passes — Upd is
+    // anchored — but version <= seal).
+    let content = upload_content(&setup.sad_client, "algorithmic-contest").await;
+    let upd_at_seal = SadEvent::upd(&v1, setup.iel_icp_said, content).unwrap();
+    setup.kel_builder.interact(&upd_at_seal.said).await.unwrap();
+    let result = setup.sad_client.submit_sad_events(&[upd_at_seal]).await;
+    assert_err_contains(
+        result,
+        "Contest required",
+        "Upd at version <= seal on linear chain must algorithmically ContestRequired",
+    );
+}
+
+/// `Dec` on a chain whose seal has advanced past the submitter's tip
+/// lands cleanly — `Dec` is terminal so the algorithmic-`ContestRequired`
+/// trigger excludes it (Gap 4 routing step 6.5 gates non-terminal AND
+/// non-Rpr only).
+#[tokio::test]
+#[serial]
+async fn active_sealed_chain_accepts_dec_terminates_decommissioned() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "active-sealed-dec").await;
+    let v1 = establish_se_chain(&mut setup, "active-sealed-dec").await;
+
+    // Seal advances past v1 (sea is at v2).
+    let sea = seal_se_chain(&mut setup, &v1, "active-sealed-dec").await;
+
+    // Author a Dec at v3 extending the seal (linear, post-seal).
+    let dec = SadEvent::dec(&sea, setup.iel_icp_said).unwrap();
+    setup.kel_builder.interact(&dec.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&dec))
+        .await
+        .expect("Dec lands on linear sealed chain");
+    assert!(resp.applied);
+
+    let prefix = dec.prefix;
+    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    assert!(v.is_decommissioned());
+    assert!(v.policy_satisfied(), "anchored Dec post-seal stays policy-satisfied");
+}
+
+/// Upd binds to a later IEL Evl after the IEL evolved post-Icp →
+/// chain advances; ratchet visible on the verification token.
+#[tokio::test]
+#[serial]
+async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "upd-binds-later-evl").await;
+
+    // Establish the SE chain (binds to IEL Icp).
+    let v1 = establish_se_chain(&mut setup, "upd-binds-later-evl").await;
+
+    // Evolve the IEL.
+    let evl_said = evolve_iel(&mut setup, "upd-binds-later-evl").await;
+
+    // Author a v2 Upd binding to the new IEL Evl.
+    let content = upload_content(&setup.sad_client, "post-evl").await;
+    let upd = SadEvent::upd(&v1, evl_said, content).unwrap();
+    setup.kel_builder.interact(&upd.said).await.unwrap();
+    let resp = setup
+        .sad_client
+        .submit_sad_events(std::slice::from_ref(&upd))
+        .await
+        .expect("Upd binds to later IEL Evl cleanly");
+    assert!(resp.applied);
+
+    let prefix = upd.prefix;
+    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    assert_eq!(
+        v.last_identity_event(),
+        Some(&evl_said),
+        "branch ratchet must advance to the IEL Evl"
+    );
+    assert!(v.policy_satisfied());
+}
+
 // ==================== Suppress unused-import warnings ====================
 //
-// `IdentityEvent`, `IelVerification`, `fetch_effective` are reserved for
-// Gap 10b's expanded test taxonomy (gossip propagation, sealed-divergent
-// matrix coverage, etc.).
+// The 4 gossip-propagation cases (full-chain to empty sink, Cnt to
+// divergent sink, Cnt/Dec to active sink) need a 2-SADStore harness
+// that's outside this file's scope; per the round-12 plan they're
+// covered by the Heisenbug-carry-forward deployment-test sweep
+// (`clients/test/scripts/test-sadstore.sh` × 50+ runs after Gap 11).
+// `IdentityEvent` / `IelVerification` / `fetch_effective` are kept in
+// scope via this dead helper so a future in-process gossip test can
+// use them without re-importing.
 #[allow(dead_code)]
-fn _gap_10b_reserved() -> (
+fn _gossip_cases_deferred_to_deployment_test() -> (
     Option<IdentityEvent>,
     Option<IelVerification>,
     fn(),
@@ -1006,6 +1878,9 @@ fn _gap_10b_reserved() -> (
 }
 
 #[allow(dead_code)]
-async fn _gap_10b_unused_helpers(sad_client: &SadStoreClient, prefix: &Digest256) {
+async fn _deferred_helper_keeps_fetch_effective_in_scope(
+    sad_client: &SadStoreClient,
+    prefix: &Digest256,
+) {
     let _ = fetch_effective(sad_client, prefix).await;
 }
