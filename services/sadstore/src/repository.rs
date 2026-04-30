@@ -349,7 +349,7 @@ impl SadEventRepository {
             .r#in(
                 "kind",
                 vec![
-                    kels_core::SadEventKind::Evl.as_str().to_string(),
+                    kels_core::SadEventKind::Sea.as_str().to_string(),
                     kels_core::SadEventKind::Rpr.as_str().to_string(),
                 ],
             )

@@ -1422,16 +1422,25 @@ pub async fn submit_sad_events(
                 return (StatusCode::FORBIDDEN, "write_policy not authorized").into_response();
             }
 
-            // Repair must not truncate at or before the establishment point
-            if let Some(est_version) = verification.establishment_version()
-                && from_version <= est_version
+            // Round-12 Gap 1 stub: SE no longer carries `establishment_version`
+            // (governance lives on IEL). Gap 4 reworks this routing block
+            // entirely under the new sealed/unsealed matrix
+            // (`docs/design/sel/reconciliation.md §Local Submissions
+            // Matrix`); until then, the historical establishment seal check
+            // is gated on the seal that DOES still exist —
+            // `last_governance_version`. This preserves linear-chain
+            // refusal semantics on already-sealed chains while removing the
+            // dropped accessor.
+            if let Some(seal_version) = verification.last_governance_version()
+                && from_version <= seal_version
             {
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "Cannot repair at version {} — establishment event at version {}",
-                        from_version, est_version
+                        "Cannot repair at version {} — sealed by governance \
+                         evaluation at version {}",
+                        from_version, seal_version
                     ),
                 )
                     .into_response();

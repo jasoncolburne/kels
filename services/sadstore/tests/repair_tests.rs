@@ -10,7 +10,7 @@ use std::{sync::OnceLock, time::Duration};
 use tokio::{sync::OnceCell, time::sleep};
 
 use ctor::dtor;
-use kels_core::{SadEvent, SadEventBuilder};
+use kels_core::SadEvent;
 use serial_test::serial;
 use testcontainers::{ContainerAsync, Image, core::ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -138,25 +138,33 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, events: &[SadEvent]
     tx.commit().await.unwrap();
 }
 
-/// Build a chain of `count` events using the standard "discoverable" shape:
-/// bare v0 `Icp` + v1 `Est` (governance declaration) + subsequent `Upd` events.
-/// Matches what real callers produce via `incept_deterministic`, so these
-/// repository tests exercise realistic chain layouts rather than
-/// governance-absent shapes the verifier would reject.
+/// Build a chain of `count` events. Round-12 Gap-1 shape: v0 `Icp` (bound
+/// to an `identity`) + (`count`-1) `Upd` events binding to a stub IEL
+/// event. The `kel_prefix` argument is reused as the identity-derivation
+/// salt so existing callers' uniqueness assumptions hold.
+///
+/// Bypasses `SadEventBuilder` entirely since round-12 Gap 1 stubs the
+/// builder's staging methods; Gap 10 will swap this back to the
+/// `incept_chain` flow once Gap 5 ships.
 fn build_chain(kel_prefix: &str, topic: &str, count: usize) -> Vec<SadEvent> {
-    assert!(
-        count >= 2,
-        "build_chain requires count >= 2 (v0 Icp + v1 Est)"
-    );
-    let wp = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
-    let gp = cesr::Digest256::blake3_256(format!("{}-gp", kel_prefix).as_bytes());
-    let mut builder = SadEventBuilder::new(None, None, None);
-    builder.incept_deterministic(topic, wp, gp, None).unwrap();
-    for i in 2..count {
+    assert!(count >= 2, "build_chain requires count >= 2 (v0 Icp + v1 Upd)");
+    let identity = cesr::Digest256::blake3_256(kel_prefix.as_bytes());
+    let iel_evt =
+        cesr::Digest256::blake3_256(format!("{}-iel-event-stub", kel_prefix).as_bytes());
+
+    let mut events = Vec::with_capacity(count);
+    let v0 = SadEvent::icp(topic, identity).unwrap();
+    events.push(v0.clone());
+    let mut prev = v0;
+
+    for i in 1..count {
         let content = cesr::Digest256::blake3_256(format!("content_{}", i).as_bytes());
-        builder.update(content).unwrap();
+        let next = SadEvent::upd(&prev, iel_evt, content).unwrap();
+        events.push(next.clone());
+        prev = next;
     }
-    builder.pending_events().to_vec()
+
+    events
 }
 
 /// Build a replacement chain starting at `from_version`, linking to `previous_said`.
@@ -182,9 +190,11 @@ fn build_replacement(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
         custody: None,
-        write_policy: None, // Rpr forbids write_policy
+        identity: None,
+        identity_event: Some(cesr::Digest256::blake3_256(
+            format!("iel-event-{}", content_tag).as_bytes(),
+        )),
         kind: kels_core::SadEventKind::Rpr,
-        governance_policy: None,
     };
     event.derive_said().unwrap();
     events.push(event.clone());

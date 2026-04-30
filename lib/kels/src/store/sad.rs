@@ -726,9 +726,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store: Arc<dyn SadStore> = Arc::new(FileSadStore::new(temp.path()).await.unwrap());
 
-        let wp = test_digest("wp");
-        let gp = test_digest("gp");
-        let v0 = SadEvent::icp("kels/concurrent-test", wp, Some(gp)).unwrap();
+        let identity = test_digest("identity");
+        let iel_evt = test_digest("iel-event");
+        let v0 = SadEvent::icp("kels/concurrent-test", identity).unwrap();
         let prefix = v0.prefix;
 
         // Seed v0 first so all subsequent events chain off a known event.
@@ -741,7 +741,8 @@ mod tests {
         // care that all 200 SAIDs land in the index.
         let mut events = Vec::with_capacity(200);
         for i in 0..200u64 {
-            let mut event = SadEvent::upd(&v0, test_digest(&format!("content-{i}"))).unwrap();
+            let mut event =
+                SadEvent::upd(&v0, iel_evt, test_digest(&format!("content-{i}"))).unwrap();
             // Force distinct SAIDs even though the v1 fork shape would
             // collide on (version, previous). `upd` already differentiates
             // on content, so each event has a unique SAID.
@@ -791,9 +792,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store = FileSadStore::new(temp.path()).await.unwrap();
 
-        let wp = test_digest("wp");
-        let gp = test_digest("gp");
-        let v0 = SadEvent::icp("kels/payload-missing-test", wp, Some(gp)).unwrap();
+        let identity = test_digest("identity");
+        let v0 = SadEvent::icp("kels/payload-missing-test", identity).unwrap();
         let prefix = v0.prefix;
         let said = v0.said;
         store.store_sel_event(&v0).await.unwrap();
@@ -827,9 +827,8 @@ mod tests {
 
         let store = InMemorySadStore::new();
 
-        let wp = test_digest("wp");
-        let gp = test_digest("gp");
-        let v0 = SadEvent::icp("kels/payload-missing-mem-test", wp, Some(gp)).unwrap();
+        let identity = test_digest("identity");
+        let v0 = SadEvent::icp("kels/payload-missing-mem-test", identity).unwrap();
         let prefix = v0.prefix;
         let said = v0.said;
         store.store_sel_event(&v0).await.unwrap();

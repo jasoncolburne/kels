@@ -619,16 +619,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_divergence_detection_at_page_boundary() {
-        let wp = test_digest(b"write-policy");
-        let gp = test_digest(b"governance-policy");
+        let identity = test_digest(b"identity");
+        let iel_evt = test_digest(b"iel-event");
 
-        // Build a chain: v0 (declares governance_policy), v1, then two events at v2 (divergence)
-        let v0 = SadEvent::icp("kels/test", wp, Some(gp)).unwrap();
-        let v1 = SadEvent::upd(&v0, test_digest(b"content1")).unwrap();
+        // Build a chain: v0 (Icp bound to identity), v1 (Upd), then two
+        // conflicting events at v2 (divergence).
+        let v0 = SadEvent::icp("kels/test", identity).unwrap();
+        let v1 = SadEvent::upd(&v0, iel_evt, test_digest(b"content1")).unwrap();
 
         // Two conflicting v2 events (same previous = v1.said)
-        let v2_a = SadEvent::upd(&v1, test_digest(b"content2a")).unwrap();
-        let v2_b = SadEvent::upd(&v1, test_digest(b"content2b")).unwrap();
+        let v2_a = SadEvent::upd(&v1, iel_evt, test_digest(b"content2a")).unwrap();
+        let v2_b = SadEvent::upd(&v1, iel_evt, test_digest(b"content2b")).unwrap();
 
         let prefix = v0.prefix;
 

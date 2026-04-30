@@ -506,12 +506,12 @@ async fn flush_submits_and_absorbs() {
         outcome.diverged_at_at_submit
     );
 
-    // Server-side: chain readable via fetch_sad_events.
-    let sel_prefix = compute_sad_event_prefix(
-        *builder.sad_verification().unwrap().write_policy(),
-        TEST_TOPIC,
-    )
-    .unwrap();
+    // Server-side: chain readable via fetch_sad_events. (Round-12 Gap 1:
+    // the dropped `write_policy` accessor is replaced with the verified
+    // prefix directly — `compute_sad_event_prefix` is exercised in
+    // `lib/kels/src/types/sad/event.rs` tests; this test no longer needs
+    // to recompute since the chain's prefix is already verified.)
+    let sel_prefix = *builder.sad_verification().unwrap().prefix();
     let page = sad_client
         .fetch_sad_events(&sel_prefix, None)
         .await
@@ -634,8 +634,11 @@ async fn submit_dedup_returns_current_divergence_signal() {
         .clone();
     let content_a = upload_publication(&sad_client, "fork-a").await;
     let content_b = upload_publication(&sad_client, "fork-b").await;
-    let v2_a = SadEvent::upd(&v1_event, content_a).unwrap();
-    let v2_b = SadEvent::upd(&v1_event, content_b).unwrap();
+    // Round-12 Gap 1 stub iel_event placeholder; Gap 10 rewrites this test
+    // to thread a real IEL binding via the new builder API.
+    let iel_evt = Digest256::blake3_256(b"iel-event-stub");
+    let v2_a = SadEvent::upd(&v1_event, iel_evt, content_a).unwrap();
+    let v2_b = SadEvent::upd(&v1_event, iel_evt, content_b).unwrap();
 
     // Anchor both forks in the same KEL — the policy check evaluates each
     // event's SAID against the KEL anchors, and both SAIDs need to resolve.
@@ -737,8 +740,9 @@ async fn flush_repair_heals_divergent_chain() {
         .clone();
     let content_a = upload_publication(&sad_client, "divergent-repair-a").await;
     let content_b = upload_publication(&sad_client, "divergent-repair-b").await;
-    let v2_a = SadEvent::upd(&v1_event, content_a).unwrap();
-    let v2_b = SadEvent::upd(&v1_event, content_b).unwrap();
+    let iel_evt = Digest256::blake3_256(b"iel-event-stub-divergent");
+    let v2_a = SadEvent::upd(&v1_event, iel_evt, content_a).unwrap();
+    let v2_b = SadEvent::upd(&v1_event, iel_evt, content_b).unwrap();
     kel_builder.interact(&v2_a.said).await.unwrap();
     kel_builder.interact(&v2_b.said).await.unwrap();
 
@@ -934,7 +938,12 @@ async fn flush_repair_heals_adversarially_extended_chain() {
     let mut adv_events = Vec::new();
     for i in 0..3 {
         let content = upload_publication(&sad_client, &format!("adversary-extension-{}", i)).await;
-        let event = SadEvent::upd(&adv_prev, content).unwrap();
+        let event = SadEvent::upd(
+            &adv_prev,
+            Digest256::blake3_256(b"iel-event-stub-adv"),
+            content,
+        )
+        .unwrap();
         kel_builder.interact(&event.said).await.unwrap();
         let r = sad_client
             .submit_sad_events(std::slice::from_ref(&event))
@@ -1213,7 +1222,12 @@ async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
     // This is the linear-extension case (round-10 case taxonomy: A0 / no
     // divergence on server, just owner's view is stale).
     let adv_content = upload_publication(&sad_client, "long-chain-adversary").await;
-    let adv_event = SadEvent::upd(&owner_tip, adv_content).unwrap();
+    let adv_event = SadEvent::upd(
+        &owner_tip,
+        Digest256::blake3_256(b"iel-event-stub-long"),
+        adv_content,
+    )
+    .unwrap();
     kel_builder.interact(&adv_event.said).await.unwrap();
     let r = sad_client
         .submit_sad_events(std::slice::from_ref(&adv_event))
