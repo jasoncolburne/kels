@@ -821,7 +821,7 @@ mod tests {
     // ==================== Helpers to build SE chains ====================
 
     fn make_icp(identity: cesr::Digest256) -> SadEvent {
-        SadEvent::icp(TEST_TOPIC, identity).unwrap()
+        SadEvent::icp(identity, TEST_TOPIC).unwrap()
     }
 
     fn make_upd(prev: &SadEvent, iel_evt: cesr::Digest256, content_label: &[u8]) -> SadEvent {

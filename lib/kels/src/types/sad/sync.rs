@@ -626,7 +626,7 @@ mod tests {
 
         // Build a chain: v0 (Icp bound to identity), v1 (Upd), then two
         // conflicting events at v2 (divergence).
-        let v0 = SadEvent::icp("kels/test", identity).unwrap();
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
         let v1 = SadEvent::upd(&v0, iel_evt, test_digest(b"content1")).unwrap();
 
         // Two conflicting v2 events (same previous = v1.said)

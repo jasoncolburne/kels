@@ -222,7 +222,7 @@ pub fn compute_sad_event_prefix(
     identity: cesr::Digest256,
     topic: impl Into<String>,
 ) -> Result<cesr::Digest256, KelsError> {
-    Ok(SadEvent::icp(topic, identity)?.prefix)
+    Ok(SadEvent::icp(identity, topic)?.prefix)
 }
 
 impl SadEvent {
@@ -232,7 +232,7 @@ impl SadEvent {
     /// chain prefix is derived from `(identity, topic)`. Inception is
     /// permissionless — no authorization check fires until the v1 `Upd` lands
     /// (per the inception batch rule enforced by the submit handler).
-    pub fn icp(topic: impl Into<String>, identity: cesr::Digest256) -> Result<Self, KelsError> {
+    pub fn icp(identity: cesr::Digest256, topic: impl Into<String>) -> Result<Self, KelsError> {
         let event = Self::create(
             topic.into(),
             SadEventKind::Icp,
@@ -546,10 +546,14 @@ impl SelVerification {
     /// when the chain is linear, `None` on divergent chains. Computed on
     /// demand from per-branch state.
     ///
-    /// On a divergent chain the per-branch values may live on different
-    /// IEL post-divergence branches and have no canonical ordering;
-    /// callers needing the full picture iterate `branches()` and consult
-    /// the resolver themselves.
+    /// On divergent chains the accessor returns `None` because deriving
+    /// a canonical chain-wide value requires comparing per-branch
+    /// positions via `IelChainPosition::try_cmp`, which needs a resolver
+    /// — the synchronous accessor has none. (Per-branch values themselves
+    /// compare cleanly: the verifier's Update precondition keeps the
+    /// ratchet pinned to non-divergent IEL positions; the limit is the
+    /// accessor's API, not the data.) Callers needing the full picture
+    /// iterate `branches()` and consult the resolver.
     pub fn last_identity_event(&self) -> Option<&cesr::Digest256> {
         if self.branches.len() != 1 {
             return None;
@@ -632,7 +636,7 @@ mod tests {
     #[test]
     fn test_icp_constructor_round_trip() {
         let id = test_identity();
-        let event = SadEvent::icp(TEST_TOPIC, id).unwrap();
+        let event = SadEvent::icp(id, TEST_TOPIC).unwrap();
         assert_eq!(event.version, 0);
         assert!(event.previous.is_none());
         assert!(event.content.is_none());
@@ -646,7 +650,7 @@ mod tests {
     #[test]
     fn test_upd_constructor_carries_identity_event_and_content() {
         let id = test_identity();
-        let v0 = SadEvent::icp(TEST_TOPIC, id).unwrap();
+        let v0 = SadEvent::icp(id, TEST_TOPIC).unwrap();
         let iel_evt = test_iel_event();
         let content = test_digest(b"some-content");
 
@@ -663,7 +667,7 @@ mod tests {
     #[test]
     fn test_sea_preserves_previous_content() {
         let id = test_identity();
-        let v0 = SadEvent::icp(TEST_TOPIC, id).unwrap();
+        let v0 = SadEvent::icp(id, TEST_TOPIC).unwrap();
         let iel_evt_a = test_digest(b"iel-a");
         let v1 = SadEvent::upd(&v0, iel_evt_a, test_digest(b"content-v1")).unwrap();
 
@@ -677,7 +681,7 @@ mod tests {
     #[test]
     fn test_terminal_constructors_round_trip() {
         let id = test_identity();
-        let v0 = SadEvent::icp(TEST_TOPIC, id).unwrap();
+        let v0 = SadEvent::icp(id, TEST_TOPIC).unwrap();
         let iel_evt = test_iel_event();
         let v1 = SadEvent::upd(&v0, iel_evt, test_digest(b"c")).unwrap();
 
@@ -698,13 +702,13 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_valid() {
-        let event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         assert!(event.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_icp_wrong_version() {
-        let mut event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let mut event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         event.version = 1;
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("version 0"));
@@ -712,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_forbids_previous() {
-        let mut event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let mut event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         event.previous = Some(test_digest(b"prev"));
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have previous"));
@@ -720,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_requires_identity() {
-        let mut event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let mut event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         event.identity = None;
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("requires identity"));
@@ -728,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_forbids_identity_event() {
-        let mut event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let mut event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         event.identity_event = Some(test_iel_event());
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have identityEvent"));
@@ -736,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_icp_forbids_content() {
-        let mut event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let mut event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         event.content = Some(test_digest(b"content"));
         let err = event.validate_structure().unwrap_err();
         assert!(err.contains("must not have content"));
@@ -746,14 +750,14 @@ mod tests {
 
     #[test]
     fn test_validate_structure_upd_valid() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
         assert!(v1.validate_structure().is_ok());
     }
 
     #[test]
     fn test_validate_structure_upd_requires_content() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let mut v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
         v1.content = None;
         let err = v1.validate_structure().unwrap_err();
@@ -762,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_upd_requires_identity_event() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let mut v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
         v1.identity_event = None;
         let err = v1.validate_structure().unwrap_err();
@@ -771,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_upd_forbids_identity() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let mut v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
         v1.identity = Some(test_identity());
         let err = v1.validate_structure().unwrap_err();
@@ -782,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_sea_valid() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
         let v2 = SadEvent::sea(&v1, test_iel_event()).unwrap();
         assert!(v2.validate_structure().is_ok());
@@ -790,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_terminal_kinds_require_identity_event() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
 
         for kind in [
@@ -813,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_validate_structure_terminal_kinds_forbid_identity() {
-        let v0 = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let v0 = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let v1 = SadEvent::upd(&v0, test_iel_event(), test_digest(b"content")).unwrap();
 
         for kind in [
@@ -910,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_sad_event_verify_said_detects_tamper() {
-        let event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let mut tampered = event;
         tampered.topic = "kels/v1/tampered".to_string();
         assert!(tampered.verify_said().is_err());
@@ -918,7 +922,7 @@ mod tests {
 
     #[test]
     fn test_sad_event_verify_prefix_detects_identity_tamper() {
-        let event = SadEvent::icp(TEST_TOPIC, test_identity()).unwrap();
+        let event = SadEvent::icp(test_identity(), TEST_TOPIC).unwrap();
         let mut tampered = event;
         tampered.identity = Some(test_digest(b"different-identity"));
         tampered.derive_said().unwrap();

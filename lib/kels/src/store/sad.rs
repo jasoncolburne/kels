@@ -728,7 +728,7 @@ mod tests {
 
         let identity = test_digest("identity");
         let iel_evt = test_digest("iel-event");
-        let v0 = SadEvent::icp("kels/concurrent-test", identity).unwrap();
+        let v0 = SadEvent::icp(identity, "kels/concurrent-test").unwrap();
         let prefix = v0.prefix;
 
         // Seed v0 first so all subsequent events chain off a known event.
@@ -793,7 +793,7 @@ mod tests {
         let store = FileSadStore::new(temp.path()).await.unwrap();
 
         let identity = test_digest("identity");
-        let v0 = SadEvent::icp("kels/payload-missing-test", identity).unwrap();
+        let v0 = SadEvent::icp(identity, "kels/payload-missing-test").unwrap();
         let prefix = v0.prefix;
         let said = v0.said;
         store.store_sel_event(&v0).await.unwrap();
@@ -828,7 +828,7 @@ mod tests {
         let store = InMemorySadStore::new();
 
         let identity = test_digest("identity");
-        let v0 = SadEvent::icp("kels/payload-missing-mem-test", identity).unwrap();
+        let v0 = SadEvent::icp(identity, "kels/payload-missing-mem-test").unwrap();
         let prefix = v0.prefix;
         let said = v0.said;
         store.store_sel_event(&v0).await.unwrap();

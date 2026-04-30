@@ -155,7 +155,7 @@ fn build_chain(kel_prefix: &str, topic: &str, count: usize) -> Vec<SadEvent> {
     let iel_evt = cesr::Digest256::blake3_256(format!("{}-iel-event-stub", kel_prefix).as_bytes());
 
     let mut events = Vec::with_capacity(count);
-    let v0 = SadEvent::icp(topic, identity).unwrap();
+    let v0 = SadEvent::icp(identity, topic).unwrap();
     events.push(v0.clone());
     let mut prev = v0;
 

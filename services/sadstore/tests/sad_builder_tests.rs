@@ -748,7 +748,7 @@ async fn incept_alone_rejected_with_incomplete_inception() {
     // Hand-build the Icp without anchoring — the inception batch rule
     // fires *before* the auth check, so anchor state doesn't matter for
     // this test.
-    let icp = SadEvent::icp(TEST_TOPIC, setup.iel_prefix).expect("build Icp");
+    let icp = SadEvent::icp(setup.iel_prefix, TEST_TOPIC).expect("build Icp");
 
     let result: Result<SubmitSadEventsResponse, KelsError> =
         setup.sad_client.submit_sad_events(&[icp]).await;
@@ -1256,7 +1256,7 @@ fn compute_sad_event_prefix_uses_identity_and_topic() {
 
     // Round-trip: build an Icp with the same inputs and verify its
     // prefix matches the standalone helper.
-    let icp = SadEvent::icp("kels/sad/v1/topic-1", id).unwrap();
+    let icp = SadEvent::icp(id, "kels/sad/v1/topic-1").unwrap();
     assert_eq!(icp.prefix, p1, "Icp prefix derivation matches helper");
 }
 
@@ -1335,7 +1335,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
     // Build the SE chain manually so v1 binds to the LATER IEL event
     // (Evl), then attempt v2 binding to the EARLIER IEL Icp.
     let initial_content = upload_content(&setup.sad_client, "monotonic-init").await;
-    let icp = SadEvent::icp(TEST_TOPIC, setup.iel_prefix).unwrap();
+    let icp = SadEvent::icp(setup.iel_prefix, TEST_TOPIC).unwrap();
     let upd = SadEvent::upd(&icp, iel_evl_said, initial_content).unwrap();
     setup
         .kel_builder

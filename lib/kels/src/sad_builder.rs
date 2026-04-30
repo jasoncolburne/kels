@@ -220,7 +220,7 @@ impl SadEventBuilder {
         self.require_fresh_builder()?;
 
         let topic_str: String = topic.into();
-        let icp = SadEvent::icp(topic_str, identity)?;
+        let icp = SadEvent::icp(identity, topic_str)?;
 
         if let Some(expected) = self.requested_prefix
             && icp.prefix != expected
