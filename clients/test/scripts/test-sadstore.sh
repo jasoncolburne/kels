@@ -33,6 +33,7 @@ CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
 # Dummy CESR values for test endpoints that skip auth but still deserialize
 MOCK_SAID="KMOCK_SAID__________________________________"
 MOCK_PREFIX="KMOCK_PREFIX________________________________"
@@ -43,6 +44,7 @@ MOCK_NONCE="NMOCK_NONCE_________________________________"
 NODE_A_SAD_URL="http://${NODE_A_SADSTORE_HOST}"
 NODE_B_SAD_URL="http://${NODE_B_SADSTORE_HOST}"
 NODE_A_KELS_URL="http://${NODE_A_KELS_HOST}"
+NODE_B_KELS_URL="http://${NODE_B_KELS_HOST}"
 
 init_temp_dir
 
@@ -152,6 +154,65 @@ wait_for_sad_event_divergence_convergence() {
     done
     echo "Timeout waiting for divergence convergence on $prefix"
     return 1
+}
+
+get_kel_effective_said() {
+    local url="$1"
+    local prefix="$2"
+    curl -sf -X POST -H 'Content-Type: application/json' \
+        -d "{\"prefix\":\"${prefix}\"}" \
+        "${url}/api/v1/kels/kel/effective-said" | jq -r '.said // empty'
+}
+
+# Wait until `kel_prefix`'s tip on every federated peer's KELS matches
+# the originating node-A KELS's tip after a `kels-cli kel anchor` call.
+#
+# Why this exists (round-12 Gap 9): the test anchors a SAID in node-A's
+# KEL (`kel anchor` produces an `Ixn` event with `anchor=said` advancing
+# node-A's KEL tip), then immediately submits an SE event referencing
+# that SAID via `sel submit`. If the SE event reaches node-B (directly
+# or via gossip) before node-A's KEL anchor does, node-B's verifier
+# rejects the SE event because the IEL-resolved policy's anchor isn't
+# visible in node-B's local KEL view yet. The race is invisible in
+# logs and produces flaky failures.
+#
+# This wait removes the cross-chain race from the test surface entirely
+# — any remaining failure is a real bug. Production gossip is
+# deliberately offline-tolerant; this convergence wait lives only in
+# the test harness (NOT in the round-12 production submit path).
+#
+# In non-federated mode this is a no-op.
+wait_for_kel_anchor_convergence() {
+    local kel_prefix="$1"
+    local said="$2"  # informational; surfaced in timeout messages
+    local timeout="${3:-$CONVERGENCE_TIMEOUT}"
+
+    [ "$FEDERATED" != "true" ] && return 0
+
+    local origin_eff
+    origin_eff=$(get_kel_effective_said "$NODE_A_KELS_URL" "$kel_prefix")
+    if [ -z "$origin_eff" ]; then
+        echo "wait_for_kel_anchor_convergence: failed to read node-a KEL effective SAID for $kel_prefix"
+        return 1
+    fi
+
+    local peer_url
+    for peer_url in "$NODE_B_KELS_URL"; do
+        local deadline=$((SECONDS + timeout))
+        local peer_eff=""
+        while [ $SECONDS -lt $deadline ]; do
+            peer_eff=$(get_kel_effective_said "$peer_url" "$kel_prefix")
+            if [ "$peer_eff" = "$origin_eff" ]; then
+                break
+            fi
+            sleep 1
+        done
+        if [ "$peer_eff" != "$origin_eff" ]; then
+            echo "Timeout waiting for KEL anchor $said in $kel_prefix to converge on $peer_url (got '$peer_eff', expected '$origin_eff')"
+            return 1
+        fi
+    done
+    return 0
 }
 
 # ========================================
@@ -290,8 +351,10 @@ else
     # Anchor both SAIDs in the KEL (required for write_policy authorization)
     run_test "v0 SAID anchored in KEL" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$V0_SAID"
+    wait_for_kel_anchor_convergence "$KEL_PREFIX" "$V0_SAID"
     run_test "v1 SAID anchored in KEL" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$V1_SAID"
+    wait_for_kel_anchor_convergence "$KEL_PREFIX" "$V1_SAID"
 
     # Submit [v0, v1] as inception batch (v1 declares governance_policy)
     echo "[$V0_JSON,$V1_JSON]" > "$TEMP_DIR/inception-submit.json"
@@ -401,6 +464,7 @@ else
     # Anchor v0 SAID in the KEL
     run_test "Divergence: v0 SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V0_SAID"
+    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V0_SAID"
 
     echo "[$D_V0_JSON]" > "$TEMP_DIR/div-v0.json"
 
@@ -423,6 +487,7 @@ else
     # Anchor v1-a SAID in the KEL
     run_test "Divergence: v1-a SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1A_SAID"
+    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V1A_SAID"
 
     echo "[$D_V1A_JSON]" > "$TEMP_DIR/div-v1a.json"
 
@@ -436,6 +501,7 @@ else
     # Anchor v1-b SAID in the KEL
     run_test "Divergence: v1-b SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1B_SAID"
+    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V1B_SAID"
 
     echo "[$D_V1B_JSON]" > "$TEMP_DIR/div-v1b.json"
 
@@ -469,6 +535,7 @@ else
     # Anchor repair SAID in the KEL
     run_test "Divergence: repair SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_REPAIR_SAID"
+    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_REPAIR_SAID"
 
     echo "[$D_REPAIR_JSON]" > "$TEMP_DIR/div-repair.json"
 
@@ -533,6 +600,7 @@ else
 
     run_test "Extension: v0 SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V0_SAID"
+    wait_for_kel_anchor_convergence "$EXT_KEL_PREFIX" "$E_V0_SAID"
     echo "[$E_V0_JSON]" > "$TEMP_DIR/ext-v0.json"
     run_test "Extension: v0 submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v0.json"
@@ -545,6 +613,7 @@ else
     E_V1_JSON=$(echo "$E_V1_JSON" | jq -c --arg s "$E_V1_SAID" '.said = $s')
     run_test "Extension: v1 (owner) SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V1_SAID"
+    wait_for_kel_anchor_convergence "$EXT_KEL_PREFIX" "$E_V1_SAID"
     echo "[$E_V1_JSON]" > "$TEMP_DIR/ext-v1.json"
     run_test "Extension: v1 (owner) submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v1.json"
@@ -560,6 +629,7 @@ else
     E_V2_JSON=$(echo "$E_V2_JSON" | jq -c --arg s "$E_V2_SAID" '.said = $s')
     run_test "Extension: rogue v2 SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_V2_SAID"
+    wait_for_kel_anchor_convergence "$EXT_KEL_PREFIX" "$E_V2_SAID"
     echo "[$E_V2_JSON]" > "$TEMP_DIR/ext-v2.json"
     run_test "Extension: rogue v2 submitted to node-a (linear, no divergence)" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-v2.json"
@@ -578,6 +648,7 @@ else
     E_RPR_JSON=$(echo "$E_RPR_JSON" | jq -c --arg s "$E_RPR_SAID" '.said = $s')
     run_test "Extension: Rpr SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$EXT_KEL_PREFIX" --said "$E_RPR_SAID"
+    wait_for_kel_anchor_convergence "$EXT_KEL_PREFIX" "$E_RPR_SAID"
     echo "[$E_RPR_JSON]" > "$TEMP_DIR/ext-rpr.json"
     run_test "Extension: Rpr submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/ext-rpr.json"
@@ -628,6 +699,7 @@ else
     CLEAN_PREFIX="$C_V0_PREFIX"
 
     kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_V0_SAID" >/dev/null
+    wait_for_kel_anchor_convergence "$CLEAN_KEL_PREFIX" "$C_V0_SAID"
     echo "[$C_V0_JSON]" > "$TEMP_DIR/clean-v0.json"
     run_test "Clean: v0 submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/clean-v0.json"
@@ -638,6 +710,7 @@ else
     C_V1_SAID=$(compute_said "$C_V1_JSON")
     C_V1_JSON=$(echo "$C_V1_JSON" | jq -c --arg s "$C_V1_SAID" '.said = $s')
     kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_V1_SAID" >/dev/null
+    wait_for_kel_anchor_convergence "$CLEAN_KEL_PREFIX" "$C_V1_SAID"
     echo "[$C_V1_JSON]" > "$TEMP_DIR/clean-v1.json"
     run_test "Clean: v1 submitted to node-a" \
         kels-cli --sadstore-url "$NODE_A_SAD_URL" sel submit "$TEMP_DIR/clean-v1.json"
