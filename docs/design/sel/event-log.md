@@ -191,14 +191,14 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 **Code:**
 - `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. Inception batch rule enforced at submit handler, not in `validate_structure` (which is per-event, not per-batch).
-- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds `last_identity_event` (ratchet); no longer holds `tracked_write_policy` / `tracked_governance_policy` (those resolve through IEL on demand).
+- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds `last_identity_event` (ratchet); authorization policies are not tracked per branch (they resolve through IEL on demand).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
 - `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger, inception-batch-rule enforcement.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
 
 **Notable changes from the dual-policy era:**
 - No `Est` kind. No `write_policy` / `governance_policy` fields on SE events.
-- No `tracked_write_policy` / `tracked_governance_policy` on branch state.
+- No per-branch tracking of authorization policies on branch state.
 - No SE-side immunity rule (lives on IEL).
 - New `identity_event` field on every v1+ event.
 - New `last_identity_event` ratchet on branch state.

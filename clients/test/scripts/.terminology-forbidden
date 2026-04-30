@@ -1,3 +1,16 @@
+# Subtree-local forbid for clients/test/scripts/.
+#
+# Replacement semantics: this file fully replaces the root forbid for files
+# in this subtree (see scripts/lint-terminology.sh). Keep this in sync with
+# the root file when rules change there.
+#
+# Why this file exists: the test scripts in this directory still build
+# pre-round-12 SE events (writePolicy on Icp, governancePolicy on Est-v1,
+# SEL prefix derived from policy_said). They will be rewritten to drive the
+# round-12 CLI surface in #147. Until then, the est/evl wire-format topic
+# strings are exempted here so the production lint stays strict.
+# Restore those two patterns when #147 lands.
+
 # === KELS-133: Rust types ===
 \bSadPointer[A-Za-z0-9_]*
 \bsad_pointer[A-Za-z0-9_]*
@@ -10,8 +23,6 @@ NotAllowedOnPointer
 \bSubmitEventsResponse\b
 
 # === KELS-133: Enum rename (EventKind → KeyEventKind) ===
-# \b word boundaries alone exclude KeyEventKind — no lookbehind needed,
-# because there's no word boundary between 'y' and 'E' in the compound.
 \bEventKind\b
 
 # === KELS-133: Renamed field / method / const identifiers ===
@@ -41,14 +52,10 @@ SAD_CHAIN_PUBSUB_CHANNEL
 /sad/pointers
 kels/sad/v1/pointer/
 "type"[[:space:]]*:[[:space:]]*"pointer"
-# Match `:repair` as a URL/announcement fragment, NOT Rust's `::repair`.
-# `(^|[^:])` requires the preceding char to not be a colon (allowing
-# start-of-line). Catches `sad-announcement:repair` and similar wire-format
-# strings without false-positiving on Rust paths like `Builder::repair`.
 (^|[^:]):repair\b
 \?repair=
 
-# === KELS-133: Phantom types (referenced in docs but never existed post-rename) ===
+# === KELS-133: Phantom types ===
 \bSignedSadEvent\b
 \bSignedSadPointer\b
 
@@ -67,28 +74,17 @@ test_sad_chain_verifier_
 \bCannotResumeDivergentChain\b
 
 # === KELS-126 round 9: KEL/SEL page-loader rename for parity ===
-# `StorePageLoader` was renamed to `KelStorePageLoader`; SEL gained a parallel
-# `SadStorePageLoader`. The bare token must not regress.
 \bStorePageLoader\b
 
 # === Grammar: common slip introduced by in-place renames ===
 \ba event\b
 
 # === KELS-126 round 12: SE identity-rooting ===
-# SE chains are now bound to IEL identities; auth/governance policies live
-# on the IEL. These tokens were SE-only; IEL still uses `governance_policy`
-# internally (do NOT blanket-forbid that token). `write_policy` /
-# `writePolicy` are NOT forbidden — Custody legitimately uses them for
-# per-SAD-object write access control (distinct concept from SE auth).
 \btracked_write_policy\b
 \bestablishment_version\b
-
-# Round-12 dropped SE kinds: `Est` removed; `Evl` renamed to `Sea`. The
-# Rust path forms catch new code; the wire-format topic strings catch
-# shell scripts, JSON literals, and design-doc references.
 \bSadEventKind::Est\b
 \bSadEventKind::Evl\b
 \bSadEvent::est\b
 \bSadEvent::evl\b
-kels/sad/v1/events/est
-kels/sad/v1/events/evl
+# kels/sad/v1/events/est and kels/sad/v1/events/evl deliberately omitted
+# here — see header note. Restore with #147.

@@ -92,6 +92,10 @@ The matrix is smaller than KEL's because SEL's gossip layer doesn't reorder — 
 
 Gossip ingestion uses the same validation rules as direct submission. There is no submit-vs-gossip rule split; data is path-agnostic. See [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules).
 
+### Successful sync = local effective SAID advanced
+
+A successful gossip sync is defined as the **sink's local effective SAID advancing**, not as the receiving HTTP submit returning OK. The sink may accept events at the wire layer (HTTP 200 / batch applied) but still leave its effective SAID at the prior tip — for example, when a forwarded chain is rejected at verification time and the local stale entry should remain queued for retry rather than being cleared. The anti-entropy loop (`run_sad_anti_entropy_loop`, `services/gossip/src/sync.rs`) treats only "effective SAID advanced" as a `Repaired` outcome; HTTP-success-without-advance returns `NoOp` and the stale entry stays queued. This invariant pairs with the soft/hard verifier semantics: a soft-rejected Cnt/Dec advances local state via the content-based terminal flag, while an unrelated forwarded chain that fails verification leaves state untouched.
+
 ### Effective SAID convergence
 
 All nodes must eventually agree on the effective SAID for each prefix.

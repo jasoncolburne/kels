@@ -96,23 +96,45 @@ Events whose SAID is already present in the chain are filtered out. If the entir
 
 ### 5. Routing
 
-The handler inspects the post-dedup batch for kind discriminators:
+The handler inspects the post-dedup batch for kind discriminators and the chain's pre-batch sealed/unsealed predicate:
 
 ```
-let is_repair = new_events.iter().any(|e| e.kind.is_repair());
-let is_contest = new_events.iter().any(|e| e.kind.is_contest());
+let is_repair       = new_events.iter().any(|e| e.kind.is_repair());
+let is_contest      = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
+let is_divergent    = first_divergent_version.is_some();
+let is_sealed       =
+    first_divergent_version.unwrap_or(u64::MAX) <= last_governance_version.unwrap_or(0);
 
-if is_repair       → repair path (truncate_and_replace)
-else if is_contest → contest path (insert + mark contested)
-else if is_decommission → decommission path (insert + mark decommissioned)
-else if chain is divergent → reject RepairRequired
-else if normal-event AND version ≤ last_governance_version AND auth_policy satisfied → reject ContestRequired
-else if event creates a fork (overlap) → insert single forking event, freeze
-else → normal append
+if is_repair:
+    if is_divergent and is_sealed → reject ContestRequired
+                                    (can't truncate behind the seal; only Cnt is legal)
+    else                          → repair path (truncate_and_replace)
+elif is_contest:
+                                    → contest path (insert + mark contested)
+                                    (Cnt is legal on every non-terminal state, including
+                                     both unsealed-divergent and sealed-divergent)
+elif is_decommission:
+    if is_divergent               → reject RepairRequired (unsealed) /
+                                    ContestRequired (sealed)
+    else                          → decommission path (insert + mark decommissioned)
+elif is_divergent:
+    if is_sealed                  → reject ContestRequired (Upd/Sea on sealed-divergent)
+    else                          → reject RepairRequired
+elif normal-event
+       AND version ≤ last_governance_version
+       AND kind-relevant authorization satisfied
+       AND event.kind is non-terminal:
+                                    → reject ContestRequired (algorithmic trigger)
+elif event creates a fork (overlap):
+                                    → insert single forking event, freeze
+else:
+                                    → normal append
 ```
 
 The repair / contest / decommission discriminators bind to predicate methods on `SadEventKind`. Any of these kinds at any position in the batch routes to its dedicated path.
+
+The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `first_divergent_version` and `last_governance_version`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
 
 ### 6. Repair Path
 
@@ -148,15 +170,15 @@ Before inserting a non-terminal event, the handler checks:
 
 ```
 if event.version ≤ last_governance_version
-   AND auth_policy was satisfied (from §1)
+   AND kind-relevant authorization was satisfied (from §1)
    AND event.kind is non-terminal
    AND chain is not divergent:
    → return ContestRequired { reason: "..." }
 ```
 
-This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
+This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
 
-Note that the §1 cross-chain authorization check is the gate for "auth_policy satisfied" — by the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger here is the existing-chain sanity floor (the chain wasn't already broken), combined with the version-vs-seal arithmetic.
+The "kind-relevant authorization" wording matters: an `Upd` that passed its `auth_policy` check but lands at-or-before the seal triggers `ContestRequired`; a `Sea` that passed its `governance_policy` check at the same version triggers it too. Both kinds use the same algorithmic gate — what differs is which IEL-resolved policy the §1 check ran against. By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger here is the existing-chain sanity floor (the chain wasn't already broken), combined with the version-vs-seal arithmetic.
 
 This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. See [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
 

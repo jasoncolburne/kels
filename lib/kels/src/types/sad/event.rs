@@ -395,9 +395,9 @@ impl SadEvent {
 ///
 /// Round-12 shape: the chain is identity-rooted, so every branch carries
 /// the bound IEL prefix (`identity`, set at Icp) and the highest IEL event
-/// the branch has ratcheted to (`last_identity_event`). Pre-round-12's
-/// `tracked_write_policy` / `governance_policy` are gone — those live on
-/// the IEL now and are resolved on demand via `IelResolver`.
+/// the branch has ratcheted to (`last_identity_event`). Authorization
+/// policies are not tracked per branch — they live on the IEL and are
+/// resolved on demand via `IelResolver`.
 #[derive(Debug, Clone)]
 pub struct SadBranchTip {
     /// The chain head — latest event on this branch.

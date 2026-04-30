@@ -278,10 +278,10 @@ enum SelCommands {
         prefix: String,
     },
 
-    /// Compute a SEL prefix from a write policy SAID and topic
+    /// Compute a SEL prefix from an IEL identity SAID and topic
     Prefix {
-        /// The write policy SAID
-        write_policy: String,
+        /// The IEL identity (prefix) SAID
+        identity: String,
 
         /// The topic (e.g., "kels/sad/v1/keys/mlkem")
         topic: String,
@@ -532,10 +532,9 @@ async fn main() -> Result<()> {
         Commands::Sel(sel_cmd) => match sel_cmd {
             SelCommands::Submit { file } => commands::sel::cmd_sel_submit(&cli, file).await,
             SelCommands::Get { prefix } => commands::sel::cmd_sel_get(&cli, prefix).await,
-            SelCommands::Prefix {
-                write_policy,
-                topic,
-            } => commands::sel::cmd_sel_prefix(write_policy, topic),
+            SelCommands::Prefix { identity, topic } => {
+                commands::sel::cmd_sel_prefix(identity, topic)
+            }
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {

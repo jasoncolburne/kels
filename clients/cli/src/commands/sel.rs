@@ -56,10 +56,10 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_sel_prefix(write_policy: &str, topic: &str) -> Result<()> {
-    let write_policy_digest =
-        cesr::Digest256::from_qb64(write_policy).context("Invalid write policy CESR")?;
-    let prefix = kels_core::compute_sad_event_prefix(write_policy_digest, topic)
+pub(crate) fn cmd_sel_prefix(identity: &str, topic: &str) -> Result<()> {
+    let identity_digest =
+        cesr::Digest256::from_qb64(identity).context("Invalid identity CESR")?;
+    let prefix = kels_core::compute_sad_event_prefix(identity_digest, topic)
         .context("Failed to compute SEL prefix")?;
     println!("{}", prefix);
     Ok(())

@@ -114,14 +114,7 @@ install-deny:
 	cargo install cargo-deny
 
 lint-terminology:
-	@if git ls-files -z \
-			':!:docs/claudit' \
-			':!:.terminology-forbidden' \
-			':!:Makefile' \
-		| xargs -0 grep -nE -f <(grep -vE '^(#|$$)' .terminology-forbidden); then \
-		echo "ERROR: forbidden terminology found (see .terminology-forbidden)"; \
-		exit 1; \
-	fi
+	@./scripts/lint-terminology.sh
 
 # Optional passthrough: set TEST_ARGS to forward flags to cargo test.
 # Examples:

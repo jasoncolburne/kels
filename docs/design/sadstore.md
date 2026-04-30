@@ -59,7 +59,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **SAD events**: No signature verification — authorization is via the anchoring model. `write_policy` identifies who can author the chain; endorsing parties anchor the event's SAID in their KELs. Consumers verify the anchoring when they use the data.
+- **SAD events**: No signature verification — authorization is via the anchoring model. The chain is identity-rooted: every chain binds at inception (Icp) to a specific IEL (`identity` field), and every v1+ event references a specific IEL event by SAID (`identity_event`). Authorization policies (`auth_policy` for `Upd`; `governance_policy` for `Sea` / `Rpr`) live on the bound IEL and are resolved on demand. Endorsing parties anchor the event's SAID in their KELs; consumers verify the anchoring when they use the data.
 
 ## Chain Lifecycle
 
@@ -79,9 +79,9 @@ If a node misses the gossip message (e.g., it was offline), the owner submits th
 
 ## Verification
 
-The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, and consistent topic. `write_policy` may evolve across versions via `Sea`; the verifier tracks its evolution per branch rather than requiring invariance. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sad_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the monotonic `last_identity_event` ratchet (advanced by hard-passing v1+ events). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `current_event()`, `current_content()`, `prefix()`, `write_policy()`, `topic()`, `policy_satisfied()`, `last_governance_version()`, `establishment_version()`, `is_contested()`, `is_decommissioned()`, `diverged_at_version()`. `write_policy()` returns the branch's tracked (effective) policy — seeded by v0 and updated whenever a `Sea` carries a new `write_policy` *and* the evolution was authorized. This reflects policy evolutions, not the tip event's raw field. The `is_contested` / `is_decommissioned` / `diverged_at_version` accessors expose lifecycle state — see [sel/event-log.md](sel/event-log.md) for the state model.
+Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `last_governance_version()`, `last_identity_event()`, `is_contested()`, `is_decommissioned()`, `diverged_at_version()`. `last_identity_event()` returns the highest IEL event SAID the (linear) chain has ratcheted to (`None` on a divergent chain — branches may live on different IEL post-divergence branches with no canonical ordering). The `is_contested` / `is_decommissioned` / `diverged_at_version` accessors expose lifecycle state — see [sel/event-log.md](sel/event-log.md) for the state model.
 
 ## Policy Evaluation Modes
 

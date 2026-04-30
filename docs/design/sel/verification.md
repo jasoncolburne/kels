@@ -23,7 +23,7 @@ SEL verification ensures:
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
 
-Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SE event's SAID. The verifier resolves the IEL-side policies through a `PolicyChecker` extended for cross-chain resolution.
+Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SE event's SAID. The verifier uses two traits — `PolicyChecker` for anchor-and-immunity checks (the same trait IEL/KEL use), and `IelResolver` for cross-chain navigation into the bound IEL.
 
 ## Verification Algorithm
 
@@ -85,23 +85,20 @@ verify_authorization(event, branch):
     if event.kind == Icp:
         return Ok
 
-    // Confirm identity_event references a real IEL event with matching prefix
-    iel_event = checker.fetch_iel_event(branch.identity, event.identity_event)
-    if iel_event is None or iel_event.prefix != branch.identity:
-        return Error("identity_event does not resolve to bound IEL")
+    // Confirm identity_event references a real IEL event with matching prefix.
+    // BadIdentityBinding fires when the SAID isn't found, prefix mismatches,
+    // or the bound event sits on a post-divergence IEL branch.
+    iel_event = resolver.fetch_iel_event(branch.identity, event.identity_event)
 
-    // Pick the relevant policy from the IEL event
+    // Resolve the relevant policy via SAID-keyed direct lookup against the
+    // IEL's IelVerification::policy_history (carry-forward applied at IEL
+    // verification time, not at resolve time — no walk-back here).
     policy = match event.kind:
-        Upd                  → iel_event.auth_policy_or_carried_forward
-        Sea, Rpr, Cnt, Dec   → iel_event.governance_policy_or_carried_forward
-
-    // The IEL event must declare/evolve the relevant policy.
-    // (Cross-chain helper resolves "the auth_policy that was tracked at IEL_X" —
-    //  if iel_event itself doesn't carry the field, walk back through IEL until
-    //  finding the most recent event that did.)
+        Upd                  → resolver.resolve_auth_policy_at(branch.identity, event.identity_event)
+        Sea, Rpr, Cnt, Dec   → resolver.resolve_governance_policy_at(branch.identity, event.identity_event)
 
     // Verify the SE event's anchoring under that policy
-    if !checker.evaluate_anchored_policy(policy, event.said):
+    if !checker.is_anchored(event.said, policy):
         return Error("Authorization failed")
 
     // Monotonic ratchet
@@ -110,7 +107,25 @@ verify_authorization(event, branch):
     branch.last_identity_event = event.identity_event
 ```
 
-The "ranks before" comparison requires walking the IEL chain (or comparing cached per-event-version metadata). The IEL is structurally a linear chain (or divergent — in which case the bound event must be on a single resolvable branch).
+The "ranks before" comparison uses cached IEL chain-order positions: the verifier batches every v1+ event's `identity_event` plus each branch's current `last_identity_event` into a single `IelResolver::iel_chain_positions` call per generation, then compares positions in O(1). The IEL is structurally a linear chain (or divergent — in which case the bound event must be on a single resolvable branch).
+
+### Soft-fail vs hard-fail policy
+
+Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state). The mapping is per kind:
+
+| Kind | Authorization gate | Anchor failure | Binding failure | Ratchet regression |
+|------|--------------------|----------------|------------------|---------------------|
+| `Upd` | `auth_policy` | **HARD** | **HARD** (`BadIdentityBinding`) | **HARD** (`BadIdentityBinding`) |
+| `Sea` | `governance_policy` | **HARD** | **HARD** | **HARD** |
+| `Rpr` | `governance_policy` | **HARD** | **HARD** | **HARD** |
+| `Cnt` | `governance_policy` | **SOFT** (chain becomes Contested with `policy_satisfied=false`) | **HARD** | **HARD** |
+| `Dec` | `governance_policy` | **SOFT** (chain becomes Decommissioned with `policy_satisfied=false`) | **HARD** | **HARD** |
+
+Hard fails leave the chain at its prior tip. The verifier does not advance `last_identity_event` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor advance the ratchet.
+
+Soft fails apply only to terminal kinds (`Cnt` / `Dec`) and only on the cross-chain anchor check or on `IelDivergent`. The chain advances to the terminal state but the verifier's content-based terminal flag carries `policy_satisfied=false`, signalling that the terminal action stands but its authorization didn't resolve cleanly. Content-preservation and structural rules remain HARD for terminal kinds — those failures bounce the batch.
+
+The rationale: terminal events (Cnt/Dec) describe an end-state declaration; rejecting them outright when the cross-chain check fails would leave the chain stuck at a tip the owner intends to abandon. Owners need a soft-fail path so a govfailed Cnt/Dec still terminates the chain locally, with the failure surfaced for downstream consumers via the content-based flag rather than an open chain on a defunct identity.
 
 ### Inception Batch Rule (verifier-level note)
 
@@ -128,7 +143,7 @@ struct SadBranchTip {
 }
 ```
 
-There is **no** `tracked_write_policy` or `tracked_governance_policy` on SE branch state. Authorization policies live on IEL; SE branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
+SE branch state does **not** track authorization policies per branch. Those policies live on IEL; SE branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
 
 ## Verification Return Value
 
@@ -187,7 +202,8 @@ Verification does NOT fail on divergence. Instead:
 ```
 struct SelVerifier {
     prefix: Digest256,
-    checker: Arc<dyn PolicyChecker>,    // extended to resolve IEL events for binding
+    checker: Arc<dyn PolicyChecker>,    // anchor-and-immunity (KEL/IEL/SEL share this trait)
+    resolver: Arc<dyn IelResolver>,     // cross-chain navigation into the bound IEL
     branches: HashMap<Digest256, BranchState>,
     last_verified_version: Option<u64>,
     diverged_at_version: Option<u64>,
@@ -199,38 +215,55 @@ struct SelVerifier {
 
 ### Constructors
 
-- `SelVerifier::new(Some(prefix), checker)` — Start from inception. Full verification of untrusted chains.
-- `SelVerifier::resume(prefix, &SelVerification, checker)` — Resume from a verified `SelVerification` token. Used by the submit handler's discriminator path to verify a single page without re-verifying the whole chain.
+- `SelVerifier::new(Some(prefix), checker, resolver)` — Start from inception. Full verification of untrusted chains.
+- `SelVerifier::resume(prefix, &SelVerification, checker, resolver)` — Resume from a verified `SelVerification` token. Used by the submit handler's discriminator path to verify a single page without re-verifying the whole chain.
 
-### PolicyChecker extension
+### Two-trait split: `PolicyChecker` and `IelResolver`
 
-The `PolicyChecker` trait (post-Gap-0 shape: `is_anchored(said, policy)` + `is_immune(policy)`, defined in `lib/kels/src/types/policy_checker.rs`) is extended with cross-chain helpers for SE binding resolution:
+Round 12 splits SE-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
+
+`PolicyChecker` is unchanged from KEL/IEL — anchor-and-immunity only:
 
 ```rust
 trait PolicyChecker: Send + Sync {
-    // Base methods (Gap 0 — defined for KEL/IEL/SEL):
     async fn is_anchored(&self, said: &Digest256, policy: &Digest256)
         -> Result<bool, KelsError>;
     async fn is_immune(&self, policy: &Digest256)
         -> Result<bool, KelsError>;
+}
+```
 
-    // Cross-chain: fetch a specific IEL event by SAID
+`IelResolver` is new — it abstracts cross-chain access into a specific IEL identity. Implementations scope every operation to a given IEL prefix and reject any SAID whose stored event prefix doesn't match (`KelsError::BadIdentityBinding`):
+
+```rust
+#[async_trait]
+trait IelResolver: Send + Sync {
+    /// Fetch a single IEL event by SAID, scoped to `identity`.
+    /// BadIdentityBinding when SAID not present or prefix mismatches.
     async fn fetch_iel_event(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<IdentityEvent, KelsError>;
 
-    // Cross-chain: resolve the tracked policy at an IEL event (walks back from
-    // the named event, finding the most recent prior IEL event that established
-    // the relevant policy field — auth_policy or governance_policy)
+    /// SAID-keyed direct lookup against `IelVerification::policy_history`
+    /// (carry-forward already applied at IEL verification time — no chain
+    /// walk here). Returns IelDivergent when the bound event lives at-or-
+    /// after the IEL's `first_divergent_version`; pre-divergence shared
+    /// events resolve cleanly even on a divergent IEL.
     async fn resolve_auth_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
+
+    /// Batch-fetch IEL chain-order positions for the SE verifier's monotonic-
+    /// ratchet check. Returns BadIdentityBinding for any SAID that doesn't
+    /// resolve in the named IEL — chain-integrity breach, the entire call fails.
+    async fn iel_chain_positions(&self, identity: &Digest256, saids: &[Digest256])
+        -> Result<HashMap<Digest256, IelChainPosition>, KelsError>;
 }
 ```
 
-The SE merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SE-side would be defense-in-depth that drifts. SE trusts the IEL gate. (`is_immune` remains on the trait for IEL's own use — both at IEL submit time and IEL verification time.)
+The SE merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SE-side would be defense-in-depth that drifts. SE trusts the IEL gate. `is_immune` remains on `PolicyChecker` for IEL's own use (both IEL submit and IEL verification).
 
-The implementations cache aggressively: one IEL event fetch per binding; tracked-policy resolution memoized per `(identity, iel_event_said, policy_kind)` triple.
+The production resolver (`AnchoredIelResolver`, `lib/kels/src/iel_resolver.rs`) re-verifies the named IEL on each call to obtain a fresh `IelVerification` token; layered caching lives above the trait so the impl stays simple and the divergence gate is exercised cleanly per call.
 
 ### Paginated Verification Helpers
 

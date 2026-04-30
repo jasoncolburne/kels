@@ -123,7 +123,7 @@ v2  kind=upd  identity_event=IEL_v0_said, content=rotated_key_said
 v3  kind=sea  identity_event=IEL_v0_said, content=rotated_key_said        ← preserved from v2; pure evaluation
 ```
 
-If the IEL evolves (a Sea-with-auth-policy lands on IEL), subsequent SE Upds bind to the new IEL Sea's SAID rather than IEL Icp.
+If the IEL evolves (an `Evl`-with-auth-policy lands on IEL), subsequent SE Upds bind to the new IEL `Evl`'s SAID rather than IEL Icp.
 
 ### Divergence resolved by repair
 
