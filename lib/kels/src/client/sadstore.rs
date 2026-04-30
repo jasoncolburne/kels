@@ -405,18 +405,21 @@ impl SadStoreClient {
 
     /// Verify a SAD Event Log and return a verification token.
     ///
-    /// Structural + policy verification: SAID, chain linkage, version
-    /// monotonicity, topic consistency, and write_policy authorization via
-    /// the provided `PolicyChecker`.
+    /// Structural + cross-chain authorization verification: SAID, chain
+    /// linkage, version monotonicity, topic consistency, plus IEL-resolved
+    /// auth/governance policy checks via the provided `PolicyChecker` and
+    /// `IelResolver`.
     pub async fn verify_sad_events(
         &self,
         prefix: &cesr::Digest256,
         checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
+        iel_resolver: Arc<dyn crate::IelResolver + Send + Sync>,
     ) -> Result<SelVerification, KelsError> {
         crate::verify_sad_events(
             prefix,
             &self.as_sad_source()?,
             checker,
+            iel_resolver,
             crate::page_size(),
             crate::max_pages(),
         )

@@ -24,6 +24,61 @@ use crate::{
     repository::{SadEventRepository, SadStoreRepository},
 };
 
+/// Round-12 Gap 2 placeholder `IelResolver` for the SE submit handler.
+///
+/// The handler's verifier construction (`SelVerifier::new`) needs an
+/// `IelResolver` after Gap 2's signature change. Gap 4 rewrites this whole
+/// submit-handler routing block under the new sealed/unsealed matrix and
+/// will plug in a real in-process resolver wrapping the IEL repository.
+/// Until then this stub errors on every call so any code path that
+/// actually exercises cross-chain auth here fails loudly.
+struct PlaceholderIelResolver;
+
+#[async_trait::async_trait]
+impl kels_core::IelResolver for PlaceholderIelResolver {
+    async fn fetch_iel_event(
+        &self,
+        _: &cesr::Digest256,
+        _: &cesr::Digest256,
+    ) -> Result<kels_core::IdentityEvent, kels_core::KelsError> {
+        Err(kels_core::KelsError::InvalidIel(
+            "PlaceholderIelResolver: Gap 4 rewires the SE submit handler with a real \
+             in-process IelResolver"
+                .to_string(),
+        ))
+    }
+    async fn resolve_auth_policy_at(
+        &self,
+        _: &cesr::Digest256,
+        _: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, kels_core::KelsError> {
+        Err(kels_core::KelsError::InvalidIel(
+            "PlaceholderIelResolver::resolve_auth_policy_at — Gap 4 wires this".to_string(),
+        ))
+    }
+    async fn resolve_governance_policy_at(
+        &self,
+        _: &cesr::Digest256,
+        _: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, kels_core::KelsError> {
+        Err(kels_core::KelsError::InvalidIel(
+            "PlaceholderIelResolver::resolve_governance_policy_at — Gap 4 wires this".to_string(),
+        ))
+    }
+    async fn iel_chain_positions(
+        &self,
+        _: &cesr::Digest256,
+        _: &[cesr::Digest256],
+    ) -> Result<
+        std::collections::HashMap<cesr::Digest256, kels_core::IelChainPosition>,
+        kels_core::KelsError,
+    > {
+        Err(kels_core::KelsError::InvalidIel(
+            "PlaceholderIelResolver::iel_chain_positions — Gap 4 wires this".to_string(),
+        ))
+    }
+}
+
 const SECS_PER_DAY: u64 = 86_400;
 const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -1396,7 +1451,9 @@ pub async fn submit_sad_events(
                     Arc::clone(&kel_source),
                     Arc::clone(&policy_resolver),
                 ));
-            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
+            let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+                Arc::new(PlaceholderIelResolver);
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker, iel_resolver);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1455,7 +1512,9 @@ pub async fn submit_sad_events(
                     Arc::clone(&kel_source),
                     Arc::clone(&policy_resolver),
                 ));
-            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker);
+            let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+                Arc::new(PlaceholderIelResolver);
+            let mut verifier = kels_core::SelVerifier::new(Some(sel_prefix), checker, iel_resolver);
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await

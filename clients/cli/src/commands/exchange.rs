@@ -133,8 +133,17 @@ pub(crate) async fn cmd_exchange_publish_key(
     let sad_store = Arc::new(create_sad_store(cli).await?);
     // Inception path — no existing chain to hydrate. `new` is the honest
     // constructor; rotate-key uses `with_prefix` because it's resuming.
-    let mut sad_builder =
-        SadEventBuilder::new(Some(sad_client.clone()), Some(sad_store), Some(checker));
+    //
+    // Round-12 Gap 2: iel_resolver is `None` here — Gap 11 will rewire
+    // the CLI to construct an `AnchoredIelResolver` from `sad_client` and
+    // pass it through. The builder's staging methods are stubbed (Gap 5
+    // territory), so this CLI call fails at runtime regardless.
+    let mut sad_builder = SadEventBuilder::new(
+        Some(sad_client.clone()),
+        Some(sad_store),
+        Some(checker),
+        None,
+    );
 
     let (icp_said, est_said) = sad_builder.incept_deterministic(
         kels_exchange::ENCAP_KEY_KIND,
@@ -250,10 +259,13 @@ pub(crate) async fn cmd_exchange_rotate_key(
     );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
+    // Round-12 Gap 2: iel_resolver is `None` (CLI rewire deferred to
+    // Gap 11); hydration is skipped, builder staging is stubbed.
     let mut sad_builder = SadEventBuilder::with_prefix(
         Some(sad_client.clone()),
         Some(sad_store),
         Some(checker),
+        None,
         &sel_prefix,
     )
     .await?;

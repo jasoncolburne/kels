@@ -24,7 +24,7 @@ use crate::{
     KelsError,
     client::SadStoreClient,
     store::SadStore,
-    types::{PolicyChecker, SadEvent, SelVerification},
+    types::{IelResolver, PolicyChecker, SadEvent, SelVerification},
 };
 
 /// Outcome of a successful `SadEventBuilder::flush`. Same surface as the
@@ -38,14 +38,15 @@ pub struct FlushOutcome {
 
 /// Builder for SAD Event Logs — Gap 1 stub. See module docs.
 ///
-/// `sad_store` and `checker` are held but unused in the stub bodies; they
-/// stay so the `new` / `with_prefix` signatures match the pre-round-12
-/// shape and Gap 5 has the deps it needs without re-threading construction.
+/// `sad_store`, `checker`, and `iel_resolver` are held but largely unused
+/// in the stub bodies — `with_prefix` consults them to hydrate verified
+/// state, but the staging methods all error. Gap 5 fully wires them.
 #[allow(dead_code)]
 pub struct SadEventBuilder {
     sad_client: Option<SadStoreClient>,
     sad_store: Option<Arc<dyn SadStore>>,
     checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
+    iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
     sad_verification: Option<SelVerification>,
     pending_events: Vec<SadEvent>,
     requested_prefix: Option<cesr::Digest256>,
@@ -53,15 +54,20 @@ pub struct SadEventBuilder {
 
 impl SadEventBuilder {
     /// Construct a bare builder.
+    ///
+    /// Round 12 adds `iel_resolver` so the builder can verify hydrated
+    /// chains (and, in Gap 5, stage v1+ events with real IEL bindings).
     pub fn new(
         sad_client: Option<SadStoreClient>,
         sad_store: Option<Arc<dyn SadStore>>,
         checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
+        iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
     ) -> Self {
         Self {
             sad_client,
             sad_store,
             checker,
+            iel_resolver,
             sad_verification: None,
             pending_events: Vec::new(),
             requested_prefix: None,
@@ -70,24 +76,34 @@ impl SadEventBuilder {
 
     /// Hydrate verified state from the local SAD store at `sel_prefix`.
     ///
-    /// Gap-1 stub keeps the round-10 owner-local hydration path so callers
-    /// resuming an existing SE chain at construction time still see verified
-    /// branch tips. Gap 5 will adapt the verifier wiring to take an
-    /// `IelResolver` alongside the policy checker.
+    /// Hydration runs only when `sad_store`, `checker`, AND `iel_resolver`
+    /// are all `Some` — the round-12 verifier requires the resolver to walk
+    /// IEL bindings. Without all three the builder still latches the
+    /// requested prefix and skips the local walk; a later flush errors via
+    /// the requested-prefix mismatch guard.
     pub async fn with_prefix(
         sad_client: Option<SadStoreClient>,
         sad_store: Option<Arc<dyn SadStore>>,
         checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
+        iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
         sel_prefix: &cesr::Digest256,
     ) -> Result<Self, KelsError> {
-        let mut builder = Self::new(sad_client, sad_store.clone(), checker.clone());
+        let mut builder = Self::new(
+            sad_client,
+            sad_store.clone(),
+            checker.clone(),
+            iel_resolver.clone(),
+        );
         builder.requested_prefix = Some(*sel_prefix);
-        if let (Some(store), Some(c)) = (sad_store.as_ref(), checker.as_ref()) {
+        if let (Some(store), Some(c), Some(r)) =
+            (sad_store.as_ref(), checker.as_ref(), iel_resolver.as_ref())
+        {
             let mut loader = crate::SadStorePageLoader::new(store.as_ref());
             match crate::sel_completed_verification(
                 &mut loader,
                 sel_prefix,
                 Arc::clone(c),
+                Arc::clone(r),
                 crate::page_size(),
                 crate::max_pages(),
             )

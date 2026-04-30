@@ -390,27 +390,36 @@ impl SadEvent {
     }
 }
 
-/// A verified SEL branch endpoint: tip event plus the per-branch state that
-/// drives policy authorization on extension.
+/// A verified SE branch endpoint: tip event plus the per-branch state the
+/// verifier needs to authorize extension and to ratchet the IEL binding.
 ///
-/// Round-12 shape (placeholder until Gap 2): the tracked-policy fields that
-/// existed pre-round-12 (`tracked_write_policy`, `governance_policy`) are
-/// gone — policies live on IEL now. Gap 2 will re-shape this with `identity`
-/// and `last_identity_event` per the round-12 plan; for now Gap 1 keeps the
-/// minimal carry-forward fields needed by the verifier scaffolding.
-///
-/// Keeps `tip`, `events_since_evaluation`, `last_governance_version` per the
-/// plan's "Keep" list.
+/// Round-12 shape: the chain is identity-rooted, so every branch carries
+/// the bound IEL prefix (`identity`, set at Icp) and the highest IEL event
+/// the branch has ratcheted to (`last_identity_event`). Pre-round-12's
+/// `tracked_write_policy` / `governance_policy` are gone — those live on
+/// the IEL now and are resolved on demand via `IelResolver`.
 #[derive(Debug, Clone)]
 pub struct SadBranchTip {
     /// The chain head — latest event on this branch.
     pub tip: SadEvent,
+    /// IEL prefix the chain is bound to. Set at Icp from `event.identity`
+    /// and never changes thereafter. Carried per-branch (not chain-wide)
+    /// because each `SadBranchTip` is also the verifier's runtime
+    /// state — every branch needs the identity to feed the resolver.
+    /// Always equal across branches on a divergent chain (Icp is shared).
+    pub identity: cesr::Digest256,
+    /// Highest IEL event SAID this branch has ratcheted to, in IEL chain
+    /// order. `None` until the first v1+ event lands hard-passing all of
+    /// fetch / divergence / policy-pick / anchor (per Gap 2's "Update
+    /// precondition" — soft-passed Cnt/Dec do NOT advance the ratchet).
+    pub last_identity_event: Option<cesr::Digest256>,
     /// Number of non-evaluation events on this branch since the last
     /// authorized governance evaluation (or since chain start if none).
+    /// Tracked for the round-12 builder's evaluation-required gates.
     pub events_since_evaluation: usize,
-    /// Version of the most recent governance evaluation (`Sea` / `Rpr`) on
-    /// this branch. `None` until the first authorized evaluation. Terminal
-    /// kinds (`Cnt` / `Dec`) do NOT advance the seal.
+    /// Version of the most recent governance evaluation (`Sea` / `Rpr`)
+    /// on this branch. `None` until the first authorized evaluation.
+    /// Terminal kinds (`Cnt` / `Dec`) do NOT advance the seal.
     pub last_governance_version: Option<u64>,
 }
 
@@ -418,14 +427,19 @@ pub struct SadBranchTip {
 ///
 /// Cannot be constructed outside this crate — only via `SelVerifier`.
 ///
-/// Round-12 shape (placeholder until Gap 2): the per-policy accessors that
-/// existed pre-round-12 are gone. Gap 2 will surface the new chain-wide
-/// aggregates (`is_contested`, `is_decommissioned`, `last_identity_event`,
-/// etc.) that round-12 SE verification needs.
+/// Round-12 shape: per-branch tips plus chain-wide aggregates. The terminal
+/// flags (`is_contested` / `is_decommissioned`) are content-based — set
+/// unconditionally on any landed `Cnt` / `Dec` regardless of whether the
+/// terminating event passed its governance anchor check; auth status is
+/// conveyed separately via `policy_satisfied`. Mirrors
+/// `IelVerification` (`lib/kels/src/types/iel/verification.rs`).
 #[derive(Debug, Clone)]
 pub struct SelVerification {
     branches: Vec<SadBranchTip>,
     policy_satisfied: bool,
+    is_contested: bool,
+    is_decommissioned: bool,
+    last_governance_version: Option<u64>,
     diverged_at_version: Option<u64>,
 }
 
@@ -434,11 +448,17 @@ impl SelVerification {
     pub(crate) fn new(
         branches: Vec<SadBranchTip>,
         policy_satisfied: bool,
+        is_contested: bool,
+        is_decommissioned: bool,
+        last_governance_version: Option<u64>,
         diverged_at_version: Option<u64>,
     ) -> Self {
         Self {
             branches,
             policy_satisfied,
+            is_contested,
+            is_decommissioned,
+            last_governance_version,
             diverged_at_version,
         }
     }
@@ -500,11 +520,41 @@ impl SelVerification {
         self.policy_satisfied
     }
 
-    /// Version of the most recent governance evaluation on the tie-break
-    /// winner's branch, if any. Branch-scoped — iterate `branches()` for the
-    /// chain-wide picture.
+    /// Version of the most recent governance evaluation across the chain
+    /// (the maximum of per-branch `last_governance_version`). `None` until
+    /// the first authorized `Sea` / `Rpr` lands. Terminal kinds (`Cnt` /
+    /// `Dec`) do NOT advance the seal.
     pub fn last_governance_version(&self) -> Option<u64> {
-        self.winning_branch().last_governance_version
+        self.last_governance_version
+    }
+
+    /// True when at least one `Cnt` event has landed on the chain.
+    /// Content-based (set unconditionally on landed `Cnt` regardless of
+    /// whether its governance anchor check passed) — mirrors the round-11
+    /// IEL terminal-flag rule.
+    pub fn is_contested(&self) -> bool {
+        self.is_contested
+    }
+
+    /// True when at least one `Dec` event has landed on the chain. Same
+    /// content-based semantics as `is_contested`.
+    pub fn is_decommissioned(&self) -> bool {
+        self.is_decommissioned
+    }
+
+    /// Chain-wide IEL ratchet view: the per-branch `last_identity_event`
+    /// when the chain is linear, `None` on divergent chains. Computed on
+    /// demand from per-branch state.
+    ///
+    /// On a divergent chain the per-branch values may live on different
+    /// IEL post-divergence branches and have no canonical ordering;
+    /// callers needing the full picture iterate `branches()` and consult
+    /// the resolver themselves.
+    pub fn last_identity_event(&self) -> Option<&cesr::Digest256> {
+        if self.branches.len() != 1 {
+            return None;
+        }
+        self.branches.first().and_then(|b| b.last_identity_event.as_ref())
     }
 
     /// The lowest version at which divergence was first observed, or `None`
@@ -516,8 +566,10 @@ impl SelVerification {
     /// Stamp a server-reported divergence version onto a token whose local
     /// verification didn't observe the fork. Crate-private.
     ///
-    /// `dead_code` while the Gap-1 verifier stub bypasses divergence
-    /// stamping; Gap 2 wires this back in.
+    /// Currently unused — Gap 4's submit-handler rewrite will re-introduce
+    /// the call site that stamps server-reported divergence onto local
+    /// tokens (the round-10 builder code that called this was stubbed in
+    /// Gap 1).
     #[allow(dead_code)]
     pub(crate) fn set_diverged_at_version(&mut self, version: u64) {
         if self.diverged_at_version.is_none() {

@@ -407,7 +407,7 @@ async fn publish_pending_makes_events_fetchable_by_said() {
         setup_kel_and_policy(harness, "publish-fetchable").await;
     let publication_said = upload_publication(&sad_client, "publish-fetchable").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None);
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None, None);
     builder
         .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
         .unwrap();
@@ -454,7 +454,7 @@ async fn publish_pending_idempotent() {
         setup_kel_and_policy(harness, "publish-idempotent").await;
     let publication_said = upload_publication(&sad_client, "publish-idempotent").await;
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None);
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, None, None);
     builder
         .incept_deterministic(TEST_TOPIC, policy.said, policy.said, Some(publication_said))
         .unwrap();
@@ -486,7 +486,7 @@ async fn flush_submits_and_absorbs() {
 
     let policy_said = policy.said;
     let checker = build_checker(harness, policy);
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker), None);
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
@@ -565,7 +565,7 @@ async fn flush_failure_preserves_pending() {
     let checker: Arc<dyn PolicyChecker + Send + Sync> =
         Arc::new(AnchoredPolicyChecker::new(kel_source, resolver));
 
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker), None);
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
@@ -617,7 +617,7 @@ async fn submit_dedup_returns_current_divergence_signal() {
     // Stage v0 Icp + v1 Est via the builder, anchor + flush.
     let policy_said = policy.said;
     let checker = build_checker(harness, policy);
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker), None);
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
@@ -724,6 +724,7 @@ async fn flush_repair_heals_divergent_chain() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker),
+        None,
     );
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
@@ -784,6 +785,7 @@ async fn flush_repair_heals_divergent_chain() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker2),
+        None,
         &sel_prefix,
     )
     .await
@@ -916,6 +918,7 @@ async fn flush_repair_heals_adversarially_extended_chain() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker),
+        None,
     );
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
@@ -983,6 +986,7 @@ async fn flush_repair_heals_adversarially_extended_chain() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker2),
+        None,
         &sel_prefix,
     )
     .await
@@ -1095,7 +1099,7 @@ async fn rate_limit_runs_above_dedup() {
 
     let policy_said = policy.said;
     let checker = build_checker(harness, policy);
-    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let mut builder = SadEventBuilder::new(Some(sad_client.clone()), None, Some(checker), None);
     let (icp_said, est_said) = builder
         .incept_deterministic(TEST_TOPIC, policy_said, policy_said, Some(publication_said))
         .unwrap();
@@ -1169,6 +1173,7 @@ async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker),
+        None,
     );
 
     // v0 (Icp without governance) + v1 (Est, declares governance). Owner
@@ -1245,6 +1250,7 @@ async fn flush_repair_heals_long_chain_post_fetch_tail_threshold() {
         Some(sad_client.clone()),
         Some(Arc::clone(&owner_store)),
         Some(checker2),
+        None,
         &sel_prefix,
     )
     .await

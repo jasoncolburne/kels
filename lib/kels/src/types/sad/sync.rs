@@ -126,10 +126,11 @@ pub async fn sel_completed_verification(
     loader: &mut dyn SelPageLoader,
     prefix: &cesr::Digest256,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
     page_size: usize,
     max_pages: usize,
 ) -> Result<SelVerification, KelsError> {
-    let mut verifier = SelVerifier::new(Some(prefix), checker);
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
     let mut offset: u64 = 0;
     let mut exhausted = false;
     let mut saw_any = false;
@@ -516,10 +517,11 @@ pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
     checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
     page_size: usize,
     max_pages: usize,
 ) -> Result<SelVerification, KelsError> {
-    let mut verifier = SelVerifier::new(Some(prefix), checker);
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
     transfer_sad_events(
         prefix,
         source,
