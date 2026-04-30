@@ -1,7 +1,13 @@
 -- KELS SADStore initial schema for PostgreSQL
 BEGIN;
 
--- SAD Event Log events table
+-- SAD Event Log events table.
+--
+-- Round 12: SE chains are identity-rooted (bound to an IEL via `identity` at
+-- Icp; subsequent events bind via `identity_event` to a specific IEL event
+-- whose policy authorizes them). Pre-round-12 `write_policy` /
+-- `governance_policy` columns are gone — those policy values now live on
+-- the IEL and are resolved on demand. See `docs/design/sel/events.md`.
 CREATE TABLE IF NOT EXISTS sad_events (
     said TEXT PRIMARY KEY,
     prefix TEXT NOT NULL,
@@ -10,9 +16,14 @@ CREATE TABLE IF NOT EXISTS sad_events (
     topic TEXT NOT NULL,
     content TEXT,
     custody TEXT,                    -- SAID of custody SAD
-    write_policy TEXT,               -- required on Icp, optional on Evl, forbidden on Est/Upd/Rpr
-    kind TEXT NOT NULL,              -- event kind (kels/sad/v1/events/{icp,upd,est,evl,rpr})
-    governance_policy TEXT           -- SAID of governance policy (higher threshold than write_policy)
+    -- Event kind: one of kels/sad/v1/events/{icp,upd,sea,rpr,cnt,dec}
+    kind TEXT NOT NULL,
+    -- IEL prefix the chain is bound to. Non-NULL only on Icp; NULL on every
+    -- other kind. Participates in chain prefix derivation alongside `topic`.
+    identity TEXT,
+    -- SAID of the IEL event whose policy authorizes this SE event. NULL on
+    -- Icp (permissionless inception); NOT NULL on every v1+ kind.
+    identity_event TEXT
 );
 
 CREATE INDEX IF NOT EXISTS sad_events_prefix_idx ON sad_events(prefix);

@@ -369,6 +369,33 @@ impl SadEventRepository {
         Ok(!self.pool.fetch(query).await?.is_empty())
     }
 
+    /// True iff the chain has any `Cnt` event. Mirrors
+    /// `IdentityEventRepository::is_contested`.
+    pub async fn is_contested(&self, prefix: &cesr::Digest256) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .eq("kind", kels_core::SadEventKind::Cnt.as_str())
+            .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
+    }
+
+    /// True iff the chain has any `Dec` event. Mirrors
+    /// `IdentityEventRepository::is_decommissioned`.
+    pub async fn is_decommissioned(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<bool, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .eq("kind", kels_core::SadEventKind::Dec.as_str())
+            .limit(1);
+        Ok(!self.pool.fetch(query).await?.is_empty())
+    }
+
     /// Get the chain as bare `SadEvent`s.
     ///
     /// Ordering: `version ASC, kind sort_priority ASC, said ASC` — deterministic
@@ -470,21 +497,53 @@ impl SadEventRepository {
     }
 
     /// Get the effective SAID for a SEL prefix.
+    ///
+    /// Round-12 terminal-state precedence (mirrors
+    /// `IdentityEventRepository::effective_said`):
+    /// 1. Decommissioned → the latest `Dec` event's SAID.
+    /// 2. Contested → `hash_effective_said("contested:{prefix}")`.
+    /// 3. Divergent (non-terminal) → `hash_effective_said("divergent:{prefix}")`.
+    /// 4. Linear → tip event SAID.
+    /// 5. Empty → `None`.
+    ///
+    /// The bool in the return tuple is `true` for synthetic SAIDs
+    /// (contested/divergent) so callers can distinguish a real chain tip
+    /// from a state marker.
     pub async fn effective_said(
         &self,
         prefix: &cesr::Digest256,
     ) -> Result<Option<(cesr::Digest256, bool)>, StorageError> {
-        let latest = self.get_latest(prefix).await?;
-        let Some(latest) = latest else {
-            return Ok(None);
-        };
+        use verifiable_storage_postgres::QueryExecutor;
 
+        // 1. Decommissioned takes precedence: the Dec event itself is the
+        //    effective SAID. (A Dec lands on either a linear chain or a
+        //    sealed-divergent chain per Gap 4 routing; in either case the
+        //    Dec SAID is the deterministic effective value.)
+        let dec_query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .eq("kind", kels_core::SadEventKind::Dec.as_str())
+            .order_by("version", verifiable_storage::Order::Desc)
+            .limit(1);
+        let dec: Vec<SadEvent> = self.pool.fetch(dec_query).await?;
+        if let Some(dec_event) = dec.first() {
+            return Ok(Some((dec_event.said, false)));
+        }
+
+        // 2. Contested → synthetic "contested:{prefix}" hash.
+        if self.is_contested(prefix).await? {
+            let said = kels_core::hash_effective_said(&format!("contested:{}", prefix));
+            return Ok(Some((said, true)));
+        }
+
+        // 3. Divergent → synthetic "divergent:{prefix}" hash.
         if self.is_divergent(prefix).await? {
             let said = kels_core::hash_effective_said(&format!("divergent:{}", prefix));
             return Ok(Some((said, true)));
         }
 
-        Ok(Some((latest.said, false)))
+        // 4. Linear → tip event SAID. 5. Empty → None.
+        let latest = self.get_latest(prefix).await?;
+        Ok(latest.map(|e| (e.said, false)))
     }
 
     const ARCHIVED_EVENTS_TABLE: &'static str = "sad_event_archives";
@@ -594,9 +653,42 @@ impl SadEventRepository {
             None
         };
 
-        // Batch divergence check
+        // Round-12 terminal-state-aware effective-SAID resolution. Apply
+        // precedence per prefix in three batch passes (matches the
+        // `effective_said` order):
+        //   1. Decommissioned: replace SAID with the prefix's `Dec` SAID.
+        //   2. Contested (and not already decommissioned): synthetic
+        //      `contested:{prefix}` hash.
+        //   3. Divergent (and neither of the above): synthetic
+        //      `divergent:{prefix}` hash.
+        // The default (linear) tip SAID is already populated from the
+        // distinct_on query above.
         let page_prefixes: Vec<String> =
             prefix_states.iter().map(|s| s.prefix.to_string()).collect();
+
+        // Pass 1 — Dec SAIDs per prefix (latest Dec wins, mirroring
+        // single-prefix `effective_said`).
+        let dec_query = verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .r#in("prefix", page_prefixes.clone())
+            .eq("kind", kels_core::SadEventKind::Dec.as_str())
+            .order_by("version", verifiable_storage::Order::Desc);
+        let dec_events: Vec<SadEvent> = self.pool.fetch(dec_query).await?;
+        let mut dec_by_prefix: std::collections::HashMap<cesr::Digest256, cesr::Digest256> =
+            std::collections::HashMap::new();
+        for ev in dec_events {
+            dec_by_prefix.entry(ev.prefix).or_insert(ev.said);
+        }
+
+        // Pass 2 — set of prefixes that have at least one Cnt event.
+        let cnt_query =
+            verifiable_storage_postgres::Query::<SadEvent>::for_table(Self::TABLE_NAME)
+                .r#in("prefix", page_prefixes.clone())
+                .eq("kind", kels_core::SadEventKind::Cnt.as_str());
+        let cnt_events: Vec<SadEvent> = self.pool.fetch(cnt_query).await?;
+        let contested_prefixes: HashSet<cesr::Digest256> =
+            cnt_events.into_iter().map(|e| e.prefix).collect();
+
+        // Pass 3 — divergent prefixes (existing batch).
         let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
             .distinct()
             .r#in("prefix", page_prefixes)
@@ -611,8 +703,14 @@ impl SadEventRepository {
             .collect();
 
         for state in &mut prefix_states {
-            if divergent_prefixes.contains(state.prefix.as_ref()) {
-                state.said = kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
+            if let Some(dec_said) = dec_by_prefix.get(&state.prefix) {
+                state.said = *dec_said;
+            } else if contested_prefixes.contains(&state.prefix) {
+                state.said =
+                    kels_core::hash_effective_said(&format!("contested:{}", state.prefix));
+            } else if divergent_prefixes.contains(state.prefix.as_ref()) {
+                state.said =
+                    kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
             }
         }
 
