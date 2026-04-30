@@ -1762,6 +1762,17 @@ pub async fn run_sad_anti_entropy_loop(
                             _ => (None, false),
                         };
 
+                    // Round-12 Gap 8 lifecycle parity with KEL Phase 1:
+                    // track whether any peer's effective SAID differs from
+                    // local. If none do → `NoOp` (clear stale entry; no
+                    // retry). HTTP-success on the sync call is no longer
+                    // the success signal — we re-fetch local effective SAID
+                    // afterwards and only declare `Repaired` when the
+                    // chain actually advanced. A 200/202 followed by
+                    // server-side rejection leaves the chain unchanged →
+                    // continue to the next peer (or end → `Failed`).
+                    let mut any_peer_differs = false;
+
                     for (_, sadstore_url) in &ordered_peers {
                         let remote = match kels_core::SadStoreClient::new(sadstore_url) {
                             Ok(c) => c,
@@ -1776,6 +1787,7 @@ pub async fn run_sad_anti_entropy_loop(
                         if remote_said == local_said {
                             continue;
                         }
+                        any_peer_differs = true;
 
                         // Determine sync direction: check if the remote's SAID
                         // exists in our local chain. If yes, we're ahead → push.
@@ -1792,7 +1804,7 @@ pub async fn run_sad_anti_entropy_loop(
                             .await
                             .unwrap_or(false);
 
-                        if we_have_remote {
+                        let sync_ok = if we_have_remote {
                             // We're ahead — push to remote
                             let use_repair = remote_divergent && !local_divergent;
                             let Ok(local_source) = local.as_sad_source() else {
@@ -1820,7 +1832,7 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            if kels_core::forward_sad_events(
+                            kels_core::forward_sad_events(
                                 prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1830,9 +1842,6 @@ pub async fn run_sad_anti_entropy_loop(
                             )
                             .await
                             .is_ok()
-                            {
-                                return (prefix, source, retries, true);
-                            }
                         } else {
                             // Remote is ahead — pull from remote
                             let use_repair = local_divergent && !remote_divergent;
@@ -1858,7 +1867,7 @@ pub async fn run_sad_anti_entropy_loop(
                                     },
                                 )
                             };
-                            if kels_core::forward_sad_events(
+                            kels_core::forward_sad_events(
                                 prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1868,32 +1877,71 @@ pub async fn run_sad_anti_entropy_loop(
                             )
                             .await
                             .is_ok()
-                            {
-                                return (prefix, source, retries, true);
-                            }
+                        };
+
+                        // Round-12 Gap 8: HTTP-success ≠ state-advancement.
+                        // The receiver can 200/202 a sync request and then
+                        // reject events at verification time, leaving the
+                        // local chain unchanged. Re-fetch local effective
+                        // SAID; declare `Repaired` only on actual change.
+                        if !sync_ok {
+                            continue;
                         }
+                        let new_said = local
+                            .fetch_sel_effective_said(prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+                        if new_said != local_said {
+                            return (prefix, source, retries, RepairResult::Repaired);
+                        }
+                        // HTTP-success but state unchanged — continue to
+                        // the next peer (the events were rejected at the
+                        // sink's verifier). Don't return Repaired.
                     }
-                    (prefix, source, retries, false)
+
+                    if any_peer_differs {
+                        (prefix, source, retries, RepairResult::Failed)
+                    } else {
+                        (prefix, source, retries, RepairResult::NoOp)
+                    }
                 });
             }
 
-            for (sel_prefix, source_node_prefix, retries, success) in join_all(tasks).await {
-                if success {
-                    info!("SAD anti-entropy: repaired chain {}", sel_prefix);
-                } else {
-                    warn!(
-                        "SAD anti-entropy: re-queuing stale chain {} (retry {})",
-                        sel_prefix,
-                        retries + 1
-                    );
-                    requeue_stale_entry(
-                        redis.as_ref(),
-                        SEL_STALE_PREFIX_KEY,
-                        sel_prefix,
-                        &source_node_prefix,
-                        retries,
-                    )
-                    .await;
+            for (sel_prefix, source_node_prefix, retries, result) in join_all(tasks).await {
+                match result {
+                    RepairResult::Repaired => {
+                        info!("SAD anti-entropy: repaired chain {}", sel_prefix);
+                    }
+                    RepairResult::Contested => {
+                        // Not currently produced by the SE Phase 1 path
+                        // (forward_sad_events doesn't translate
+                        // ContestedSel into a typed signal). Reserved for
+                        // future symmetry with KEL.
+                        warn!("SAD anti-entropy: SE contested for {}", sel_prefix);
+                    }
+                    RepairResult::Failed => {
+                        warn!(
+                            "SAD anti-entropy: re-queuing stale chain {} (retry {})",
+                            sel_prefix,
+                            retries + 1
+                        );
+                        requeue_stale_entry(
+                            redis.as_ref(),
+                            SEL_STALE_PREFIX_KEY,
+                            sel_prefix,
+                            &source_node_prefix,
+                            retries,
+                        )
+                        .await;
+                    }
+                    RepairResult::NoOp => {
+                        debug!(
+                            "SAD anti-entropy: all peers agree on state for {} (cleared)",
+                            sel_prefix
+                        );
+                    }
                 }
             }
         }
