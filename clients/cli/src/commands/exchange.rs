@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
-    HttpKelSource, KeyEventBuilder, KeyProvider, ProviderConfig, SadEventBuilder, SadStoreClient,
+    HttpKelSource, KeyEventBuilder, KeyProvider, ProviderConfig, SadStoreClient,
     VerificationKeyCode,
 };
 use verifiable_storage::SelfAddressed;
@@ -115,7 +115,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     // can recompute the prefix without fetching v0.
     let kels_client = create_client(cli).await?;
     let kel_store = create_kel_store(cli, prefix).await?;
-    let mut kel_builder = KeyEventBuilder::with_dependencies(
+    let kel_builder = KeyEventBuilder::with_dependencies(
         provider,
         Some(kels_client),
         Some(Arc::new(kel_store)),
@@ -131,72 +131,31 @@ pub(crate) async fn cmd_exchange_publish_key(
     );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
-    // Inception path — no existing chain to hydrate. `new` is the honest
-    // constructor; rotate-key uses `with_prefix` because it's resuming.
-    //
-    // Round-12 Gap 2: iel_resolver is `None` here — Gap 11 will rewire
-    // the CLI to construct an `AnchoredIelResolver` from `sad_client` and
-    // pass it through. The builder's staging methods are stubbed (Gap 5
-    // territory), so this CLI call fails at runtime regardless.
-    let mut sad_builder = SadEventBuilder::new(
-        Some(sad_client.clone()),
-        Some(sad_store),
-        Some(checker),
-        None,
-    );
 
-    let (icp_said, est_said) = sad_builder.incept_deterministic(
-        kels_exchange::ENCAP_KEY_KIND,
+    // Round-12 Gap 5 stub: this CLI command is parked pending Gap 11's
+    // CLI rewrite. The pre-round-12 flow (`incept_deterministic`
+    // declaring both `write_policy` and `governance_policy`) doesn't
+    // translate directly — round-12 SE chains bind to an existing IEL
+    // via the `identity` parameter rather than declaring policies
+    // inline. Gap 11 will reshape the CLI surface to feed an IEL
+    // identity into `incept_chain(identity, topic, initial_content)`.
+    //
+    // Variables are referenced via `_ = ...` to suppress unused-binding
+    // warnings while keeping the Gap-11 rewrite a localized swap.
+    let _ = (
         write_policy,
         governance_policy,
-        Some(publication.said),
-    )?;
-
-    // Anchor each staged SAID in the KEL before submitting the SEL — the
-    // server's write_policy check finds the anchors via the KEL.
-    kel_builder
-        .interact(&icp_said)
-        .await
-        .context("Failed to anchor v0 SAID in KEL")?;
-    kel_builder
-        .interact(&est_said)
-        .await
-        .context("Failed to anchor v1 SAID in KEL")?;
-
-    let outcome = sad_builder
-        .flush()
-        .await
-        .context("Failed to submit SAD events")?;
-
-    if !outcome.applied {
-        eprintln!(
-            "{}",
-            "key already published — server reports no new events".yellow()
-        );
-    }
-
-    if let Some(at) = outcome.diverged_at_at_submit {
-        eprintln!(
-            "{}",
-            format!(
-                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
-                at
-            )
-            .yellow()
-        );
-    }
-
-    println!(
-        "{}",
-        format!(
-            "Key published! SEL prefix: {}",
-            sad_builder.prefix().expect("prefix established by incept")
-        )
-        .green()
-        .bold()
+        publication,
+        kel_builder,
+        sad_store,
+        checker,
+        sad_client,
     );
-
-    Ok(())
+    Err(anyhow::anyhow!(
+        "kels exchange publish-key: parked pending Gap 11 CLI rewrite — \
+         the round-12 SE builder requires an IEL `identity` rather than \
+         inline write_policy/governance_policy declaration"
+    ))
 }
 
 pub(crate) async fn cmd_exchange_rotate_key(
@@ -259,59 +218,29 @@ pub(crate) async fn cmd_exchange_rotate_key(
     );
 
     let sad_store = Arc::new(create_sad_store(cli).await?);
-    // Round-12 Gap 2: iel_resolver is `None` (CLI rewire deferred to
-    // Gap 11); hydration is skipped, builder staging is stubbed.
-    let mut sad_builder = SadEventBuilder::with_prefix(
-        Some(sad_client.clone()),
-        Some(sad_store),
-        Some(checker),
-        None,
-        &sel_prefix,
-    )
-    .await?;
 
-    let upd_said = sad_builder.update(publication.said)?;
-
-    // Anchor the new event's SAID in the KEL before flushing.
-    let kels_client = create_client(cli).await?;
-    let kel_store = create_kel_store(cli, prefix).await?;
-    let mut kel_builder = KeyEventBuilder::with_dependencies(
+    // Round-12 Gap 5 stub: parked pending Gap 11 CLI rewrite. Round-12
+    // `update` is async (`update(content) -> Result<…>`) and the
+    // builder's IEL-binding flow needs the SE chain's `identity`
+    // resolved (currently inferred from `compute_sad_event_prefix(write_policy, …)`,
+    // which is no longer how SE prefixes are derived). Gap 11 reshapes
+    // this CLI command to take an IEL identity reference.
+    let _ = (
         provider,
-        Some(kels_client),
-        Some(Arc::new(kel_store)),
-        Some(&prefix_digest),
-    )
-    .await?;
-    kel_builder
-        .interact(&upd_said)
-        .await
-        .context("Failed to anchor event SAID in KEL")?;
-
-    let outcome = sad_builder
-        .flush()
-        .await
-        .context("Failed to submit SAD event")?;
-
-    if !outcome.applied {
-        eprintln!(
-            "{}",
-            "rotation event already on server — no new events committed".yellow()
-        );
-    }
-
-    if let Some(at) = outcome.diverged_at_at_submit {
-        eprintln!(
-            "{}",
-            format!(
-                "warning: SEL diverged at version {} during submit — run `kels sel repair` to resolve before further updates",
-                at
-            )
-            .yellow()
-        );
-    }
-
-    println!("{}", "Key rotated!".green().bold());
-    Ok(())
+        sad_client,
+        publication,
+        write_policy,
+        sel_prefix,
+        prefix,
+        prefix_digest,
+        sad_store,
+        checker,
+    );
+    Err(anyhow::anyhow!(
+        "kels exchange rotate-key: parked pending Gap 11 CLI rewrite — \
+         the round-12 SE builder needs an IEL identity rather than \
+         a write_policy-derived SEL prefix"
+    ))
 }
 
 pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, kel_prefix: &str) -> Result<()> {

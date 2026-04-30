@@ -6,7 +6,6 @@
 pub(crate) mod ast;
 pub(crate) mod error;
 pub(crate) mod evaluator;
-pub(crate) mod iel_resolver;
 pub mod json_api;
 pub(crate) mod parser;
 pub(crate) mod policy;
@@ -17,7 +16,6 @@ pub(crate) mod verification;
 pub use ast::PolicyNode;
 pub use error::PolicyError;
 pub use evaluator::{evaluate_anchored_policy, evaluate_signed_policy, poison_hash};
-pub use iel_resolver::AnchoredIelResolver;
 pub use parser::{canonicalize, parse};
 pub use policy::Policy;
 pub use policy_checker::AnchoredPolicyChecker;

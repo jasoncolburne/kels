@@ -1,109 +1,120 @@
 //! SAD Event Log builder.
 //!
-//! **Round-12 Gap 1 stub.** The pre-round-12 builder was tightly coupled to
-//! the dropped `write_policy` / `governance_policy` SE fields, the `Est` /
-//! `Evl` kinds, and the dual-incept paths (`incept` /
-//! `incept_deterministic`). Gap 5 rebuilds this module end-to-end per
-//! `~/.claude-plan-round12.md` (single `incept_chain`; `update`, `seal`,
-//! `repair`, `contest`, `decommission`; pending bundling; `verify_server_chain_pre_action`).
+//! Single-actor, protocol-agnostic construction surface for SAD Event Logs.
+//! Round-12 shape: chains are identity-rooted, so every staging method that
+//! produces a v1+ event must bind it to a specific IEL event via
+//! `identity_event`. The builder fetches the IEL's current state from the
+//! server on demand to find the binding.
 //!
-//! Until then, this module exposes the same public-method surface the
-//! pre-round-12 callers used (`incept`, `incept_deterministic`, `update`,
-//! `evaluate`, `repair`, `governance_policy`, `is_established`,
-//! `events_since_evaluation`, `needs_evaluation`, `flush`, `publish_pending`)
-//! so the workspace keeps compiling. Bodies that depend on the dropped SE
-//! shape are stubbed to `Err(KelsError::InvalidKel("Gap 1 stub …"))` —
-//! callers that exercise those paths at runtime fail immediately, which is
-//! the right signal at this stage of the round.
+//! Per-method:
+//! - `incept_chain(identity, topic, initial_content)` atomically stages
+//!   `[Icp, Upd]` (the inception batch rule requires a v1 Upd alongside
+//!   every Icp).
+//! - `update(content)` stages a v+1 `Upd`; binds to the most recent IEL
+//!   non-terminal event for the chain's identity.
+//! - `seal()` stages a `Sea`; binds to the most recent IEL non-terminal
+//!   event (governance carrier).
+//! - `repair()` stages an `Rpr` resolving divergence; bundles pending into
+//!   the batch.
+//! - `contest()` / `decommission()` stage terminal events and bundle
+//!   pending; `decommission` fails fast on divergent chains.
+//! - `flush()` submits pending atomically and rolls into verified state.
 //!
-//! **Do not rely on this stub's semantics.** Gap 5 lands the real builder.
+//! Cross-chain access: the builder uses `SadStoreClient` for all HTTP I/O.
+//! When it needs to verify (its own chain or its IEL binding), it
+//! constructs an [`AnchoredIelResolver`](crate::AnchoredIelResolver) on
+//! demand from `sad_client.as_iel_source()` — no `IelResolver` field
+//! lives on the builder; the durable handle is the client.
+//!
+//! Staging methods are synchronous (in-memory construction). Methods that
+//! need IEL state (everything except plain getters) are `async` because
+//! they hit the network. Only `flush()` and `publish_pending()` write.
 
 use std::sync::Arc;
 
 use crate::{
-    KelsError,
+    AnchoredIelResolver, KelsError,
     client::SadStoreClient,
     store::SadStore,
-    types::{IelResolver, PolicyChecker, SadEvent, SelVerification},
+    types::{IdentityEventKind, IelResolver, PolicyChecker, SadEvent, SelVerification, SelVerifier},
 };
 
-/// Outcome of a successful `SadEventBuilder::flush`. Same surface as the
-/// pre-round-12 type — Gap 5 may extend.
+/// Outcome of a successful `SadEventBuilder::flush`.
 #[derive(Debug, Clone)]
-#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit"]
+#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit before continuing"]
 pub struct FlushOutcome {
     pub diverged_at_at_submit: Option<u64>,
     pub applied: bool,
 }
 
-/// Builder for SAD Event Logs — Gap 1 stub. See module docs.
+/// Builder for SAD Event Logs.
 ///
-/// `sad_store`, `checker`, and `iel_resolver` are held but largely unused
-/// in the stub bodies — `with_prefix` consults them to hydrate verified
-/// state, but the staging methods all error. Gap 5 fully wires them.
-#[allow(dead_code)]
+/// Dual-state per `IdentityEventBuilder`: `sad_verification` holds the
+/// verified tail (from server or local store), `pending_events` holds
+/// locally staged events. The builder is non-generic over `KeyProvider` —
+/// SAD events carry no signatures; authorization is via IEL bindings
+/// resolved at the server's verifier.
 pub struct SadEventBuilder {
     sad_client: Option<SadStoreClient>,
     sad_store: Option<Arc<dyn SadStore>>,
+    /// Policy checker for hydration in `with_prefix`, for verifying IEL
+    /// bindings during staging, and for absorbing pending in `flush`.
+    /// `None` permits offline construction (tests, staging-only flows);
+    /// `flush` errors when pending is non-empty and this is unset.
     checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
-    iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
     sad_verification: Option<SelVerification>,
     pending_events: Vec<SadEvent>,
+    /// Prefix the caller expects this builder to operate on (captured via
+    /// `with_prefix`). Mismatch surfaces at flush via the verifier's
+    /// prefix check.
     requested_prefix: Option<cesr::Digest256>,
 }
 
 impl SadEventBuilder {
-    /// Construct a bare builder.
-    ///
-    /// Round 12 adds `iel_resolver` so the builder can verify hydrated
-    /// chains (and, in Gap 5, stage v1+ events with real IEL bindings).
+    // ==================== Constructors ====================
+
     pub fn new(
         sad_client: Option<SadStoreClient>,
         sad_store: Option<Arc<dyn SadStore>>,
         checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
-        iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
     ) -> Self {
         Self {
             sad_client,
             sad_store,
             checker,
-            iel_resolver,
             sad_verification: None,
             pending_events: Vec::new(),
             requested_prefix: None,
         }
     }
 
-    /// Hydrate verified state from the local SAD store at `sel_prefix`.
+    /// Construct a builder for an existing SE chain at `sel_prefix` and
+    /// hydrate verified state from the **local SAD store only**.
     ///
-    /// Hydration runs only when `sad_store`, `checker`, AND `iel_resolver`
-    /// are all `Some` — the round-12 verifier requires the resolver to walk
-    /// IEL bindings. Without all three the builder still latches the
-    /// requested prefix and skips the local walk; a later flush errors via
-    /// the requested-prefix mismatch guard.
+    /// Hydration runs only when both `sad_store` and `checker` are set —
+    /// the round-12 verifier also needs an `IelResolver`, which the
+    /// builder constructs from `sad_client`. Without `sad_client` the
+    /// hydration path is skipped (the prefix-mismatch guard at flush
+    /// catches misuse). `KelsError::NotFound` from the local walk is
+    /// silently absorbed — the chain may not exist locally yet.
     pub async fn with_prefix(
         sad_client: Option<SadStoreClient>,
         sad_store: Option<Arc<dyn SadStore>>,
         checker: Option<Arc<dyn PolicyChecker + Send + Sync>>,
-        iel_resolver: Option<Arc<dyn IelResolver + Send + Sync>>,
         sel_prefix: &cesr::Digest256,
     ) -> Result<Self, KelsError> {
-        let mut builder = Self::new(
-            sad_client,
-            sad_store.clone(),
-            checker.clone(),
-            iel_resolver.clone(),
-        );
+        let mut builder = Self::new(sad_client.clone(), sad_store.clone(), checker.clone());
         builder.requested_prefix = Some(*sel_prefix);
-        if let (Some(store), Some(c), Some(r)) =
-            (sad_store.as_ref(), checker.as_ref(), iel_resolver.as_ref())
+        if let (Some(store), Some(c), Some(client)) =
+            (sad_store.as_ref(), checker.as_ref(), sad_client.as_ref())
         {
+            let resolver = builder.build_iel_resolver_from(client, c)?;
             let mut loader = crate::SadStorePageLoader::new(store.as_ref());
             match crate::sel_completed_verification(
                 &mut loader,
                 sel_prefix,
                 Arc::clone(c),
-                Arc::clone(r),
+                resolver,
                 crate::page_size(),
                 crate::max_pages(),
             )
@@ -127,6 +138,8 @@ impl SadEventBuilder {
         self.sad_verification.as_ref()
     }
 
+    /// The most recent event on the chain (pending tail wins over verified
+    /// tip). `None` on a fresh, un-incepted builder.
     pub fn last_event(&self) -> Option<&SadEvent> {
         if let Some(last) = self.pending_events.last() {
             return Some(last);
@@ -138,6 +151,7 @@ impl SadEventBuilder {
         self.last_event().map(|e| &e.said)
     }
 
+    /// SE prefix (pending v0, then verified prefix).
     pub fn prefix(&self) -> Option<&cesr::Digest256> {
         if let Some(first) = self.pending_events.first() {
             return Some(&first.prefix);
@@ -149,27 +163,21 @@ impl SadEventBuilder {
         self.last_event().map(|e| e.version)
     }
 
-    /// Round-12 SE has no `governance_policy` field on events — policies
-    /// live on IEL. Gap 1 stub returns `None` unconditionally; Gap 5
-    /// removes this method entirely and routes governance through
-    /// `IelResolver`.
-    pub fn governance_policy(&self) -> Option<cesr::Digest256> {
-        None
+    /// True iff the chain has terminated locally (a `Cnt` or `Dec` is
+    /// staged or already verified). Refuses further staging.
+    pub fn is_terminal(&self) -> bool {
+        if self.pending_events.iter().any(|e| e.kind.is_terminal()) {
+            return true;
+        }
+        self.sad_verification
+            .as_ref()
+            .map(|v| v.is_contested() || v.is_decommissioned())
+            .unwrap_or(false)
     }
 
-    /// Round-12 stub: returns `true` once any event is present (pending or
-    /// verified). The pre-round-12 distinction between "Icp" and
-    /// "Icp+Est governance established" no longer exists — every chain has
-    /// a permissionless Icp followed immediately by an Upd per the
-    /// inception batch rule (Gap 4). Gap 5 removes this method entirely.
-    pub fn is_established(&self) -> bool {
-        self.sad_verification.is_some() || !self.pending_events.is_empty()
-    }
-
-    /// Round-12 stub: counts non-evaluation events on the pending tail.
-    /// Treats `Sea` / `Rpr` / `Cnt` / `Dec` as evaluation events that reset
-    /// the counter; everything else (Icp, Upd) increments. Gap 5 will
-    /// recompute against the new branch state shape.
+    /// Number of non-evaluation events on the current branch since the
+    /// last governance evaluation, or since chain start if none. Walks
+    /// pending events forward from the verified counter (if any).
     pub fn events_since_evaluation(&self) -> usize {
         let mut count = self
             .sad_verification
@@ -177,7 +185,12 @@ impl SadEventBuilder {
             .map(|v| v.events_since_evaluation())
             .unwrap_or(0);
         for event in &self.pending_events {
-            if event.kind.evaluates_governance() {
+            // `Icp` and any governance-evaluating kind reset the counter;
+            // everything else (only `Upd` in practice) increments. Folded
+            // into one arm to satisfy `clippy::if_same_then_else`.
+            if event.kind == crate::types::SadEventKind::Icp
+                || event.kind.evaluates_governance()
+            {
                 count = 0;
             } else {
                 count += 1;
@@ -186,69 +199,244 @@ impl SadEventBuilder {
         count
     }
 
-    /// True when the next non-evaluation event would cross
-    /// `MAX_NON_EVALUATION_EVENTS`. Gap 5 will replace with round-12-specific
-    /// gates (e.g., post-divergence routing).
     pub fn needs_evaluation(&self) -> bool {
         self.events_since_evaluation() >= crate::MAX_NON_EVALUATION_EVENTS
     }
 
-    // ==================== Staging — Gap 1 stubs ====================
-    //
-    // All staging methods below preserve the pre-round-12 signatures purely
-    // so call sites compile during the Gap 1 → Gap 5 transition window.
-    // Their bodies always error out: any caller that actually exercises a
-    // staging path at runtime gets `KelsError::InvalidKel("Gap 1 stub: …")`
-    // immediately, which is the right behavior — round-12 SE staging
-    // requires the new IEL-binding flow that Gap 5 introduces.
+    // ==================== Staging (async) ====================
 
-    pub fn incept(
+    /// Atomically stage `[Icp, Upd]` for a fresh SE chain bound to
+    /// `identity`. Returns `(icp_said, upd_said)`.
+    ///
+    /// The Upd's `identity_event` resolves to the most recent IEL
+    /// non-terminal event for `identity` (Icp or Evl). The IEL must be
+    /// locally reachable via `sad_client`.
+    pub async fn incept_chain(
         &mut self,
-        _topic: impl Into<String>,
-        _identity_or_old_write_policy: cesr::Digest256,
-        _old_governance_policy: cesr::Digest256,
-    ) -> Result<cesr::Digest256, KelsError> {
-        Err(stub_err("incept"))
-    }
-
-    pub fn incept_deterministic(
-        &mut self,
-        _topic: impl Into<String>,
-        _identity_or_old_write_policy: cesr::Digest256,
-        _old_governance_policy: cesr::Digest256,
-        _content: Option<cesr::Digest256>,
+        identity: cesr::Digest256,
+        topic: impl Into<String>,
+        initial_content: cesr::Digest256,
     ) -> Result<(cesr::Digest256, cesr::Digest256), KelsError> {
-        Err(stub_err("incept_deterministic"))
+        self.require_fresh_builder()?;
+
+        let topic_str: String = topic.into();
+        let icp = SadEvent::icp(topic_str, identity)?;
+
+        if let Some(expected) = self.requested_prefix
+            && icp.prefix != expected
+        {
+            return Err(KelsError::InvalidKel(format!(
+                "Icp prefix {} does not match requested prefix {}",
+                icp.prefix, expected
+            )));
+        }
+
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let upd = SadEvent::upd(&icp, iel_event_said, initial_content)?;
+
+        let icp_said = icp.said;
+        let upd_said = upd.said;
+        self.pending_events.push(icp);
+        self.pending_events.push(upd);
+        Ok((icp_said, upd_said))
     }
 
-    pub fn update(&mut self, _content: cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
-        Err(stub_err("update"))
+    /// Stage a v+1 `Upd` carrying new content. Resolves `identity_event`
+    /// from the most recent IEL non-terminal event for the chain's
+    /// identity at staging time.
+    pub async fn update(&mut self, content: cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+        self.require_non_divergent()?;
+
+        if self.needs_evaluation() {
+            return Err(KelsError::EvaluationRequired);
+        }
+
+        let identity = self.chain_identity()?;
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let tip = self.current_tip()?.clone();
+        let upd = SadEvent::upd(&tip, iel_event_said, content)?;
+        let said = upd.said;
+        self.pending_events.push(upd);
+        Ok(said)
     }
 
-    pub fn evaluate(
-        &mut self,
-        _content: Option<cesr::Digest256>,
-        _old_write_policy: Option<cesr::Digest256>,
-        _old_governance_policy: Option<cesr::Digest256>,
-    ) -> Result<cesr::Digest256, KelsError> {
-        Err(stub_err("evaluate"))
+    /// Stage a `Sea` (degenerate seal marker). Carries `previous.content`
+    /// forward. `identity_event` binds to the most recent IEL non-terminal
+    /// event (governance carrier) for the chain's identity.
+    pub async fn seal(&mut self) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+        self.require_non_divergent()?;
+
+        let identity = self.chain_identity()?;
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let tip = self.current_tip()?.clone();
+        let sea = SadEvent::sea(&tip, iel_event_said)?;
+        let said = sea.said;
+        self.pending_events.push(sea);
+        Ok(said)
     }
 
-    pub async fn repair(
-        &mut self,
-        _content: Option<cesr::Digest256>,
-    ) -> Result<cesr::Digest256, KelsError> {
-        Err(stub_err("repair"))
+    /// Stage an `Rpr` (repair) at the truncation boundary so the
+    /// server-side `is_repair` path heals divergence (or
+    /// adversary-extended linear). Pre-flight runs
+    /// `verify_server_chain_pre_action` (full client-side re-verify of
+    /// the server's view).
+    pub async fn repair(&mut self) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+
+        let server_view = self.verify_server_chain_pre_action().await?.ok_or_else(|| {
+            KelsError::OfflineMode("repair requires sad_client + checker for pre-flight".into())
+        })?;
+
+        if !server_view.policy_satisfied() {
+            return Err(KelsError::ChainHasUnverifiedEvents(
+                "server-fetched chain reports policy_satisfied=false — \
+                 will not repair against unverified data"
+                    .into(),
+            ));
+        }
+
+        let owner_verification = self
+            .sad_verification
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
+        if !owner_verification.policy_satisfied() {
+            return Err(KelsError::ChainHasUnverifiedEvents(
+                "owner-local sad_verification reports policy_satisfied=false — \
+                 local store may have been tampered, or KEL anchors are \
+                 unreachable; resolve before repairing"
+                    .into(),
+            ));
+        }
+
+        // Boundary derivation. Mirrors the round-10 logic but uses
+        // round-12 accessors.
+        let owner_tip = owner_verification.current_event().clone();
+        let prefix = owner_tip.prefix;
+        let boundary_version = match server_view.diverged_at_version() {
+            Some(d) => {
+                if d == 0 {
+                    return Err(KelsError::InvalidKel(
+                        "server reports divergence at v0 — cannot repair below \
+                         inception"
+                            .into(),
+                    ));
+                }
+                d - 1
+            }
+            None => {
+                let server_tip_v = server_view.current_event().version;
+                if server_tip_v <= owner_tip.version {
+                    return Err(KelsError::NothingToRepair);
+                }
+                owner_tip.version
+            }
+        };
+
+        // Fetch boundary event from owner's local store.
+        let sad_store = self
+            .sad_store
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("repair requires a sad_store".into()))?;
+        let (boundary_events, _has_more) = sad_store
+            .load_sel_events(&prefix, 1, boundary_version)
+            .await?;
+        let boundary = boundary_events.into_iter().next().ok_or_else(|| {
+            KelsError::InvalidKel(format!(
+                "boundary event at version {} not in local store for prefix {} \
+                 — owner-local view may be incomplete",
+                boundary_version, prefix
+            ))
+        })?;
+        if boundary.version != boundary_version {
+            return Err(KelsError::InvalidKel(format!(
+                "local store offset {} returned event at version {} (prefix {}) \
+                 — index ordering is inconsistent",
+                boundary_version, boundary.version, prefix
+            )));
+        }
+
+        let identity = self.chain_identity()?;
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let rpr = SadEvent::rpr(&boundary, iel_event_said)?;
+        let said = rpr.said;
+        self.pending_events.push(rpr);
+        Ok(said)
     }
 
-    // ==================== Submission ====================
+    /// Stage a `Cnt` (and any pending events) for submission.
+    ///
+    /// On a linear chain with pending, `Cnt` extends the last pending
+    /// event. On a linear chain without pending, `Cnt` extends the
+    /// verified tip. On a divergent chain (no pending), `Cnt` extends
+    /// the **lower-SAID branch tip** for cross-node determinism (mirrors
+    /// IEL's lower-SAID rule at `docs/design/iel/event-log.md:174`).
+    ///
+    /// Pre-flight: full client-side server-chain re-verification via
+    /// `verify_server_chain_pre_action`. Defense-in-depth.
+    ///
+    /// No local divergent-state pre-flight (deliberate asymmetry with
+    /// `decommission`): `Cnt` is a valid resolver on sealed-divergent
+    /// chains; the builder lets the server route.
+    pub async fn contest(&mut self) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
 
-    /// Submit pending events to SADStore. Gap-1 minimal version: posts
-    /// pending events as-is and clears `pending_events` on success. The
-    /// per-event policy/IEL re-verification that Gap 5 will run is omitted
-    /// here — the stub is only used by callers that have already submitted
-    /// events through other paths (e.g., gossip handlers) or by tests that
-    /// don't depend on policy semantics.
+        let _server_view = self.verify_server_chain_pre_action().await?;
+
+        let cnt_previous = self.choose_terminal_anchor(false)?;
+        let identity = self.chain_identity()?;
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let cnt = SadEvent::cnt(&cnt_previous, iel_event_said)?;
+        let said = cnt.said;
+        self.pending_events.push(cnt);
+        Ok(said)
+    }
+
+    /// Stage a `Dec` (and any pending events) for submission.
+    ///
+    /// Fails fast on a divergent chain — `Dec` cannot resolve a divergent
+    /// SE chain (sealed-divergent → ContestRequired; unsealed-divergent →
+    /// RepairRequired). The builder surfaces a generic
+    /// `DecommissionBlockedByDivergence` and lets the operator route to
+    /// `repair()` or `contest()`.
+    ///
+    /// Round-12 deviation: Gap 6 introduces
+    /// `KelsError::DecommissionBlockedByDivergence`; until then we
+    /// surface as `KelsError::InvalidKel` with the load-bearing fragment
+    /// "decommission blocked by divergence".
+    pub async fn decommission(&mut self) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+
+        let server_view = self.verify_server_chain_pre_action().await?;
+
+        if self.is_divergent_view(server_view.as_ref()) {
+            return Err(KelsError::InvalidKel(
+                "decommission blocked by divergence: chain is divergent — \
+                 use contest() (sealed) or repair() (unsealed) instead"
+                    .into(),
+            ));
+        }
+
+        let dec_previous = self.choose_terminal_anchor(true)?;
+        let identity = self.chain_identity()?;
+        let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let dec = SadEvent::dec(&dec_previous, iel_event_said)?;
+        let said = dec.said;
+        self.pending_events.push(dec);
+        Ok(said)
+    }
+
+    // ==================== Submission (async) ====================
+
+    /// Publish staged events as generic SAD objects in the object store.
+    /// Idempotent (object store keys by SAID). Does not promote events
+    /// into the SEL — `flush()` does that.
     pub async fn publish_pending(&self) -> Result<(), KelsError> {
         let client = self.sad_client.as_ref().ok_or_else(|| {
             KelsError::OfflineMode("publish_pending requires a SadStoreClient".into())
@@ -261,10 +449,19 @@ impl SadEventBuilder {
         Ok(())
     }
 
-    /// Flush staged events. Gap-1 stub: only meaningful when pending is
-    /// already empty (returns a no-op `FlushOutcome`); otherwise errors —
-    /// staging methods are stubbed, so a non-empty pending queue here is a
-    /// caller bug.
+    /// Submit pending events to SADStore, then absorb into verified state.
+    ///
+    /// Three phases (mirrors round-10 / IEL flush):
+    /// 1. `sad_client.submit_sad_events(...)` — server commits.
+    /// 2. `sad_store.store_sel_event` per event — local cache write-through.
+    /// 3. `absorb_pending` — re-verify against server-accepted state.
+    ///
+    /// Special case: a flush that includes an `Rpr` triggers a fresh
+    /// owner-local rehydrate (the Rpr's `previous` points at a
+    /// pre-truncation event that isn't a current branch tip; resume +
+    /// verify_page would error). After server's `is_repair` truncation
+    /// the chain is linear from v0 to the Rpr; rehydrate from the local
+    /// SAD store.
     pub async fn flush(&mut self) -> Result<FlushOutcome, KelsError> {
         if self.pending_events.is_empty() {
             return Ok(FlushOutcome {
@@ -272,13 +469,314 @@ impl SadEventBuilder {
                 applied: false,
             });
         }
-        Err(stub_err("flush"))
-    }
-}
 
-fn stub_err(op: &str) -> KelsError {
-    KelsError::InvalidKel(format!(
-        "SadEventBuilder::{op} is a Gap-1 stub — round-12 SE staging \
-         lands in Gap 5 (see ~/.claude-plan-round12.md)",
-    ))
+        let client = self
+            .sad_client
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("flush requires a SadStoreClient".into()))?;
+        if self.checker.is_none() {
+            return Err(KelsError::OfflineMode(
+                "flush requires a PolicyChecker".into(),
+            ));
+        }
+
+        let response = client.submit_sad_events(&self.pending_events).await?;
+
+        if let Some(store) = self.sad_store.as_ref() {
+            for event in &self.pending_events {
+                store.store_sel_event(event).await?;
+            }
+        }
+
+        let was_repair = self.pending_events.iter().any(|e| e.kind.is_repair());
+
+        if was_repair {
+            #[allow(clippy::expect_used)]
+            let prefix = *self
+                .prefix()
+                .expect("repair flush has prefix from pending or verification");
+            #[allow(clippy::expect_used)]
+            let checker = Arc::clone(
+                self.checker
+                    .as_ref()
+                    .expect("flush is_none-checked checker above"),
+            );
+            #[allow(clippy::expect_used)]
+            let store = self
+                .sad_store
+                .as_ref()
+                .expect("repair flush requires sad_store (validated by repair pre-flight)");
+            let resolver = self.build_iel_resolver()?;
+            let mut loader = crate::SadStorePageLoader::new(store.as_ref());
+            let fresh = crate::sel_completed_verification(
+                &mut loader,
+                &prefix,
+                checker,
+                resolver,
+                crate::page_size(),
+                crate::max_pages(),
+            )
+            .await?;
+            self.sad_verification = Some(fresh);
+            self.pending_events.clear();
+        } else {
+            self.absorb_pending().await?;
+
+            if let Some(at) = response.diverged_at
+                && let Some(v) = self.sad_verification.as_mut()
+            {
+                v.set_diverged_at_version(at);
+            }
+        }
+
+        Ok(FlushOutcome {
+            diverged_at_at_submit: response.diverged_at,
+            applied: response.applied,
+        })
+    }
+
+    // ==================== Private helpers ====================
+
+    /// Construct an `IelResolver` from this builder's `sad_client` and
+    /// `checker`. Errors if either is missing. Used per-verify-call —
+    /// the `iel_client` (= `sad_client`) is the durable handle; the
+    /// resolver is ephemeral.
+    fn build_iel_resolver(
+        &self,
+    ) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
+        let client = self.sad_client.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode("IelResolver construction requires a SadStoreClient".into())
+        })?;
+        let checker = self.checker.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode("IelResolver construction requires a PolicyChecker".into())
+        })?;
+        self.build_iel_resolver_from(client, checker)
+    }
+
+    fn build_iel_resolver_from(
+        &self,
+        client: &SadStoreClient,
+        checker: &Arc<dyn PolicyChecker + Send + Sync>,
+    ) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
+        let source: Arc<dyn crate::types::PagedIelSource + Send + Sync> =
+            Arc::new(client.as_iel_source()?);
+        Ok(Arc::new(AnchoredIelResolver::new(
+            source,
+            Arc::clone(checker),
+            crate::page_size(),
+            crate::max_pages(),
+        )))
+    }
+
+    /// Verify the server's view of the chain. Returns `None` if any of
+    /// `sad_client` / `checker` / `prefix` is missing (offline-staging
+    /// flows). Mirrors `IdentityEventBuilder::verify_server_chain_pre_action`.
+    async fn verify_server_chain_pre_action(
+        &self,
+    ) -> Result<Option<SelVerification>, KelsError> {
+        let (Some(client), Some(checker), Some(prefix)) = (
+            self.sad_client.as_ref(),
+            self.checker.as_ref(),
+            self.prefix(),
+        ) else {
+            return Ok(None);
+        };
+        let resolver = self.build_iel_resolver_from(client, checker)?;
+        Ok(Some(
+            client
+                .verify_sad_events(prefix, Arc::clone(checker), resolver)
+                .await?,
+        ))
+    }
+
+    /// Fetch the SAID of the most recent IEL non-terminal event (Icp or
+    /// Evl) for `identity`. The event's policy fields authorize SE
+    /// staging. Errors if the IEL is divergent (no canonical "current"
+    /// event) or terminated (chain can't authorize new SE work).
+    async fn fetch_current_iel_binding(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        let client = self.sad_client.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode(
+                "fetch_current_iel_binding requires a SadStoreClient".into(),
+            )
+        })?;
+        let checker = self.checker.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode(
+                "fetch_current_iel_binding requires a PolicyChecker".into(),
+            )
+        })?;
+        let verification = client
+            .verify_identity_events(identity, Arc::clone(checker))
+            .await?;
+        if verification.is_divergent() {
+            return Err(KelsError::IelDivergent(format!(
+                "IEL {} is divergent — cannot pick a binding for SE staging",
+                identity
+            )));
+        }
+        if verification.is_contested() || verification.is_decommissioned() {
+            return Err(KelsError::InvalidIel(format!(
+                "IEL {} is terminal (contested/decommissioned) — cannot \
+                 authorize SE staging",
+                identity
+            )));
+        }
+        let current = verification.current_event().ok_or_else(|| {
+            KelsError::InvalidIel(format!(
+                "IEL {} has no current event (unexpected on a non-divergent chain)",
+                identity
+            ))
+        })?;
+        // Round-12 SE bindings target Icp / Evl events (the kinds that
+        // carry policy state forward). Terminal IEL kinds (Cnt / Dec)
+        // shouldn't be reachable here because we just gated on
+        // `is_contested` / `is_decommissioned`, but stay defensive.
+        if matches!(current.kind, IdentityEventKind::Cnt | IdentityEventKind::Dec) {
+            return Err(KelsError::InvalidIel(format!(
+                "IEL {}'s current event is terminal kind {} — cannot bind SE \
+                 events to a terminated IEL",
+                identity, current.kind
+            )));
+        }
+        Ok(current.said)
+    }
+
+    /// Choose the event a terminal staging op (`Cnt` or `Dec`) should
+    /// extend. Pending tail wins. Otherwise: linear → verified tip;
+    /// divergent (Cnt only — Dec already gated out) → lower-SAID branch
+    /// tip from the verification token.
+    fn choose_terminal_anchor(&self, decommission: bool) -> Result<SadEvent, KelsError> {
+        if let Some(last) = self.pending_events.last() {
+            return Ok(last.clone());
+        }
+        let view = self
+            .sad_verification
+            .as_ref()
+            .ok_or(KelsError::NotIncepted)?;
+        if let Some(_at) = view.diverged_at_version() {
+            if decommission {
+                // Should be unreachable — `decommission` already returned
+                // `DecommissionBlockedByDivergence` before reaching here.
+                return Err(KelsError::InvalidKel(
+                    "decommission blocked by divergence: chain is divergent".into(),
+                ));
+            }
+            // Lower-SAID branch tip: `branches` is sorted ascending by
+            // tip SAID at `SelVerifier::finish`, so the first entry is
+            // the lower-SAID one.
+            let branch = view.branches().first().ok_or_else(|| {
+                KelsError::InvalidKel(
+                    "verification has no branches — impossible per finish".into(),
+                )
+            })?;
+            return Ok(branch.tip.clone());
+        }
+        Ok(view.current_event().clone())
+    }
+
+    /// `chain.identity` — the IEL prefix this SE chain is bound to.
+    /// Sourced from the verified Icp (preferred) or the pending v0 Icp.
+    fn chain_identity(&self) -> Result<cesr::Digest256, KelsError> {
+        if let Some(v) = self.sad_verification.as_ref() {
+            // The Icp's `identity` is preserved per-branch on
+            // `SadBranchTip.identity` — all branches share it.
+            #[allow(clippy::expect_used)]
+            let branch = v
+                .branches()
+                .first()
+                .expect("SelVerification invariant: branches non-empty");
+            return Ok(branch.identity);
+        }
+        let icp = self
+            .pending_events
+            .iter()
+            .find(|e| e.kind == crate::types::SadEventKind::Icp)
+            .ok_or(KelsError::NotIncepted)?;
+        icp.identity.ok_or_else(|| {
+            KelsError::InvalidKel("pending Icp missing identity field — invariant breach".into())
+        })
+    }
+
+    fn require_fresh_builder(&self) -> Result<(), KelsError> {
+        if !self.pending_events.is_empty() || self.sad_verification.is_some() {
+            return Err(KelsError::InvalidKel(
+                "Inception requires an empty builder (no pending or verified state)".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_incepted(&self) -> Result<(), KelsError> {
+        if self.sad_verification.is_some() || !self.pending_events.is_empty() {
+            return Ok(());
+        }
+        Err(KelsError::NotIncepted)
+    }
+
+    fn require_non_divergent(&self) -> Result<(), KelsError> {
+        if let Some(v) = self.sad_verification.as_ref()
+            && let Some(at) = v.diverged_at_version()
+        {
+            return Err(KelsError::SelDivergent { at });
+        }
+        Ok(())
+    }
+
+    fn require_non_terminal(&self) -> Result<(), KelsError> {
+        if self.is_terminal() {
+            return Err(KelsError::InvalidKel(
+                "chain has already terminated (Cnt or Dec) — no further events accepted"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn current_tip(&self) -> Result<&SadEvent, KelsError> {
+        self.last_event().ok_or(KelsError::NotIncepted)
+    }
+
+    fn is_divergent_view(&self, server_view: Option<&SelVerification>) -> bool {
+        if let Some(v) = server_view
+            && v.diverged_at_version().is_some()
+        {
+            return true;
+        }
+        self.sad_verification
+            .as_ref()
+            .map(|v| v.diverged_at_version().is_some())
+            .unwrap_or(false)
+    }
+
+    /// Re-verify pending events against server-accepted state and roll
+    /// into `sad_verification`, then clear pending. Mirrors IEL's
+    /// `absorb_pending`.
+    async fn absorb_pending(&mut self) -> Result<(), KelsError> {
+        if self.pending_events.is_empty() {
+            return Ok(());
+        }
+        let checker = self
+            .checker
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("flush requires a PolicyChecker".into()))?
+            .clone();
+        let resolver = self.build_iel_resolver()?;
+
+        let mut verifier = if let Some(ref v) = self.sad_verification {
+            SelVerifier::resume(v, Arc::clone(&checker), Arc::clone(&resolver))?
+        } else {
+            SelVerifier::new(
+                self.requested_prefix.as_ref(),
+                Arc::clone(&checker),
+                Arc::clone(&resolver),
+            )
+        };
+
+        verifier.verify_page(&self.pending_events).await?;
+        self.sad_verification = Some(verifier.finish().await?);
+        self.pending_events.clear();
+        Ok(())
+    }
 }

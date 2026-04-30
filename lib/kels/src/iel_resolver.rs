@@ -1,20 +1,23 @@
 //! Production [`IelResolver`] implementation backed by an HTTP / paged IEL
 //! source plus the round-11 `IelVerification` token.
 //!
-//! Mirrors [`AnchoredPolicyChecker`](crate::AnchoredPolicyChecker)'s shape:
-//! the resolver owns its dependencies via `Arc` so it can be type-erased into
-//! `Arc<dyn IelResolver + Send + Sync>` and stashed alongside a
-//! `PolicyChecker` on the SE verifier or builder.
+//! Lives in `lib/kels` (not `lib/policy`) so `SadEventBuilder` and friends
+//! can construct one from their `SadStoreClient` without crossing the
+//! kels-core / kels-policy crate boundary. The impl uses only kels-core
+//! types — no policy-DSL machinery — so the placement is honest.
 //!
-//! The resolver re-verifies the named IEL on each call. Layered caching lives
-//! above (Gap 4 / Gap 5 wire it up); this impl stays simple so the trait
-//! semantics — particularly the divergence gate — are exercised cleanly.
+//! The resolver re-verifies the named IEL on each call. Layered caching
+//! lives above; this impl stays simple so the trait semantics — particularly
+//! the divergence gate — are exercised cleanly.
 
 use std::{collections::HashMap, sync::Arc};
 
-use kels_core::{
-    IdentityEvent, IelChainPosition, IelResolver, IelVerification, KelsError, PagedIelSource,
-    PolicyChecker, verify_identity_events,
+use crate::{
+    KelsError,
+    types::{
+        IdentityEvent, IelChainPosition, IelResolver, IelVerification, PagedIelSource,
+        PolicyChecker, verify_identity_events,
+    },
 };
 
 /// `IelResolver` backed by a `PagedIelSource` (HTTP, in-memory, etc.) and a

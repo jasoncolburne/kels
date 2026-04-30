@@ -42,6 +42,7 @@ pub mod client;
 pub mod crypto;
 pub mod disclosure;
 pub mod error;
+pub mod iel_resolver;
 pub mod identity_builder;
 pub mod merge;
 pub mod repository;
@@ -67,6 +68,7 @@ pub use hardware::{
 
 pub use builder::{KeyEventBuilder, should_rotate_with_recovery};
 pub use cesr::VerificationKeyCode;
+pub use iel_resolver::AnchoredIelResolver;
 pub use client::{
     IdentityClient, IdentityInfo, IdentityStatus, KelsClient, KelsRegistryClient,
     ManageKelOperation, ManageKelRequest, ManageKelResponse, NodeStatus, PeerSigner, RotateMode,
