@@ -90,8 +90,9 @@ impl AnchoredIelResolver {
             for event in &events {
                 if wanted.iter().any(|w| w == &event.said) && !found.contains_key(&event.said) {
                     if &event.prefix != identity {
-                        return Err(KelsError::InvalidIel(format!(
-                            "IEL event {} has prefix {} but expected identity {}",
+                        return Err(KelsError::BadIdentityBinding(format!(
+                            "IEL event {} has prefix {} but expected identity {} \
+                             (cross-IEL contamination)",
                             event.said, event.prefix, identity,
                         )));
                     }
@@ -122,7 +123,7 @@ impl IelResolver for AnchoredIelResolver {
             .collect_events_by_said(identity, std::slice::from_ref(iel_event_said))
             .await?;
         found.remove(iel_event_said).ok_or_else(|| {
-            KelsError::InvalidIel(format!(
+            KelsError::BadIdentityBinding(format!(
                 "IEL event {} not found in IEL {}",
                 iel_event_said, identity
             ))
@@ -145,8 +146,9 @@ impl IelResolver for AnchoredIelResolver {
             )));
         }
         verification.auth_policy_at(iel_event_said).ok_or_else(|| {
-            KelsError::InvalidIel(format!(
-                "auth_policy not found for IEL event {} in IEL {}",
+            KelsError::BadIdentityBinding(format!(
+                "auth_policy not found for IEL event {} in IEL {} \
+                 (event not in policy_history — chain integrity breach)",
                 iel_event_said, identity,
             ))
         })
@@ -170,8 +172,9 @@ impl IelResolver for AnchoredIelResolver {
         verification
             .governance_policy_at(iel_event_said)
             .ok_or_else(|| {
-                KelsError::InvalidIel(format!(
-                    "governance_policy not found for IEL event {} in IEL {}",
+                KelsError::BadIdentityBinding(format!(
+                    "governance_policy not found for IEL event {} in IEL {} \
+                     (event not in policy_history — chain integrity breach)",
                     iel_event_said, identity,
                 ))
             })
@@ -196,7 +199,7 @@ impl IelResolver for AnchoredIelResolver {
         let mut positions: HashMap<cesr::Digest256, IelChainPosition> = HashMap::new();
         for said in saids {
             let event = found.get(said).ok_or_else(|| {
-                KelsError::InvalidIel(format!(
+                KelsError::BadIdentityBinding(format!(
                     "IEL event {} not found in IEL {} (requested for monotonic ratchet)",
                     said, identity,
                 ))

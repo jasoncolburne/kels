@@ -401,14 +401,12 @@ impl SadEventBuilder {
     ///
     /// Fails fast on a divergent chain — `Dec` cannot resolve a divergent
     /// SE chain (sealed-divergent → ContestRequired; unsealed-divergent →
-    /// RepairRequired). The builder surfaces a generic
-    /// `DecommissionBlockedByDivergence` and lets the operator route to
-    /// `repair()` or `contest()`.
-    ///
-    /// Round-12 deviation: Gap 6 introduces
-    /// `KelsError::DecommissionBlockedByDivergence`; until then we
-    /// surface as `KelsError::InvalidKel` with the load-bearing fragment
-    /// "decommission blocked by divergence".
+    /// RepairRequired). The builder surfaces
+    /// `KelsError::DecommissionBlockedByDivergence` and lets the operator
+    /// route to `repair()` or `contest()`. The error is generic by design
+    /// — it doesn't distinguish sealed vs. unsealed locally; the
+    /// operator's next move comes from the server's response if they
+    /// force-submit.
     pub async fn decommission(&mut self) -> Result<cesr::Digest256, KelsError> {
         self.require_incepted()?;
         self.require_non_terminal()?;
@@ -416,9 +414,8 @@ impl SadEventBuilder {
         let server_view = self.verify_server_chain_pre_action().await?;
 
         if self.is_divergent_view(server_view.as_ref()) {
-            return Err(KelsError::InvalidKel(
-                "decommission blocked by divergence: chain is divergent — \
-                 use contest() (sealed) or repair() (unsealed) instead"
+            return Err(KelsError::DecommissionBlockedByDivergence(
+                "chain is divergent — use contest() (sealed) or repair() (unsealed) instead"
                     .into(),
             ));
         }
@@ -659,8 +656,9 @@ impl SadEventBuilder {
             if decommission {
                 // Should be unreachable — `decommission` already returned
                 // `DecommissionBlockedByDivergence` before reaching here.
-                return Err(KelsError::InvalidKel(
-                    "decommission blocked by divergence: chain is divergent".into(),
+                return Err(KelsError::DecommissionBlockedByDivergence(
+                    "chain is divergent (defense-in-depth: should have been caught upstream)"
+                        .into(),
                 ));
             }
             // Lower-SAID branch tip: `branches` is sorted ascending by

@@ -76,14 +76,15 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         iel_event_said: &cesr::Digest256,
     ) -> Result<kels_core::IdentityEvent, kels_core::KelsError> {
         let event = self.fetch_event_by_said(iel_event_said).await?.ok_or_else(|| {
-            kels_core::KelsError::InvalidIel(format!(
+            kels_core::KelsError::BadIdentityBinding(format!(
                 "IEL event {} not found in IEL {}",
                 iel_event_said, identity
             ))
         })?;
         if event.prefix != *identity {
-            return Err(kels_core::KelsError::InvalidIel(format!(
-                "IEL event {} has prefix {} but expected identity {}",
+            return Err(kels_core::KelsError::BadIdentityBinding(format!(
+                "IEL event {} has prefix {} but expected identity {} \
+                 (cross-IEL contamination)",
                 iel_event_said, event.prefix, identity
             )));
         }
@@ -1388,21 +1389,18 @@ pub async fn submit_sad_events(
     // The Icp itself stays dedup-idempotent across submitters; only fresh
     // inceptions without their paired v1 Upd are rejected.
     //
-    // Round-12 deviation: Gap 6 introduces `KelsError::IncompleteInception`;
-    // until then we surface the rule violation as a generic
-    // `BAD_REQUEST` with a descriptive body. The body fragment
-    // "incomplete inception" is the load-bearing client signal.
+    // The HTTP response body matches `KelsError::IncompleteInception`'s
+    // Display prefix ("Incomplete inception: …") so client-side code that
+    // maps server errors back to KelsError can match on the prefix.
     let has_icp = events.iter().any(|e| e.kind.is_inception());
     let has_v1_upd = events
         .iter()
         .any(|e| e.version == 1 && e.kind == kels_core::SadEventKind::Upd);
     if has_icp && !has_v1_upd {
-        return (
-            StatusCode::BAD_REQUEST,
-            "incomplete inception: a batch containing Icp must also contain an Upd at v1"
-                .to_string(),
-        )
-            .into_response();
+        let err = kels_core::KelsError::IncompleteInception(
+            "a batch containing Icp must also contain an Upd at v1".to_string(),
+        );
+        return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
     }
 
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.

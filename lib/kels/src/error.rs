@@ -196,6 +196,37 @@ pub enum KelsError {
     // ~152 bytes; embedding two of them would balloon every `Result<_, KelsError>`
     // returned by the crate.
     SadStorePayloadMissing { prefix: String, said: String },
+
+    /// Round-12: an SE batch contained an `Icp` but did not also contain an
+    /// `Upd` at v1. The inception batch rule (`docs/design/sel/events.md`)
+    /// requires `[Icp, Upd, ...]` minimum so every chain is born with both
+    /// content and an IEL binding; lone-Icp batches are rejected.
+    #[error(
+        "Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1"
+    )]
+    IncompleteInception(String),
+
+    /// Round-12: an SE event's `identity_event` binding is structurally
+    /// invalid. Covers three cases (the `String` payload describes which):
+    /// 1. The named SAID doesn't exist in the bound IEL.
+    /// 2. The named SAID's IEL prefix doesn't match the SE chain's
+    ///    `identity` (cross-IEL contamination).
+    /// 3. The named SAID regresses the SE branch's monotonic
+    ///    `last_identity_event` ratchet in IEL chain order.
+    ///
+    /// HARD for ALL SE kinds (`Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`) —
+    /// a chain with no valid IEL binding cannot be recorded; chain
+    /// integrity beats forensic preservation.
+    #[error("Bad identity binding: {0}")]
+    BadIdentityBinding(String),
+
+    /// Round-12: `SadEventBuilder::decommission()` pre-flight refused
+    /// because the SE chain is divergent. Generic — does not distinguish
+    /// sealed vs. unsealed (the routing rules differ — sealed →
+    /// `ContestRequired`, unsealed → `RepairRequired`); operators see the
+    /// concrete next move from the server's response on a force-submit.
+    #[error("Decommission blocked by divergence: {0}")]
+    DecommissionBlockedByDivergence(String),
 }
 
 impl KelsError {
@@ -358,6 +389,9 @@ mod tests {
                 prefix: cesr::Digest256::blake3_256(b"prefix").to_string(),
                 said: cesr::Digest256::blake3_256(b"said").to_string(),
             },
+            KelsError::IncompleteInception("missing v1 Upd".to_string()),
+            KelsError::BadIdentityBinding("identity_event SAID not in IEL".to_string()),
+            KelsError::DecommissionBlockedByDivergence("chain divergent".to_string()),
         ];
 
         for err in errors {

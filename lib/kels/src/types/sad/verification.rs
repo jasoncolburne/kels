@@ -418,9 +418,9 @@ impl SelVerifier {
                     use std::cmp::Ordering;
                     match new_position.try_cmp(prior_position) {
                         Ok(Ordering::Less) => {
-                            return Err(KelsError::VerificationFailed(format!(
+                            return Err(KelsError::BadIdentityBinding(format!(
                                 "SE event {} identity_event {} regresses prior ratchet {} \
-                                 in IEL chain order (BadIdentityBinding monotonic)",
+                                 in IEL chain order (monotonic)",
                                 event.said, identity_event_said, prior_said,
                             )));
                         }
@@ -432,10 +432,13 @@ impl SelVerifier {
                             // hard-pass on steps 1–4 (so we never feed
                             // post-divergence-different-branch positions).
                             // If we get here, chain integrity has been breached;
-                            // hard-fail uniformly.
-                            return Err(KelsError::VerificationFailed(format!(
+                            // hard-fail uniformly with the same monotonic
+                            // surface as Less (the trait contract specifies
+                            // BadIdentityBinding for the chain-integrity
+                            // umbrella).
+                            return Err(KelsError::BadIdentityBinding(format!(
                                 "SE event {} identity_event {} compares as IelDivergent \
-                                 against prior ratchet {} (chain integrity breach)",
+                                 against prior ratchet {} (monotonic — chain integrity breach)",
                                 event.said, identity_event_said, prior_said,
                             )));
                         }
@@ -693,13 +696,16 @@ mod tests {
             said: &cesr::Digest256,
         ) -> Result<IdentityEvent, KelsError> {
             if identity != &self.identity {
-                return Err(KelsError::InvalidIel(format!(
+                return Err(KelsError::BadIdentityBinding(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
             }
             let entry = self.events.get(said).ok_or_else(|| {
-                KelsError::InvalidIel(format!("FakeIelResolver: no event for SAID {}", said))
+                KelsError::BadIdentityBinding(format!(
+                    "FakeIelResolver: no event for SAID {}",
+                    said
+                ))
             })?;
             // Build a synthetic IEL event with the recorded fields. SAID/prefix
             // wired up to be self-consistent for the verifier's checks (we
@@ -757,7 +763,7 @@ mod tests {
             saids: &[cesr::Digest256],
         ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError> {
             if identity != &self.identity {
-                return Err(KelsError::InvalidIel(format!(
+                return Err(KelsError::BadIdentityBinding(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
@@ -765,7 +771,10 @@ mod tests {
             let mut out = HashMap::new();
             for said in saids {
                 let entry = self.events.get(said).ok_or_else(|| {
-                    KelsError::InvalidIel(format!("FakeIelResolver: no event for SAID {}", said))
+                    KelsError::BadIdentityBinding(format!(
+                    "FakeIelResolver: no event for SAID {}",
+                    said
+                ))
                 })?;
                 let branch_marker = match self.first_divergent_version {
                     Some(d) if entry.version >= d => Some(*said),
@@ -907,8 +916,8 @@ mod tests {
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            matches!(err, KelsError::InvalidIel(_)),
-            "expected InvalidIel-class binding error, got {err:?}"
+            matches!(err, KelsError::BadIdentityBinding(_)),
+            "expected BadIdentityBinding, got {err:?}"
         );
     }
 
@@ -940,8 +949,9 @@ mod tests {
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            err.to_string().contains("regresses prior ratchet"),
-            "expected monotonic-regression error, got {err}"
+            matches!(err, KelsError::BadIdentityBinding(_))
+                && err.to_string().contains("regresses prior ratchet"),
+            "expected BadIdentityBinding(monotonic), got {err:?}"
         );
     }
 
