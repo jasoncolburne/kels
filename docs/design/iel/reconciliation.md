@@ -56,7 +56,9 @@ There is no `[..., Rpr]` batch — IEL has no Rpr.
 
 ## Gossip Sync
 
-When chain state transitions, the submit handler publishes the new effective SAID for gossip. Peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. IEL gossip does NOT reorder events — peers always fetch the full chain from origin and submit to their local store. The receiving handler routes via the same kind-discriminator (`is_contest` / `is_decommission`) used for direct submissions.
+When chain state transitions, the submit handler publishes the new effective SAID for gossip. Peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same kind-discriminator (`is_contest` / `is_decommission`) used for direct submissions.
+
+For linear chains the source sends a single full-chain stream. For divergent chains the source uses `send_divergent_iel_events` (`lib/kels/src/types/iel/sync.rs`) to partition the chain into sub-batches the sink will accept under its routing rules: pre-divergence + non-`Cnt` chain as paged appends, then `Cnt` chain as an atomic single-page batch. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-iels). Sender-side composition is the cryptographic-soundness gate; the sink's routing rules are the constraint the sender designs around, not a safety net.
 
 ### Source → Sink state matrix
 

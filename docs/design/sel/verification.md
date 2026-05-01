@@ -127,6 +127,16 @@ Soft fails apply only to terminal kinds (`Cnt` / `Dec`) and only on the cross-ch
 
 The rationale: terminal events (Cnt/Dec) describe an end-state declaration; rejecting them outright when the cross-chain check fails would leave the chain stuck at a tip the owner intends to abandon. Owners need a soft-fail path so a govfailed Cnt/Dec still terminates the chain locally, with the failure surfaced for downstream consumers via the content-based flag rather than an open chain on a defunct identity.
 
+#### Post-terminal soft-fail propagation
+
+The verifier tracks `contested_at_version: Option<u64>` and `decommissioned_at_version: Option<u64>` during the walk, set the moment a `Cnt` or `Dec` is processed. For each subsequent v1+ event being verified, if `event.version > contested_at_version || event.version > decommissioned_at_version`, the verifier overrides `policy_satisfied=false` regardless of the auth-check outcome.
+
+The rule: events at version strictly greater than a recorded terminal **land structurally** (the chain preserves them as forensic record) but verification marks them invalid. Concurrent siblings at the same version as a Cnt — events processed earlier in the same generation by `(version, kind sort_priority, said)` order — land with their auth-check outcome unmodified ("concurrent, not after"). Only strictly-higher versions get the soft-fail override.
+
+Why preserve rather than reject: `Cnt` semantically means "the governance keys may be compromised; I cannot recover this chain." Once contested, every further attempt to advance the chain has unknowable provenance — could be the legitimate party, could be the adversary. Hard-rejecting post-terminal events would discard the adversary's actions from the forensic record; soft-failing preserves them while making clear that verification doesn't bless them. Decommissioning has a parallel rationale (the chain is permanently closed; further events are not ratifiable).
+
+This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains (`merge.md §Terminal-State Gate`) is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (concurrent within-batch siblings, gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
+
 ### Inception Batch Rule (verifier-level note)
 
 The inception batch rule `[Icp, Upd]` minimum is enforced at the **submit handler**, not in the verifier per se. The verifier walks events as they exist; if the chain has only an `Icp` with no v1, that's "incomplete" rather than "invalid." The submit handler is what prevents an Icp-alone batch from landing in storage in the first place. See [merge.md](merge.md).

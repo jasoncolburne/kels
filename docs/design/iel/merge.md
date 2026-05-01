@@ -155,6 +155,20 @@ The `IelVerification` token is the trusted context for routing decisions. The DB
 
 All IEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. The `CASE` expression uses `IdentityEventKind::sort_priority()` to ensure state-determining events (Cnt, Dec) sort after `Evl` at the same version. `MINIMUM_PAGE_SIZE = 64` controls page size.
 
+## Gossip Send-Side Partitioning (divergent IELs)
+
+Propagating a divergent IEL chain to a remote node requires more than ordering events by canonical chain order. The receiver's submit handler routes batches by content predicates (`is_contest`, divergent-rejection); a single batch that contains both pre-divergence events and a post-divergence non-`Cnt` extension would route through "normal append (overlap creates fork)" and the second branch's events get rejected. To make propagation succeed, the SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+
+`send_divergent_iel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
+
+1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b` (mirror KEL's chain-partition loop).
+2. Send **pre-divergence + non-cnt chain** as paged appends. Each page lands as a non-divergent extension at the receiver.
+3. Send **cnt-chain** as an atomic single-page batch. Routes to `is_contest`, accepts on divergent or linear, ends in contested state.
+
+For an IEL that is divergent but not contested (no `Cnt` in either branch): in production this state is unreachable because the IEL submit handler returns `ContestRequired` for non-`Cnt` events on divergent chains. If a sender encounters one (e.g., during a defensive replay or a corrupted source), it sends the longer chain as paged appends, then the fork event from the shorter chain as a single-event batch. This mirrors KEL's unrecovered-divergence path.
+
+**Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and can produce sequences that compose correctly given the receiver's routing rules. Relying on the receiver's submit handler to "figure out" complex batches is invariant-protection reasoning; the cryptographic-soundness argument is that the sender produces sequences that the routing rules accept by construction.
+
 ## Key Invariants
 
 1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.

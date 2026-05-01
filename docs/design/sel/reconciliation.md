@@ -72,7 +72,9 @@ There is no standalone `[Est]` or `[Icp]` batch (Est doesn't exist; Icp alone is
 
 ## Gossip Sync
 
-When chain state transitions, the submit handler publishes the new effective SAID to Redis (`sel_updates`). The gossip service broadcasts an announcement on the `kels/sad/v1` topic; peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. SEL gossip does NOT reorder events — peers always fetch a full chain from origin and submit to their local SADStore, where the receiving handler routes via the same kind-discriminator (`is_repair` / `is_contest` / `is_decommission`) used for direct submissions.
+When chain state transitions, the submit handler publishes the new effective SAID to Redis (`sel_updates`). The gossip service broadcasts an announcement on the `kels/sad/v1` topic; peers compare their local effective SAID against the announcement and fetch the full chain from origin if stale. The receiving handler routes via the same kind-discriminator (`is_repair` / `is_contest` / `is_decommission`) used for direct submissions.
+
+For linear chains the source sends a single full-chain stream that the sink applies as a normal append. For divergent chains the source uses `send_divergent_sad_events` (`lib/kels/src/types/sad/sync.rs`) to partition the chain into sub-batches the sink will accept under its routing rules: pre-divergence + non-`Cnt` chain as paged appends, then `Cnt` chain as an atomic single-page batch. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels). Sender-side composition is the cryptographic-soundness gate; the sink's routing rules are the constraint the sender designs around, not a safety net.
 
 ### Source → Sink state matrix
 
@@ -86,7 +88,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 | **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `DecommissionedSel` (sink Dec'd first; gossip Cnt rejected) |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `RepairRequired` (until repair lands) | `ContestedSel` | Effective SAIDs match (Dec.said) ✓ |
 
-The matrix is smaller than KEL's because SEL's gossip layer doesn't reorder — full-chain fetch always converges. There is no `send_divergent_events` analogue.
+The matrix is smaller than KEL's because SEL's discriminator handles repair-driven archival inline; the source-side partitioning (`send_divergent_sad_events`) ensures each sub-batch routes through a single discriminator predicate at the sink, so the matrix collapses around the source's terminal state rather than expanding into per-sub-batch cases.
 
 ### Path-agnostic acceptance
 

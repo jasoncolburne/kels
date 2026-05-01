@@ -209,6 +209,20 @@ The `SelVerification` token is the trusted context for routing decisions. The DB
 
 All SEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. `MINIMUM_PAGE_SIZE = 64` controls page size for both reads and the discriminator's single-page fetch.
 
+## Gossip Send-Side Partitioning (divergent SELs)
+
+Propagating a divergent SEL chain to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ContestRequired`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+
+`send_divergent_sad_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
+
+1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b`.
+2. Send **pre-divergence + non-cnt chain** as paged appends; each page lands as a non-divergent extension.
+3. Send **cnt-chain** as an atomic single-page batch; routes to `is_contest`, accepts on divergent or linear.
+
+For unrecovered divergence (no terminal in either branch — possible on SEL during the gossip-propagation window before the owner contests), the longer chain is sent as paged appends, then the fork event from the shorter chain establishes divergence at the receiver.
+
+**Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and produces sequences that compose correctly given the receiver's routing rules. Same principle applies across KEL, IEL, and SEL — see [../iel/merge.md](../iel/merge.md#gossip-send-side-partitioning-divergent-iels) and [../kel/merge.md](../kel/merge.md).
+
 ## Key Invariants
 
 1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
