@@ -934,4 +934,180 @@ mod tests {
             assert_eq!(e.said, chain[i].said, "event {i} mismatch");
         }
     }
+
+    /// Unrecovered divergent IEL — no Cnt on either branch (defensive
+    /// case; production routing rejects this state with `ContestRequired`).
+    /// Send order: longer chain as paged appends, then fork event from
+    /// shorter chain establishes divergence at the receiver. Mirrors
+    /// KEL's unrecovered-divergence path.
+    #[tokio::test]
+    async fn forward_unrecovered_divergent_iel_sends_longer_chain_then_fork_event() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let prefix = icp.prefix;
+
+        // Two competing Evls at v=1. Use distinct auth_policy SAIDs to
+        // produce different branch-tip SAIDs (Evl constructors derive
+        // SAIDs from event content).
+        let auth_a = test_digest(b"auth-a");
+        let auth_b = test_digest(b"auth-b");
+        let evl_a = IdentityEvent::evl(&icp, Some(auth_a), None).unwrap();
+        let evl_b = IdentityEvent::evl(&icp, Some(auth_b), None).unwrap();
+        // Add a v=2 Evl extending one of them so that branch is "longer".
+        // Pick canonically-first branch by SAID for determinism.
+        let (longer_v1, shorter_v1) = if evl_a.said.as_ref() < evl_b.said.as_ref() {
+            (evl_a.clone(), evl_b.clone())
+        } else {
+            (evl_b.clone(), evl_a.clone())
+        };
+        let evl_v2 = IdentityEvent::evl(&longer_v1, None, None).unwrap();
+
+        // Canonical sort: Icp@0, then v=1 Evls (by said), then v=2 Evl.
+        let chain = vec![
+            icp.clone(),
+            longer_v1.clone(),
+            shorter_v1.clone(),
+            evl_v2.clone(),
+        ];
+        let source = VecSource {
+            events: chain.clone(),
+        };
+        let sink = CollectingSink::new();
+
+        forward_identity_events(&prefix, &source, &sink, 16, 8, None)
+            .await
+            .expect("forward succeeds on unrecovered divergent IEL");
+
+        let pages = sink.pages().await;
+
+        // Partition: longer chain (Icp + longer_v1 + evl_v2) must come
+        // before the fork event (shorter_v1).
+        let fork_page_idx = pages
+            .iter()
+            .position(|page| page.iter().any(|e| e.said == shorter_v1.said))
+            .expect("fork event page present");
+        let pre_fork_events: Vec<IdentityEvent> =
+            pages[..fork_page_idx].iter().flatten().cloned().collect();
+        assert!(pre_fork_events.iter().any(|e| e.said == icp.said));
+        assert!(pre_fork_events.iter().any(|e| e.said == longer_v1.said));
+        assert!(pre_fork_events.iter().any(|e| e.said == evl_v2.said));
+        assert!(!pre_fork_events.iter().any(|e| e.said == shorter_v1.said));
+
+        // Fork event page is a single-event batch.
+        assert_eq!(pages[fork_page_idx].len(), 1);
+        assert_eq!(pages[fork_page_idx][0].said, shorter_v1.said);
+    }
+
+    /// Multi-page contested-divergent partitioning: pre-divergence + non-cnt
+    /// chain spans multiple pages. Each chunk is sent as a paged append, the
+    /// cnt-chain as an atomic single-page batch at the end.
+    #[tokio::test]
+    async fn forward_partitions_contested_divergent_iel_with_multi_page_non_cnt_chain() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let prefix = icp.prefix;
+
+        // Linear pre-divergence chain: Icp@0, Evl@1, Evl@2, Evl@3, Evl@4.
+        // Then divergence at v=5: an Evl on the linear branch + a Cnt
+        // creating divergence by extending v=4.
+        let mut linear = vec![icp.clone()];
+        for _ in 1..=4 {
+            #[allow(clippy::expect_used)]
+            let prev = linear.last().expect("non-empty");
+            linear.push(IdentityEvent::evl(prev, None, None).unwrap());
+        }
+        let evl_v5 = IdentityEvent::evl(linear.last().unwrap(), None, None).unwrap();
+        let cnt_v5 = IdentityEvent::cnt(linear.last().unwrap()).unwrap();
+        // Canonical sort at v=5: Evl (kind=1) before Cnt (kind=2).
+        let mut chain = linear.clone();
+        chain.push(evl_v5.clone());
+        chain.push(cnt_v5.clone());
+
+        let source = VecSource {
+            events: chain.clone(),
+        };
+        let sink = CollectingSink::new();
+
+        // page_size=2 forces multiple pages over the pre-divergence + non-cnt
+        // chain (Icp..Evl_v4 + Evl_v5 = 6 events at 2 per page = 3 pages).
+        forward_identity_events(&prefix, &source, &sink, 2, 16, None)
+            .await
+            .expect("multi-page partitioning succeeds");
+
+        let pages = sink.pages().await;
+        // Cnt page comes last, atomically (1 event).
+        let cnt_page = pages.last().expect("at least one page");
+        assert_eq!(cnt_page.len(), 1, "cnt-chain page is atomic");
+        assert!(cnt_page.iter().any(|e| e.kind.is_contest()));
+
+        // Non-cnt chunks: collect everything before the cnt page; should
+        // span ≥2 pages and contain Icp, Evls v=1..=5 (non-cnt branch).
+        let non_cnt_pages = &pages[..pages.len() - 1];
+        assert!(
+            non_cnt_pages.len() >= 2,
+            "non-cnt chain spans multiple pages"
+        );
+        let non_cnt_events: Vec<IdentityEvent> = non_cnt_pages.iter().flatten().cloned().collect();
+        assert!(non_cnt_events.iter().all(|e| !e.kind.is_contest()));
+        assert!(non_cnt_events.iter().any(|e| e.said == evl_v5.said));
+        // The Cnt itself is on its own page; pre-divergence events plus
+        // non-cnt branch should total 6 events.
+        assert_eq!(non_cnt_events.len(), 6);
+    }
+
+    /// Divergence detection across a page boundary: the held-back-event
+    /// strategy in `transfer_identity_events` must surface a same-version
+    /// overlap that's split between two pages. Construct a chain where
+    /// the divergence-creating event lands as the FIRST event of page 2,
+    /// with its same-version sibling at the END of page 1.
+    #[tokio::test]
+    async fn forward_detects_divergence_at_page_boundary_via_held_back_event() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let prefix = icp.prefix;
+
+        // Linear v=0..=2, then divergence at v=3 between Evl@v3 and Cnt@v3.
+        // We want Evl@v3 to land at page-end and Cnt@v3 at page-start.
+        // With page_size=4 and chain length 5 (Icp + Evl@1 + Evl@2 + Evl@v3 +
+        // Cnt@v3), page 1 = first 4 events (Icp, Evl@1, Evl@2, Evl@v3),
+        // page 2 = [Cnt@v3]. The divergence-creating Cnt is on page 2.
+        let evl_v1 = IdentityEvent::evl(&icp, None, None).unwrap();
+        let evl_v2 = IdentityEvent::evl(&evl_v1, None, None).unwrap();
+        let evl_v3 = IdentityEvent::evl(&evl_v2, None, None).unwrap();
+        let cnt_v3 = IdentityEvent::cnt(&evl_v2).unwrap();
+        let chain = vec![
+            icp.clone(),
+            evl_v1.clone(),
+            evl_v2.clone(),
+            evl_v3.clone(),
+            cnt_v3.clone(),
+        ];
+
+        let source = VecSource {
+            events: chain.clone(),
+        };
+        let sink = CollectingSink::new();
+
+        // page_size=4 → page 1 = Icp..Evl@v3, page 2 = [Cnt@v3]. The held-back
+        // event from page 1 (Evl@v3) prepends to page 2's contents to make
+        // the same-version overlap visible to the divergence detector.
+        forward_identity_events(&prefix, &source, &sink, 4, 8, None)
+            .await
+            .expect("page-boundary divergence detection succeeds");
+
+        let pages = sink.pages().await;
+        // Verify the contested partition shape: non-cnt chain (Icp + Evls)
+        // sent first, Cnt sent atomically last.
+        let last = pages.last().expect("at least one page");
+        assert_eq!(last.len(), 1);
+        assert!(last[0].kind.is_contest());
+        assert_eq!(last[0].said, cnt_v3.said);
+
+        // Total events sent equals chain length.
+        let sent_count: usize = pages.iter().map(Vec::len).sum();
+        assert_eq!(sent_count, chain.len());
+    }
 }

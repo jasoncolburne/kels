@@ -1894,12 +1894,10 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
 // `iel_chain_positions` walk-back against the real IEL repository.
 // The walk-back algorithm is unit-tested against a fake source at
 // `lib/kels/src/iel_resolver.rs` (covers V=D base case + V=D+1
-// non-trivial walk + pre-divergence-no-marker). This integration test
-// exercises the V=D base case through the postgres-backed repo —
-// confirming `fetch_event_by_said` returns events in a shape compatible
-// with the algorithm. Injecting V=D+1 events would require bypassing
-// IEL routing (which rejects post-divergence submissions with
-// `ContestRequired`); covered by the unit-level walk test instead.
+// non-trivial walk + pre-divergence-no-marker). The integration tests
+// below exercise both V=D and V=D+1 cases through the postgres-backed
+// repo — confirming the in-process pool walk + materialize-then-walk
+// flow matches the unit-level algorithm.
 #[tokio::test]
 #[serial]
 async fn repository_walk_back_different_branches_compares_iel_divergent() {
@@ -1936,6 +1934,92 @@ async fn repository_walk_back_different_branches_compares_iel_divergent() {
     // Different branches → IelDivergent (no canonical ordering across forks).
     assert!(matches!(p_a.try_cmp(p_b), Err(KelsError::IelDivergent(_))));
     assert!(matches!(p_b.try_cmp(p_a), Err(KelsError::IelDivergent(_))));
+}
+
+/// V=D+1 walk-back through the postgres-backed repo: a `Cnt` extending
+/// one of the divergent v=1 Evls lands at v=2 (Cnt is the only kind IEL
+/// routing accepts on a divergent chain). The Cnt's `branch_marker`
+/// should trace back to the v=1 Evl on the same branch — exercising the
+/// shared `walk_back_to_branch_identity` algorithm against a real chain
+/// where the walk takes one non-trivial step.
+#[tokio::test]
+#[serial]
+async fn repository_walk_back_v_d_plus_one_traces_to_v_d_ancestor() {
+    use kels_core::{IdentityEvent, IelResolver};
+    use kels_sadstore::SadStoreRepository;
+    use kels_sadstore::iel_resolver::RepositoryIelResolver;
+    use verifiable_storage::RepositoryConnection;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "walk-back-vd1").await;
+    let _v1 = establish_se_chain(&mut setup, "walk-back-vd1").await;
+    let (evl_a, evl_b, _) = create_iel_divergence(&mut setup, "walk-back-vd1").await;
+
+    // Fetch evl_a's full event so we can build a Cnt extending it.
+    let iel_chain: Vec<IdentityEvent> = setup
+        .sad_client
+        .fetch_identity_events(&setup.iel_prefix, None)
+        .await
+        .expect("fetch IEL")
+        .events;
+    let evl_a_event = iel_chain
+        .iter()
+        .find(|e| e.said == evl_a)
+        .cloned()
+        .expect("evl_a in IEL");
+
+    // Cnt extending evl_a at v=2 — post-divergence on the evl_a branch.
+    // IEL routing accepts Cnt on divergent (contest path).
+    let cnt = IdentityEvent::cnt(&evl_a_event).expect("build Cnt");
+    setup
+        .kel_builder
+        .interact(&cnt.said)
+        .await
+        .expect("anchor Cnt");
+    let _ = setup
+        .sad_client
+        .submit_identity_events(std::slice::from_ref(&cnt))
+        .await
+        .expect("submit Cnt");
+
+    let repo = SadStoreRepository::connect(&harness.sad_db_url)
+        .await
+        .expect("connect sadstore repo");
+    let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::clone(&setup.checker);
+    let resolver = RepositoryIelResolver::new(Arc::new(repo), checker);
+
+    let positions = resolver
+        .iel_chain_positions(&setup.iel_prefix, &[evl_a, cnt.said])
+        .await
+        .expect("positions resolve");
+
+    let p_evl_a = positions.get(&evl_a).expect("evl_a position");
+    let p_cnt = positions.get(&cnt.said).expect("cnt position");
+
+    // evl_a sits at v=D=1: its own SAID is its branch identity.
+    assert_eq!(p_evl_a.branch_marker, Some(evl_a));
+    // Cnt at v=D+1=2 walks back through `previous=evl_a` — branch
+    // identity is evl_a (the v=D ancestor on this branch).
+    assert_eq!(p_cnt.branch_marker, Some(evl_a));
+
+    // Same branch → canonical chain order, not IelDivergent.
+    use std::cmp::Ordering;
+    assert_eq!(p_evl_a.try_cmp(p_cnt).unwrap(), Ordering::Less);
+    assert_eq!(p_cnt.try_cmp(p_evl_a).unwrap(), Ordering::Greater);
+
+    // Sanity: evl_b (other v=D branch) compares as IelDivergent vs both.
+    let positions_b = resolver
+        .iel_chain_positions(&setup.iel_prefix, &[evl_b, cnt.said])
+        .await
+        .expect("positions resolve");
+    let p_evl_b = positions_b.get(&evl_b).expect("evl_b position");
+    let p_cnt_b = positions_b.get(&cnt.said).expect("cnt position via b");
+    assert!(matches!(
+        p_evl_b.try_cmp(p_cnt_b),
+        Err(KelsError::IelDivergent(_))
+    ));
 }
 
 // ==================== Suppress unused-import warnings ====================

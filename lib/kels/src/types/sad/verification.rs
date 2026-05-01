@@ -1795,4 +1795,218 @@ mod tests {
         assert_eq!(v.current_event().said, sea.said);
         assert!(v.current_content().is_none());
     }
+
+    // ==================== Post-SE-divergence taxonomy ====================
+    //
+    // The post-divergence soft-fail rule (round-12 third follow-up commit 1)
+    // converts auth-related failures (IelDivergent / is_satisfied=false /
+    // is_anchored=false) on post-SE-divergence non-terminals from HARD to
+    // SOFT. Structural integrity rules stay HARD regardless.
+    //
+    // Fixture pattern: divergent SE chain at v=1 via two competing Upds (Cnt
+    // would also create divergence; Upd-divergence is simpler to construct
+    // here and exercises the same `event.version >= diverged_at_version`
+    // predicate). Post-divergence event at v=2 extends one branch.
+
+    /// Helper: build a divergent-at-v=1 SE chain. Returns (v0, lo_v1_branch_tip,
+    /// hi_v1_branch_tip, iel_icp_said).
+    fn divergent_chain_at_v1() -> (
+        SadEvent,
+        SadEvent,
+        SadEvent,
+        cesr::Digest256,
+        cesr::Digest256,
+    ) {
+        let identity = d(b"identity-postdiv");
+        let iel_icp = d(b"iel-icp-postdiv");
+        let v0 = make_icp(identity);
+        let v1_a = make_upd_with_content(&v0, iel_icp, b"branch-a");
+        let v1_b = make_upd_with_content(&v0, iel_icp, b"branch-b");
+        let (lo, hi) = if v1_a.said.as_ref() < v1_b.said.as_ref() {
+            (v1_a, v1_b)
+        } else {
+            (v1_b, v1_a)
+        };
+        (v0, lo, hi, identity, iel_icp)
+    }
+
+    /// Sea post-SE-divergence with anchor-fail soft-lands. Parallel of
+    /// `upd_post_divergence_anchor_fail_soft_lands_no_err`.
+    #[tokio::test]
+    async fn sea_post_divergence_anchor_fail_soft_lands_no_err() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-postdiv"),
+            d(b"gov-postdiv"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let sea = SadEvent::sea(&lo, iel_icp).unwrap();
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker {
+            reject: HashSet::from([sea.said]),
+        });
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page(&[v0, lo, hi, sea.clone()])
+            .await
+            .expect("post-SE-div Sea anchor-fail should soft-pass");
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(!v.policy_satisfied());
+    }
+
+    /// Rpr post-SE-divergence with anchor-fail soft-lands.
+    #[tokio::test]
+    async fn rpr_post_divergence_anchor_fail_soft_lands_no_err() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-postdiv"),
+            d(b"gov-postdiv"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let rpr = SadEvent::rpr(&lo, iel_icp).unwrap();
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker {
+            reject: HashSet::from([rpr.said]),
+        });
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page(&[v0, lo, hi, rpr.clone()])
+            .await
+            .expect("post-SE-div Rpr anchor-fail should soft-pass");
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(!v.policy_satisfied());
+    }
+
+    /// Post-SE-divergence Upd whose IelDivergent gate fires soft-lands.
+    /// Parallel of `upd_binding_to_divergent_iel_event_hard_rejects`
+    /// but on a post-SE-divergent chain — gate severity converts.
+    #[tokio::test]
+    async fn upd_post_divergence_iel_divergent_soft_lands() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+        let iel_evl_div = d(b"iel-evl-div");
+
+        // The fake IEL resolver reports divergence at v=1, so the bound
+        // post-divergence IEL Evl surfaces IelDivergent on resolve_*_at.
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-postdiv-iel"),
+                    d(b"gov-postdiv-iel"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-postdiv-iel"),
+                    d(b"gov-postdiv-iel"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        // Post-divergence Upd binding to the post-IEL-divergence Evl. SE
+        // chain itself is also post-divergence (v=2 > diverged_at=1), so
+        // both gates point to SOFT.
+        let postdiv = make_upd_with_content(&lo, iel_evl_div, b"post-div");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, lo, hi, postdiv.clone()])
+            .await
+            .expect("post-SE-div Upd with IelDivergent should soft-pass");
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(!v.policy_satisfied());
+    }
+
+    // Post-SE-divergence is_satisfied=false soft-fail cell intentionally
+    // omitted at this level. Distinct from the IelDivergent path: the
+    // fake's `is_satisfied` returns false for any post-IEL-divergence
+    // event, but `resolve_*_at` only returns IelDivergent for events at
+    // `version >= IEL.first_divergent_version`. To model auth-fail-pre-
+    // divergence (the round-11 Cnt's-own-soft-fail case for IEL) the
+    // fake would need a hand-driven IEL verification — overkill for the
+    // unit surface. Covered by the integration tests via the full IEL
+    // verifier path; the SE-side severity wiring is exercised by the
+    // anchor-fail and IelDivergent cells above (same code path).
+
+    /// Post-SE-divergence BadIdentityBinding stays HARD (chain integrity).
+    #[tokio::test]
+    async fn upd_post_divergence_bad_identity_binding_stays_hard() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+        let unknown = d(b"unknown-iel-event");
+
+        // The fake resolver only knows iel_icp; binding to an unknown
+        // SAID surfaces BadIdentityBinding from fetch_iel_event.
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-postdiv"),
+            d(b"gov-postdiv"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let postdiv = make_upd_with_content(&lo, unknown, b"post-div");
+
+        let verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        let mut v = verifier;
+        v.verify_page(&[v0, lo, hi, postdiv]).await.unwrap();
+        let err = v
+            .finish()
+            .await
+            .expect_err("BadIdentityBinding stays HARD post-SE-divergence");
+        assert!(
+            matches!(err, KelsError::BadIdentityBinding(_)),
+            "expected BadIdentityBinding, got {err:?}"
+        );
+    }
+
+    /// Post-SE-divergence Upd that auth-PASSES all gates: ratchet advances,
+    /// chain.policy_satisfied stays true (no auth failures), but the
+    /// Upd's SAID is NOT in `satisfied_saids` (post-divergence cutoff).
+    #[tokio::test]
+    async fn upd_post_divergence_auth_pass_advances_ratchet_excludes_from_satisfied() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-postdiv"),
+            d(b"gov-postdiv"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        // Post-divergence Upd extending lo at v=2; auth-passes (always_pass).
+        let postdiv = make_upd_with_content(&lo, iel_icp, b"post-div");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.check_satisfied([postdiv.said, lo.said, v0.said]);
+        verifier
+            .verify_page(&[v0.clone(), lo.clone(), hi, postdiv.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(
+            v.policy_satisfied(),
+            "auth-passing post-SE-divergence does NOT flip policy_satisfied"
+        );
+        // Pre-SE-div v0 (at v=0) lands in satisfied_saids. lo (at v=D=1)
+        // is at-or-after divergence by the predicate, so does NOT.
+        // Post-SE-div postdiv (at v=2) also does NOT, even though all
+        // gates passed. This pins the rule's "version < first_divergent_version"
+        // cutoff.
+        assert!(v.is_said_satisfied(&v0.said));
+        assert!(!v.is_said_satisfied(&lo.said));
+        assert!(!v.is_said_satisfied(&postdiv.said));
+    }
 }

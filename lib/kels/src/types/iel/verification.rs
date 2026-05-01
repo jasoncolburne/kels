@@ -204,11 +204,23 @@ impl IelVerification {
 
     /// The `auth_policy` declared (at Icp) or evolved/preserved (at Evl/Cnt/Dec)
     /// at the named IEL event. Returns `None` if the SAID is not in this chain.
+    ///
+    /// **Verifier-view, not raw-event-view.** The returned policy reflects
+    /// what the verifier *adopted* into branch state when it walked the
+    /// chain — which can diverge from what the event itself declares in
+    /// the rare case of a post-divergence Evl that auth-failed (round-12
+    /// post-divergence soft-fail propagation). For such an event the
+    /// verifier records prior tracked policies (the unauthenticated
+    /// evolution is not adopted) even though the event payload declares
+    /// the new values. Consumers should treat this accessor's answer as
+    /// authoritative; reading `event.auth_policy` directly bypasses the
+    /// verifier's trust contract.
     pub fn auth_policy_at(&self, said: &cesr::Digest256) -> Option<cesr::Digest256> {
         self.policy_history.get(said).map(|(a, _)| *a)
     }
 
-    /// Same as [`auth_policy_at`], for `governance_policy`.
+    /// Same as [`auth_policy_at`], for `governance_policy`. Same
+    /// verifier-view-not-raw-event-view caveat applies.
     pub fn governance_policy_at(&self, said: &cesr::Digest256) -> Option<cesr::Digest256> {
         self.policy_history.get(said).map(|(_, g)| *g)
     }
