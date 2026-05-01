@@ -186,11 +186,135 @@ impl PagedIelSink for HttpIelSink {
     }
 }
 
-/// Forward a remote IEL chain into a local sink, paged. Mirrors
-/// `forward_sad_events` but without the divergence-aware held-back logic
-/// (IEL has no `Rpr`; the server's submit handler routes each batch — Cnt on
-/// divergent goes to contest, non-Cnt batch on divergent gets `ContestRequired`).
-pub async fn forward_identity_events(
+/// Separate post-divergence IEL events into the two branches by tracing
+/// forward from each fork event, then send them to the sink in an order
+/// the remote will accept under its routing rules.
+///
+/// Mirrors KEL's `send_divergent_events` (`lib/kels/src/types/kel/sync.rs:517`)
+/// adapted for IEL semantics: IEL has no `Rpr`, so the only legitimate
+/// divergence resolver is `Cnt`. Two cases:
+///
+/// **Contested** (a `Cnt` exists on either branch): pre-divergence events
+/// plus the non-`Cnt` chain go as paged appends; the `Cnt` chain goes as
+/// a single atomic batch (so the receiver's submit handler routes it via
+/// the `is_contest` path with the correct branch). The Cnt-chain must fit
+/// in one page — exceeding the bound indicates DB tampering.
+///
+/// **Unrecovered** (no terminal in either branch — defensive only; in
+/// production the IEL submit handler rejects non-`Cnt` events on
+/// divergent chains with `ContestRequired`): longer chain goes as paged
+/// appends, then the fork event from the shorter chain establishes
+/// divergence at the receiver. Mirrors KEL's unrecovered-divergence path.
+async fn send_divergent_iel_events(
+    sink: &(dyn PagedIelSink + Sync),
+    pre_divergence: &[IdentityEvent],
+    post_divergence: Vec<IdentityEvent>,
+    page_size: usize,
+) -> Result<(), KelsError> {
+    if post_divergence.len() < 2 {
+        return Err(KelsError::InvalidIel(
+            "Divergent IEL must have at least 2 events at divergence point".to_string(),
+        ));
+    }
+
+    // Partition: trace forward from each fork event. Mirror KEL's
+    // chain-partition loop at lib/kels/src/types/kel/sync.rs:546-570.
+    let mut chain_a_saids = std::collections::HashSet::new();
+    let mut chain_b_saids = std::collections::HashSet::new();
+    chain_a_saids.insert(post_divergence[0].said);
+    chain_b_saids.insert(post_divergence[1].said);
+
+    for event in &post_divergence[2..] {
+        if let Some(prev) = event.previous.as_ref() {
+            if chain_a_saids.contains(prev) {
+                chain_a_saids.insert(event.said);
+            } else if chain_b_saids.contains(prev) {
+                chain_b_saids.insert(event.said);
+            }
+        }
+    }
+
+    let mut chain_a: Vec<IdentityEvent> = Vec::new();
+    let mut chain_b: Vec<IdentityEvent> = Vec::new();
+    for event in post_divergence {
+        if chain_a_saids.contains(&event.said) {
+            chain_a.push(event);
+        } else {
+            chain_b.push(event);
+        }
+    }
+
+    let chain_a_has_cnt = chain_a.iter().any(|e| e.kind.is_contest());
+    let chain_b_has_cnt = chain_b.iter().any(|e| e.kind.is_contest());
+
+    if chain_a_has_cnt || chain_b_has_cnt {
+        // Contested case: send pre-divergence + non-cnt chain as paged
+        // appends, then cnt-chain as atomic single-page batch.
+        let (non_cnt_chain, cnt_chain) = if chain_a_has_cnt {
+            (chain_b, chain_a)
+        } else {
+            (chain_a, chain_b)
+        };
+
+        let mut non_divergent = pre_divergence.to_vec();
+        non_divergent.extend(non_cnt_chain);
+        for chunk in non_divergent.chunks(page_size) {
+            sink.store_page(chunk).await?;
+        }
+
+        // The cnt-chain must fit in one page — under round-12 routing,
+        // post-Cnt extension on the cnt branch is structurally rare
+        // (handler rejects further events on contested chains via the
+        // terminal-state gate), so a long cnt-chain indicates corrupted
+        // source state.
+        if cnt_chain.len() > crate::MINIMUM_PAGE_SIZE {
+            return Err(KelsError::InvalidIel(format!(
+                "Contest chain exceeds page bound ({} > {}) — possible DB tampering",
+                cnt_chain.len(),
+                crate::MINIMUM_PAGE_SIZE,
+            )));
+        }
+        // Best-effort: the receiver may already be contested on this
+        // chain (gossip race), in which case the submit handler returns
+        // 4xx — the HttpIelSink converts that to Ok via the existing
+        // `CONFLICT|FORBIDDEN → Ok` branch. Errors here are reserved for
+        // genuine failures.
+        sink.store_page(&cnt_chain).await?;
+    } else {
+        // Unrecovered (defensive): production routing prevents this
+        // state. If the source produces it anyway, send the longer
+        // chain as paged appends, then the fork event from the shorter
+        // chain establishes divergence at the receiver.
+        let (longer, shorter) = if chain_a.len() >= chain_b.len() {
+            (chain_a, chain_b)
+        } else {
+            (chain_b, chain_a)
+        };
+
+        let mut non_divergent = pre_divergence.to_vec();
+        non_divergent.extend(longer);
+        for chunk in non_divergent.chunks(page_size) {
+            sink.store_page(chunk).await?;
+        }
+
+        if let Some(fork) = shorter.first() {
+            sink.store_page(std::slice::from_ref(fork)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Page through an IEL from `source` to `sink`, detecting divergence at
+/// page boundaries. When divergence is found, switches to collection
+/// mode, accumulates remaining events, and submits them via
+/// [`send_divergent_iel_events`] in an order the remote can accept.
+///
+/// Mirrors SE's `transfer_sad_events` (`lib/kels/src/types/sad/sync.rs`).
+/// Uses the held-back-event strategy: holds the last event of each page
+/// (when `has_more`) so a same-version overlap with the next page's
+/// first event is detectable.
+async fn transfer_identity_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedIelSource + Sync),
     sink: &(dyn PagedIelSink + Sync),
@@ -199,23 +323,124 @@ pub async fn forward_identity_events(
     since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
     let mut current_since = since.copied();
+    let mut held_back: Option<IdentityEvent> = None;
+    let mut divergence_found = false;
+    let mut pre_divergence: Vec<IdentityEvent> = Vec::new();
+    let mut post_divergence: Vec<IdentityEvent> = Vec::new();
+
     for _ in 0..max_pages {
-        let (events, has_more) = source
+        let (fetched, has_more) = source
             .fetch_page(prefix, current_since.as_ref(), page_size)
             .await?;
+
+        // Prepend held-back event from the previous page so a same-version
+        // overlap at the page boundary is visible.
+        let mut events = if let Some(held) = held_back.take() {
+            let mut v = vec![held];
+            v.extend(fetched);
+            v
+        } else {
+            fetched
+        };
+
         if events.is_empty() {
-            return Ok(());
+            break;
         }
-        sink.store_page(&events).await?;
+
+        if divergence_found {
+            // Collection mode: accumulate post-divergence events in
+            // canonical chain order; defer the actual sink writes to
+            // `send_divergent_iel_events` once we have the full picture.
+            current_since = events.last().map(|e| e.said);
+            post_divergence.extend(events);
+        } else {
+            // Phase 1: scan for divergence on this page.
+            if has_more || events.len() > page_size {
+                held_back = events.pop();
+            }
+
+            if events.is_empty() {
+                if !has_more {
+                    break;
+                }
+                continue;
+            }
+
+            // Detect divergence: two consecutive events at the same version
+            // in canonical sort order indicate a fork.
+            let mut divergence_idx: Option<usize> = None;
+            for i in 1..events.len() {
+                if events[i].version == events[i - 1].version {
+                    divergence_idx = Some(i - 1);
+                    break;
+                }
+            }
+
+            if let Some(div_idx) = divergence_idx {
+                let div_version = events[div_idx].version;
+                let same_version_count = events.iter().filter(|e| e.version == div_version).count();
+                if same_version_count > 2 {
+                    return Err(KelsError::InvalidIel(format!(
+                        "IEL generation at version {} has {} events, max 2 allowed",
+                        div_version, same_version_count
+                    )));
+                }
+
+                divergence_found = true;
+                pre_divergence = events[..div_idx].to_vec();
+                post_divergence = events[div_idx..].to_vec();
+
+                if let Some(held) = held_back.take() {
+                    current_since = Some(held.said);
+                    post_divergence.push(held);
+                } else {
+                    current_since = post_divergence.last().map(|e| e.said);
+                }
+            } else {
+                // No divergence on this page — straight passthrough.
+                sink.store_page(&events).await?;
+                current_since = events.last().map(|e| e.said);
+            }
+        }
+
         if !has_more {
-            return Ok(());
+            break;
         }
-        current_since = events.last().map(|e| e.said);
+
+        if let Some(ref held) = held_back {
+            current_since = Some(held.said);
+        }
     }
-    Err(KelsError::InvalidIel(format!(
-        "IEL forward exceeded max_pages limit ({}) for {}",
-        max_pages, prefix,
-    )))
+
+    // Final held-back event handling — same shape as SE's transfer.
+    if let Some(held) = held_back {
+        if divergence_found {
+            post_divergence.push(held);
+        } else {
+            sink.store_page(std::slice::from_ref(&held)).await?;
+        }
+    }
+
+    if !divergence_found {
+        return Ok(());
+    }
+
+    send_divergent_iel_events(sink, &pre_divergence, post_divergence, page_size).await
+}
+
+/// Forward a remote IEL chain into a local sink, paged. Detects divergence
+/// at page boundaries and uses [`send_divergent_iel_events`] to partition
+/// the post-divergence events into batches the receiver's submit handler
+/// will accept under its routing rules. Mirrors `forward_sad_events`.
+pub async fn forward_identity_events(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedIelSource + Sync),
+    sink: &(dyn PagedIelSink + Sync),
+    page_size: usize,
+    max_pages: usize,
+    since: Option<&cesr::Digest256>,
+) -> Result<(), KelsError> {
+    transfer_identity_events(prefix, source, sink, page_size, max_pages, since).await
 }
 
 // ==================== Verification Helpers ====================
@@ -527,6 +752,126 @@ mod tests {
         match err {
             KelsError::ServerError(_, ErrorCode::NotFound) => {}
             other => panic!("unexpected error: {}", other),
+        }
+    }
+
+    // ==================== Round-12 third follow-up commit 4 ====================
+
+    /// Collecting sink — records every page passed to `store_page` so tests
+    /// can assert the exact partitioning sequence.
+    struct CollectingSink {
+        pages: tokio::sync::Mutex<Vec<Vec<IdentityEvent>>>,
+    }
+
+    impl CollectingSink {
+        fn new() -> Self {
+            Self {
+                pages: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn pages(&self) -> Vec<Vec<IdentityEvent>> {
+            self.pages.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl PagedIelSink for CollectingSink {
+        async fn store_page(&self, events: &[IdentityEvent]) -> Result<(), KelsError> {
+            self.pages.lock().await.push(events.to_vec());
+            Ok(())
+        }
+    }
+
+    /// Build a contested-divergent IEL chain in canonical sort order and
+    /// confirm `forward_identity_events` partitions it into:
+    ///   1. pre-divergence + non-cnt chain (paged appends)
+    ///   2. cnt-chain (atomic single-page batch)
+    ///
+    /// Mirrors KEL's `send_divergent_events` contested case at
+    /// `lib/kels/src/types/kel/sync.rs:572-610`.
+    #[tokio::test]
+    async fn forward_partitions_contested_divergent_iel_into_non_cnt_then_cnt_chain() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let prefix = icp.prefix;
+
+        // Two competing v=1 events: one Evl, one Cnt. Cnt creates the
+        // divergence (post-Evl Cnt would have higher version).
+        let evl_a = IdentityEvent::evl(&icp, None, None).unwrap();
+        let cnt_b = IdentityEvent::cnt(&icp).unwrap();
+
+        // Canonical sort order: at v=1 Evl (kind=1) sorts before Cnt
+        // (kind=2). Source serves them in canonical order.
+        let chain = vec![icp.clone(), evl_a.clone(), cnt_b.clone()];
+        let source = VecSource {
+            events: chain.clone(),
+        };
+        let sink = CollectingSink::new();
+
+        forward_identity_events(&prefix, &source, &sink, 16, 8, None)
+            .await
+            .expect("forward succeeds on contested divergent IEL");
+
+        let pages = sink.pages().await;
+        // Expect at least two pages: the non-cnt chain (Icp + Evl) and the
+        // cnt chain (Cnt). The exact paging count depends on `page_size`
+        // but the partition shape is fixed.
+        let sent_events: Vec<IdentityEvent> = pages.iter().flatten().cloned().collect();
+
+        // Non-cnt chain comes first: should include Icp and Evl, in that
+        // order, before the Cnt page.
+        let cnt_page_idx = pages
+            .iter()
+            .position(|page| page.iter().any(|e| e.kind.is_contest()))
+            .expect("cnt page present");
+        let non_cnt_pages = &pages[..cnt_page_idx];
+        let cnt_page = &pages[cnt_page_idx];
+
+        // Pre-divergence + non-cnt chain (Evl branch): should contain Icp
+        // and Evl, no Cnt.
+        let non_cnt_events: Vec<IdentityEvent> = non_cnt_pages.iter().flatten().cloned().collect();
+        assert!(non_cnt_events.iter().any(|e| e.said == icp.said));
+        assert!(non_cnt_events.iter().any(|e| e.said == evl_a.said));
+        assert!(non_cnt_events.iter().all(|e| !e.kind.is_contest()));
+
+        // Cnt page: contains the Cnt event, sent atomically.
+        assert_eq!(cnt_page.len(), 1);
+        assert_eq!(cnt_page[0].said, cnt_b.said);
+
+        // Sanity: every event in the source ends up sent exactly once.
+        assert_eq!(sent_events.len(), chain.len());
+        for source_event in &chain {
+            assert!(
+                sent_events.iter().any(|e| e.said == source_event.said),
+                "event {} not in sink output",
+                source_event.said
+            );
+        }
+    }
+
+    /// Linear (non-divergent) IEL forward: same single-page passthrough as
+    /// before — `forward_identity_events` returns Ok without invoking the
+    /// divergence path. Pinned to confirm the wrapper doesn't perturb the
+    /// happy path.
+    #[tokio::test]
+    async fn forward_linear_iel_passes_chain_through_unchanged() {
+        let chain = make_chain(3);
+        let prefix = chain[0].prefix;
+        let source = VecSource {
+            events: chain.clone(),
+        };
+        let sink = CollectingSink::new();
+
+        forward_identity_events(&prefix, &source, &sink, 16, 8, None)
+            .await
+            .expect("forward succeeds on linear IEL");
+
+        let sent: Vec<IdentityEvent> = sink.pages().await.into_iter().flatten().collect();
+        assert_eq!(sent.len(), chain.len());
+        for (i, e) in sent.iter().enumerate() {
+            assert_eq!(e.said, chain[i].said, "event {i} mismatch");
         }
     }
 }
