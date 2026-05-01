@@ -8,6 +8,7 @@
 pub mod compaction;
 pub(crate) mod expansion;
 mod handlers;
+pub mod iel_resolver;
 pub mod object_store;
 pub mod repository;
 mod server;

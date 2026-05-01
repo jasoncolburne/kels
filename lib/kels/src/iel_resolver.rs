@@ -108,6 +108,43 @@ impl AnchoredIelResolver {
         verifier.finish().await
     }
 
+    /// Materialize every event in the named IEL into a `said → event` map.
+    /// Used by [`iel_chain_positions`]'s walk-back to determine the
+    /// branch identity of post-divergence events without per-step HTTP
+    /// fetches. Bounded by `max_pages`; fail-secure on overrun by paging
+    /// behavior (extra events past the limit are simply not visible).
+    async fn collect_all_events(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<HashMap<cesr::Digest256, IdentityEvent>, KelsError> {
+        let mut found: HashMap<cesr::Digest256, IdentityEvent> = HashMap::new();
+        let mut since: Option<cesr::Digest256> = None;
+        for _ in 0..self.max_pages {
+            let (events, has_more) = self
+                .source
+                .fetch_page(identity, since.as_ref(), self.page_size)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            for event in &events {
+                if &event.prefix != identity {
+                    return Err(KelsError::BadIdentityBinding(format!(
+                        "IEL event {} has prefix {} but expected identity {} \
+                         (cross-IEL contamination)",
+                        event.said, event.prefix, identity,
+                    )));
+                }
+                found.insert(event.said, event.clone());
+            }
+            if !has_more {
+                break;
+            }
+            since = events.last().map(|e| e.said);
+        }
+        Ok(found)
+    }
+
     /// Walk the source until `wanted` (a set of SAIDs) are all collected, or
     /// the chain ends / `max_pages` is exhausted. Returns events in their
     /// canonical chain order. Used by [`fetch_iel_event`] and
@@ -252,8 +289,16 @@ impl IelResolver for AnchoredIelResolver {
         let verification = self.verification_for(identity).await?;
         let diverged_at = verification.diverged_at_version();
 
-        // One source walk to fetch every requested event.
-        let found = self.collect_events_by_said(identity, saids).await?;
+        // For non-divergent IELs walk-back never fires; we only need the
+        // specifically requested events. For divergent IELs we materialize
+        // every event in one extra page walk and walk back in-memory, so
+        // each post-divergence SAID resolves its branch identity in
+        // O(divergent-depth) hashmap hops with no extra HTTP cost.
+        let found = if diverged_at.is_some() {
+            self.collect_all_events(identity).await?
+        } else {
+            self.collect_events_by_said(identity, saids).await?
+        };
 
         let mut positions: HashMap<cesr::Digest256, IelChainPosition> = HashMap::new();
         for said in saids {
@@ -264,17 +309,16 @@ impl IelResolver for AnchoredIelResolver {
                 ))
             })?;
 
-            // Per round-12 verifier discipline, post-divergence events are
-            // structurally unreachable as ratchet inputs (see Gap 2's
-            // monotonic-ratchet "Update precondition"). When seen anyway,
-            // mark them with the event's own SAID so two such positions
-            // would only compare-equal when `said == said`; differing SAIDs
-            // surface `IelDivergent` from `IelChainPosition::try_cmp` —
-            // matching the trait's case-4 behavior. A precise branch-walk
-            // implementation can layer in later if real divergent-position
-            // comparisons are ever introduced.
+            // Round-12 third follow-up: walk back from each post-divergence
+            // SAID to its branch's first-divergent ancestor. The ancestor's
+            // SAID becomes the branch identity, so two events on the same
+            // branch share a `branch_marker` and compare via canonical
+            // chain order (instead of surfacing a false-positive
+            // `IelDivergent`). Pre-divergence events keep `None`.
             let branch_marker = match diverged_at {
-                Some(threshold) if event.version >= threshold => Some(event.said),
+                Some(threshold) if event.version >= threshold => Some(
+                    walk_back_to_branch_identity(&found, *said, threshold, identity)?,
+                ),
                 _ => None,
             };
 
@@ -290,5 +334,237 @@ impl IelResolver for AnchoredIelResolver {
         }
 
         Ok(positions)
+    }
+}
+
+/// Walk `event.previous` from `start` until reaching the event at version
+/// `divergence_version`. That event's SAID is the branch identity for any
+/// post-divergence event tracing back through it. Bounded by `chain.len()`
+/// to detect cycles or unbounded loops.
+///
+/// Returns `BadIdentityBinding` on any chain-integrity breach mid-walk:
+/// missing event, walked past `divergence_version`, `previous=None` on a
+/// non-Icp event, or step-bound exceeded.
+fn walk_back_to_branch_identity(
+    chain: &HashMap<cesr::Digest256, IdentityEvent>,
+    start: cesr::Digest256,
+    divergence_version: u64,
+    identity: &cesr::Digest256,
+) -> Result<cesr::Digest256, KelsError> {
+    let mut current = start;
+    let bound = chain.len() + 1;
+    for _ in 0..bound {
+        let event = chain.get(&current).ok_or_else(|| {
+            KelsError::BadIdentityBinding(format!(
+                "IEL walk-back: event {} not found in IEL {} (chain integrity breach)",
+                current, identity,
+            ))
+        })?;
+        if event.version == divergence_version {
+            return Ok(event.said);
+        }
+        if event.version < divergence_version {
+            return Err(KelsError::BadIdentityBinding(format!(
+                "IEL walk-back: event {} at version {} walked past divergence \
+                 at version {} (chain integrity breach)",
+                current, event.version, divergence_version,
+            )));
+        }
+        current = event.previous.ok_or_else(|| {
+            KelsError::BadIdentityBinding(format!(
+                "IEL walk-back: event {} at version {} has no previous \
+                 (chain integrity breach)",
+                current, event.version,
+            ))
+        })?;
+    }
+    Err(KelsError::BadIdentityBinding(format!(
+        "IEL walk-back: exceeded chain length bound for IEL {} \
+         (cycle or chain too long)",
+        identity,
+    )))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::cmp::Ordering;
+
+    use crate::types::IdentityEventKind;
+
+    const TEST_TOPIC: &str = "kels/iel/v1/identity/walk-back";
+
+    fn d(label: &[u8]) -> cesr::Digest256 {
+        cesr::Digest256::blake3_256(label)
+    }
+
+    /// Test fake serving a fixed list of IEL events in order, paginating by
+    /// exclusive `since` SAID.
+    struct VecSource {
+        events: Vec<IdentityEvent>,
+    }
+
+    #[async_trait]
+    impl PagedIelSource for VecSource {
+        async fn fetch_page(
+            &self,
+            _prefix: &cesr::Digest256,
+            since: Option<&cesr::Digest256>,
+            limit: usize,
+        ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+            let start = match since {
+                None => 0,
+                Some(cursor) => self
+                    .events
+                    .iter()
+                    .position(|e| &e.said == cursor)
+                    .map(|i| i + 1)
+                    .unwrap_or(self.events.len()),
+            };
+            if start >= self.events.len() {
+                return Ok((Vec::new(), false));
+            }
+            let end = (start + limit).min(self.events.len());
+            let page = self.events[start..end].to_vec();
+            let has_more = end < self.events.len();
+            Ok((page, has_more))
+        }
+    }
+
+    /// Anchor check passes for everything; every policy is immune.
+    struct AlwaysPassChecker;
+
+    #[async_trait]
+    impl PolicyChecker for AlwaysPassChecker {
+        async fn is_anchored(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
+    /// Build a divergent IEL chain in canonical sort order:
+    /// `Icp@v=0`, `Evl_a@v=1`, `Evl_b@v=1` (lower SAID first), and a
+    /// post-divergence `Evl_a2@v=2` extending `Evl_a`. Returns the events
+    /// plus the lower-SAID branch's tip SAID at v=1 so tests can assert
+    /// branch identity directly.
+    fn build_divergent_chain() -> (
+        Vec<IdentityEvent>,
+        IdentityEvent,
+        IdentityEvent,
+        IdentityEvent,
+    ) {
+        let auth = d(b"auth-policy");
+        let gov = d(b"gov-policy");
+        let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        // Two competing Evls at v=1: differentiated by carrying different
+        // auth_policy values forward (constructors derive distinct SAIDs).
+        let auth_a = d(b"auth-policy-A");
+        let auth_b = d(b"auth-policy-B");
+        let evl_a = IdentityEvent::evl(&icp, Some(auth_a), None).unwrap();
+        let evl_b = IdentityEvent::evl(&icp, Some(auth_b), None).unwrap();
+        // Order canonically: kind sort_priority is equal (both Evl), tiebreak by SAID.
+        let (lo, hi) = if evl_a.said.as_ref() < evl_b.said.as_ref() {
+            (evl_a.clone(), evl_b.clone())
+        } else {
+            (evl_b.clone(), evl_a.clone())
+        };
+        // Post-divergence Evl extending the lower-SAID branch tip.
+        let evl_lo_v2 = IdentityEvent::evl(&lo, None, None).unwrap();
+        let chain = vec![icp.clone(), lo.clone(), hi.clone(), evl_lo_v2.clone()];
+        (chain, lo, hi, evl_lo_v2)
+    }
+
+    fn resolver(events: Vec<IdentityEvent>) -> AnchoredIelResolver {
+        AnchoredIelResolver::new(
+            Arc::new(VecSource { events }),
+            Arc::new(AlwaysPassChecker),
+            crate::page_size(),
+            crate::max_pages(),
+        )
+    }
+
+    #[tokio::test]
+    async fn walk_back_identifies_branch_for_distinct_post_divergence_events_on_same_branch() {
+        let (chain, lo_v1, _hi_v1, lo_v2) = build_divergent_chain();
+        let identity = chain[0].prefix;
+        let r = resolver(chain);
+
+        let positions = r
+            .iel_chain_positions(&identity, &[lo_v1.said, lo_v2.said])
+            .await
+            .expect("positions resolve");
+
+        let p_v1 = positions.get(&lo_v1.said).expect("v1 position");
+        let p_v2 = positions.get(&lo_v2.said).expect("v2 position");
+
+        // Both events on the same branch share the same branch identity:
+        // the v=1 ancestor on this branch is `lo_v1` itself.
+        assert_eq!(p_v1.branch_marker, Some(lo_v1.said));
+        assert_eq!(p_v2.branch_marker, Some(lo_v1.said));
+
+        // Same-branch positions compare by canonical chain order (Less / Greater),
+        // not IelDivergent.
+        assert_eq!(p_v1.try_cmp(p_v2).unwrap(), Ordering::Less);
+        assert_eq!(p_v2.try_cmp(p_v1).unwrap(), Ordering::Greater);
+    }
+
+    #[tokio::test]
+    async fn walk_back_identifies_branch_for_events_on_different_branches() {
+        let (chain, lo_v1, hi_v1, _lo_v2) = build_divergent_chain();
+        let identity = chain[0].prefix;
+        let r = resolver(chain);
+
+        let positions = r
+            .iel_chain_positions(&identity, &[lo_v1.said, hi_v1.said])
+            .await
+            .expect("positions resolve");
+
+        let p_lo = positions.get(&lo_v1.said).expect("lo branch position");
+        let p_hi = positions.get(&hi_v1.said).expect("hi branch position");
+
+        // Each event sits at v=D (the divergence version), so its own SAID
+        // is the branch identity.
+        assert_eq!(p_lo.branch_marker, Some(lo_v1.said));
+        assert_eq!(p_hi.branch_marker, Some(hi_v1.said));
+
+        // Different branches → IelDivergent (no canonical ordering across
+        // forks).
+        assert!(matches!(
+            p_lo.try_cmp(p_hi),
+            Err(KelsError::IelDivergent(_))
+        ));
+        assert!(matches!(
+            p_hi.try_cmp(p_lo),
+            Err(KelsError::IelDivergent(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn pre_divergence_event_has_no_branch_marker() {
+        let (chain, _lo, _hi, _lo_v2) = build_divergent_chain();
+        let identity = chain[0].prefix;
+        let icp = chain[0].clone();
+        let r = resolver(chain);
+
+        let positions = r
+            .iel_chain_positions(&identity, &[icp.said])
+            .await
+            .expect("positions resolve");
+        let p = positions.get(&icp.said).expect("icp position");
+        assert!(p.branch_marker.is_none());
+    }
+
+    // Suppress the "kind is unused" warning if we don't reference IdentityEventKind.
+    #[allow(dead_code)]
+    fn _silence_kind() -> IdentityEventKind {
+        IdentityEventKind::Evl
     }
 }

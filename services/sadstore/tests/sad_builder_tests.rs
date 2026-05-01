@@ -91,6 +91,10 @@ async fn retry_get_port_generic(
 struct SharedHarness {
     kels_url: String,
     sad_url: String,
+    /// Direct DB URL for the SAD-store Postgres container — used by
+    /// integration tests that need to construct a `SadStoreRepository`
+    /// in-process (e.g., to drive `RepositoryIelResolver` directly).
+    sad_db_url: String,
     _pg_kels: ContainerAsync<Postgres>,
     _pg_sad: ContainerAsync<Postgres>,
     _redis: ContainerAsync<Redis>,
@@ -251,6 +255,7 @@ impl SharedHarness {
         Some(Self {
             kels_url,
             sad_url,
+            sad_db_url,
             _pg_kels: pg_kels,
             _pg_sad: pg_sad,
             _redis: redis,
@@ -1881,6 +1886,56 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
         "branch ratchet must advance to the IEL Evl"
     );
     assert!(v.policy_satisfied());
+}
+
+// ==================== RepositoryIelResolver walk-back ====================
+//
+// Round-12 third follow-up commit 2: pin `RepositoryIelResolver`'s
+// `iel_chain_positions` walk-back against the real IEL repository.
+// The walk-back algorithm is unit-tested against a fake source at
+// `lib/kels/src/iel_resolver.rs` (covers V=D base case + V=D+1
+// non-trivial walk + pre-divergence-no-marker). This integration test
+// exercises the V=D base case through the postgres-backed repo —
+// confirming `fetch_event_by_said` returns events in a shape compatible
+// with the algorithm. Injecting V=D+1 events would require bypassing
+// IEL routing (which rejects post-divergence submissions with
+// `ContestRequired`); covered by the unit-level walk test instead.
+#[tokio::test]
+#[serial]
+async fn repository_walk_back_different_branches_compares_iel_divergent() {
+    use kels_core::IelResolver;
+    use kels_sadstore::SadStoreRepository;
+    use kels_sadstore::iel_resolver::RepositoryIelResolver;
+    use verifiable_storage::RepositoryConnection;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "walk-back-diff").await;
+    let _v1 = establish_se_chain(&mut setup, "walk-back-diff").await;
+    let (evl_a, evl_b, _) = create_iel_divergence(&mut setup, "walk-back-diff").await;
+
+    let repo = SadStoreRepository::connect(&harness.sad_db_url)
+        .await
+        .expect("connect sadstore repo");
+    let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::clone(&setup.checker);
+    let resolver = RepositoryIelResolver::new(Arc::new(repo), checker);
+
+    let positions = resolver
+        .iel_chain_positions(&setup.iel_prefix, &[evl_a, evl_b])
+        .await
+        .expect("positions resolve");
+
+    let p_a = positions.get(&evl_a).expect("a position");
+    let p_b = positions.get(&evl_b).expect("b position");
+
+    // Each event sits at v=D; its own SAID is its branch identity.
+    assert_eq!(p_a.branch_marker, Some(evl_a));
+    assert_eq!(p_b.branch_marker, Some(evl_b));
+
+    // Different branches → IelDivergent (no canonical ordering across forks).
+    assert!(matches!(p_a.try_cmp(p_b), Err(KelsError::IelDivergent(_))));
+    assert!(matches!(p_b.try_cmp(p_a), Err(KelsError::IelDivergent(_))));
 }
 
 // ==================== Suppress unused-import warnings ====================
