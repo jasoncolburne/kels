@@ -96,15 +96,25 @@ Policy state is **branch-tracked**:
 
 Authorization checks use the *previous tracked* policy values for `Evl` (an Evl evolving auth_policy is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing). This prevents an actor with auth-only authority from elevating themselves.
 
-### Post-Terminal Soft-Fail Propagation
+### Post-Divergence Soft-Fail Propagation
 
-The verifier tracks `contested_at_version: Option<u64>` and `decommissioned_at_version: Option<u64>` during the walk, set the moment a `Cnt` or `Dec` is processed. For each subsequent v1+ event, if `event.version > contested_at_version || event.version > decommissioned_at_version`, the verifier overrides `policy_satisfied=false` regardless of the auth-check outcome.
+The verification cutoff for "valid for downstream binding" is `first_divergent_version`. A `Cnt` structurally creates divergence (it extends an existing tip that isn't the chain's max version), so contested chains always have a divergence point. `Dec` only lands on non-divergent chains (routing rejects Dec on divergent with `ContestRequired`), so decommissioned chains have no cutoff and the Dec event itself is a valid event in the chain.
 
-The rule: events at version strictly greater than a recorded terminal **land structurally** (preserved as forensic record) but verification marks them invalid. Concurrent siblings at the same version as a Cnt — events processed earlier in the same generation by `(version, kind sort_priority, said)` order — land with their auth-check outcome unmodified ("concurrent, not after"). Only strictly-higher versions get the soft-fail override.
+For events at `version >= first_divergent_version` (post-divergence on a Cnt'd chain): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Pre-divergence events follow the existing round-11 soft/hard mapping (Cnt's-own-soft-fail for governance check; Evl/Cnt/Dec auth checks per their respective severity). Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution, BadIdentityBinding — stay HARD regardless of divergence position. Cnt doesn't change whether an event is well-formed.
 
-Why preserve rather than reject: `Cnt` semantically means "the governance keys may be compromised; the chain cannot be safely advanced." Once contested, every further attempt to advance has unknowable provenance. Hard-rejecting post-terminal events would discard the adversary's actions from the forensic record; soft-failing preserves them while making clear that verification doesn't bless them. Decommissioning has a parallel rationale: the chain is permanently closed, further events are not ratifiable.
+Why preserve rather than reject: `Cnt` semantically means "the governance keys may be compromised; the chain cannot be safely advanced." Hard-rejecting post-divergence events would bounce the entire verification, leaving consumers unable to read pre-divergence state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them.
 
-This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (concurrent within-batch siblings, gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
+This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
+
+### Caller-Bounded SAID Querying (`queried_saids` / `satisfied_saids`)
+
+The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SE verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SE to bind under?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
+
+- Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
+- During the chain walk, for each event whose SAID appears in `queried_saids`: if the event is at `version < first_divergent_version` (or chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
+- Token exposes `is_said_satisfied(said) -> bool` and `satisfied_saids() -> &BTreeSet<Digest256>`.
+
+The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SE verifier collects `identity_event` references from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
 
 ## Verification Return Value
 
