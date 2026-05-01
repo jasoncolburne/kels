@@ -173,8 +173,9 @@ pub struct IdentityEvent {
 /// Prefix is derived from the v0 `Icp` template with `said` and `prefix`
 /// blanked. Anyone with `(auth_policy, governance_policy, topic)` can
 /// reproduce the prefix — but those inputs are private to the inceptor on
-/// IEL (unlike SE's third-party-discoverable `(write_policy, topic)` shape),
-/// so prefix derivation is itself non-discoverable in practice.
+/// IEL (unlike SE's third-party-discoverable `(identity, topic)` shape,
+/// where `identity` is the IEL prefix and is publicly known), so prefix
+/// derivation is itself non-discoverable in practice.
 ///
 /// Routes through `IdentityEvent::icp` so prefix derivation and v0 staging
 /// share the same structural-validation gate.

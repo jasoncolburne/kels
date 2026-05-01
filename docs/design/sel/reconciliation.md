@@ -159,7 +159,7 @@ Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent
 
 ### 7. IEL evolves, owner ratchets dependent SE chain
 
-After IEL governance evolves (a Sea on IEL changes governance_policy), owner submits `Sea` on each dependent SE chain to ratchet `last_identity_event` forward. After ratcheting, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` fails the monotonic check. See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
+After IEL governance evolves (an Evl on IEL changes governance_policy), owner submits `Sea` on each dependent SE chain to ratchet `last_identity_event` forward. After ratcheting, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` fails the monotonic check. See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
 
 ### 8. SE chain bound to an IEL event whose IEL is now divergent
 

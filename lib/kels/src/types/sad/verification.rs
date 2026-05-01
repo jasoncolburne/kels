@@ -1599,4 +1599,174 @@ mod tests {
             err
         );
     }
+
+    // ==================== Round-12 third follow-up commit 3: missing taxonomy ====================
+
+    /// Sea binding to a divergent-IEL post-divergence event: HARD reject
+    /// (advancement event; chain does not advance). Parallel of
+    /// `upd_binding_to_divergent_iel_event_hard_rejects`.
+    #[tokio::test]
+    async fn sea_binding_to_divergent_iel_event_hard_rejects() {
+        let identity = d(b"identity-sea-div");
+        let iel_icp = d(b"iel-icp-sea-div");
+        let iel_evl_div = d(b"iel-evl-sea-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-sea-div"),
+                    d(b"gov-sea-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-sea-div"),
+                    d(b"gov-sea-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        // Sea binds to the post-divergence IEL Evl. HARD reject: SE chain
+        // is non-divergent (Sea is the first thing past v=1 that would
+        // touch the divergent IEL), so the auth-fail isn't soft-converted.
+        let sea = SadEvent::sea(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, sea]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IelDivergent(_)),
+            "expected IelDivergent, got {err:?}"
+        );
+    }
+
+    /// Rpr binding to a divergent-IEL post-divergence event: HARD reject.
+    #[tokio::test]
+    async fn rpr_binding_to_divergent_iel_event_hard_rejects() {
+        let identity = d(b"identity-rpr-div");
+        let iel_icp = d(b"iel-icp-rpr-div");
+        let iel_evl_div = d(b"iel-evl-rpr-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-rpr-div"),
+                    d(b"gov-rpr-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-rpr-div"),
+                    d(b"gov-rpr-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        // Rpr binds to the post-divergence IEL Evl. Same HARD path as Sea
+        // — Rpr is an advancement event (resolves divergence on SE side)
+        // and cannot rest on an unstable IEL state.
+        let rpr = SadEvent::rpr(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, rpr]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IelDivergent(_)),
+            "expected IelDivergent, got {err:?}"
+        );
+    }
+
+    /// Dec binding to a divergent-IEL post-divergence event: SOFT-passes
+    /// (lands; chain becomes decommissioned content-based;
+    /// `policy_satisfied=false`). Parallel of
+    /// `cnt_with_divergent_iel_binding_lands_softly`.
+    #[tokio::test]
+    async fn dec_with_divergent_iel_binding_lands_softly() {
+        let identity = d(b"identity-dec-div");
+        let iel_icp = d(b"iel-icp-dec-div");
+        let iel_evl_div = d(b"iel-evl-dec-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-dec-div"),
+                    d(b"gov-dec-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-dec-div"),
+                    d(b"gov-dec-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, dec]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_decommissioned());
+        assert!(!v.is_contested());
+        assert!(!v.policy_satisfied());
+        // Ratchet pinned to the hard-passed v1 binding; soft-passed Dec
+        // does NOT advance it.
+        assert_eq!(v.branches()[0].last_identity_event, Some(iel_icp));
+    }
+
+    /// `[Icp, Sea]` content preservation when no Upd has landed: previous
+    /// content is `None`, Sea must preserve `None`. Pins the
+    /// content-preservation rule on the no-Upd branch.
+    #[tokio::test]
+    async fn sea_after_icp_no_upd_preserves_none_content() {
+        let identity = d(b"identity-sea-noupd");
+        let iel_icp = d(b"iel-icp-sea-noupd");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-sea-noupd"),
+            d(b"gov-sea-noupd"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        // Sea directly after Icp — no Upd in between. v0.content is None
+        // (Icp forbids content), and Sea must carry that forward.
+        let sea = SadEvent::sea(&v0, iel_icp).unwrap();
+        assert!(
+            sea.content.is_none(),
+            "constructor must seed Sea.content from previous (None for Icp)"
+        );
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0.clone(), sea.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.policy_satisfied());
+        assert_eq!(v.last_governance_version(), Some(1));
+        assert_eq!(v.current_event().said, sea.said);
+        assert!(v.current_content().is_none());
+    }
 }

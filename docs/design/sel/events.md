@@ -66,8 +66,8 @@ The chain's identity cannot be changed after Icp. To migrate an SE chain to a di
 `identity_event: Digest256` references the SAID of the specific IEL event whose declared/evolved policy authorizes the SE event:
 
 - `Icp`: forbidden. (No authorization gate; no policy to bind to.)
-- `Upd`: required. References the most recent IEL `Icp` or `Sea`-with-auth-policy at the time of submission — the IEL event that established the currently-tracked `auth_policy`.
-- `Sea` / `Rpr` / `Cnt` / `Dec`: required. References the most recent IEL `Icp` or `Sea`-with-governance-policy — the IEL event that established the currently-tracked `governance_policy`.
+- `Upd`: required. References the most recent IEL `Icp` or `Evl`-with-auth-policy at the time of submission — the IEL event that established the currently-tracked `auth_policy`.
+- `Sea` / `Rpr` / `Cnt` / `Dec`: required. References the most recent IEL `Icp` or `Evl`-with-governance-policy — the IEL event that established the currently-tracked `governance_policy`.
 
 #### Why bind by SAID rather than version
 
@@ -137,13 +137,13 @@ v3  kind=rpr  identity_event=IEL_governance_event_said, previous=v2a.said, conte
                                                                               ← Rpr extends owner's tip; v2b archived
 ```
 
-The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (preservation). The `identity_event` references the IEL event currently establishing `governance_policy` (typically IEL Icp, but could be a later IEL Sea if governance evolved on IEL).
+The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (preservation). The `identity_event` references the IEL event currently establishing `governance_policy` (typically IEL Icp, but could be a later IEL Evl if governance evolved on IEL).
 
 ### Contest after IEL governance compromise
 
 ```
 v0..v4   normal chain, last_governance_version=4 (Sea at v4)
-         (an unauthorized actor submits Sea on IEL evolving auth_policy/governance_policy in their favor)
+         (an unauthorized actor submits Evl on IEL evolving auth_policy/governance_policy in their favor)
 v5       owner Upd at v5 — would have to bind to the IEL's new authority event, which the owner doesn't satisfy
          → owner cannot safely continue normally; Cnt is the only legitimate path
 v6       kind=cnt  identity_event=current_IEL_governance_event_said    ← chain becomes contested, terminal
