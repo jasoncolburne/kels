@@ -1100,6 +1100,73 @@ pub async fn sad_event_exists(
 
 // === Layer 2: SAD Events (Postgres) ===
 
+/// Stream the SE chain inside the submit transaction and accumulate the
+/// unique `event.identity_event` SAIDs (drops events). Mirrors
+/// `kels_core::collect_identity_event_saids[_from_loader]` for the
+/// transactional repository path. Bounded by `max_pages × page_size × 32B`;
+/// fail-secure on overrun (returns `INTERNAL_SERVER_ERROR` rather than
+/// silently using a partial set, which would soft-fail every binding for
+/// SAIDs past the limit).
+///
+/// Used by the SE submit handler to pre-walk the chain before constructing
+/// the `IelResolver` with a `queried_saids` set, so `is_satisfied` answers
+/// reflect the full SE chain's bindings.
+async fn collect_se_chain_identity_event_saids_via_tx<Tx: TransactionExecutor>(
+    tx: &mut Tx,
+    repo: &SadEventRepository,
+    prefix: &cesr::Digest256,
+    new_events: &[kels_core::SadEvent],
+) -> Result<std::collections::BTreeSet<cesr::Digest256>, axum::response::Response> {
+    let mut saids: std::collections::BTreeSet<cesr::Digest256> = std::collections::BTreeSet::new();
+    let page_size = kels_core::page_size() as u64;
+    let max_pages = kels_core::max_pages();
+    let mut since: Option<cesr::Digest256> = None;
+    let mut exhausted = false;
+    for _ in 0..max_pages {
+        let page = repo
+            .get_stored_in(
+                tx,
+                prefix.as_ref(),
+                since.as_ref().map(|s| s.as_ref()),
+                Some(page_size),
+            )
+            .await
+            .map_err(|e| {
+                warn!("Failed to pre-walk SE chain for queried_saids: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response()
+            })?;
+        if page.is_empty() {
+            exhausted = true;
+            break;
+        }
+        let page_len = page.len();
+        since = page.last().map(|r| r.said);
+        for ev in &page {
+            if let Some(s) = ev.identity_event {
+                saids.insert(s);
+            }
+        }
+        if (page_len as u64) < page_size {
+            exhausted = true;
+            break;
+        }
+    }
+    if !exhausted {
+        let msg = format!(
+            "SE pre-walk for queried_saids exceeded max_pages limit ({}) for {}",
+            max_pages, prefix
+        );
+        warn!("{}", msg);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, msg).into_response());
+    }
+    for ev in new_events {
+        if let Some(s) = ev.identity_event {
+            saids.insert(s);
+        }
+    }
+    Ok(saids)
+}
+
 /// Page through existing SAD events in a transaction, feeding each page to the verifier.
 async fn verify_existing_chain<Tx: TransactionExecutor>(
     tx: &mut Tx,
@@ -1458,56 +1525,23 @@ pub async fn submit_sad_events(
             ));
 
         // SE pre-walk: stream the SE chain (storage + new events), accumulate
-        // unique `identity_event` SAIDs into a `BTreeSet`, drop events. The
-        // set is forwarded as `queried_saids` to the `IelResolver` so its
-        // `is_satisfied` answers reflect IEL verification of these SAIDs.
-        // Bounded by `max_pages × page_size × 32B`; events themselves never
-        // accumulate (matches the existing aggregation invariant for
-        // `IelVerification::policy_history`).
-        let queried_iel_saids: std::collections::BTreeSet<cesr::Digest256> = {
-            let mut saids = std::collections::BTreeSet::new();
-            let page_size = kels_core::page_size() as u64;
-            let mut since: Option<cesr::Digest256> = None;
-            for _ in 0..kels_core::max_pages() {
-                let page = match state
-                    .repo
-                    .sad_events
-                    .get_stored_in(
-                        &mut tx,
-                        sel_prefix.as_ref(),
-                        since.as_ref().map(|s| s.as_ref()),
-                        Some(page_size),
-                    )
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to pre-walk SE chain for queried_saids: {}", e);
-                        let _ = tx.rollback().await;
-                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
-                            .into_response();
-                    }
-                };
-                if page.is_empty() {
-                    break;
-                }
-                let page_len = page.len();
-                since = page.last().map(|r| r.said);
-                for ev in &page {
-                    if let Some(s) = ev.identity_event {
-                        saids.insert(s);
-                    }
-                }
-                if (page_len as u64) < page_size {
-                    break;
-                }
+        // unique `identity_event` SAIDs. The set is forwarded as
+        // `queried_saids` to the `IelResolver` so its `is_satisfied`
+        // answers reflect IEL verification of these SAIDs. Bounded by
+        // `max_pages × page_size × 32 B`; fail-secure on max_pages overrun.
+        let queried_iel_saids = match collect_se_chain_identity_event_saids_via_tx(
+            &mut tx,
+            &state.repo.sad_events,
+            sel_prefix,
+            &new_events,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(response) => {
+                let _ = tx.rollback().await;
+                return response;
             }
-            for ev in &new_events {
-                if let Some(s) = ev.identity_event {
-                    saids.insert(s);
-                }
-            }
-            saids
         };
 
         let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> = Arc::new(

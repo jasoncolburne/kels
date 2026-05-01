@@ -363,20 +363,46 @@ impl SelVerifier {
             })?;
 
             let is_terminal = matches!(event.kind, SadEventKind::Cnt | SadEventKind::Dec);
-            // Post-divergence on the SE chain itself: Cnt structurally creates
-            // divergence at its own version (per `docs/design/sel/verification.md
-            // §Post-divergence soft-fail propagation`), so any v1+ event whose
-            // version is at-or-after the divergence point gets the soft-fail
-            // override on auth-related failures (IelDivergent, satisfied-check,
-            // anchor-fail). Structural integrity rules (BadIdentityBinding,
-            // monotonic ratchet, content preservation) stay HARD regardless of
-            // position. Pre-divergence flow keeps the existing HARD/SOFT mapping
-            // (HARD for Upd/Sea/Rpr; SOFT for Cnt/Dec).
-            let post_divergence = self.diverged_at_version.is_some_and(|d| event.version >= d);
-            // A "soft-fail-eligible" auth failure: terminal events are always
-            // soft (existing rule); non-terminals are soft only post-divergence
-            // (new rule). When false, HARD-fail returns Err.
-            let auth_soft_eligible = is_terminal || post_divergence;
+
+            // Two distinct soft-fail rules govern the auth gates below; each
+            // gate (IelDivergent, IEL-satisfied, anchor) consults their union.
+            //
+            //  1. **Terminal-soft** (round-11 baseline): Cnt/Dec auth-failures
+            //     soft-fail under any chain state. Terminal flags are
+            //     content-based; auth status surfaces via `policy_satisfied`.
+            //     Mirrors `docs/design/sel/verification.md §Soft-fail policy`.
+            //
+            //  2. **Post-divergence-soft** (round-12 third follow-up): on
+            //     SE chains where Cnt has structurally created divergence
+            //     (`diverged_at_version <= event.version`), ALL v1+ kinds'
+            //     auth-failures soft-fail. The chain is already invalidated
+            //     by the terminal; further auth failures don't add information
+            //     and bouncing the verification would lose pre-divergence
+            //     reads. Mirrors `docs/design/sel/verification.md
+            //     §Post-divergence soft-fail propagation`.
+            //
+            // Structural integrity rules (BadIdentityBinding, monotonic
+            // ratchet, content preservation) stay HARD regardless of either
+            // rule — Cnt doesn't change well-formedness.
+            let terminal_soft = is_terminal;
+            let post_divergence_soft = self.diverged_at_version.is_some_and(|d| event.version >= d);
+            let auth_soft_eligible = terminal_soft || post_divergence_soft;
+
+            // Per-event auth gate sequence (β-ordering, see
+            // `docs/design/sel/verification.md §Caller-bounded SAID querying`):
+            //
+            //   1. fetch_iel_event              — chain integrity (HARD always).
+            //   2. resolve_*_at                 — IelDivergent gate (severity per `auth_soft_eligible`).
+            //   3. is_satisfied                 — IEL-side auth + divergence cutoff (severity per `auth_soft_eligible`).
+            //   4. is_anchored                  — SE-side auth check (severity per `auth_soft_eligible`).
+            //   5. monotonic-ratchet            — chain integrity (HARD always).
+            //
+            // Step 3 lands AFTER `resolve_*_at` so the existing IelDivergent
+            // gate stays as defense-in-depth: `is_satisfied` covers the
+            // auth-fail-pre-divergence case the divergence gate doesn't see;
+            // `resolve_*_at` covers the divergence case `is_satisfied` could
+            // also detect. Both gates remain wired to keep the soundness
+            // surface explicit at each point of failure.
 
             // Step 1 — fetch IEL event. BadIdentityBinding is HARD for all v1+ kinds.
             // The IelResolver impl returns errors for SAID-not-found / prefix-mismatch;
@@ -570,7 +596,7 @@ impl SelVerifier {
             // `version < first_divergent_version` (or chain non-divergent).
             // Cnt is structurally always at-or-after divergence — never lands
             // here. Dec on a clean chain CAN.
-            if !post_divergence && self.queried_saids.contains(&event.said) {
+            if !post_divergence_soft && self.queried_saids.contains(&event.said) {
                 self.satisfied_saids.insert(event.said);
             }
         }
