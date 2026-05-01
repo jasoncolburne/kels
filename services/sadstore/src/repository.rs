@@ -1139,6 +1139,93 @@ impl IdentityEventRepository {
     /// `(version ASC, kind sort_priority ASC, said ASC)` with optional
     /// exclusive `since_said` cursor and limit. Same shape as
     /// `SadEventRepository::get_stored_in`.
+    /// Non-transactional companion to [`Self::fetch_iel_page`] using
+    /// `&self.pool` directly. Used by in-process readers that don't hold
+    /// a transaction (e.g. `RepositoryIelResolver` walking the IEL to
+    /// answer `is_satisfied` from inside the SE submit handler — the SE
+    /// submit's tx isolates SE state, but IEL state is read-only here so
+    /// pool reads are appropriate).
+    ///
+    /// Same semantics as the transactional variant: ordered
+    /// `(version ASC, kind sort_priority ASC, said ASC)`; `since_said`
+    /// is exclusive; post-filters to strict-greater-than on the canonical
+    /// tuple (so duplicates at the cursor's version are dropped).
+    pub async fn fetch_iel_page_pool(
+        &self,
+        prefix: &str,
+        since_said: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<IdentityEvent>, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let since_position: Option<(u64, IdentityEventKind, cesr::Digest256)> = if let Some(said) =
+            since_said
+        {
+            let cursor_query =
+                verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                    .eq("said", said)
+                    .limit(1);
+            self.pool
+                .fetch(cursor_query)
+                .await?
+                .into_iter()
+                .next()
+                .map(|r| (r.version, r.kind, r.said))
+        } else {
+            None
+        };
+
+        let mut query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .eq("prefix", prefix)
+                .order_by("version", verifiable_storage_postgres::Order::Asc)
+                .order_by_case(
+                    "kind",
+                    &IdentityEventKind::sort_priority_mapping(),
+                    verifiable_storage_postgres::Order::Asc,
+                )
+                .order_by("said", verifiable_storage_postgres::Order::Asc);
+
+        if let Some((version, _, _)) = &since_position {
+            query = query.gte("version", *version);
+        }
+
+        if let Some(limit) = limit {
+            let fetch_limit = if since_position.is_some() {
+                limit + 2
+            } else {
+                limit
+            };
+            query = query.limit(fetch_limit);
+        }
+
+        let mut events: Vec<IdentityEvent> = self.pool.fetch(query).await?;
+
+        if let Some((version, kind, said)) = &since_position {
+            let skipped = events.len();
+            let since_priority = kind.sort_priority();
+            events.retain(|e| {
+                let e_priority = e.kind.sort_priority();
+                e.version > *version
+                    || (e.version == *version && e_priority > since_priority)
+                    || (e.version == *version && e_priority == since_priority && e.said > *said)
+            });
+            let skipped = skipped - events.len();
+            if skipped > 2 {
+                return Err(StorageError::StorageError(format!(
+                    "IEL chain integrity violation: {} events skipped at version {} for prefix {} — possible DB tampering",
+                    skipped, version, prefix
+                )));
+            }
+
+            if let Some(limit) = limit {
+                events.truncate(limit as usize);
+            }
+        }
+
+        Ok(events)
+    }
+
     pub async fn fetch_iel_page<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,

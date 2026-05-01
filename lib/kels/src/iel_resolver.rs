@@ -18,8 +18,8 @@ use std::{
 use crate::{
     KelsError,
     types::{
-        IdentityEvent, IelChainPosition, IelResolver, IelVerification, IelVerifier, PagedIelSource,
-        PolicyChecker,
+        IdentityEvent, IelChainPosition, IelResolver, IelVerification, PagedIelSource,
+        PolicyChecker, verify_identity_events_with_queried,
     },
 };
 
@@ -79,52 +79,42 @@ impl AnchoredIelResolver {
         &self,
         identity: &cesr::Digest256,
     ) -> Result<IelVerification, KelsError> {
-        let mut verifier = IelVerifier::new(Some(identity), Arc::clone(&self.checker));
-        verifier.check_satisfied(self.queried_saids.iter().copied());
-
-        let mut since: Option<cesr::Digest256> = None;
-        let mut saw_any = false;
-        for _ in 0..self.max_pages {
-            let (events, has_more) = self
-                .source
-                .fetch_page(identity, since.as_ref(), self.page_size)
-                .await?;
-            if events.is_empty() {
-                break;
-            }
-            saw_any = true;
-            verifier.verify_page(&events).await?;
-            since = events.last().map(|e| e.said);
-            if !has_more {
-                break;
-            }
-        }
-        if !saw_any {
-            return Err(KelsError::NotFound(format!(
-                "IEL not locally inducted: {}",
-                identity
-            )));
-        }
-        verifier.finish().await
+        // Round-12 third follow-up: delegate to the shared
+        // `verify_identity_events_with_queried` helper so the page-walk +
+        // verifier construction lives in one place. Forwards
+        // `queried_saids` so the resulting token's `is_said_satisfied`
+        // answers correctly.
+        verify_identity_events_with_queried(
+            identity,
+            self.source.as_ref(),
+            Arc::clone(&self.checker),
+            self.page_size,
+            self.max_pages,
+            self.queried_saids.clone(),
+        )
+        .await
     }
 
     /// Materialize every event in the named IEL into a `said → event` map.
     /// Used by [`iel_chain_positions`]'s walk-back to determine the
     /// branch identity of post-divergence events without per-step HTTP
-    /// fetches. Bounded by `max_pages`; fail-secure on overrun by paging
-    /// behavior (extra events past the limit are simply not visible).
+    /// fetches. Bounded by `max_pages`; fail-secure on overrun (so the
+    /// walk-back never runs against an incomplete map and silently
+    /// returns "event not found").
     async fn collect_all_events(
         &self,
         identity: &cesr::Digest256,
     ) -> Result<HashMap<cesr::Digest256, IdentityEvent>, KelsError> {
         let mut found: HashMap<cesr::Digest256, IdentityEvent> = HashMap::new();
         let mut since: Option<cesr::Digest256> = None;
+        let mut exhausted = false;
         for _ in 0..self.max_pages {
             let (events, has_more) = self
                 .source
                 .fetch_page(identity, since.as_ref(), self.page_size)
                 .await?;
             if events.is_empty() {
+                exhausted = true;
                 break;
             }
             for event in &events {
@@ -138,9 +128,16 @@ impl AnchoredIelResolver {
                 found.insert(event.said, event.clone());
             }
             if !has_more {
+                exhausted = true;
                 break;
             }
             since = events.last().map(|e| e.said);
+        }
+        if !exhausted {
+            return Err(KelsError::InvalidIel(format!(
+                "IEL walk-back materialization exceeded max_pages limit ({}) for {}",
+                self.max_pages, identity,
+            )));
         }
         Ok(found)
     }
@@ -345,7 +342,12 @@ impl IelResolver for AnchoredIelResolver {
 /// Returns `BadIdentityBinding` on any chain-integrity breach mid-walk:
 /// missing event, walked past `divergence_version`, `previous=None` on a
 /// non-Icp event, or step-bound exceeded.
-fn walk_back_to_branch_identity(
+///
+/// Round-12 third follow-up: shared walker used by both
+/// [`AnchoredIelResolver::iel_chain_positions`] and the in-process
+/// `RepositoryIelResolver` (in `services/sadstore`). Each impl supplies
+/// its own materialized chain map; the algorithm is identical.
+pub fn walk_back_to_branch_identity(
     chain: &HashMap<cesr::Digest256, IdentityEvent>,
     start: cesr::Digest256,
     divergence_version: u64,

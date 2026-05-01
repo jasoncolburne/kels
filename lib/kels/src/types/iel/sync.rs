@@ -7,7 +7,7 @@
 //! - `iel_completed_verification` — owner-local verification via a page loader.
 //! - `verify_identity_events` — server-side verification via a `PagedIelSource`.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -462,7 +462,38 @@ pub async fn iel_completed_verification(
     page_size: usize,
     max_pages: usize,
 ) -> Result<IelVerification, KelsError> {
+    iel_completed_verification_with_queried(
+        loader,
+        prefix,
+        checker,
+        page_size,
+        max_pages,
+        BTreeSet::new(),
+    )
+    .await
+}
+
+/// `iel_completed_verification` plus caller-bounded SAID querying. The
+/// queried set is registered on the `IelVerifier` before the walk so the
+/// resulting token's `is_said_satisfied` answers correctly. Mirrors
+/// `KelVerifier::check_anchors` integrated with the verification helper.
+///
+/// Round-12 third follow-up: shared entry point for resolver impls
+/// ([`AnchoredIelResolver::is_satisfied`](crate::AnchoredIelResolver),
+/// the in-process `RepositoryIelResolver`) so the page-walk + verifier
+/// construction lives in one place.
+pub async fn iel_completed_verification_with_queried(
+    loader: &mut dyn IelPageLoader,
+    prefix: &cesr::Digest256,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    queried_saids: BTreeSet<cesr::Digest256>,
+) -> Result<IelVerification, KelsError> {
     let mut verifier = IelVerifier::new(Some(prefix), checker);
+    if !queried_saids.is_empty() {
+        verifier.check_satisfied(queried_saids);
+    }
     let mut offset: u64 = 0;
     let mut exhausted = false;
     let mut saw_any = false;
@@ -512,7 +543,36 @@ pub async fn verify_identity_events(
     page_size: usize,
     max_pages: usize,
 ) -> Result<IelVerification, KelsError> {
+    verify_identity_events_with_queried(
+        prefix,
+        source,
+        checker,
+        page_size,
+        max_pages,
+        BTreeSet::new(),
+    )
+    .await
+}
+
+/// `verify_identity_events` plus caller-bounded SAID querying. Registers
+/// `queried_saids` on the `IelVerifier` before the walk so the resulting
+/// token's `is_said_satisfied` answers correctly.
+///
+/// Round-12 third follow-up: shared entry point for `AnchoredIelResolver`
+/// (HTTP source) and any other `PagedIelSource` consumer that needs the
+/// queried/satisfied surface.
+pub async fn verify_identity_events_with_queried(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedIelSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    queried_saids: BTreeSet<cesr::Digest256>,
+) -> Result<IelVerification, KelsError> {
     let mut verifier = IelVerifier::new(Some(prefix), checker);
+    if !queried_saids.is_empty() {
+        verifier.check_satisfied(queried_saids);
+    }
     let mut since: Option<cesr::Digest256> = None;
     let mut exhausted = false;
     let mut saw_any = false;

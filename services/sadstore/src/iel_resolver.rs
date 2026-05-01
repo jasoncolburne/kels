@@ -14,6 +14,44 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use crate::repository::SadStoreRepository;
 
+/// `PagedIelSource` adapter wrapping the IEL repository's connection pool.
+/// Mirrors `HttpIelSource`'s shape for the in-process path so the shared
+/// IEL verification helper (`verify_identity_events_with_queried`) can
+/// drive the walk for both HTTP and in-process callers.
+///
+/// Reads are non-transactional — the SE submit transaction wrapping
+/// `is_satisfied` isolates SE state; IEL state is read-only here so pool
+/// reads (consistent with the SE handler's pre-batch
+/// `is_divergent` / `first_divergent_version` queries) are correct.
+struct RepositoryIelPageSource {
+    repo: Arc<SadStoreRepository>,
+}
+
+#[async_trait::async_trait]
+impl kels_core::PagedIelSource for RepositoryIelPageSource {
+    async fn fetch_page(
+        &self,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<(Vec<kels_core::IdentityEvent>, bool), kels_core::KelsError> {
+        let prefix_str = prefix.to_string();
+        let since_str = since.map(|s| s.to_string());
+        let events = self
+            .repo
+            .iel_events
+            .fetch_iel_page_pool(&prefix_str, since_str.as_deref(), Some(limit as u64))
+            .await
+            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+        // The shared helper relies on `has_more` to decide whether to
+        // continue paging. A full-limit page implies more events may
+        // exist; a short page guarantees end-of-chain (post-filtered to
+        // strict-gt semantics in `fetch_iel_page_pool`).
+        let has_more = events.len() == limit;
+        Ok((events, has_more))
+    }
+}
+
 /// In-process [`IelResolver`](kels_core::IelResolver) backed directly by
 /// the SAD store's `IdentityEventRepository`.
 ///
@@ -151,67 +189,28 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         said: &cesr::Digest256,
     ) -> Result<bool, kels_core::KelsError> {
         // Chain-integrity check: BadIdentityBinding propagates from
-        // fetch_iel_event if the SAID isn't in the named IEL or has a
-        // prefix mismatch. After that, walk the IEL via the repo,
-        // running an `IelVerifier` with `queried_saids ∪ {said}`
-        // registered, then read `is_said_satisfied(said)` from the token.
+        // `fetch_iel_event` if the SAID isn't in the named IEL or has a
+        // prefix mismatch. After that, delegate to the shared
+        // `verify_identity_events_with_queried` helper through a
+        // `PagedIelSource` adapter wrapping the IEL repo pool. The shared
+        // walker handles pagination + post-filter correctly; this impl
+        // doesn't duplicate the loop.
         let _ = self.fetch_iel_event(identity, said).await?;
 
-        // Pool-based paged walk (non-transactional — `is_satisfied` is
-        // called from inside the SE submit transaction but the IEL state
-        // is read-only here; same isolation as the pre-batch
-        // `is_divergent` / `first_divergent_version` queries the SE
-        // handler already does).
-        use verifiable_storage_postgres::QueryExecutor;
-        let mut verifier = kels_core::IelVerifier::new(Some(identity), self.checker.clone());
-        verifier.check_satisfied(self.queried_saids.iter().copied());
-        verifier.check_satisfied([*said]);
-
-        let page_size = kels_core::page_size() as u64;
-        let max_pages = kels_core::max_pages();
-        let mut since: Option<cesr::Digest256> = None;
-        for _ in 0..max_pages {
-            // Fetch a page from the IEL repo via the pool (no transaction).
-            let mut query =
-                verifiable_storage_postgres::Query::<kels_core::IdentityEvent>::for_table(
-                    "iel_events",
-                )
-                .eq("prefix", identity.as_ref())
-                .order_by("version", verifiable_storage_postgres::Order::Asc)
-                .order_by_case(
-                    "kind",
-                    &kels_core::IdentityEventKind::sort_priority_mapping(),
-                    verifiable_storage_postgres::Order::Asc,
-                )
-                .order_by("said", verifiable_storage_postgres::Order::Asc)
-                .limit(page_size);
-            if let Some(s) = since {
-                // Approximate: include only events whose version is >= the
-                // since cursor's version. Final monotonic-ratchet ordering
-                // already enforced by the canonical sort.
-                if let Some(prev) = self.fetch_event_by_said(&s).await? {
-                    query = query.gte("version", prev.version);
-                }
-            }
-            let events: Vec<kels_core::IdentityEvent> = self
-                .repo
-                .iel_events
-                .pool
-                .fetch(query)
-                .await
-                .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
-            if events.is_empty() {
-                break;
-            }
-            let last_said = events.last().map(|e| e.said);
-            verifier.verify_page(&events).await?;
-            if (events.len() as u64) < page_size {
-                break;
-            }
-            since = last_said;
-        }
-
-        let verification = verifier.finish().await?;
+        let mut queried = self.queried_saids.clone();
+        queried.insert(*said);
+        let source = RepositoryIelPageSource {
+            repo: Arc::clone(&self.repo),
+        };
+        let verification = kels_core::verify_identity_events_with_queried(
+            identity,
+            &source,
+            self.checker.clone(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            queried,
+        )
+        .await?;
         Ok(verification.is_said_satisfied(said))
     }
 
@@ -233,17 +232,23 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             .await
             .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
 
+        // For non-divergent IELs the walk-back never fires, so we keep
+        // the per-SAID lookup path. For divergent IELs we materialize the
+        // full chain into a map once and feed it to the shared walker —
+        // each post-divergence SAID resolves its branch identity in
+        // O(divergent-depth) hashmap hops with no extra DB queries.
+        let chain_map = if divergent_at.is_some() {
+            Some(self.materialize_iel_chain(identity).await?)
+        } else {
+            None
+        };
+
         let mut out = std::collections::HashMap::new();
         for said in saids {
             let event = self.fetch_iel_event(identity, said).await?;
-            // Round-12 third follow-up: walk back from each post-divergence
-            // SAID via `fetch_event_by_said` until reaching the event at
-            // version `divergent_at`. That ancestor's SAID is the branch
-            // identity. O(K·D) per-batch — D≈1–2 in production.
-            let branch_marker = match divergent_at {
-                Some(d) if event.version >= d => Some(
-                    self.walk_back_to_branch_identity(identity, &event, d)
-                        .await?,
+            let branch_marker = match (divergent_at, chain_map.as_ref()) {
+                (Some(d), Some(chain)) if event.version >= d => Some(
+                    kels_core::walk_back_to_branch_identity(chain, *said, d, identity)?,
                 ),
                 _ => None,
             };
@@ -262,62 +267,61 @@ impl kels_core::IelResolver for RepositoryIelResolver {
 }
 
 impl RepositoryIelResolver {
-    /// Walk `event.previous` from `start` until reaching the event at
-    /// version `divergence_version` and return that ancestor's SAID. The
-    /// returned SAID is the branch identity for any post-divergence event
-    /// tracing back through it. Per-step lookups via `fetch_event_by_said`.
-    ///
-    /// Returns `BadIdentityBinding` on chain-integrity breaches: missing
-    /// event, walked past `divergence_version`, `previous=None` mid-walk,
-    /// or step bound exceeded.
-    async fn walk_back_to_branch_identity(
+    /// Materialize every event in the named IEL into a `said → event` map
+    /// via the IEL repository pool. Mirrors `AnchoredIelResolver::collect_all_events`
+    /// for the in-process path. Used by `iel_chain_positions`'s walk-back
+    /// to determine post-divergence branch identity. Bounded by
+    /// `max_pages`; fail-secure on overrun (so the walker never sees an
+    /// incomplete chain).
+    async fn materialize_iel_chain(
         &self,
         identity: &cesr::Digest256,
-        start: &kels_core::IdentityEvent,
-        divergence_version: u64,
-    ) -> Result<cesr::Digest256, kels_core::KelsError> {
-        let mut current = start.clone();
-        // Step bound: walking from V_S to D takes (V_S - D) steps. Bounded
-        // by `max_pages × page_size` (the chain-length ceiling).
-        let bound = kels_core::max_pages().saturating_mul(kels_core::page_size()) + 1;
-        for _ in 0..bound {
-            if current.version == divergence_version {
-                return Ok(current.said);
+    ) -> Result<
+        std::collections::HashMap<cesr::Digest256, kels_core::IdentityEvent>,
+        kels_core::KelsError,
+    > {
+        let mut found: std::collections::HashMap<cesr::Digest256, kels_core::IdentityEvent> =
+            std::collections::HashMap::new();
+        let prefix_str = identity.to_string();
+        let page_size = kels_core::page_size() as u64;
+        let max_pages = kels_core::max_pages();
+        let mut since: Option<String> = None;
+        let mut exhausted = false;
+        for _ in 0..max_pages {
+            let events = self
+                .repo
+                .iel_events
+                .fetch_iel_page_pool(&prefix_str, since.as_deref(), Some(page_size))
+                .await
+                .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+            if events.is_empty() {
+                exhausted = true;
+                break;
             }
-            if current.version < divergence_version {
-                return Err(kels_core::KelsError::BadIdentityBinding(format!(
-                    "IEL walk-back: event {} at version {} walked past divergence \
-                     at version {} (chain integrity breach)",
-                    current.said, current.version, divergence_version,
-                )));
+            since = events.last().map(|e| e.said.to_string());
+            for event in &events {
+                if event.prefix != *identity {
+                    return Err(kels_core::KelsError::BadIdentityBinding(format!(
+                        "IEL event {} has prefix {} but expected identity {} \
+                         (cross-IEL contamination)",
+                        event.said, event.prefix, identity,
+                    )));
+                }
+                found.insert(event.said, event.clone());
             }
-            let prev_said = current.previous.ok_or_else(|| {
-                kels_core::KelsError::BadIdentityBinding(format!(
-                    "IEL walk-back: event {} at version {} has no previous \
-                     (chain integrity breach)",
-                    current.said, current.version,
-                ))
-            })?;
-            let prev_event = self.fetch_event_by_said(&prev_said).await?.ok_or_else(|| {
-                kels_core::KelsError::BadIdentityBinding(format!(
-                    "IEL walk-back: previous event {} not found in IEL {} \
-                         (chain integrity breach)",
-                    prev_said, identity,
-                ))
-            })?;
-            if prev_event.prefix != *identity {
-                return Err(kels_core::KelsError::BadIdentityBinding(format!(
-                    "IEL walk-back: event {} has prefix {} but expected {} \
-                     (cross-IEL contamination)",
-                    prev_said, prev_event.prefix, identity,
-                )));
+            // A short page guarantees end-of-chain (post-filtered to
+            // strict-gt semantics in `fetch_iel_page_pool`).
+            if (events.len() as u64) < page_size {
+                exhausted = true;
+                break;
             }
-            current = prev_event;
         }
-        Err(kels_core::KelsError::BadIdentityBinding(format!(
-            "IEL walk-back: exceeded chain length bound for IEL {} \
-             (cycle or chain too long)",
-            identity,
-        )))
+        if !exhausted {
+            return Err(kels_core::KelsError::InvalidIel(format!(
+                "IEL walk-back materialization exceeded max_pages limit ({}) for {}",
+                max_pages, identity,
+            )));
+        }
+        Ok(found)
     }
 }

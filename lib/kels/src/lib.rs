@@ -81,7 +81,7 @@ pub use crypto::{
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::KelsError;
 pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
-pub use iel_resolver::AnchoredIelResolver;
+pub use iel_resolver::{AnchoredIelResolver, walk_back_to_branch_identity};
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use sad::{
@@ -120,10 +120,11 @@ pub use types::{
     collect_identity_event_saids, collect_identity_event_saids_from_loader, completed_verification,
     compute_approval_threshold, compute_identity_event_prefix, compute_rotation_hash,
     compute_sad_event_prefix, forward_identity_events, forward_key_events, forward_sad_events,
-    hash_effective_said, iel_completed_verification, parse_and_validate_custody,
-    sel_completed_verification, single_signer, truncate_incomplete_generation, validate_timestamp,
-    verify_identity_events, verify_key_events, verify_key_events_collecting_establishment_keys,
-    verify_key_events_with, verify_sad_events,
+    hash_effective_said, iel_completed_verification, iel_completed_verification_with_queried,
+    parse_and_validate_custody, sel_completed_verification, single_signer,
+    truncate_incomplete_generation, validate_timestamp, verify_identity_events,
+    verify_identity_events_with_queried, verify_key_events,
+    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_events,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

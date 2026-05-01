@@ -563,13 +563,15 @@ pub async fn collect_identity_event_saids(
     let mut collected: std::collections::BTreeSet<cesr::Digest256> =
         std::collections::BTreeSet::new();
     let mut since: Option<cesr::Digest256> = None;
-    let mut saw_any = false;
     for _ in 0..max_pages {
         let (events, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
         if events.is_empty() {
-            break;
+            // Mid-walk empty page is treated as end-of-chain — same
+            // semantics as the loader sibling. Defensive: source-side
+            // pagination cursor anomalies still produce a valid (possibly
+            // partial) set rather than InvalidKel-on-something-unusual.
+            return Ok(collected);
         }
-        saw_any = true;
         for event in &events {
             if let Some(said) = event.identity_event {
                 collected.insert(said);
@@ -579,9 +581,6 @@ pub async fn collect_identity_event_saids(
         if !has_more {
             return Ok(collected);
         }
-    }
-    if !saw_any {
-        return Ok(collected);
     }
     Err(KelsError::InvalidKel(format!(
         "SEL identity_event collection exceeded max_pages limit ({}) for {}",
