@@ -110,7 +110,23 @@ impl SadEventBuilder {
         if let (Some(store), Some(c), Some(client)) =
             (sad_store.as_ref(), checker.as_ref(), sad_client.as_ref())
         {
-            let resolver = builder.build_iel_resolver_from(client, c)?;
+            // SE pre-walk over the local store, accumulating only
+            // identity_event SAIDs so the IelResolver can answer
+            // is_satisfied during the verification walk that follows.
+            let mut prewalk = crate::SadStorePageLoader::new(store.as_ref());
+            let queried = match crate::collect_identity_event_saids_from_loader(
+                &mut prewalk,
+                sel_prefix,
+                crate::page_size(),
+                crate::max_pages(),
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(KelsError::NotFound(_)) => std::collections::BTreeSet::new(),
+                Err(e) => return Err(e),
+            };
+            let resolver = builder.build_iel_resolver_from(client, c, queried)?;
             let mut loader = crate::SadStorePageLoader::new(store.as_ref());
             match crate::sel_completed_verification(
                 &mut loader,
@@ -509,7 +525,18 @@ impl SadEventBuilder {
                 .sad_store
                 .as_ref()
                 .expect("repair flush requires sad_store (validated by repair pre-flight)");
-            let resolver = self.build_iel_resolver()?;
+            // Pre-walk the local store post-repair to collect identity_event
+            // SAIDs the IelResolver needs to query during the rehydrate
+            // verification.
+            let mut prewalk = crate::SadStorePageLoader::new(store.as_ref());
+            let queried = crate::collect_identity_event_saids_from_loader(
+                &mut prewalk,
+                &prefix,
+                crate::page_size(),
+                crate::max_pages(),
+            )
+            .await?;
+            let resolver = self.build_iel_resolver(queried)?;
             let mut loader = crate::SadStorePageLoader::new(store.as_ref());
             let fresh = crate::sel_completed_verification(
                 &mut loader,
@@ -541,37 +568,51 @@ impl SadEventBuilder {
     // ==================== Private helpers ====================
 
     /// Construct an `IelResolver` from this builder's `sad_client` and
-    /// `checker`. Errors if either is missing. Used per-verify-call —
-    /// the `iel_client` (= `sad_client`) is the durable handle; the
-    /// resolver is ephemeral.
-    fn build_iel_resolver(&self) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
+    /// `checker`, with the caller-provided queried_saids forwarded to the
+    /// resolver. Errors if `sad_client` or `checker` is missing. Used
+    /// per-verify-call — the `iel_client` (= `sad_client`) is the durable
+    /// handle; the resolver is ephemeral.
+    fn build_iel_resolver(
+        &self,
+        queried_saids: impl IntoIterator<Item = cesr::Digest256>,
+    ) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
         let client = self.sad_client.as_ref().ok_or_else(|| {
             KelsError::OfflineMode("IelResolver construction requires a SadStoreClient".into())
         })?;
         let checker = self.checker.as_ref().ok_or_else(|| {
             KelsError::OfflineMode("IelResolver construction requires a PolicyChecker".into())
         })?;
-        self.build_iel_resolver_from(client, checker)
+        self.build_iel_resolver_from(client, checker, queried_saids)
     }
 
     fn build_iel_resolver_from(
         &self,
         client: &SadStoreClient,
         checker: &Arc<dyn PolicyChecker + Send + Sync>,
+        queried_saids: impl IntoIterator<Item = cesr::Digest256>,
     ) -> Result<Arc<dyn IelResolver + Send + Sync>, KelsError> {
         let source: Arc<dyn crate::types::PagedIelSource + Send + Sync> =
             Arc::new(client.as_iel_source()?);
-        Ok(Arc::new(AnchoredIelResolver::new(
-            source,
-            Arc::clone(checker),
-            crate::page_size(),
-            crate::max_pages(),
-        )))
+        Ok(Arc::new(
+            AnchoredIelResolver::new(
+                source,
+                Arc::clone(checker),
+                crate::page_size(),
+                crate::max_pages(),
+            )
+            .with_queried_saids(queried_saids),
+        ))
     }
 
     /// Verify the server's view of the chain. Returns `None` if any of
     /// `sad_client` / `checker` / `prefix` is missing (offline-staging
     /// flows). Mirrors `IdentityEventBuilder::verify_server_chain_pre_action`.
+    ///
+    /// Round-12 third follow-up: pre-walks the server's SE chain to collect
+    /// the unique `identity_event` SAIDs the IEL verification needs to query.
+    /// The collected set is forwarded to the `IelResolver` via
+    /// `with_queried_saids` so `is_satisfied` answers correctly during the
+    /// SE chain walk.
     async fn verify_server_chain_pre_action(&self) -> Result<Option<SelVerification>, KelsError> {
         let (Some(client), Some(checker), Some(prefix)) = (
             self.sad_client.as_ref(),
@@ -580,7 +621,18 @@ impl SadEventBuilder {
         ) else {
             return Ok(None);
         };
-        let resolver = self.build_iel_resolver_from(client, checker)?;
+
+        // SE pre-walk over the server's SE source — streaming, accumulates
+        // only SAIDs.
+        let queried_iel_saids = crate::collect_identity_event_saids(
+            prefix,
+            &client.as_sad_source()?,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await?;
+
+        let resolver = self.build_iel_resolver_from(client, checker, queried_iel_saids)?;
         Ok(Some(
             client
                 .verify_sad_events(prefix, Arc::clone(checker), resolver)
@@ -758,7 +810,22 @@ impl SadEventBuilder {
             .as_ref()
             .ok_or_else(|| KelsError::OfflineMode("flush requires a PolicyChecker".into()))?
             .clone();
-        let resolver = self.build_iel_resolver()?;
+        // queried_saids = prior token's queried (carried across resume) ∪
+        // identity_event SAIDs from the pending events being absorbed.
+        // SE pre-walk for absorb_pending is in-memory: pending_events is
+        // already a `Vec<SadEvent>` held by the builder, so SAID extraction
+        // is a single pass with no I/O.
+        let mut queried: std::collections::BTreeSet<cesr::Digest256> = self
+            .sad_verification
+            .as_ref()
+            .map(|v| v.queried_saids().clone())
+            .unwrap_or_default();
+        for ev in &self.pending_events {
+            if let Some(s) = ev.identity_event {
+                queried.insert(s);
+            }
+        }
+        let resolver = self.build_iel_resolver(queried)?;
 
         let mut verifier = if let Some(ref v) = self.sad_verification {
             SelVerifier::resume(v, Arc::clone(&checker), Arc::clone(&resolver))?

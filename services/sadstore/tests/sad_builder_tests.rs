@@ -426,20 +426,35 @@ async fn fetch_chain(sad_client: &SadStoreClient, prefix: &Digest256) -> Vec<Sad
 }
 
 /// Verify a fetched chain owner-locally and return the verification token.
+///
+/// Mirrors the production `SadEventBuilder::verify_server_chain_pre_action`
+/// flow: SE pre-walk over the source → collect identity_event SAIDs →
+/// construct resolver via `with_queried_saids` → verify.
 async fn verify_chain(
     sad_client: &SadStoreClient,
     setup: &Setup,
     prefix: &Digest256,
 ) -> kels_core::SelVerification {
     use kels_core::{AnchoredIelResolver, IelResolver, PagedIelSource};
-    let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
-        Arc::new(sad_client.as_iel_source().expect("iel source"));
-    let resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(AnchoredIelResolver::new(
-        iel_source,
-        Arc::clone(&setup.checker),
+    let queried = kels_core::collect_identity_event_saids(
+        prefix,
+        &sad_client.as_sad_source().expect("sad source"),
         kels_core::page_size(),
         kels_core::max_pages(),
-    ));
+    )
+    .await
+    .expect("SE pre-walk");
+    let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
+        Arc::new(sad_client.as_iel_source().expect("iel source"));
+    let resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(
+        AnchoredIelResolver::new(
+            iel_source,
+            Arc::clone(&setup.checker),
+            kels_core::page_size(),
+            kels_core::max_pages(),
+        )
+        .with_queried_saids(queried),
+    );
     sad_client
         .verify_sad_events(prefix, Arc::clone(&setup.checker), resolver)
         .await
@@ -624,14 +639,27 @@ async fn verify_chain_with_policies(
         Arc::new(InMemoryPolicyResolver::new(all));
     let checker: Arc<dyn PolicyChecker + Send + Sync> =
         Arc::new(AnchoredPolicyChecker::new(kel_source, resolver_inner));
-    let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
-        Arc::new(sad_client.as_iel_source().expect("iel source"));
-    let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(AnchoredIelResolver::new(
-        iel_source,
-        Arc::clone(&checker),
+    // SE pre-walk to collect identity_event SAIDs, mirroring the production
+    // pattern in `SadEventBuilder::verify_server_chain_pre_action`.
+    let queried = kels_core::collect_identity_event_saids(
+        prefix,
+        &sad_client.as_sad_source().expect("sad source"),
         kels_core::page_size(),
         kels_core::max_pages(),
-    ));
+    )
+    .await
+    .expect("SE pre-walk");
+    let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
+        Arc::new(sad_client.as_iel_source().expect("iel source"));
+    let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(
+        AnchoredIelResolver::new(
+            iel_source,
+            Arc::clone(&checker),
+            kels_core::page_size(),
+            kels_core::max_pages(),
+        )
+        .with_queried_saids(queried),
+    );
     sad_client
         .verify_sad_events(prefix, checker, iel_resolver)
         .await

@@ -10,13 +10,16 @@
 //! lives above; this impl stays simple so the trait semantics — particularly
 //! the divergence gate — are exercised cleanly.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use crate::{
     KelsError,
     types::{
-        IdentityEvent, IelChainPosition, IelResolver, IelVerification, PagedIelSource,
-        PolicyChecker, verify_identity_events,
+        IdentityEvent, IelChainPosition, IelResolver, IelVerification, IelVerifier, PagedIelSource,
+        PolicyChecker,
     },
 };
 
@@ -27,12 +30,19 @@ use crate::{
 /// token and uses its SAID-keyed accessors to satisfy the resolver contract.
 /// The walk is bounded by `page_size` / `max_pages`; both fail-secure when
 /// the chain exceeds the limit.
+///
+/// `queried_saids` is the set the SE caller pre-walked from its own chain
+/// (round-12 third follow-up). The resolver registers it on every `IelVerifier`
+/// it constructs so `is_satisfied` answers consistently across calls. Set
+/// once at construction via [`Self::with_queried_saids`]; lifetime of the
+/// resolver = lifetime of the SE verification it serves.
 #[derive(Clone)]
 pub struct AnchoredIelResolver {
     source: Arc<dyn PagedIelSource + Send + Sync>,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
     page_size: usize,
     max_pages: usize,
+    queried_saids: BTreeSet<cesr::Digest256>,
 }
 
 impl AnchoredIelResolver {
@@ -47,21 +57,55 @@ impl AnchoredIelResolver {
             checker,
             page_size,
             max_pages,
+            queried_saids: BTreeSet::new(),
         }
+    }
+
+    /// Register IEL event SAIDs the SE caller cares about. Forwarded to
+    /// every `IelVerifier` this resolver constructs so `is_satisfied`
+    /// answers correctly.
+    ///
+    /// Caller pattern: SE pre-walks its own chain (streaming over a
+    /// `PagedSadSource`), accumulates `event.identity_event` SAIDs into a
+    /// `BTreeSet`, then constructs the resolver via
+    /// `AnchoredIelResolver::new(...).with_queried_saids(saids)`.
+    #[must_use]
+    pub fn with_queried_saids(mut self, saids: impl IntoIterator<Item = cesr::Digest256>) -> Self {
+        self.queried_saids.extend(saids);
+        self
     }
 
     async fn verification_for(
         &self,
         identity: &cesr::Digest256,
     ) -> Result<IelVerification, KelsError> {
-        verify_identity_events(
-            identity,
-            self.source.as_ref(),
-            Arc::clone(&self.checker),
-            self.page_size,
-            self.max_pages,
-        )
-        .await
+        let mut verifier = IelVerifier::new(Some(identity), Arc::clone(&self.checker));
+        verifier.check_satisfied(self.queried_saids.iter().copied());
+
+        let mut since: Option<cesr::Digest256> = None;
+        let mut saw_any = false;
+        for _ in 0..self.max_pages {
+            let (events, has_more) = self
+                .source
+                .fetch_page(identity, since.as_ref(), self.page_size)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            saw_any = true;
+            verifier.verify_page(&events).await?;
+            since = events.last().map(|e| e.said);
+            if !has_more {
+                break;
+            }
+        }
+        if !saw_any {
+            return Err(KelsError::NotFound(format!(
+                "IEL not locally inducted: {}",
+                identity
+            )));
+        }
+        verifier.finish().await
     }
 
     /// Walk the source until `wanted` (a set of SAIDs) are all collected, or
@@ -178,6 +222,21 @@ impl IelResolver for AnchoredIelResolver {
                     iel_event_said, identity,
                 ))
             })
+    }
+
+    async fn is_satisfied(
+        &self,
+        identity: &cesr::Digest256,
+        said: &cesr::Digest256,
+    ) -> Result<bool, KelsError> {
+        // The verifier walks the IEL with `queried_saids` registered (set
+        // at construction). After the walk, `is_said_satisfied` is the
+        // direct answer. The fetch step doubles as the chain-integrity
+        // check: BadIdentityBinding propagates from the trait's existing
+        // `fetch_iel_event` if the SAID isn't in the named IEL.
+        let _ = self.fetch_iel_event(identity, said).await?;
+        let verification = self.verification_for(identity).await?;
+        Ok(verification.is_said_satisfied(said))
     }
 
     async fn iel_chain_positions(

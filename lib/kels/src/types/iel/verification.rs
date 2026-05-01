@@ -31,7 +31,7 @@
 //! - Immunity violations at Icp or Evl evolution are **hard**.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 
@@ -81,9 +81,21 @@ pub struct IelVerification {
     is_contested: bool,
     is_decommissioned: bool,
     last_governance_version: Option<u64>,
+    /// Caller-provided up-front: the IEL event SAIDs the consumer cares about.
+    /// Mirrors `KelVerification`'s `queried_saids`. The verifier filters its
+    /// satisfaction-tracking to events whose SAID appears here, keeping the
+    /// satisfied-set size bounded by caller interest rather than chain size.
+    queried_saids: BTreeSet<cesr::Digest256>,
+    /// Verifier-populated subset of `queried_saids`: SAIDs whose corresponding
+    /// IEL event passed its auth check AND lives at `version <
+    /// first_divergent_version` (or the chain is non-divergent). Cnt's-own
+    /// auth-pass does not put it in here because Cnt is structurally always
+    /// at-or-after the divergence cut. Dec on a clean chain does land here.
+    satisfied_saids: BTreeSet<cesr::Digest256>,
 }
 
 impl IelVerification {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         branches: Vec<IdentityBranchTip>,
         policy_history: BTreeMap<cesr::Digest256, (cesr::Digest256, cesr::Digest256)>,
@@ -92,6 +104,8 @@ impl IelVerification {
         is_contested: bool,
         is_decommissioned: bool,
         last_governance_version: Option<u64>,
+        queried_saids: BTreeSet<cesr::Digest256>,
+        satisfied_saids: BTreeSet<cesr::Digest256>,
     ) -> Self {
         Self {
             branches,
@@ -101,6 +115,8 @@ impl IelVerification {
             is_contested,
             is_decommissioned,
             last_governance_version,
+            queried_saids,
+            satisfied_saids,
         }
     }
 
@@ -197,6 +213,25 @@ impl IelVerification {
         self.policy_history.get(said).map(|(_, g)| *g)
     }
 
+    /// Whether the named IEL event passed its auth check AND lives at
+    /// `version < first_divergent_version` (or the chain is non-divergent).
+    /// Mirrors `KelVerification::is_said_anchored`. Used by SE verification
+    /// to gate `identity_event` bindings. Returns `false` for SAIDs not in
+    /// `queried_saids` — callers must register interest before walking.
+    pub fn is_said_satisfied(&self, said: &cesr::Digest256) -> bool {
+        self.satisfied_saids.contains(said)
+    }
+
+    /// The full set of satisfied SAIDs (subset of `queried_saids`).
+    pub fn satisfied_saids(&self) -> &BTreeSet<cesr::Digest256> {
+        &self.satisfied_saids
+    }
+
+    /// The set of SAIDs the caller registered interest in.
+    pub fn queried_saids(&self) -> &BTreeSet<cesr::Digest256> {
+        &self.queried_saids
+    }
+
     /// Stamp a server-reported divergence version. Crate-private; only the
     /// builder layer should call this when the local verifier did not directly
     /// observe a fork that the server did. (First consumer lands in Gap 6.)
@@ -227,6 +262,8 @@ pub struct IelVerifier {
     diverged_at_version: Option<u64>,
     is_contested: bool,
     is_decommissioned: bool,
+    queried_saids: BTreeSet<cesr::Digest256>,
+    satisfied_saids: BTreeSet<cesr::Digest256>,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
 }
 
@@ -247,12 +284,39 @@ impl IelVerifier {
             diverged_at_version: None,
             is_contested: false,
             is_decommissioned: false,
+            queried_saids: BTreeSet::new(),
+            satisfied_saids: BTreeSet::new(),
             checker,
         }
     }
 
+    /// Register IEL event SAIDs the caller cares about for satisfaction
+    /// tracking. Mirrors `KelVerifier::check_anchors`. Call before
+    /// `verify_page` (or before resuming the walk via `resume`). Repeated
+    /// calls union the sets — they don't replace.
+    ///
+    /// During the walk, for each event whose SAID is in `queried_saids`: the
+    /// verifier adds the SAID to `satisfied_saids` iff the event passed its
+    /// auth check AND lives at `version < first_divergent_version` (or chain
+    /// is non-divergent).
+    pub fn check_satisfied(
+        &mut self,
+        saids: impl IntoIterator<Item = cesr::Digest256>,
+    ) -> &mut Self {
+        self.queried_saids.extend(saids);
+        self
+    }
+
     /// Re-hydrate a verifier from a prior verification token. Subsequent
     /// `verify_page` calls extend the same per-branch state.
+    ///
+    /// Unlike `KelVerifier::resume` (which resets queried/anchored), the IEL
+    /// path rehydrates `queried_saids` and `satisfied_saids` from the prior
+    /// token. SE-driven multi-page verification needs the caller's registered
+    /// interest to persist across page boundaries; resetting would force the
+    /// caller to re-register on every resume, which conflicts with the
+    /// streaming pre-walk pattern where the queried set is collected once
+    /// upfront. KEL's symmetric fix is deferred to round 13.
     pub fn resume(
         verification: &IelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,
@@ -277,6 +341,8 @@ impl IelVerifier {
             diverged_at_version: verification.diverged_at_version(),
             is_contested: verification.is_contested(),
             is_decommissioned: verification.is_decommissioned(),
+            queried_saids: verification.queried_saids.clone(),
+            satisfied_saids: verification.satisfied_saids.clone(),
             checker,
         })
     }
@@ -362,11 +428,11 @@ impl IelVerifier {
 
             // Soft anchor check — Icp self-authorization. Failure leaves the
             // chain in `policy_satisfied=false` but does not abort.
-            if !self
+            let icp_anchored = self
                 .checker
                 .is_anchored(&event.said, &event.auth_policy)
-                .await?
-            {
+                .await?;
+            if !icp_anchored {
                 self.policy_satisfied = false;
             }
 
@@ -381,6 +447,13 @@ impl IelVerifier {
             );
             self.policy_history
                 .insert(event.said, (event.auth_policy, event.governance_policy));
+
+            // Satisfied-saids tracking. Icp at v=0 is structurally
+            // pre-divergence (divergence is detected at v>=1 when a
+            // generation has 2+ events).
+            if icp_anchored && self.queried_saids.contains(&event.said) {
+                self.satisfied_saids.insert(event.said);
+            }
 
             if self.prefix.is_none() {
                 self.prefix = Some(event.prefix);
@@ -428,15 +501,21 @@ impl IelVerifier {
             }
 
             // Anchor check against the branch's tracked governance_policy.
-            // For Evl this is hard-fail (per SEL parity for governance kinds).
-            // For Cnt/Dec we record the result and surface it via
-            // `policy_satisfied`; the terminal flags are content-based (set
-            // unconditionally below) per `docs/design/iel/event-log.md`
-            // §"Chain States".
+            // Pre-divergence Evl: hard-fail (advancement event must be authorized).
+            // Pre-divergence Cnt/Dec: soft-fail (terminal flags content-based;
+            // auth status surfaces via `policy_satisfied`) per
+            // `docs/design/iel/event-log.md` §"Chain States".
+            // Post-divergence (event.version >= diverged_at_version): all
+            // auth-check failures convert to soft (the chain is already
+            // contested-by-construction; further failures don't add information,
+            // and bouncing the verification would lose pre-divergence reads).
+            // Structural integrity rules (immunity, content preservation) stay
+            // hard regardless of position — Cnt doesn't change well-formedness.
             let governance_satisfied = self
                 .checker
                 .is_anchored(&event.said, &branch.tracked_governance_policy)
                 .await?;
+            let post_divergence = self.diverged_at_version.is_some_and(|d| event.version >= d);
 
             match event.kind {
                 IdentityEventKind::Icp => {
@@ -446,15 +525,25 @@ impl IelVerifier {
                     )));
                 }
                 IdentityEventKind::Evl => {
-                    if !governance_satisfied {
+                    if !governance_satisfied && !post_divergence {
                         return Err(KelsError::VerificationFailed(format!(
                             "IEL Evl {} not anchored under tracked governance_policy {}",
                             event.said, branch.tracked_governance_policy
                         )));
                     }
+                    if !governance_satisfied {
+                        // Post-divergence soft path: chain-wide flag flipped;
+                        // event still lands but its evolved policies are NOT
+                        // adopted (the auth chain that would have authorized
+                        // the evolution failed). Tracked state preserves
+                        // prior, seal does not advance.
+                        self.policy_satisfied = false;
+                    }
 
                     // Per-kind discipline: Evl may evolve policies. Check
-                    // immunity on any new value before adopting it.
+                    // immunity on any new value before adopting it. Hard
+                    // even on post-divergence: structural well-formedness
+                    // is independent of divergence position.
                     let auth_changed = event.auth_policy != branch.tracked_auth_policy;
                     let gov_changed = event.governance_policy != branch.tracked_governance_policy;
 
@@ -471,17 +560,31 @@ impl IelVerifier {
                         )));
                     }
 
+                    let (track_auth, track_gov, last_gov) = if governance_satisfied {
+                        (
+                            event.auth_policy,
+                            event.governance_policy,
+                            Some(event.version),
+                        )
+                    } else {
+                        (
+                            branch.tracked_auth_policy,
+                            branch.tracked_governance_policy,
+                            branch.last_governance_version,
+                        )
+                    };
+
                     new_branches.insert(
                         event.said,
                         IdentityBranchTip {
                             tip: event.clone(),
-                            tracked_auth_policy: event.auth_policy,
-                            tracked_governance_policy: event.governance_policy,
-                            last_governance_version: Some(event.version),
+                            tracked_auth_policy: track_auth,
+                            tracked_governance_policy: track_gov,
+                            last_governance_version: last_gov,
                         },
                     );
                     self.policy_history
-                        .insert(event.said, (event.auth_policy, event.governance_policy));
+                        .insert(event.said, (track_auth, track_gov));
                 }
                 IdentityEventKind::Cnt | IdentityEventKind::Dec => {
                     // Hard structural rule: Cnt/Dec must preserve both policies.
@@ -532,6 +635,17 @@ impl IelVerifier {
                         (branch.tracked_auth_policy, branch.tracked_governance_policy),
                     );
                 }
+            }
+
+            // Satisfied-SAIDs tracking. Predicate: SAID was queried, the
+            // event passed its auth check, AND the event lives at
+            // `version < first_divergent_version` (or chain non-divergent).
+            // Cnt is structurally always at-or-after divergence (Cnt creates
+            // it), so Cnt is never in `satisfied_saids` even when its own
+            // governance check passed. Dec on a clean chain CAN be satisfied.
+            if !post_divergence && governance_satisfied && self.queried_saids.contains(&event.said)
+            {
+                self.satisfied_saids.insert(event.said);
             }
         }
 
@@ -600,6 +714,8 @@ impl IelVerifier {
             self.is_contested,
             self.is_decommissioned,
             last_governance_version,
+            self.queried_saids,
+            self.satisfied_saids,
         ))
     }
 }
@@ -1110,5 +1226,218 @@ mod tests {
         // Branch state still seeded (Icp's seeding is unconditional on the
         // anchor check, just as in SEL).
         assert_eq!(v.branches().len(), 1);
+    }
+
+    // ---------- Caller-bounded SAID querying + post-divergence soft-fail ----------
+
+    #[tokio::test]
+    async fn satisfied_saids_populates_for_pre_divergence_anchored_event() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        // Both events queried; both pre-divergence (chain non-divergent);
+        // both auth-passed. Both in satisfied_saids.
+        assert!(v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+        assert_eq!(v.satisfied_saids().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn satisfied_saids_excludes_unqueried_event() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+
+        // Only v1 registered; v0 isn't.
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.check_satisfied([v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(!v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+    }
+
+    #[tokio::test]
+    async fn cnt_creates_divergence_at_its_version_so_cnt_not_in_satisfied_saids() {
+        // Cnt creates divergence by extending an existing tip that isn't
+        // the chain's max version. To reproduce in a fake-source setup,
+        // build a chain where Evl@1 lands first, then a Cnt@1 extending v0
+        // appears at the same version. The verifier observes divergence
+        // at v=1, and per the design Cnt's own SAID is structurally NOT in
+        // satisfied_saids regardless of the auth check.
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let evl = IdentityEvent::evl(&v0, None, None).unwrap();
+        let cnt = IdentityEvent::cnt(&v0).unwrap();
+
+        // Sort canonical: kind sort_priority places Evl=1 before Cnt=2.
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.check_satisfied([v0.said, evl.said, cnt.said]);
+        verifier
+            .verify_page(&[v0, evl.clone(), cnt.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.diverged_at_version(), Some(1));
+        // Pre-divergence v=0 — satisfied. v=1 events — NOT satisfied.
+        assert!(!v.is_said_satisfied(&evl.said));
+        assert!(!v.is_said_satisfied(&cnt.said));
+        // Chain is contested (content-based) but no satisfied SAID at the
+        // divergence version.
+        assert!(v.is_contested());
+    }
+
+    #[tokio::test]
+    async fn dec_lands_in_satisfied_saids_on_clean_chain() {
+        // Dec only lands on a non-divergent chain (per routing). diverged_at
+        // remains None, so Dec at v=1 is pre-divergence by predicate
+        // (chain-non-divergent branch of `version < first_divergent_version
+        // OR chain non-divergent`). With auth-pass, Dec lands satisfied.
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let dec = IdentityEvent::dec(&v0).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.check_satisfied([dec.said]);
+        verifier
+            .verify_page(&[v0.clone(), dec.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.diverged_at_version(), None);
+        assert!(v.is_decommissioned());
+        assert!(v.is_said_satisfied(&dec.said));
+    }
+
+    #[tokio::test]
+    async fn evl_post_divergence_with_anchor_fail_soft_lands_no_err() {
+        // Build [Icp, Evl-on-A@1, Cnt@1]; the Cnt creates divergence at v=1.
+        // Then add an Evl-extending-cnt at v=2 (post-divergence). With an
+        // anchor-rejecting checker, the post-divergence Evl's auth check
+        // soft-fails (sets policy_satisfied=false) but the verifier doesn't
+        // return Err — the event lands. Pre-divergence events keep passing
+        // their checks (we use AlwaysPassChecker for Icp soft-anchor).
+        //
+        // Use a checker that rejects only the post-divergence Evl's SAID.
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let evl_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let cnt = IdentityEvent::cnt(&v0).unwrap();
+        // Post-divergence Evl extending Cnt at v=2.
+        let evl_postdiv = IdentityEvent::evl(&cnt, None, None).unwrap();
+
+        struct RejectSpecific {
+            reject: cesr::Digest256,
+        }
+        #[async_trait::async_trait]
+        impl PolicyChecker for RejectSpecific {
+            async fn is_anchored(
+                &self,
+                said: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<bool, KelsError> {
+                Ok(said != &self.reject)
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectSpecific {
+            reject: evl_postdiv.said,
+        });
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
+        // Verify: walk in canonical order. v=0: Icp. v=1: Evl (kind=1) + Cnt
+        // (kind=2). v=2: post-divergence Evl extending the Cnt branch.
+        verifier
+            .verify_page(&[v0, evl_a, cnt, evl_postdiv.clone()])
+            .await
+            .expect("post-divergence auth-fail should not return Err");
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(
+            !v.policy_satisfied(),
+            "post-divergence anchor-fail flips chain-wide policy_satisfied"
+        );
+    }
+
+    #[tokio::test]
+    async fn structural_failure_post_divergence_still_returns_err() {
+        // Even with the post-divergence soft-fail, structural rules stay HARD.
+        // A Cnt with a tampered governance_policy must still bounce.
+        let auth = test_digest(b"auth-policy");
+        let gov1 = test_digest(b"gov-1");
+        let gov2 = test_digest(b"gov-2");
+        let v0 = IdentityEvent::icp(auth, gov1, TEST_TOPIC).unwrap();
+        let evl_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let mut cnt_b = IdentityEvent::cnt(&v0).unwrap();
+        // Tamper structurally: Cnt must preserve governance_policy.
+        cnt_b.governance_policy = gov2;
+        cnt_b.derive_said().unwrap();
+
+        let verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        // Verifier sees Evl-then-Cnt at v=1; Cnt's preservation check
+        // structurally fails — HARD error regardless of post-divergence
+        // status.
+        let err = run(verifier, &[v0, evl_a, cnt_b])
+            .await
+            .expect_err("structural Cnt-policy-preservation must HARD-fail");
+        assert!(
+            err.to_string().contains("must preserve governance_policy"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_rehydrates_queried_and_satisfied_saids() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let token = verifier.finish().await.unwrap();
+        assert!(token.is_said_satisfied(&v0.said));
+        assert!(token.is_said_satisfied(&v1.said));
+
+        // Resume: queried_saids and satisfied_saids carry across the
+        // resume boundary (IEL/SE divergence from KEL's reset-on-resume).
+        let v2 = IdentityEvent::evl(&v1, None, None).unwrap();
+        let mut resumed = IelVerifier::resume(&token, always_pass()).unwrap();
+        resumed
+            .verify_page(std::slice::from_ref(&v2))
+            .await
+            .unwrap();
+        let extended = resumed.finish().await.unwrap();
+
+        assert!(extended.is_said_satisfied(&v0.said));
+        assert!(extended.is_said_satisfied(&v1.said));
     }
 }

@@ -13,7 +13,7 @@
 //! SE no longer carries `write_policy` / `governance_policy` fields — those
 //! live on IEL.
 
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeSet, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{Chained, SelfAddressed};
@@ -441,10 +441,20 @@ pub struct SelVerification {
     is_decommissioned: bool,
     last_governance_version: Option<u64>,
     diverged_at_version: Option<u64>,
+    /// Caller-provided up-front: SE event SAIDs the consumer cares about.
+    /// Mirrors `KelVerification::queried_saids` and the IEL parallel.
+    queried_saids: BTreeSet<cesr::Digest256>,
+    /// Verifier-populated subset of `queried_saids`: SAIDs whose corresponding
+    /// SE event passed its auth check AND lives at `version <
+    /// first_divergent_version` (or chain non-divergent). Cnt is structurally
+    /// at-or-after the divergence cut and never appears here; Dec on a clean
+    /// chain CAN.
+    satisfied_saids: BTreeSet<cesr::Digest256>,
 }
 
 impl SelVerification {
     /// Create a new verification token. Crate-internal only.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         branches: Vec<SadBranchTip>,
         policy_satisfied: bool,
@@ -452,6 +462,8 @@ impl SelVerification {
         is_decommissioned: bool,
         last_governance_version: Option<u64>,
         diverged_at_version: Option<u64>,
+        queried_saids: BTreeSet<cesr::Digest256>,
+        satisfied_saids: BTreeSet<cesr::Digest256>,
     ) -> Self {
         Self {
             branches,
@@ -460,6 +472,8 @@ impl SelVerification {
             is_decommissioned,
             last_governance_version,
             diverged_at_version,
+            queried_saids,
+            satisfied_saids,
         }
     }
 
@@ -567,6 +581,25 @@ impl SelVerification {
     /// on linear chains.
     pub fn diverged_at_version(&self) -> Option<u64> {
         self.diverged_at_version
+    }
+
+    /// Whether the named SE event passed its auth check AND lives at
+    /// `version < first_divergent_version` (or chain is non-divergent).
+    /// Mirrors `KelVerification::is_said_anchored` and the IEL parallel.
+    /// Returns `false` for SAIDs not in `queried_saids` — callers must
+    /// register interest before walking.
+    pub fn is_said_satisfied(&self, said: &cesr::Digest256) -> bool {
+        self.satisfied_saids.contains(said)
+    }
+
+    /// The full set of satisfied SAIDs (subset of `queried_saids`).
+    pub fn satisfied_saids(&self) -> &BTreeSet<cesr::Digest256> {
+        &self.satisfied_saids
+    }
+
+    /// The set of SAIDs the caller registered interest in.
+    pub fn queried_saids(&self) -> &BTreeSet<cesr::Digest256> {
+        &self.queried_saids
     }
 
     /// Stamp a server-reported divergence version onto a token whose local

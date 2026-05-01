@@ -536,6 +536,103 @@ pub async fn verify_sad_events(
     verifier.finish().await
 }
 
+/// Stream a SEL chain from `source` and accumulate the unique
+/// `event.identity_event` SAIDs the SE caller needs from the bound IEL.
+///
+/// Used by SE consumers (submit handler, builder pre-action verify) to
+/// pre-walk the SE chain and collect the queried-IEL-SAID set before
+/// constructing the `IelResolver`. The accumulator is a `BTreeSet<Digest256>`
+/// — events themselves are dropped after each page is processed, so the
+/// in-memory cost is bounded by SAID-level metadata only (proportional to
+/// chain length × 32 B), consistent with the existing aggregation invariant
+/// (see `IelVerification::policy_history`'s shape).
+///
+/// Walk is bounded by `max_pages`; fail-secure when exceeded. Stops early
+/// when the source signals `has_more=false`.
+///
+/// Round-12 third-follow-up addition: paired with
+/// `IelResolver::with_queried_saids` and `is_satisfied` for the
+/// caller-bounded SAID querying pattern (see
+/// `docs/design/sel/verification.md §Caller-bounded SAID querying`).
+pub async fn collect_identity_event_saids(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedSadSource + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<std::collections::BTreeSet<cesr::Digest256>, KelsError> {
+    let mut collected: std::collections::BTreeSet<cesr::Digest256> =
+        std::collections::BTreeSet::new();
+    let mut since: Option<cesr::Digest256> = None;
+    let mut saw_any = false;
+    for _ in 0..max_pages {
+        let (events, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
+        if events.is_empty() {
+            break;
+        }
+        saw_any = true;
+        for event in &events {
+            if let Some(said) = event.identity_event {
+                collected.insert(said);
+            }
+        }
+        since = events.last().map(|e| e.said);
+        if !has_more {
+            return Ok(collected);
+        }
+    }
+    if !saw_any {
+        return Ok(collected);
+    }
+    Err(KelsError::InvalidKel(format!(
+        "SEL identity_event collection exceeded max_pages limit ({}) for {}",
+        max_pages, prefix,
+    )))
+}
+
+/// Stream a SEL chain from a local `SelPageLoader` and accumulate the
+/// unique `event.identity_event` SAIDs the SE caller needs from the bound
+/// IEL. Mirrors [`collect_identity_event_saids`] but for owner-local
+/// verification flows that page through `SadStore` rather than over HTTP.
+///
+/// Same in-memory profile (SAID-level only; events dropped per page) and
+/// same `max_pages` bound.
+pub async fn collect_identity_event_saids_from_loader(
+    loader: &mut dyn SelPageLoader,
+    prefix: &cesr::Digest256,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<std::collections::BTreeSet<cesr::Digest256>, KelsError> {
+    let mut collected: std::collections::BTreeSet<cesr::Digest256> =
+        std::collections::BTreeSet::new();
+    let mut offset: u64 = 0;
+    let limit = page_size as u64;
+    let mut saw_any = false;
+    for _ in 0..max_pages {
+        let (events, has_more) = loader.load_page(prefix, limit, offset).await?;
+        if events.is_empty() {
+            return Ok(collected);
+        }
+        saw_any = true;
+        let advanced = events.len() as u64;
+        for event in &events {
+            if let Some(said) = event.identity_event {
+                collected.insert(said);
+            }
+        }
+        offset += advanced;
+        if !has_more {
+            return Ok(collected);
+        }
+    }
+    if !saw_any {
+        return Ok(collected);
+    }
+    Err(KelsError::InvalidKel(format!(
+        "SEL identity_event collection exceeded max_pages limit ({}) for {}",
+        max_pages, prefix,
+    )))
+}
+
 /// Forward SAD events from source to sink without verification. Supports delta via `since`.
 pub async fn forward_sad_events(
     prefix: &cesr::Digest256,

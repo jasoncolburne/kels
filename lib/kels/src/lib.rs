@@ -117,12 +117,13 @@ pub use types::{
     SadStorePageLoader, SelPageLoader, SelRepairEvent, SelVerification, SelVerifier,
     SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest, StoreKelSource,
     SubmitIdentityEventsResponse, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
-    completed_verification, compute_approval_threshold, compute_identity_event_prefix,
-    compute_rotation_hash, compute_sad_event_prefix, forward_identity_events, forward_key_events,
-    forward_sad_events, hash_effective_said, iel_completed_verification,
-    parse_and_validate_custody, sel_completed_verification, single_signer,
-    truncate_incomplete_generation, validate_timestamp, verify_identity_events, verify_key_events,
-    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_events,
+    collect_identity_event_saids, collect_identity_event_saids_from_loader, completed_verification,
+    compute_approval_threshold, compute_identity_event_prefix, compute_rotation_hash,
+    compute_sad_event_prefix, forward_identity_events, forward_key_events, forward_sad_events,
+    hash_effective_said, iel_completed_verification, parse_and_validate_custody,
+    sel_completed_verification, single_signer, truncate_incomplete_generation, validate_timestamp,
+    verify_identity_events, verify_key_events, verify_key_events_collecting_establishment_keys,
+    verify_key_events_with, verify_sad_events,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

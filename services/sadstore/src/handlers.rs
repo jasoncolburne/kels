@@ -41,11 +41,36 @@ use crate::{
 /// unreachable as ratchet inputs, so the precision loss is invisible.
 struct RepositoryIelResolver {
     repo: Arc<crate::repository::SadStoreRepository>,
+    /// `PolicyChecker` used by the in-process `IelVerifier` walks inside
+    /// `is_satisfied`. Same checker the SE handler builds for its own
+    /// `SelVerifier` — passing it here keeps the IEL-side auth check
+    /// answer-equivalent to the IEL submit handler's own walk.
+    checker: Arc<dyn kels_core::PolicyChecker + Send + Sync>,
+    /// SE caller's pre-walked identity_event SAIDs. Forwarded to the
+    /// `IelVerifier` constructed in `is_satisfied` via `check_satisfied`.
+    /// Empty until `with_queried_saids` is called; the SE pre-walk
+    /// populates it before the resolver is wrapped in `Arc<dyn IelResolver>`.
+    queried_saids: std::collections::BTreeSet<cesr::Digest256>,
 }
 
 impl RepositoryIelResolver {
-    fn new(repo: Arc<crate::repository::SadStoreRepository>) -> Self {
-        Self { repo }
+    fn new(
+        repo: Arc<crate::repository::SadStoreRepository>,
+        checker: Arc<dyn kels_core::PolicyChecker + Send + Sync>,
+    ) -> Self {
+        Self {
+            repo,
+            checker,
+            queried_saids: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Register the SE caller's pre-walked queried SAIDs for satisfaction
+    /// tracking. Mirrors `AnchoredIelResolver::with_queried_saids`.
+    #[must_use]
+    fn with_queried_saids(mut self, saids: impl IntoIterator<Item = cesr::Digest256>) -> Self {
+        self.queried_saids.extend(saids);
+        self
     }
 
     async fn fetch_event_by_said(
@@ -138,6 +163,76 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             )));
         }
         Ok(event.governance_policy)
+    }
+
+    async fn is_satisfied(
+        &self,
+        identity: &cesr::Digest256,
+        said: &cesr::Digest256,
+    ) -> Result<bool, kels_core::KelsError> {
+        // Chain-integrity check: BadIdentityBinding propagates from
+        // fetch_iel_event if the SAID isn't in the named IEL or has a
+        // prefix mismatch. After that, walk the IEL via the repo,
+        // running an `IelVerifier` with `queried_saids ∪ {said}`
+        // registered, then read `is_said_satisfied(said)` from the token.
+        let _ = self.fetch_iel_event(identity, said).await?;
+
+        // Pool-based paged walk (non-transactional — `is_satisfied` is
+        // called from inside the SE submit transaction but the IEL state
+        // is read-only here; same isolation as the pre-batch
+        // `is_divergent` / `first_divergent_version` queries the SE
+        // handler already does).
+        use verifiable_storage_postgres::QueryExecutor;
+        let mut verifier = kels_core::IelVerifier::new(Some(identity), self.checker.clone());
+        verifier.check_satisfied(self.queried_saids.iter().copied());
+        verifier.check_satisfied([*said]);
+
+        let page_size = kels_core::page_size() as u64;
+        let max_pages = kels_core::max_pages();
+        let mut since: Option<cesr::Digest256> = None;
+        for _ in 0..max_pages {
+            // Fetch a page from the IEL repo via the pool (no transaction).
+            let mut query =
+                verifiable_storage_postgres::Query::<kels_core::IdentityEvent>::for_table(
+                    "iel_events",
+                )
+                .eq("prefix", identity.as_ref())
+                .order_by("version", verifiable_storage_postgres::Order::Asc)
+                .order_by_case(
+                    "kind",
+                    &kels_core::IdentityEventKind::sort_priority_mapping(),
+                    verifiable_storage_postgres::Order::Asc,
+                )
+                .order_by("said", verifiable_storage_postgres::Order::Asc)
+                .limit(page_size);
+            if let Some(s) = since {
+                // Approximate: include only events whose version is >= the
+                // since cursor's version. Final monotonic-ratchet ordering
+                // already enforced by the canonical sort.
+                if let Some(prev) = self.fetch_event_by_said(&s).await? {
+                    query = query.gte("version", prev.version);
+                }
+            }
+            let events: Vec<kels_core::IdentityEvent> = self
+                .repo
+                .iel_events
+                .pool
+                .fetch(query)
+                .await
+                .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
+            if events.is_empty() {
+                break;
+            }
+            let last_said = events.last().map(|e| e.said);
+            verifier.verify_page(&events).await?;
+            if (events.len() as u64) < page_size {
+                break;
+            }
+            since = last_said;
+        }
+
+        let verification = verifier.finish().await?;
+        Ok(verification.is_said_satisfied(said))
     }
 
     async fn iel_chain_positions(
@@ -1609,8 +1704,64 @@ pub async fn submit_sad_events(
                 Arc::clone(&kel_source),
                 Arc::clone(&policy_resolver),
             ));
-        let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
-            Arc::new(RepositoryIelResolver::new(state.repo.clone()));
+
+        // SE pre-walk: stream the SE chain (storage + new events), accumulate
+        // unique `identity_event` SAIDs into a `BTreeSet`, drop events. The
+        // set is forwarded as `queried_saids` to the `IelResolver` so its
+        // `is_satisfied` answers reflect IEL verification of these SAIDs.
+        // Bounded by `max_pages × page_size × 32B`; events themselves never
+        // accumulate (matches the existing aggregation invariant for
+        // `IelVerification::policy_history`).
+        let queried_iel_saids: std::collections::BTreeSet<cesr::Digest256> = {
+            let mut saids = std::collections::BTreeSet::new();
+            let page_size = kels_core::page_size() as u64;
+            let mut since: Option<cesr::Digest256> = None;
+            for _ in 0..kels_core::max_pages() {
+                let page = match state
+                    .repo
+                    .sad_events
+                    .get_stored_in(
+                        &mut tx,
+                        sel_prefix.as_ref(),
+                        since.as_ref().map(|s| s.as_ref()),
+                        Some(page_size),
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to pre-walk SE chain for queried_saids: {}", e);
+                        let _ = tx.rollback().await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+                            .into_response();
+                    }
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = page.len();
+                since = page.last().map(|r| r.said);
+                for ev in &page {
+                    if let Some(s) = ev.identity_event {
+                        saids.insert(s);
+                    }
+                }
+                if (page_len as u64) < page_size {
+                    break;
+                }
+            }
+            for ev in &new_events {
+                if let Some(s) = ev.identity_event {
+                    saids.insert(s);
+                }
+            }
+            saids
+        };
+
+        let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> = Arc::new(
+            RepositoryIelResolver::new(state.repo.clone(), Arc::clone(&checker))
+                .with_queried_saids(queried_iel_saids),
+        );
 
         if is_repair {
             // Routing matrix step 1: `is_repair`.

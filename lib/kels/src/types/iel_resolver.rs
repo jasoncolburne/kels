@@ -151,4 +151,31 @@ pub trait IelResolver: Send + Sync {
         identity: &cesr::Digest256,
         saids: &[cesr::Digest256],
     ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError>;
+
+    /// Whether the named IEL event passed its IEL auth check AND lives at
+    /// `version < first_divergent_version` (or chain non-divergent), per
+    /// `IelVerification::is_said_satisfied`.
+    ///
+    /// Used by the SE verifier (β-ordering: after `resolve_*_at`, before
+    /// `is_anchored`) to gate SE bindings. SE chains binding to an IEL event
+    /// that didn't pass IEL's verification (Cnt's-own-soft-fail or
+    /// post-IEL-divergence soft) are SOFT for terminals / post-SE-divergence
+    /// non-terminals, HARD for pre-SE-divergence non-terminals.
+    ///
+    /// Implementations must scope SAID resolution to `identity` (cross-IEL
+    /// contamination surfaces as `BadIdentityBinding`) and must register
+    /// the SAID via `IelVerifier::check_satisfied` before walking the IEL
+    /// — production impls do this internally from a caller-supplied
+    /// `queried_saids` set fixed at construction.
+    ///
+    /// Returns `false` (not Err) when the SAID is in the IEL's chain but
+    /// either (a) failed its auth check, or (b) lives at-or-after the IEL's
+    /// `first_divergent_version`. Returns `Err(BadIdentityBinding)` when
+    /// the SAID doesn't resolve in the named IEL at all (chain-integrity
+    /// breach — caller treats as HARD regardless of position).
+    async fn is_satisfied(
+        &self,
+        identity: &cesr::Digest256,
+        said: &cesr::Digest256,
+    ) -> Result<bool, KelsError>;
 }

@@ -36,7 +36,10 @@
 //! is conveyed separately via `policy_satisfied`. This mirrors the
 //! round-11 IEL fix that pinned terminal flags to chain content.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use verifiable_storage::{Chained, SelfAddressed};
 
@@ -70,6 +73,8 @@ pub struct SelVerifier {
     is_contested: bool,
     is_decommissioned: bool,
     diverged_at_version: Option<u64>,
+    queried_saids: BTreeSet<cesr::Digest256>,
+    satisfied_saids: BTreeSet<cesr::Digest256>,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
     iel_resolver: Arc<dyn IelResolver + Send + Sync>,
 }
@@ -91,14 +96,33 @@ impl SelVerifier {
             is_contested: false,
             is_decommissioned: false,
             diverged_at_version: None,
+            queried_saids: BTreeSet::new(),
+            satisfied_saids: BTreeSet::new(),
             checker,
             iel_resolver,
         }
     }
 
+    /// Register SE event SAIDs the caller cares about for satisfaction
+    /// tracking. Mirrors `KelVerifier::check_anchors`. Call before
+    /// `verify_page` (or before resuming the walk via `resume`). Repeated
+    /// calls union the sets — they don't replace.
+    pub fn check_satisfied(
+        &mut self,
+        saids: impl IntoIterator<Item = cesr::Digest256>,
+    ) -> &mut Self {
+        self.queried_saids.extend(saids);
+        self
+    }
+
     /// Re-hydrate a verifier from a prior verification token. Subsequent
     /// `verify_page` calls extend the same per-branch state — including
     /// each branch's `last_identity_event` ratchet.
+    ///
+    /// Like the IEL parallel, rehydrates `queried_saids` / `satisfied_saids`
+    /// from the prior token (KEL's `resume` resets these; the IEL/SE
+    /// streaming pre-walk pattern needs them to persist across pages).
+    /// KEL's symmetric fix is deferred to round 13.
     pub fn resume(
         verification: &SelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,
@@ -123,6 +147,8 @@ impl SelVerifier {
             is_contested: verification.is_contested(),
             is_decommissioned: verification.is_decommissioned(),
             diverged_at_version: verification.diverged_at_version(),
+            queried_saids: verification.queried_saids().clone(),
+            satisfied_saids: verification.satisfied_saids().clone(),
             checker,
             iel_resolver,
         })
@@ -218,6 +244,13 @@ impl SelVerifier {
                     last_governance_version: None,
                 },
             );
+
+            // Satisfied-SAIDs tracking. SE Icp is permissionless (no anchor
+            // check); landing means it satisfies the SE auth contract by
+            // construction. v=0 is structurally pre-divergence.
+            if self.queried_saids.contains(&event.said) {
+                self.satisfied_saids.insert(event.said);
+            }
 
             if self.prefix.is_none() {
                 self.prefix = Some(event.prefix);
@@ -330,10 +363,25 @@ impl SelVerifier {
             })?;
 
             let is_terminal = matches!(event.kind, SadEventKind::Cnt | SadEventKind::Dec);
+            // Post-divergence on the SE chain itself: Cnt structurally creates
+            // divergence at its own version (per `docs/design/sel/verification.md
+            // §Post-divergence soft-fail propagation`), so any v1+ event whose
+            // version is at-or-after the divergence point gets the soft-fail
+            // override on auth-related failures (IelDivergent, satisfied-check,
+            // anchor-fail). Structural integrity rules (BadIdentityBinding,
+            // monotonic ratchet, content preservation) stay HARD regardless of
+            // position. Pre-divergence flow keeps the existing HARD/SOFT mapping
+            // (HARD for Upd/Sea/Rpr; SOFT for Cnt/Dec).
+            let post_divergence = self.diverged_at_version.is_some_and(|d| event.version >= d);
+            // A "soft-fail-eligible" auth failure: terminal events are always
+            // soft (existing rule); non-terminals are soft only post-divergence
+            // (new rule). When false, HARD-fail returns Err.
+            let auth_soft_eligible = is_terminal || post_divergence;
 
             // Step 1 — fetch IEL event. BadIdentityBinding is HARD for all v1+ kinds.
             // The IelResolver impl returns errors for SAID-not-found / prefix-mismatch;
-            // surface them directly.
+            // surface them directly. Chain-integrity rule, not auth — stays HARD
+            // even post-divergence.
             let _bound = self
                 .iel_resolver
                 .fetch_iel_event(&branch.identity, &identity_event_said)
@@ -354,37 +402,71 @@ impl SelVerifier {
                 SadEventKind::Icp => unreachable!("Icp handled in first-generation branch above"),
             };
 
-            // IelDivergent: HARD for Upd/Sea/Rpr; SOFT for Cnt/Dec.
+            // IelDivergent: HARD pre-divergence on non-terminals; SOFT for
+            // terminals OR post-divergence on the SE chain.
             let resolved_policy = match policy_resolution {
                 Ok(p) => p,
-                Err(KelsError::IelDivergent(_msg)) if is_terminal => {
-                    // SOFT: the terminal event lands; mark policy_satisfied=false;
-                    // terminal flag is set content-based below (unconditionally).
+                Err(KelsError::IelDivergent(_)) if auth_soft_eligible => {
                     self.policy_satisfied = false;
-                    self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
                     continue;
                 }
                 Err(e) => return Err(e),
             };
 
-            // Step 4 — anchor check. HARD for Upd/Sea/Rpr; SOFT for Cnt/Dec.
+            // Step 3.5 (β-ordering) — IEL satisfied-check. After resolve_*_at,
+            // before is_anchored. If the bound IEL event resolved cleanly but
+            // didn't pass IEL's auth in IEL's verification (Cnt's-own-soft-fail,
+            // post-IEL-divergence soft), SE's auth chain is implicitly broken.
+            // Same severity mapping as IelDivergent: HARD pre-divergence on
+            // non-terminals; SOFT for terminals OR post-SE-divergence.
+            let iel_said_satisfied = self
+                .iel_resolver
+                .is_satisfied(&branch.identity, &identity_event_said)
+                .await?;
+            if !iel_said_satisfied {
+                if auth_soft_eligible {
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                return Err(KelsError::VerificationFailed(format!(
+                    "SE {} event {}: bound IEL event {} did not satisfy IEL verification \
+                     (auth-fail or post-IEL-divergence; non-terminal pre-SE-divergence)",
+                    event.kind, event.said, identity_event_said,
+                )));
+            }
+
+            // Step 4 — anchor check. HARD pre-divergence on non-terminals;
+            // SOFT for terminals OR post-divergence.
             let anchored = self
                 .checker
                 .is_anchored(&event.said, &resolved_policy)
                 .await?;
 
             if !anchored {
-                if is_terminal {
+                if auth_soft_eligible {
                     self.policy_satisfied = false;
-                    self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
                     continue;
-                } else {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "SE {} event {} not anchored under resolved policy {} \
-                         (bound IEL event {})",
-                        event.kind, event.said, resolved_policy, identity_event_said,
-                    )));
                 }
+                return Err(KelsError::VerificationFailed(format!(
+                    "SE {} event {} not anchored under resolved policy {} \
+                     (bound IEL event {})",
+                    event.kind, event.said, resolved_policy, identity_event_said,
+                )));
             }
 
             // Step 5 — monotonic ratchet (uses positions fetched above). HARD
@@ -481,6 +563,16 @@ impl SelVerifier {
                     last_governance_version: new_last_governance_version,
                 },
             );
+
+            // Satisfied-SAIDs tracking. Predicate: SAID was queried, the
+            // event passed every auth-related gate (IelDivergent, satisfied,
+            // anchor) reaching this point, AND the event lives at
+            // `version < first_divergent_version` (or chain non-divergent).
+            // Cnt is structurally always at-or-after divergence — never lands
+            // here. Dec on a clean chain CAN.
+            if !post_divergence && self.queried_saids.contains(&event.said) {
+                self.satisfied_saids.insert(event.said);
+            }
         }
 
         // Carry forward branches no event in this generation extended.
@@ -495,12 +587,12 @@ impl SelVerifier {
     }
 
     /// Record a SOFT-passed terminal event (Cnt/Dec that failed its
-    /// IelDivergent guard or anchor check). The event lands on the chain
-    /// (replaces the parent branch tip) and sets the appropriate terminal
-    /// flag content-based, but does NOT advance `last_identity_event`,
-    /// `last_governance_version`, or `events_since_evaluation` — per the
-    /// "Update precondition" rule that keeps the ratchet pinned to a
-    /// known-clean position.
+    /// IelDivergent guard, satisfied-check, or anchor check). The event
+    /// lands on the chain (replaces the parent branch tip) and sets the
+    /// appropriate terminal flag content-based, but does NOT advance
+    /// `last_identity_event`, `last_governance_version`, or
+    /// `events_since_evaluation` — per the "Update precondition" rule
+    /// that keeps the ratchet pinned to a known-clean position.
     fn record_terminal_landing(
         &mut self,
         event: &SadEvent,
@@ -513,6 +605,29 @@ impl SelVerifier {
         } else {
             self.is_decommissioned = true;
         }
+        new_branches.insert(
+            event.said,
+            SadBranchTip {
+                tip: event.clone(),
+                identity: parent.identity,
+                last_identity_event: parent.last_identity_event,
+                events_since_evaluation: parent.events_since_evaluation,
+                last_governance_version: parent.last_governance_version,
+            },
+        );
+    }
+
+    /// Record a SOFT-passed non-terminal event (Upd/Sea/Rpr that failed an
+    /// auth-related gate post-divergence — IelDivergent, satisfied-check,
+    /// or anchor-fail). The event lands as the new branch tip but preserves
+    /// all other branch state (no ratchet advance, no seal advance, counter
+    /// preserved). Used only on post-divergence soft conversion; pre-divergence
+    /// HARD-fails for these kinds still return Err.
+    fn record_non_terminal_soft_landing(
+        event: &SadEvent,
+        new_branches: &mut HashMap<cesr::Digest256, SadBranchTip>,
+        parent: &SadBranchTip,
+    ) {
         new_branches.insert(
             event.said,
             SadBranchTip {
@@ -580,6 +695,8 @@ impl SelVerifier {
             self.is_decommissioned,
             last_governance_version,
             self.diverged_at_version,
+            self.queried_saids,
+            self.satisfied_saids,
         ))
     }
 }
@@ -756,6 +873,26 @@ mod tests {
                 )));
             }
             Ok(event.governance_policy)
+        }
+
+        async fn is_satisfied(
+            &self,
+            identity: &cesr::Digest256,
+            said: &cesr::Digest256,
+        ) -> Result<bool, KelsError> {
+            // Test fake: chain-integrity check via fetch (BadIdentityBinding
+            // on miss / prefix mismatch). For the satisfied-predicate, mirror
+            // the production rule: pre-divergence (or chain non-divergent)
+            // AND would-have-passed-its-auth. The fake's `events` map doesn't
+            // record auth-pass-status, so default to "auth-passed" — tests
+            // that need to pin auth-fail-soft cases construct chains where
+            // the SE checker rejects, exercising the SE-side gate without
+            // having to drive an in-fake IEL verifier.
+            let event = self.fetch_iel_event(identity, said).await?;
+            let post_divergence = self
+                .first_divergent_version
+                .is_some_and(|d| event.version >= d);
+            Ok(!post_divergence)
         }
 
         async fn iel_chain_positions(
@@ -1244,5 +1381,222 @@ mod tests {
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let v = verifier.finish().await.unwrap();
         assert!(v.policy_satisfied());
+    }
+
+    // ==================== Caller-bounded SAID querying ====================
+
+    /// Pre-divergence SE events that pass auth land in `satisfied_saids`
+    /// when the caller registered them via `check_satisfied`.
+    #[tokio::test]
+    async fn satisfied_saids_populates_for_pre_divergence_se_events() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+    }
+
+    /// SAIDs not registered are absent from `satisfied_saids`, even if
+    /// the events themselves landed and passed auth.
+    #[tokio::test]
+    async fn satisfied_saids_excludes_unqueried_se_events() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        // Only v1 registered; v0 isn't.
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.check_satisfied([v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(!v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+    }
+
+    /// Resume rehydrates `queried_saids` and `satisfied_saids` from the
+    /// prior token. Diverges from KEL's reset-on-resume; the IEL/SE
+    /// streaming pre-walk pattern needs registered interest to persist.
+    #[tokio::test]
+    async fn resume_rehydrates_queried_and_satisfied_saids_se() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), Arc::clone(&resolver));
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let token = verifier.finish().await.unwrap();
+        assert!(token.is_said_satisfied(&v0.said));
+        assert!(token.is_said_satisfied(&v1.said));
+
+        // Resume preserves the registered set + accumulated satisfied set.
+        let v2 = make_upd(&v1, iel_icp, b"content-2");
+        let mut resumed =
+            SelVerifier::resume(&token, always_pass(), Arc::clone(&resolver)).unwrap();
+        resumed
+            .verify_page(std::slice::from_ref(&v2))
+            .await
+            .unwrap();
+        let extended = resumed.finish().await.unwrap();
+
+        assert!(extended.is_said_satisfied(&v0.said));
+        assert!(extended.is_said_satisfied(&v1.said));
+    }
+
+    // ==================== Post-divergence soft-fail propagation ====================
+
+    /// Building helper: produce an Upd extending `prev` with a fixed
+    /// `iel_event` binding and content. Mirrors `make_upd` shape.
+    fn make_upd_with_content(
+        prev: &SadEvent,
+        iel_evt: cesr::Digest256,
+        content_label: &[u8],
+    ) -> SadEvent {
+        SadEvent::upd(prev, iel_evt, d(content_label)).unwrap()
+    }
+
+    /// On a post-divergence SE event, anchor-fail (a HARD path pre-divergence
+    /// for Upd) converts to SOFT — the verifier sets `policy_satisfied=false`
+    /// and does NOT return Err; the event lands. Sibling Upds at the
+    /// divergence version land normally (concurrent, not after).
+    #[tokio::test]
+    async fn upd_post_divergence_anchor_fail_soft_lands_no_err() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        // Always-pass IEL resolver — IEL side is clean. The SE-side checker
+        // is the gate we control: it rejects only one specific SE SAID
+        // (the post-divergence Upd) so we can pin the soft-conversion.
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        // Build a divergent SE chain at v=1 (two competing Upds), then a
+        // post-divergence Upd at v=2 extending one of them.
+        let v0 = make_icp(identity);
+        let v1_a = make_upd_with_content(&v0, iel_icp, b"branch-a");
+        let v1_b = make_upd_with_content(&v0, iel_icp, b"branch-b");
+        // Order them by SAID to match canonical sort.
+        let (first, second) = if v1_a.said.as_ref() < v1_b.said.as_ref() {
+            (v1_a.clone(), v1_b.clone())
+        } else {
+            (v1_b.clone(), v1_a.clone())
+        };
+        // Post-divergence Upd extending the lower-SAID branch at v=2.
+        let postdiv = make_upd_with_content(&first, iel_icp, b"post-div");
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker {
+            reject: HashSet::from([postdiv.said]),
+        });
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        // Walk the full chain. Post-divergence Upd's anchor-fail is a HARD
+        // path pre-divergence; the new soft-fail propagation converts it
+        // to SOFT, no Err returned.
+        verifier
+            .verify_page(&[v0, first, second, postdiv.clone()])
+            .await
+            .expect("post-divergence anchor-fail should soft-pass on SE chain");
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(
+            !v.policy_satisfied(),
+            "post-divergence soft-fail flips chain-wide policy_satisfied"
+        );
+    }
+
+    /// Structural rules stay HARD post-divergence: a content-preservation
+    /// breach on a Sea past the divergence point still bounces the
+    /// verification.
+    #[tokio::test]
+    async fn structural_failure_post_divergence_still_returns_err_se() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1_a = make_upd_with_content(&v0, iel_icp, b"branch-a");
+        let v1_b = make_upd_with_content(&v0, iel_icp, b"branch-b");
+        let (first, second) = if v1_a.said.as_ref() < v1_b.said.as_ref() {
+            (v1_a.clone(), v1_b.clone())
+        } else {
+            (v1_b.clone(), v1_a.clone())
+        };
+        // Post-divergence Sea extending `first`. Sea preserves content from
+        // its parent — but tamper to break that rule.
+        let mut bad_sea = SadEvent::sea(&first, iel_icp).unwrap();
+        bad_sea.content = Some(d(b"different-content"));
+        bad_sea.derive_said().unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        // verify_page only flushes a generation when version transitions,
+        // so the v=2 bad_sea sits buffered until finish(). Run both stages
+        // to surface the structural rejection.
+        verifier
+            .verify_page(&[v0, first, second, bad_sea])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("content-preservation breach must HARD-fail post-divergence");
+        assert!(
+            err.to_string().contains("must preserve content"),
+            "unexpected error: {}",
+            err
+        );
     }
 }
