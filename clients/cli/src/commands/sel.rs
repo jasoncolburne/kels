@@ -301,7 +301,9 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
     let checker = sad_store_anchored_checker(cli, &sad_client)?;
     let source = HttpSadSource::new(&cli.sadstore_url())?;
 
-    println!("{}", format!("Fetching SEL {}...", sel_prefix).green());
+    // Streaming/diagnostic lines go to stderr; stdout is reserved for the
+    // final JSON so callers can pipe `sel get` through `jq` cleanly.
+    eprintln!("{}", format!("Fetching SEL {}...", sel_prefix).green());
 
     // Verifier-driven walk through `transfer_sad_events` (via
     // `verify_sad_events_with`). Streams summary lines per page while
@@ -346,13 +348,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
         kels_core::max_pages(),
         |events| {
             for event in events {
-                let said_str: &str = event.said.as_ref();
-                println!(
-                    "  [{}] {:?} - {}",
-                    event.version,
-                    event.kind,
-                    &said_str[..16]
-                );
+                eprintln!("  [{}] {:?} - {}", event.version, event.kind, event.said);
             }
             #[allow(clippy::expect_used)]
             collected
@@ -377,7 +373,6 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
         "is_decommissioned": verification.is_decommissioned(),
     });
 
-    println!();
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }

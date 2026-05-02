@@ -141,7 +141,9 @@ pub(crate) async fn cmd_iel_get(cli: &Cli, iel_prefix: &str) -> Result<()> {
     let checker = sad_store_anchored_checker(cli, &sad_client)?;
     let source = HttpIelSource::new(&cli.sadstore_url())?;
 
-    println!("{}", format!("Fetching IEL {}...", iel_prefix).green());
+    // Streaming/diagnostic lines go to stderr; stdout is reserved for the
+    // final JSON so callers can pipe `iel get` through `jq` cleanly.
+    eprintln!("{}", format!("Fetching IEL {}...", iel_prefix).green());
 
     // Verifier-driven walk mirrors `kels kel get` (which uses
     // `verify_key_events_with`). Stream summary lines per page while
@@ -156,13 +158,7 @@ pub(crate) async fn cmd_iel_get(cli: &Cli, iel_prefix: &str) -> Result<()> {
         kels_core::max_pages(),
         |events| {
             for event in events {
-                let said_str: &str = event.said.as_ref();
-                println!(
-                    "  [{}] {:?} - {}",
-                    event.version,
-                    event.kind,
-                    &said_str[..16]
-                );
+                eprintln!("  [{}] {:?} - {}", event.version, event.kind, event.said);
             }
             #[allow(clippy::expect_used)]
             collected
@@ -187,7 +183,6 @@ pub(crate) async fn cmd_iel_get(cli: &Cli, iel_prefix: &str) -> Result<()> {
         "is_decommissioned": verification.is_decommissioned(),
     });
 
-    println!();
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
