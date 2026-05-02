@@ -201,6 +201,12 @@ run_test "sadstore can PUBLISH to sel_updates" bash -c '
     [ "$result" -ge 0 ]
 '
 
+run_test "sadstore can PUBLISH to iel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user sadstore -a "'$SADSTORE_PASSWORD'" --no-auth-warning PUBLISH iel_updates test_message)
+    echo "  Result: $result"
+    [ "$result" -ge 0 ]
+'
+
 run_test "gossip cannot PUBLISH to kel_updates" bash -c '
     result=$(redis-cli -h "'$REDIS_HOST'" --user gossip -a "'$GOSSIP_PASSWORD'" --no-auth-warning PUBLISH kel_updates test_message 2>&1)
     echo "  Result: $result"
@@ -209,6 +215,12 @@ run_test "gossip cannot PUBLISH to kel_updates" bash -c '
 
 run_test "kels cannot PUBLISH to sad_updates" bash -c '
     result=$(redis-cli -h "'$REDIS_HOST'" --user kels -a "'$KELS_PASSWORD'" --no-auth-warning PUBLISH sad_updates test_message 2>&1)
+    echo "  Result: $result"
+    echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
+'
+
+run_test "kels cannot PUBLISH to iel_updates" bash -c '
+    result=$(redis-cli -h "'$REDIS_HOST'" --user kels -a "'$KELS_PASSWORD'" --no-auth-warning PUBLISH iel_updates test_message 2>&1)
     echo "  Result: $result"
     echo "$result" | grep -qi "NOPERM\|no permissions\|denied"
 '
