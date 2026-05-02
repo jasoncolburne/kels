@@ -67,7 +67,7 @@ providers:
     buildMode: local-docker
 
 variables:
-  rustLogLevel: info
+  rustLogLevel: info,kels_gossip::sync=debug,kels_sadstore=debug
   postgres:
     user: kels_admin
     password: use_something_better_in_production
@@ -120,7 +120,7 @@ variables:
     accessKey: "minioadmin"
     secretKey: "minioadmin"
   sadstore:
-    replicas: 2
+    replicas: 1
     port: "80"
     bucket: "kels-sad"
     maxSelEventsPerPrefixPerDay: "256"

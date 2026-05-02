@@ -2610,6 +2610,12 @@ pub async fn submit_identity_events(
                 .await
             {
                 warn!("Failed to publish IEL update: {}", e);
+            } else {
+                debug!(
+                    iel_prefix = %iel_prefix,
+                    effective_said = %said,
+                    "Published IEL update to Redis"
+                );
             }
         }
     }

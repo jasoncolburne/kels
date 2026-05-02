@@ -1840,7 +1840,7 @@ pub async fn run_sad_anti_entropy_loop(
                             // didn't change. Don't re-fetch local SAID
                             // here — that's the PULL-shaped check and on
                             // PUSH it would always return false.
-                            if kels_core::forward_sad_events(
+                            match kels_core::forward_sad_events(
                                 prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1849,9 +1849,17 @@ pub async fn run_sad_anti_entropy_loop(
                                 since_digest.as_ref(),
                             )
                             .await
-                            .is_ok()
                             {
-                                return (prefix, source, retries, RepairResult::Repaired);
+                                Ok(()) => {
+                                    return (prefix, source, retries, RepairResult::Repaired);
+                                }
+                                Err(e) => {
+                                    debug!(
+                                        sel_prefix = %prefix,
+                                        peer_sadstore_url = %sadstore_url,
+                                        "SAD anti-entropy: push to peer failed: {}", e
+                                    );
+                                }
                             }
                         } else {
                             // Remote is ahead — pull from remote.
@@ -1886,7 +1894,7 @@ pub async fn run_sad_anti_entropy_loop(
                             // effective SAID and declare `Repaired` only
                             // on actual advancement; otherwise continue to
                             // the next peer.
-                            if kels_core::forward_sad_events(
+                            if let Err(e) = kels_core::forward_sad_events(
                                 prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1895,8 +1903,12 @@ pub async fn run_sad_anti_entropy_loop(
                                 since_digest.as_ref(),
                             )
                             .await
-                            .is_err()
                             {
+                                debug!(
+                                    sel_prefix = %prefix,
+                                    peer_sadstore_url = %sadstore_url,
+                                    "SAD anti-entropy: pull from peer failed: {}", e
+                                );
                                 continue;
                             }
                             let new_said = local
