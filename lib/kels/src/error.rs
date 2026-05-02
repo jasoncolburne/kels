@@ -225,6 +225,14 @@ pub enum KelsError {
     /// concrete next move from the server's response on a force-submit.
     #[error("Decommission blocked by divergence: {0}")]
     DecommissionBlockedByDivergence(String),
+
+    /// Server-side chain re-verification of already-stored events failed.
+    /// Indicates DB integrity loss or tampering — the receiver cannot
+    /// confirm its own historical state, so it cannot accept new events.
+    /// Surfaces as 500 (server-internal failure), not 409 (which is
+    /// reserved for client-vs-state structural conflicts).
+    #[error("Chain verification failed: {0}")]
+    ChainVerificationFailed(String),
 }
 
 impl KelsError {
@@ -390,6 +398,7 @@ mod tests {
             KelsError::IncompleteInception("missing v1 Upd".to_string()),
             KelsError::BadIdentityBinding("identity_event SAID not in IEL".to_string()),
             KelsError::DecommissionBlockedByDivergence("chain divergent".to_string()),
+            KelsError::ChainVerificationFailed("server-side existing chain re-verify".to_string()),
         ];
 
         for err in errors {

@@ -37,7 +37,8 @@ use crate::{
     client::SadStoreClient,
     store::SadStore,
     types::{
-        IdentityEventKind, IelResolver, PolicyChecker, SadEvent, SelVerification, SelVerifier,
+        IdentityEventKind, IelResolver, PolicyChecker, SadEvent, SadEventTerminalState,
+        SelVerification, SelVerifier,
     },
 };
 
@@ -47,6 +48,11 @@ use crate::{
 pub struct FlushOutcome {
     pub diverged_at_at_submit: Option<u64>,
     pub applied: bool,
+    /// `Some(_)` when the server skipped the batch because the chain is
+    /// already terminal (gossip-race-already-contested / decommissioned).
+    /// In that case `applied=false` and pending was NOT absorbed —
+    /// callers must reconcile their local state against the server view.
+    pub terminal: Option<SadEventTerminalState>,
 }
 
 /// Builder for SAD Event Logs.
@@ -486,6 +492,7 @@ impl SadEventBuilder {
             return Ok(FlushOutcome {
                 diverged_at_at_submit: None,
                 applied: false,
+                terminal: None,
             });
         }
 
@@ -500,6 +507,18 @@ impl SadEventBuilder {
         }
 
         let response = client.submit_sad_events(&self.pending_events).await?;
+
+        // Terminal-state skip: server reports the chain is already
+        // contested / decommissioned. No events landed; do NOT write
+        // through to the local store, do NOT absorb pending. Surface
+        // the signal so the caller can reconcile.
+        if let Some(terminal) = response.terminal {
+            return Ok(FlushOutcome {
+                diverged_at_at_submit: response.diverged_at,
+                applied: response.applied,
+                terminal: Some(terminal),
+            });
+        }
 
         if let Some(store) = self.sad_store.as_ref() {
             for event in &self.pending_events {
@@ -562,6 +581,7 @@ impl SadEventBuilder {
         Ok(FlushOutcome {
             diverged_at_at_submit: response.diverged_at,
             applied: response.applied,
+            terminal: None,
         })
     }
 

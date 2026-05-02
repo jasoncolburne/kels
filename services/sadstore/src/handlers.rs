@@ -1195,12 +1195,16 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
         let page_len = page.len();
         since = page.last().map(|r| r.said);
         verifier.verify_page(&page).await.map_err(|e| {
-            warn!("Chain verification failed: {}", e);
-            (
-                StatusCode::CONFLICT,
-                format!("Chain verification failed: {}", e),
-            )
-                .into_response()
+            // Re-verifying *already-stored* events should always pass — these
+            // are events the receiver itself wrote earlier under the same
+            // verifier rules. A failure here means DB integrity loss /
+            // tampering, not a client-vs-state conflict — surface as 500
+            // via `KelsError::ChainVerificationFailed` so federation peers
+            // and operators can distinguish server-internal failures from
+            // routine 409 conflict responses.
+            warn!("SE existing-chain re-verification failed: {}", e);
+            let err = kels_core::KelsError::ChainVerificationFailed(e.to_string());
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         })?;
         if (page_len as u64) < page_size {
             break;
@@ -1416,6 +1420,7 @@ pub async fn submit_sad_events(
             let response = kels_core::SubmitSadEventsResponse {
                 diverged_at,
                 applied: false,
+                terminal: None,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }
@@ -1470,28 +1475,23 @@ pub async fn submit_sad_events(
             };
 
         // Terminal-state gates: a contested or decommissioned SE chain
-        // accepts no further events of any kind. Mirrors the IEL handler.
-        if pre_batch_contested {
+        // accepts no further events of any kind. Mirrors the IEL handler:
+        // 200 OK with `terminal: Some(_)` so gossip forwarders see
+        // idempotent success; owner-side callers branch on `terminal` to
+        // distinguish "your work is moot" from dedup-short-circuit.
+        if pre_batch_contested || pre_batch_decommissioned {
             let _ = tx.rollback().await;
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "SE {} is contested — no further events accepted",
-                    sel_prefix
-                ),
-            )
-                .into_response();
-        }
-        if pre_batch_decommissioned {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "SE {} is decommissioned — no further events accepted",
-                    sel_prefix
-                ),
-            )
-                .into_response();
+            let terminal = if pre_batch_contested {
+                kels_core::SadEventTerminalState::Contested
+            } else {
+                kels_core::SadEventTerminalState::Decommissioned
+            };
+            let response = kels_core::SubmitSadEventsResponse {
+                diverged_at: pre_batch_first_divergent,
+                applied: false,
+                terminal: Some(terminal),
+            };
+            return (StatusCode::OK, Json(response)).into_response();
         }
 
         // Sealed/unsealed predicate per
@@ -1698,12 +1698,19 @@ pub async fn submit_sad_events(
 
             // Insert each Cnt with `insert_event` (mirrors IEL Cnt path):
             // bypasses `save_batch`'s divergent-rejection so a Cnt can land
-            // on a sealed-divergent chain.
+            // on a sealed-divergent chain. A failure here is post-dedup,
+            // post-advisory-lock, post-verifier — there's no client-vs-state
+            // conflict left to surface; the only realistic cause is a DB
+            // integrity issue. Surface as 500 via `ChainVerificationFailed`.
             for event in &new_events {
                 if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert SE Cnt: {}", e);
+                    warn!("Failed to insert SE Cnt (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
-                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                    let err = kels_core::KelsError::ChainVerificationFailed(format!(
+                        "post-dedup-locked Cnt insert failed: {}",
+                        e
+                    ));
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
                 }
             }
             new_event_count = new_events.len() as u32;
@@ -1769,11 +1776,17 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
+            // Same shape as the SE Cnt insert above — failure post-dedup-
+            // locked-verified is server-internal integrity, not 409.
             for event in &new_events {
                 if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert SE Dec: {}", e);
+                    warn!("Failed to insert SE Dec (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
-                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                    let err = kels_core::KelsError::ChainVerificationFailed(format!(
+                        "post-dedup-locked Dec insert failed: {}",
+                        e
+                    ));
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
                 }
             }
             new_event_count = new_events.len() as u32;
@@ -1932,6 +1945,7 @@ pub async fn submit_sad_events(
         let response = kels_core::SubmitSadEventsResponse {
             diverged_at: diverged_at_version,
             applied: new_event_count > 0,
+            terminal: None,
         };
         return (StatusCode::CREATED, Json(response)).into_response();
     }
@@ -1983,6 +1997,7 @@ pub async fn submit_sad_events(
     let response = kels_core::SubmitSadEventsResponse {
         diverged_at: diverged_at_version,
         applied: new_event_count > 0,
+        terminal: None,
     };
     (StatusCode::CREATED, Json(response)).into_response()
 }
@@ -2110,12 +2125,13 @@ async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
         let page_len = page.len();
         since = page.last().map(|e| e.said);
         verifier.verify_page(&page).await.map_err(|e| {
-            warn!("IEL chain verification failed: {}", e);
-            (
-                StatusCode::CONFLICT,
-                format!("IEL chain verification failed: {}", e),
-            )
-                .into_response()
+            // Same shape as `verify_existing_chain` for SE — re-verification
+            // of already-stored IEL events is a server-internal integrity
+            // contract, not a client-vs-state conflict. Surface as 500 via
+            // `KelsError::ChainVerificationFailed`.
+            warn!("IEL existing-chain re-verification failed: {}", e);
+            let err = kels_core::KelsError::ChainVerificationFailed(e.to_string());
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         })?;
         if (page_len as u64) < page_size {
             break;
@@ -2321,12 +2337,18 @@ pub async fn submit_identity_events(
             let response = kels_core::SubmitIdentityEventsResponse {
                 applied: false,
                 diverged_at,
+                terminal: None,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
         // Terminal-state gate. These checks fire before routing — terminal
-        // chains accept no further events of any kind.
+        // chains accept no further events of any kind. The response is 200
+        // OK with `terminal: Some(_)` (rather than 4xx) so gossip
+        // forwarders see idempotent success on the gossip-race-already-
+        // terminal case; owner-side callers branch on `terminal` to
+        // distinguish "your work is moot — chain is already terminal" from
+        // the dedup short-circuit (also `applied=false`, `terminal=None`).
         let is_contested = match state.repo.iel_events.is_contested(iel_prefix).await {
             Ok(v) => v,
             Err(e) => {
@@ -2335,17 +2357,6 @@ pub async fn submit_identity_events(
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
         };
-        if is_contested {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "IEL {} is contested — no further events accepted",
-                    iel_prefix
-                ),
-            )
-                .into_response();
-        }
         let is_decommissioned = match state.repo.iel_events.is_decommissioned(iel_prefix).await {
             Ok(v) => v,
             Err(e) => {
@@ -2354,16 +2365,32 @@ pub async fn submit_identity_events(
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
         };
-        if is_decommissioned {
+        if is_contested || is_decommissioned {
+            let diverged_at = match state
+                .repo
+                .iel_events
+                .first_divergent_version(iel_prefix)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query first divergent version: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
             let _ = tx.rollback().await;
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "IEL {} is decommissioned — no further events accepted",
-                    iel_prefix
-                ),
-            )
-                .into_response();
+            let terminal = if is_contested {
+                kels_core::IdentityEventTerminalState::Contested
+            } else {
+                kels_core::IdentityEventTerminalState::Decommissioned
+            };
+            let response = kels_core::SubmitIdentityEventsResponse {
+                applied: false,
+                diverged_at,
+                terminal: Some(terminal),
+            };
+            return (StatusCode::OK, Json(response)).into_response();
         }
 
         // Snapshot pre-batch chain state BEFORE running the verifier. The
@@ -2459,11 +2486,18 @@ pub async fn submit_identity_events(
         let last_gp_version = pre_batch_seal;
 
         if is_contest {
+            // A failure here is post-dedup, post-advisory-lock, post-verifier
+            // — server-internal integrity, not 409. Surface as 500 via
+            // `ChainVerificationFailed` (mirrors the SE Cnt/Dec sites).
             for event in &new_events {
                 if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert IEL Cnt: {}", e);
+                    warn!("Failed to insert IEL Cnt (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
-                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                    let err = kels_core::KelsError::ChainVerificationFailed(format!(
+                        "post-dedup-locked IEL Cnt insert failed: {}",
+                        e
+                    ));
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
                 }
             }
             new_event_count = new_events.len() as u32;
@@ -2478,9 +2512,13 @@ pub async fn submit_identity_events(
         } else if is_decommission {
             for event in &new_events {
                 if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert IEL Dec: {}", e);
+                    warn!("Failed to insert IEL Dec (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
-                    return (StatusCode::CONFLICT, format!("{}", e)).into_response();
+                    let err = kels_core::KelsError::ChainVerificationFailed(format!(
+                        "post-dedup-locked IEL Dec insert failed: {}",
+                        e
+                    ));
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
                 }
             }
             new_event_count = new_events.len() as u32;
@@ -2565,6 +2603,7 @@ pub async fn submit_identity_events(
     let response = kels_core::SubmitIdentityEventsResponse {
         diverged_at: diverged_at_version,
         applied: new_event_count > 0,
+        terminal: None,
     };
     (StatusCode::CREATED, Json(response)).into_response()
 }

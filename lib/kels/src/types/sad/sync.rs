@@ -284,19 +284,31 @@ impl PagedSadSink for HttpSadSink {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
 
-        if resp.status().is_success() {
+        let status = resp.status();
+        if status.is_success() {
             // Drain the body to honor `SubmitSadEventsResponse`'s `#[must_use]`.
-            // Forwarding/sync isn't owner-driven, so the divergence/applied
-            // signals aren't actionable here — owner submission goes through
-            // `SadStoreClient::submit_sad_events`, which surfaces the response.
+            // Forwarding/sync isn't owner-driven, so the
+            // divergence/applied/terminal signals aren't actionable here —
+            // owner submission goes through `SadStoreClient::submit_sad_events`,
+            // which surfaces the response. The 200-OK terminal-state-skip
+            // path (round-12 third follow-up commit 2) lands here too: a
+            // gossip-race-already-terminal remote returns 200 with
+            // `terminal: Some(_)` instead of 4xx, so the sink reads it as
+            // idempotent success.
             let _ = resp.json::<crate::SubmitSadEventsResponse>().await;
-            Ok(())
-        } else if resp.status() == reqwest::StatusCode::CONFLICT {
-            // Chain already divergent on remote — that's fine, skip
             Ok(())
         } else {
             let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+            // 409 is reserved for genuine client-vs-state conflicts (sealed
+            // fork, divergent chain on `save_batch`, repair preconditions
+            // on `truncate_and_replace`). Surface as `ErrorCode::Conflict`
+            // so callers can distinguish from 5xx.
+            let code = if status == reqwest::StatusCode::CONFLICT {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::InternalError
+            };
+            Err(KelsError::ServerError(text, code))
         }
     }
 }
@@ -712,6 +724,84 @@ mod tests {
         async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
             self.pages.lock().await.push(events.to_vec());
             Ok(())
+        }
+    }
+
+    /// Wire-level mapping contract: a 409 from the SE submit endpoint
+    /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`, not
+    /// `InternalError` (silent-skip dropped — round-12 third follow-up
+    /// commit 2). Production conflict-409 paths in the submit handler
+    /// (`save_batch` sealed-fork, `truncate_and_replace` repair
+    /// preconditions) are pre-screened by the routing matrix; this
+    /// test pins the typed-error mapping the client guarantees to
+    /// callers, so when those defense-in-depth paths fire (or any
+    /// future flow exposes them) callers can branch on `Conflict`
+    /// without parsing the error body.
+    #[tokio::test]
+    async fn http_sad_sink_409_maps_to_conflict_error_code() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_string(
+                    "Cannot fork at version 3 — sealed by evaluation at version 5",
+                ),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpSadSink::new(&mock_server.uri()).expect("sink");
+        let identity = test_digest(b"identity-409");
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
+
+        let result = sink.store_page(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
+                assert!(
+                    body.contains("Cannot fork"),
+                    "body should preserve server message, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, Conflict), got {other:?}"),
+        }
+    }
+
+    /// Wire-level mapping contract for non-409 server errors: 500
+    /// (e.g., `KelsError::ChainVerificationFailed` from the
+    /// `verify_existing_chain` helper) surfaces as
+    /// `ServerError(_, ErrorCode::InternalError)`, with the body
+    /// preserved so callers can prefix-match the variant via Display.
+    #[tokio::test]
+    async fn http_sad_sink_500_with_chain_verification_body_maps_to_internal_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string("Chain verification failed: invalid said in stored event"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpSadSink::new(&mock_server.uri()).expect("sink");
+        let identity = test_digest(b"identity-500");
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
+
+        let result = sink.store_page(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
+                assert!(
+                    body.starts_with("Chain verification failed:"),
+                    "body should preserve `ChainVerificationFailed` Display prefix, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, InternalError), got {other:?}"),
         }
     }
 

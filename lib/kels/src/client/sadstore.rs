@@ -225,12 +225,18 @@ impl SadStoreClient {
     ) -> Result<SubmitSadEventsResponse, KelsError> {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
+        let status = resp.status();
 
-        if resp.status().is_success() {
+        if status.is_success() {
             Ok(resp.json().await?)
         } else {
             let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+            let code = if status == reqwest::StatusCode::CONFLICT {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::InternalError
+            };
+            Err(KelsError::ServerError(text, code))
         }
     }
 
@@ -447,12 +453,18 @@ impl SadStoreClient {
     ) -> Result<crate::SubmitIdentityEventsResponse, KelsError> {
         let url = format!("{}/api/v1/iel/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
+        let status = resp.status();
 
-        if resp.status().is_success() {
+        if status.is_success() {
             Ok(resp.json().await?)
         } else {
             let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+            let code = if status == reqwest::StatusCode::CONFLICT {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::InternalError
+            };
+            Err(KelsError::ServerError(text, code))
         }
     }
 
@@ -523,5 +535,140 @@ impl SadStoreClient {
             crate::max_pages(),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Wire-level mapping contracts for the typed `SadStoreClient` submit
+    //! methods. The bare 409→`ErrorCode::Conflict` mapping (round-12 third
+    //! follow-up commit 2) is what callers depend on to branch on conflict
+    //! semantics without parsing error bodies; the 500→`InternalError`
+    //! mapping preserves the body so callers can prefix-match the typed
+    //! variant via Display (e.g., `KelsError::ChainVerificationFailed`).
+    //! `HttpSadSink` / `HttpIelSink` carry parallel tests in
+    //! `lib/kels/src/types/{sad,iel}/sync.rs`.
+    use super::*;
+    use crate::{IdentityEvent, SadEvent};
+    use cesr::Digest256;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_digest(label: &[u8]) -> Digest256 {
+        Digest256::blake3_256(label)
+    }
+
+    #[tokio::test]
+    async fn submit_sad_events_409_maps_to_conflict_error_code() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_string("Chain is divergent — repair required"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = SadStoreClient::new(&mock_server.uri()).expect("client");
+        let identity = test_digest(b"identity-409-typed");
+        let v0 = SadEvent::icp(identity, "kels/test").expect("icp");
+
+        let result = client.submit_sad_events(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
+                assert!(
+                    body.contains("Chain is divergent"),
+                    "body should preserve server message, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, Conflict), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_sad_events_500_maps_to_internal_error_with_chain_verification_body() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string(
+                    "Chain verification failed: stored said does not match content",
+                ),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = SadStoreClient::new(&mock_server.uri()).expect("client");
+        let identity = test_digest(b"identity-500-typed");
+        let v0 = SadEvent::icp(identity, "kels/test").expect("icp");
+
+        let result = client.submit_sad_events(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
+                assert!(
+                    body.starts_with("Chain verification failed:"),
+                    "body should preserve `ChainVerificationFailed` Display prefix, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, InternalError), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_identity_events_409_maps_to_conflict_error_code() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/iel/events"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .set_body_string("Chain is divergent — only Cnt resolves an IEL"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = SadStoreClient::new(&mock_server.uri()).expect("client");
+        let auth = test_digest(b"auth-409-typed");
+        let gov = test_digest(b"gov-409-typed");
+        let v0 = IdentityEvent::icp(auth, gov, "kels/iel/v1/identity/test").expect("icp");
+
+        let result = client.submit_identity_events(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
+                assert!(
+                    body.contains("Chain is divergent"),
+                    "body should preserve server message, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, Conflict), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_identity_events_500_maps_to_internal_error_with_chain_verification_body() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/iel/events"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(
+                "Chain verification failed: post-dedup-locked Cnt insert failed: tx error",
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let client = SadStoreClient::new(&mock_server.uri()).expect("client");
+        let auth = test_digest(b"auth-500-typed");
+        let gov = test_digest(b"gov-500-typed");
+        let v0 = IdentityEvent::icp(auth, gov, "kels/iel/v1/identity/test").expect("icp");
+
+        let result = client.submit_identity_events(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
+                assert!(
+                    body.starts_with("Chain verification failed:"),
+                    "body should preserve `ChainVerificationFailed` Display prefix, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, InternalError), got {other:?}"),
+        }
     }
 }

@@ -23,8 +23,8 @@ use std::{
 
 use ctor::dtor;
 use kels_core::{
-    IdentityEvent, IdentityEventBuilder, IdentityEventKind, KelsClient, KeyEventBuilder,
-    PolicyChecker, SadStoreClient, SoftwareKeyProvider, VerificationKeyCode,
+    IdentityEvent, IdentityEventBuilder, IdentityEventKind, IdentityEventTerminalState, KelsClient,
+    KeyEventBuilder, PolicyChecker, SadStoreClient, SoftwareKeyProvider, VerificationKeyCode,
     compute_identity_event_prefix,
 };
 use kels_policy::{AnchoredPolicyChecker, InMemoryPolicyResolver, Policy, PolicyResolver};
@@ -83,6 +83,13 @@ async fn retry_get_port_generic(
 struct SharedHarness {
     kels_url: String,
     sad_url: String,
+    /// Direct DB URL for the SAD-store Postgres container — used by
+    /// integration tests that need to construct a `SadStoreRepository`
+    /// or run raw SQL outside the HTTP API (e.g., the
+    /// integrity-500 test corrupts a stored event row to trigger
+    /// `verify_existing_iel_chain` failure on the next submit).
+    /// Mirrors the SE-side harness at `sad_builder_tests.rs`.
+    sad_db_url: String,
     _pg_kels: ContainerAsync<Postgres>,
     _pg_sad: ContainerAsync<Postgres>,
     _redis: ContainerAsync<Redis>,
@@ -244,6 +251,7 @@ impl SharedHarness {
         Some(Self {
             kels_url,
             sad_url,
+            sad_db_url,
             _pg_kels: pg_kels,
             _pg_sad: pg_sad,
             _redis: redis,
@@ -499,8 +507,9 @@ async fn contest_terminates_chain() {
     kel_builder.interact(&cnt_said).await.expect("anchor Cnt");
     let _ = builder.flush().await.expect("flush Cnt");
 
-    // Subsequent submission should fail with a 403 (ContestedIel surfaces from
-    // the server as a generic ServerError in the client).
+    // Subsequent submission returns 200 OK with `terminal: Some(Contested)`
+    // (round-12 third follow-up commit 2 — gossip-race-already-terminal
+    // idempotency). The body shape replaces the prior 403 + text body.
     let mut builder2 = IdentityEventBuilder::new(
         Some(sad_client.clone()),
         None,
@@ -520,11 +529,10 @@ async fn contest_terminates_chain() {
     let _ = builder2.flush().await.unwrap(); // empty pending
     let resp = sad_client
         .submit_identity_events(std::slice::from_ref(&evl_event))
-        .await;
-    // Terminal-state gate: server returns "IEL <prefix> is contested — no
-    // further events accepted" once a Cnt has landed.
-    assert_err_contains(&resp, "is contested");
-    assert_err_contains(&resp, "no further events accepted");
+        .await
+        .expect("contested chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(IdentityEventTerminalState::Contested));
 }
 
 #[tokio::test]
@@ -560,11 +568,13 @@ async fn decommission_terminates_chain() {
     .unwrap();
     let resp = sad_client
         .submit_identity_events(std::slice::from_ref(&evl_event))
-        .await;
-    // Terminal-state gate: server returns "IEL <prefix> is decommissioned — no
-    // further events accepted" once a Dec has landed.
-    assert_err_contains(&resp, "is decommissioned");
-    assert_err_contains(&resp, "no further events accepted");
+        .await
+        .expect("decommissioned chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(
+        resp.terminal,
+        Some(IdentityEventTerminalState::Decommissioned)
+    );
 }
 
 #[tokio::test]
@@ -684,9 +694,12 @@ async fn divergent_chain_accepts_cnt_terminates() {
     // terminal-state gate fires before any routing.
     let evl_extra = IdentityEvent::evl(&v1_a, None, None).unwrap();
     kel_builder.interact(&evl_extra.said).await.unwrap();
-    let resp = sad_client.submit_identity_events(&[evl_extra]).await;
-    assert_err_contains(&resp, "is contested");
-    assert_err_contains(&resp, "no further events accepted");
+    let resp = sad_client
+        .submit_identity_events(&[evl_extra])
+        .await
+        .expect("contested chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(IdentityEventTerminalState::Contested));
 }
 
 #[tokio::test]
@@ -992,4 +1005,71 @@ async fn upload_immune_policy(
 #[allow(dead_code)]
 async fn _suppress_incept_and_flush_unused(harness: &SharedHarness) {
     let _ = incept_and_flush(harness, "_unused").await;
+}
+
+/// Server-internal-integrity-failure → 500 contract for IEL.
+/// Mirrors the SE test in `sad_builder_tests.rs`: when the receiver's
+/// already-stored IEL chain fails re-verification, the
+/// `verify_existing_iel_chain` helper surfaces the failure as
+/// `KelsError::ChainVerificationFailed` and the handler returns 500.
+/// The client maps the 500 → `ServerError(_, ErrorCode::InternalError)`
+/// with the variant's Display prefix in the body.
+///
+/// Tampering shape: directly UPDATE a stored row's `version` column
+/// without recomputing its `said`. On re-verification the deserialized
+/// event's `said` no longer matches the Blake3 of its (modified)
+/// content, so `verify_said` fails inside `verifier.verify_page`.
+#[tokio::test]
+#[serial]
+async fn submit_returns_500_when_existing_iel_chain_fails_reverification() {
+    use kels_core::{IdentityEvent, KelsError};
+    use kels_sadstore::SadStoreRepository;
+    use verifiable_storage::RepositoryConnection;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (builder, mut kel_builder, _policy) = incept_and_flush(harness, "iel-integrity-500").await;
+    let iel_prefix = *builder.prefix().expect("prefix from incept");
+
+    // Tamper: change v0 (Icp)'s version column to a bogus value.
+    let repo = SadStoreRepository::connect(&harness.sad_db_url)
+        .await
+        .expect("connect sadstore repo");
+    let rows_affected =
+        sqlx::query("UPDATE iel_events SET version = 999 WHERE prefix = $1 AND version = 0")
+            .bind(iel_prefix.to_string())
+            .execute(repo.iel_events.pool.inner())
+            .await
+            .expect("tamper iel_events row")
+            .rows_affected();
+    assert_eq!(rows_affected, 1, "tampering must hit exactly one row");
+
+    // Submit a fresh Evl extending the (now-tampered-on-disk) chain.
+    // The handler's `verify_existing_iel_chain` runs the verifier over
+    // the existing IEL events — `verify_said` fails on the corrupted
+    // Icp row, surfacing 500 with the typed-variant prefix in the body.
+    let tip = builder
+        .iel_verification()
+        .and_then(|v| v.current_event())
+        .expect("tip after Icp")
+        .clone();
+    let evl = IdentityEvent::evl(&tip, None, None).expect("build Evl");
+    kel_builder.interact(&evl.said).await.expect("anchor Evl");
+
+    // Use the raw client (bypassing `flush`) so we can match against the
+    // typed `KelsError::ServerError` directly.
+    let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
+    let result = sad_client.submit_identity_events(&[evl]).await;
+    match result {
+        Err(KelsError::ServerError(body, kels_core::ErrorCode::InternalError)) => {
+            assert!(
+                body.starts_with("Chain verification failed:"),
+                "server-internal integrity failure must use the typed variant prefix; got: {body}"
+            );
+        }
+        other => panic!(
+            "expected ServerError(_, InternalError) with chain-verification body, got {other:?}"
+        ),
+    }
 }

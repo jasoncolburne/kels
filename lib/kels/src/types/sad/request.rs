@@ -55,14 +55,35 @@ pub struct SadEventEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
+/// Terminal state of an SE chain at the moment a submission was rejected
+/// because the chain is already terminal. Returned via
+/// `SubmitSadEventsResponse.terminal` on a 200 OK response so gossip
+/// relays / forwarders see idempotent success while owner-side callers can
+/// still distinguish the cause. Mirrors IEL's `IdentityEventTerminalState`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SadEventTerminalState {
+    Contested,
+    Decommissioned,
+}
+
 /// Response from SAD event submission.
+///
+/// - `applied=true` — at least one event committed.
+/// - `applied=false`, `terminal=None` — dedup short-circuit (every event
+///   submitted was already in the chain).
+/// - `applied=false`, `terminal=Some(_)` — the chain was already terminal
+///   when the batch arrived; no events committed but the receiver reports
+///   the state for caller dispatch.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[must_use = "SubmitSadEventsResponse.applied must be checked — events may be rejected"]
+#[must_use = "SubmitSadEventsResponse.applied / .terminal must be checked — events may be rejected"]
 pub struct SubmitSadEventsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diverged_at: Option<u64>,
     pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<SadEventTerminalState>,
 }
 
 /// Response from a successful SAD object submission.

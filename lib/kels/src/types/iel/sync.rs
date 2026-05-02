@@ -163,25 +163,35 @@ impl PagedIelSink for HttpIelSink {
         let url = format!("{}/api/v1/iel/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
 
-        if resp.status().is_success() {
+        let status = resp.status();
+        if status.is_success() {
             // Drain the body to honor `SubmitIdentityEventsResponse`'s `#[must_use]`.
-            // Forwarding/sync isn't owner-driven, so the divergence/applied
-            // signals aren't actionable here — owner submission goes through
-            // `SadStoreClient::submit_identity_events`, which surfaces the response.
+            // Forwarding/sync isn't owner-driven, so the
+            // divergence/applied/terminal signals aren't actionable here —
+            // owner submission goes through
+            // `SadStoreClient::submit_identity_events`, which surfaces the
+            // response. The 200-OK terminal-state-skip path (round-12
+            // third follow-up commit 2) lands here too: a gossip-race-
+            // already-terminal remote returns 200 with `terminal: Some(_)`
+            // instead of 4xx, so the sink reads it as idempotent success.
             let _ = resp
                 .json::<crate::types::SubmitIdentityEventsResponse>()
                 .await;
             Ok(())
-        } else if resp.status() == reqwest::StatusCode::CONFLICT
-            || resp.status() == reqwest::StatusCode::FORBIDDEN
-        {
-            // Chain already terminal or divergent on remote — gossip pulls are
-            // best-effort; skip rather than fail. The submit handler's routing
-            // is the authority on what's accepted.
-            Ok(())
         } else {
             let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+            // 409 = genuine client-vs-state conflict (e.g., sealed-fork
+            // rejection from `save_batch`). 403 = real failure
+            // (`policy_satisfied=false`, divergent-rejection); the
+            // gossip-race-already-terminal idempotent case now flows
+            // through 200 OK + `terminal: Some(_)`, so the previous
+            // FORBIDDEN→Ok silent-skip is gone.
+            let code = if status == reqwest::StatusCode::CONFLICT {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::InternalError
+            };
+            Err(KelsError::ServerError(text, code))
         }
     }
 }
@@ -275,10 +285,12 @@ async fn send_divergent_iel_events(
             )));
         }
         // Best-effort: the receiver may already be contested on this
-        // chain (gossip race), in which case the submit handler returns
-        // 4xx — the HttpIelSink converts that to Ok via the existing
-        // `CONFLICT|FORBIDDEN → Ok` branch. Errors here are reserved for
-        // genuine failures.
+        // chain (gossip race). The submit handler's terminal-state gate
+        // returns 200 OK with `terminal: Some(Contested)` for that case
+        // (round-12 third follow-up commit 2), so the sink reads it as
+        // idempotent success. Errors here are reserved for genuine
+        // failures (now propagating uniformly via `ErrorCode::Conflict`
+        // for 409 and `ErrorCode::InternalError` for 5xx).
         sink.store_page(&cnt_chain).await?;
     } else {
         // Unrecovered (defensive): production routing prevents this
@@ -692,6 +704,76 @@ mod tests {
             events.push(IdentityEvent::evl(prev, None, None).unwrap());
         }
         events
+    }
+
+    /// Wire-level mapping contract: a 409 from the IEL submit endpoint
+    /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`,
+    /// not `InternalError`. Mirrors the SE-side test in
+    /// `lib/kels/src/types/sad/sync.rs` — round-12 third follow-up
+    /// commit 2 dropped both 409 and 403 silent-skips (replaced by
+    /// 200-with-`terminal` for the gossip-race-already-terminal case).
+    /// Owner-side and gossip-relay callers now both see `Conflict`
+    /// for genuine `save_batch` conflicts.
+    #[tokio::test]
+    async fn http_iel_sink_409_maps_to_conflict_error_code() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/iel/events"))
+            .respond_with(ResponseTemplate::new(409).set_body_string(
+                "Cannot fork at version 2 — sealed by governance evaluation at version 3",
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpIelSink::new(&mock_server.uri()).expect("sink");
+        let chain = make_chain(1);
+        let result = sink.store_page(&chain).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
+                assert!(
+                    body.contains("Cannot fork"),
+                    "body should preserve server message, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, Conflict), got {other:?}"),
+        }
+    }
+
+    /// 500 from IEL submit (server-internal integrity, e.g.
+    /// `KelsError::ChainVerificationFailed` from
+    /// `verify_existing_iel_chain`) maps to
+    /// `ServerError(_, ErrorCode::InternalError)` with the variant's
+    /// Display prefix preserved in the body.
+    #[tokio::test]
+    async fn http_iel_sink_500_with_chain_verification_body_maps_to_internal_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/iel/events"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string("Chain verification failed: invalid said in stored event"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpIelSink::new(&mock_server.uri()).expect("sink");
+        let chain = make_chain(1);
+        let result = sink.store_page(&chain).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
+                assert!(
+                    body.starts_with("Chain verification failed:"),
+                    "body should preserve `ChainVerificationFailed` Display prefix, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, InternalError), got {other:?}"),
+        }
     }
 
     #[tokio::test]

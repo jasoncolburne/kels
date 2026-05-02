@@ -31,8 +31,8 @@ use cesr::Digest256;
 use ctor::dtor;
 use kels_core::{
     IdentityEvent, IdentityEventBuilder, IelVerification, KelsClient, KelsError, KeyEventBuilder,
-    PolicyChecker, SadEvent, SadEventBuilder, SadStoreClient, SoftwareKeyProvider,
-    SubmitSadEventsResponse, VerificationKeyCode,
+    PolicyChecker, SadEvent, SadEventBuilder, SadEventTerminalState, SadStoreClient,
+    SoftwareKeyProvider, SubmitSadEventsResponse, VerificationKeyCode,
 };
 use kels_policy::{AnchoredPolicyChecker, InMemoryPolicyResolver, Policy, PolicyResolver};
 use reqwest::Client;
@@ -889,15 +889,18 @@ async fn submit_lands_govfailed_cnt_chain_becomes_contested_with_policy_unsatisf
         "policy_satisfied must be false (govfail propagates)"
     );
 
-    // And subsequent submits to the contested chain are refused.
+    // And subsequent submits to the contested chain return 200 OK with
+    // `terminal: Some(Contested)` (round-12 third follow-up commit 2 —
+    // gossip-race-already-terminal idempotency on owner-side too).
     let further_content = upload_content(&setup.sad_client, "post-cnt").await;
     let further_upd = SadEvent::upd(&cnt, setup.iel_icp_said, further_content).expect("build Upd");
-    let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
-    assert_err_contains(
-        result,
-        "is contested",
-        "contested chain must reject further submissions",
-    );
+    let resp = setup
+        .sad_client
+        .submit_sad_events(&[further_upd])
+        .await
+        .expect("contested chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(SadEventTerminalState::Contested));
 }
 
 /// Symmetric govfailed-Dec: SOFT path lands; chain becomes
@@ -945,16 +948,17 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
     assert!(!v.is_contested());
     assert!(!v.policy_satisfied());
 
-    // Subsequent submits refused with "is decommissioned".
+    // Subsequent submits return 200 OK with `terminal: Some(Decommissioned)`.
     let further_content = upload_content(&setup.sad_client, "post-dec").await;
     let further_upd =
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).expect("build Upd");
-    let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
-    assert_err_contains(
-        result,
-        "is decommissioned",
-        "decommissioned chain must reject further submissions",
-    );
+    let resp = setup
+        .sad_client
+        .submit_sad_events(&[further_upd])
+        .await
+        .expect("decommissioned chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(SadEventTerminalState::Decommissioned));
 }
 
 /// Cnt on an unsealed-divergent SE chain: rejected with "Repair required"
@@ -1130,12 +1134,13 @@ async fn contest_terminates_chain() {
     let further_content = upload_content(&setup.sad_client, "post-contest").await;
     let further_upd =
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
-    let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
-    assert_err_contains(
-        result,
-        "is contested",
-        "contested chain refuses further submissions",
-    );
+    let resp = setup
+        .sad_client
+        .submit_sad_events(&[further_upd])
+        .await
+        .expect("contested chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(SadEventTerminalState::Contested));
 }
 
 /// Builder-driven `decommission()` on a clean linear chain: Dec lands,
@@ -1183,12 +1188,13 @@ async fn decommission_terminates_chain() {
     let further_content = upload_content(&setup.sad_client, "post-dec").await;
     let further_upd =
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
-    let result = setup.sad_client.submit_sad_events(&[further_upd]).await;
-    assert_err_contains(
-        result,
-        "is decommissioned",
-        "decommissioned chain refuses further submissions",
-    );
+    let resp = setup
+        .sad_client
+        .submit_sad_events(&[further_upd])
+        .await
+        .expect("decommissioned chain returns 200 with terminal indicator");
+    assert!(!resp.applied);
+    assert_eq!(resp.terminal, Some(SadEventTerminalState::Decommissioned));
 }
 
 /// `decommission()` fail-fast on divergent: surfaces a typed
@@ -2020,6 +2026,82 @@ async fn repository_walk_back_v_d_plus_one_traces_to_v_d_ancestor() {
         p_evl_b.try_cmp(p_cnt_b),
         Err(KelsError::IelDivergent(_))
     ));
+}
+
+/// Server-internal-integrity-failure → 500 contract: when the receiver's
+/// already-stored chain fails re-verification (DB tampering or
+/// integrity loss), `verify_existing_chain` surfaces the failure as
+/// `KelsError::ChainVerificationFailed` and the handler returns 500.
+/// The client maps the 500 → `ServerError(_, ErrorCode::InternalError)`
+/// with the variant's Display prefix preserved in the body so callers
+/// can distinguish server-internal failures from routine 409 conflicts.
+///
+/// Tampering shape: directly UPDATE a stored row's `version` column
+/// without recomputing its `said`. On re-verification the deserialized
+/// event's `said` no longer matches the Blake3 of its (modified)
+/// content, so `verify_said` fails inside `verifier.verify_page`.
+#[tokio::test]
+#[serial]
+async fn submit_returns_500_when_existing_se_chain_fails_reverification() {
+    use kels_sadstore::SadStoreRepository;
+    use verifiable_storage::RepositoryConnection;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "se-integrity-500").await;
+    let content = upload_content(&setup.sad_client, "se-integrity-500").await;
+
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        None,
+        Some(Arc::clone(&setup.checker)),
+    );
+    let (icp_said, upd_said) = builder
+        .incept_chain(setup.iel_prefix, TEST_TOPIC, content)
+        .await
+        .expect("incept_chain");
+    setup
+        .kel_builder
+        .interact_batch(&[icp_said, upd_said])
+        .await
+        .unwrap();
+    let _ = builder.flush().await.expect("flush incept");
+    let prefix = *builder.prefix().expect("prefix");
+
+    // Tamper: change v0's version to a bogus value. The said column stays
+    // intact, so the (deserialized) event's recomputed Blake3 won't match
+    // its said field on next re-verification.
+    let repo = SadStoreRepository::connect(&harness.sad_db_url)
+        .await
+        .expect("connect sadstore repo");
+    let rows_affected =
+        sqlx::query("UPDATE sad_events SET version = 999 WHERE prefix = $1 AND version = 0")
+            .bind(prefix.to_string())
+            .execute(repo.sad_events.pool.inner())
+            .await
+            .expect("tamper sad_events row")
+            .rows_affected();
+    assert_eq!(rows_affected, 1, "tampering must hit exactly one row");
+
+    // Now submit a fresh event. The handler's `verify_existing_chain` runs
+    // the verifier over the on-disk chain (now including the tampered v0),
+    // which surfaces a 500 with `ChainVerificationFailed` body prefix.
+    let further_content = upload_content(&setup.sad_client, "post-tamper").await;
+    let v1 = builder.last_event().cloned().expect("v1 tip");
+    let v2 = SadEvent::upd(&v1, setup.iel_icp_said, further_content).expect("build Upd");
+    let result = setup.sad_client.submit_sad_events(&[v2]).await;
+    match result {
+        Err(KelsError::ServerError(body, kels_core::ErrorCode::InternalError)) => {
+            assert!(
+                body.starts_with("Chain verification failed:"),
+                "server-internal integrity failure must use the typed variant prefix; got: {body}"
+            );
+        }
+        other => panic!(
+            "expected ServerError(_, InternalError) with chain-verification body, got {other:?}"
+        ),
+    }
 }
 
 // ==================== Suppress unused-import warnings ====================

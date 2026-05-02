@@ -29,7 +29,8 @@ use crate::{
     client::SadStoreClient,
     store::IdentityStore,
     types::{
-        IdentityEvent, IelVerification, IelVerifier, PolicyChecker, SubmitIdentityEventsResponse,
+        IdentityEvent, IdentityEventTerminalState, IelVerification, IelVerifier, PolicyChecker,
+        SubmitIdentityEventsResponse,
     },
 };
 
@@ -42,6 +43,11 @@ pub struct FlushIdentityOutcome {
     pub diverged_at_at_submit: Option<u64>,
     /// `true` iff the submit committed at least one new event server-side.
     pub applied: bool,
+    /// `Some(_)` when the server skipped the batch because the chain is
+    /// already terminal (gossip-race-already-contested / decommissioned).
+    /// In that case `applied=false` and pending was NOT absorbed —
+    /// callers must reconcile their local state against the server view.
+    pub terminal: Option<IdentityEventTerminalState>,
 }
 
 /// Builder for Identity Event Logs.
@@ -246,6 +252,7 @@ impl IdentityEventBuilder {
             return Ok(FlushIdentityOutcome {
                 diverged_at_at_submit: None,
                 applied: false,
+                terminal: None,
             });
         }
 
@@ -255,6 +262,19 @@ impl IdentityEventBuilder {
             .ok_or_else(|| KelsError::OfflineMode("flush requires a SadStoreClient".into()))?;
         let response: SubmitIdentityEventsResponse =
             client.submit_identity_events(&self.pending_events).await?;
+
+        // Terminal-state skip: the server reports the chain is already
+        // contested/decommissioned (gossip-race or another submitter beat
+        // us). No events landed; do NOT absorb pending into verified
+        // state, do NOT write through to the local store. Surface the
+        // signal so the caller can reconcile.
+        if let Some(terminal) = response.terminal {
+            return Ok(FlushIdentityOutcome {
+                diverged_at_at_submit: response.diverged_at,
+                applied: response.applied,
+                terminal: Some(terminal),
+            });
+        }
 
         // Local cache write-through.
         if let Some(store) = self.iel_store.as_ref() {
@@ -279,6 +299,7 @@ impl IdentityEventBuilder {
         Ok(FlushIdentityOutcome {
             diverged_at_at_submit: response.diverged_at,
             applied: response.applied,
+            terminal: None,
         })
     }
 
