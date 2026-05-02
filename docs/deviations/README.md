@@ -56,16 +56,6 @@ For round-12 production (short chains, 1–3 v1+ events) this is fine. Pre-produ
 
 **Fix path:** cache the per-identity `IelVerification` inside the resolver (Mutex<HashMap<Digest256, IelVerification>> or OnceCell keyed by identity). Cache lifetime equals resolver lifetime equals SE-verification lifetime, so no invalidation needed during the SE walk. Same shape on both impls. Not blocking #147 e2e gating; tracked here for the #152 perf pass.
 
-### [Round-12 review fix → standalone, deliberate] Auth-passing post-SE-divergence event keeps `chain.policy_satisfied=true`
-
-The post-divergence soft-fail propagation rule (commit 1 of the third follow-up) flips `chain.policy_satisfied=false` only when an auth-related gate (`IelDivergent`, `is_satisfied`, `is_anchored`) FAILS for an event at `version >= diverged_at_version`. An auth-PASSING post-SE-divergent event leaves `chain.policy_satisfied=true`.
-
-The pinned test `upd_post_divergence_auth_pass_advances_ratchet_excludes_from_satisfied` in `lib/kels/src/types/sad/verification.rs` confirms this is the deliberate behavior: chain-wide `policy_satisfied` tracks "any auth failures encountered in the walk" — orthogonal to the divergence cutoff. The per-event SAID query (`is_said_satisfied`) is the cutoff-aware signal: post-divergence SAIDs are NOT in `satisfied_saids` even on auth-pass.
-
-A strict reading of the design's "verification doesn't bless" framing would also flip `chain.policy_satisfied=false` for any post-divergence event. Implementation diverges from that strict reading because consumers needing the cutoff signal use `is_said_satisfied` per-SAID; the chain-wide flag is the auth-validity aggregate, not the divergence-status flag. `is_contested` / `is_decommissioned` carry the divergence-status signal content-based.
-
-No behavior change planned in #152; logged here so future review knows this pairing is intentional.
-
 ### [Round-12 review fix → standalone, deliberate] Post-divergence auth-failed Evl: `policy_history` records prior tracked policies, not event-declared values
 
 When a post-IEL-divergence Evl auth-fails (soft path), the IEL verifier records `policy_history[event.said] = (PRIOR auth, PRIOR governance)` — the event payload's declared policies are NOT adopted into branch state (the unauthenticated evolution is rejected from trust). Consumers calling `auth_policy_at(post_div_evl_auth_failed.said)` get prior policies, not the event's stated values.
@@ -197,6 +187,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Round-12 review fix → audit confirmed clean]** [Auth-passing post-SE-divergence event keeps `chain.policy_satisfied=true`](policy-satisfied-consumer-audit.md) — KELS-126 Group A consumer audit walked all five `.policy_satisfied()` production sites; every one answers "did any auth check fail in the walk?" rather than the divergence/terminal questions. SE Cnt path explicitly does NOT gate on the flag (SOFT-auth design respected). No code changes needed; design contract pinned for future consumers.
 
 - **[Pre-existing → round-12 third follow-up commit 2]** [HttpSadSink/HttpIelSink 409 silent-skip + server-side response-code semantics](sink-409-and-response-code-semantics.md) — audit + fix of all server-side 409 sites; server-internal integrity failures split off to 500 via `ChainVerificationFailed`; IEL terminal-state-gate response moved to 200-with-`terminal: Some(_)` indicator (option C); SE side picks up symmetric idempotency.
 
