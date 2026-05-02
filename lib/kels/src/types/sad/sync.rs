@@ -548,6 +548,55 @@ pub async fn verify_sad_events(
     verifier.finish().await
 }
 
+/// Verify a SAD Event Log with a per-batch callback that fires after each
+/// page passes verification. Mirrors `verify_key_events_with` for the SE
+/// primitive — same `transfer_sad_events` engine with a `CallbackSink` in
+/// place of the `NoOpSadSink`.
+///
+/// Used by the CLI's `kels sel get` to stream events while the verifier
+/// walks the chain. Batches may be smaller than `page_size` due to
+/// divergence handling (see `transfer_sad_events`).
+pub async fn verify_sad_events_with<F>(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedSadSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    on_page: F,
+) -> Result<SelVerification, KelsError>
+where
+    F: FnMut(&[SadEvent]) + Send,
+{
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
+    let sink = CallbackSadSink(std::sync::Mutex::new(on_page));
+    transfer_sad_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+        None,
+    )
+    .await?;
+    verifier.finish().await
+}
+
+/// Sink that invokes a callback for each batch of events. Mirrors KEL's
+/// `CallbackSink` for the SE primitive.
+struct CallbackSadSink<F: FnMut(&[SadEvent]) + Send>(std::sync::Mutex<F>);
+
+#[async_trait]
+impl<F: FnMut(&[SadEvent]) + Send> PagedSadSink for CallbackSadSink<F> {
+    async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
+        if let Ok(mut f) = self.0.lock() {
+            (f)(events);
+        }
+        Ok(())
+    }
+}
+
 /// Stream a SEL chain from `source` and accumulate the unique
 /// `event.identity_event` SAIDs the SE caller needs from the bound IEL.
 ///

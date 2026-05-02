@@ -342,10 +342,84 @@ enum IelCommands {
 
 #[derive(Subcommand, Debug)]
 enum SelCommands {
-    /// Submit a SAD event to a SEL
+    /// Stage atomic [Icp, Upd] for a fresh SE chain bound to an IEL
+    /// identity. Prints the Icp SAID and the Upd SAID, one per line.
+    Incept {
+        /// SE topic string (e.g., "kels/sad/v1/keys/mlkem")
+        topic: String,
+
+        /// IEL identity (prefix) the chain binds to at inception
+        #[arg(long)]
+        identity: String,
+
+        /// SAID of the initial content payload (must already be in SADStore)
+        #[arg(long)]
+        initial_content: String,
+
+        /// Publish the staged events to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage an Upd extending an existing SE chain. Prints the SAID.
+    Update {
+        /// SEL prefix to update
+        sel_prefix: String,
+
+        /// Content SAID to install in this Upd
+        content: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a Sea (degenerate seal marker) at the current tip. Prints the SAID.
+    Seal {
+        /// SEL prefix to seal
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a repair (Rpr) on an unsealed-divergent or
+    /// adversary-extended SE chain. Prints the SAID.
+    Repair {
+        /// SEL prefix to repair
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a contest (Cnt) terminal event. Prints the SAID.
+    Contest {
+        /// SEL prefix to contest
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a decommission (Dec) terminal event. Prints the SAID.
+    Decommission {
+        /// SEL prefix to decommission
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Submit one or more staged SE events by SAID
     Submit {
-        /// Path to JSON file containing SadEvent(s)
-        file: PathBuf,
+        /// SAIDs of events previously published to the SAD object store
+        #[arg(required = true, num_args = 1..)]
+        saids: Vec<String>,
     },
 
     /// Fetch and display a SAD Event Log
@@ -606,7 +680,37 @@ async fn main() -> Result<()> {
         },
 
         Commands::Sel(sel_cmd) => match sel_cmd {
-            SelCommands::Submit { file } => commands::sel::cmd_sel_submit(&cli, file).await,
+            SelCommands::Incept {
+                topic,
+                identity,
+                initial_content,
+                publish,
+            } => {
+                commands::sel::cmd_sel_incept(&cli, topic, identity, initial_content, *publish)
+                    .await
+            }
+            SelCommands::Update {
+                sel_prefix,
+                content,
+                publish,
+            } => commands::sel::cmd_sel_update(&cli, sel_prefix, content, *publish).await,
+            SelCommands::Seal {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_seal(&cli, sel_prefix, *publish).await,
+            SelCommands::Repair {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_repair(&cli, sel_prefix, *publish).await,
+            SelCommands::Contest {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_contest(&cli, sel_prefix, *publish).await,
+            SelCommands::Decommission {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_decommission(&cli, sel_prefix, *publish).await,
+            SelCommands::Submit { saids } => commands::sel::cmd_sel_submit(&cli, saids).await,
             SelCommands::Get { prefix } => commands::sel::cmd_sel_get(&cli, prefix).await,
             SelCommands::Prefix { identity, topic } => {
                 commands::sel::cmd_sel_prefix(identity, topic)

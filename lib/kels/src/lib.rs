@@ -126,6 +126,7 @@ pub use types::{
     truncate_incomplete_generation, validate_timestamp, verify_identity_events,
     verify_identity_events_with, verify_identity_events_with_queried, verify_key_events,
     verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_events,
+    verify_sad_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

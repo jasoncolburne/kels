@@ -97,6 +97,54 @@ impl SadEventBuilder {
     }
 
     /// Construct a builder for an existing SE chain at `sel_prefix` and
+    /// hydrate verified state from the **server**, via
+    /// `sad_client.verify_sad_events`.
+    ///
+    /// Used by the stage-and-exit CLI lifecycle commands (`update`, `seal`,
+    /// `repair`, `contest`, `decommission`) where each invocation is
+    /// short-lived and there is no useful local SAD store. The pre-walk
+    /// collects the chain's queried IEL SAIDs so the constructed
+    /// `IelResolver` can answer `is_satisfied` during the SE walk; the
+    /// SE verification itself is checker-gated, so the trust boundary
+    /// matches `with_prefix` — the server's wire output is verified
+    /// end-to-end before being adopted as the builder's tail. Returns a
+    /// fresh builder with no `sad_verification` if the server has no
+    /// events for the prefix.
+    pub async fn with_remote_prefix(
+        sad_client: SadStoreClient,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
+        sel_prefix: &cesr::Digest256,
+    ) -> Result<Self, KelsError> {
+        let mut builder = Self::new(Some(sad_client.clone()), None, Some(Arc::clone(&checker)));
+        builder.requested_prefix = Some(*sel_prefix);
+
+        let source = sad_client.as_sad_source()?;
+        let queried = match crate::collect_identity_event_saids(
+            sel_prefix,
+            &source,
+            crate::page_size(),
+            crate::max_pages(),
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(KelsError::NotFound(_)) => return Ok(builder),
+            Err(e) => return Err(e),
+        };
+
+        let resolver = builder.build_iel_resolver_from(&sad_client, &checker, queried)?;
+        match sad_client
+            .verify_sad_events(sel_prefix, Arc::clone(&checker), resolver)
+            .await
+        {
+            Ok(v) => builder.sad_verification = Some(v),
+            Err(KelsError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(builder)
+    }
+
+    /// Construct a builder for an existing SE chain at `sel_prefix` and
     /// hydrate verified state from the **local SAD store only**.
     ///
     /// Hydration runs only when both `sad_store` and `checker` are set —

@@ -583,6 +583,13 @@ impl SelVerification {
         self.diverged_at_version
     }
 
+    /// True when the verifier observed a fork. Mirrors
+    /// `IelVerification::is_divergent` for consumer ergonomics; equivalent
+    /// to `branches().len() > 1`.
+    pub fn is_divergent(&self) -> bool {
+        self.branches.len() > 1
+    }
+
     /// Whether the named SE event passed its auth check AND lives at
     /// `version < first_divergent_version` (or chain is non-divergent).
     /// Mirrors `KelVerification::is_said_anchored` and the IEL parallel.
