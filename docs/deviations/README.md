@@ -100,14 +100,6 @@ Path-scoped exemption via `clients/test/scripts/.terminology-forbidden`. The pat
 
 Restore those two patterns to the subtree forbid when #147 lands. The lint infrastructure now supports per-subtree forbid files (`scripts/lint-terminology.sh`, deepest-wins replacement semantics) — same mechanism can be used for future short-lived exemptions.
 
-### [Gap 5 → #147] Exchange CLI commands parked compile-clean since SE rewrite
-
-`cmd_exchange_publish_key` / `cmd_exchange_rotate_key` (clients/cli/src/commands/exchange.rs) return `Err("parked pending Gap 11 CLI rewrite")` on invocation. The underlying flow assembled pre-round-12 SE events declaring `write_policy` / `governance_policy` inline at inception and computed the SEL prefix from `(write_policy, topic)`. Round-12 SE chains bind to an existing IEL via the `identity` parameter. The full functional rewiring (build IEL Icp first, feed identity into `incept_chain(identity, topic, …)`) is in #147's body along with the test-scripts migration that drives the new CLI.
-
-`cmd_exchange_lookup_key` and `mail send` use the same pre-round-12 prefix derivation (`compute_sad_event_prefix(write_policy, …)`) and are runtime-broken vs. round-12 servers but compile clean. They surface wrong prefixes silently rather than erroring; #147 fixes both alongside publish/rotate.
-
-`exchange_write_policy` helper in `clients/cli/src/helpers.rs` builds a single-endorser policy SAD object (Custody-style write_policy SAID); the helper's name is consistent with Custody's field naming and stays.
-
 ### [Gap 8 → end-of-round verification] Phase-1 anti-entropy unit + integration tests deferred
 
 The Gap 8 plan asks for:
@@ -181,6 +173,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Gap 5 → #147]** [Exchange CLI commands parked compile-clean since SE rewrite](cli-exchange-parked-gap-5-resolved-147.md) — `cmd_exchange_publish_key` / `_rotate_key` / `_lookup_key` rewired onto round-12 SE primitives; new `--identity <iel-prefix>` arg replaces inline `write_policy` derivation.
 
 - **[Round-12 review fix → audit + resolver fix on KELS-126]** [Post-divergence auth-failed Evl: `policy_history` records prior tracked policies, not event-declared values](iel-resolver-verifier-adopted-policy-view.md) — KELS-126 Group A audit found one consumer (`RepositoryIelResolver::resolve_{auth,governance}_policy_at`) reading `event.auth_policy` / `event.governance_policy` directly; rerouted through a new `verification_for` helper + `verification.auth_policy_at(said)` / `governance_policy_at(said)` so the resolver consults the verifier-adopted view (mirroring `AnchoredIelResolver`). DB-tamper integration test pins the new contract.
 

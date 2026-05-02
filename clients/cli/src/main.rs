@@ -441,32 +441,42 @@ enum SelCommands {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::enum_variant_names)]
 enum ExchangeCommands {
-    /// Publish an ML-KEM encapsulation key to the SADStore
+    /// Publish an ML-KEM encapsulation key to the SADStore. Stages,
+    /// anchors, and submits an SE chain bound to `--identity`.
     PublishKey {
-        /// KEL prefix whose key to publish
+        /// KEL prefix whose key signs the anchoring Ixn events
         #[arg(long)]
         prefix: String,
+
+        /// IEL identity (prefix) the SE chain binds to. Must already
+        /// exist in SADStore with auth/governance policies set.
+        #[arg(long)]
+        identity: String,
 
         /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
         #[arg(long)]
         algorithm: Option<String>,
     },
 
-    /// Rotate the ML-KEM encapsulation key (appends new version to the SEL)
+    /// Rotate the ML-KEM encapsulation key (appends new version to the SEL).
     RotateKey {
-        /// KEL prefix whose key to rotate
+        /// KEL prefix whose key signs the anchoring Ixn event
         #[arg(long)]
         prefix: String,
+
+        /// IEL identity (prefix) the SE chain binds to
+        #[arg(long)]
+        identity: String,
 
         /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
         #[arg(long)]
         algorithm: Option<String>,
     },
 
-    /// Look up a prefix's encapsulation key from the SADStore
+    /// Look up an identity's encapsulation key from the SADStore
     LookupKey {
-        /// KEL prefix to look up
-        prefix: String,
+        /// IEL identity (prefix) to look up
+        identity: String,
     },
 }
 
@@ -755,16 +765,34 @@ async fn main() -> Result<()> {
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {
-            ExchangeCommands::PublishKey { prefix, algorithm } => {
-                commands::exchange::cmd_exchange_publish_key(&cli, prefix, algorithm.as_deref())
-                    .await
+            ExchangeCommands::PublishKey {
+                prefix,
+                identity,
+                algorithm,
+            } => {
+                commands::exchange::cmd_exchange_publish_key(
+                    &cli,
+                    prefix,
+                    identity,
+                    algorithm.as_deref(),
+                )
+                .await
             }
-            ExchangeCommands::RotateKey { prefix, algorithm } => {
-                commands::exchange::cmd_exchange_rotate_key(&cli, prefix, algorithm.as_deref())
-                    .await
+            ExchangeCommands::RotateKey {
+                prefix,
+                identity,
+                algorithm,
+            } => {
+                commands::exchange::cmd_exchange_rotate_key(
+                    &cli,
+                    prefix,
+                    identity,
+                    algorithm.as_deref(),
+                )
+                .await
             }
-            ExchangeCommands::LookupKey { prefix } => {
-                commands::exchange::cmd_exchange_lookup_key(&cli, prefix).await
+            ExchangeCommands::LookupKey { identity } => {
+                commands::exchange::cmd_exchange_lookup_key(&cli, identity).await
             }
         },
 
