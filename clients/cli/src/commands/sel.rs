@@ -10,12 +10,15 @@
 //! batch — the always-publish flow is load-bearing here. `get` runs a
 //! verifier-driven walk via `verify_sad_events_with` (mirrors `kel get`).
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{HttpSadSource, SadEvent, SadEventBuilder, SadStoreClient};
+use kels_core::{
+    HttpKelSource, HttpSadSource, KelVerifier, SadEvent, SadEventBuilder, SadStoreClient,
+};
 
 use crate::Cli;
 use crate::helpers::sad_store_anchored_checker;
@@ -111,17 +114,64 @@ pub(crate) async fn cmd_sel_seal(cli: &Cli, sel_prefix: &str, publish: bool) -> 
     Ok(())
 }
 
-pub(crate) async fn cmd_sel_repair(cli: &Cli, sel_prefix: &str, publish: bool) -> Result<()> {
+pub(crate) async fn cmd_sel_repair(
+    cli: &Cli,
+    sel_prefix: &str,
+    owner_prefix: Option<&str>,
+    publish: bool,
+) -> Result<()> {
     let prefix = cesr::Digest256::from_qb64(sel_prefix).context("Invalid SEL prefix CESR")?;
 
     let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let checker = sad_store_anchored_checker(cli, &sad_client)?;
 
+    // Resolve the owner-anchored SAID set (kels-style silent-extension
+    // boundary discovery). Walk the owner's KEL via verifier-driven page
+    // walk, harvest each Ixn's anchor field. Stale-cache-free: every
+    // repair invocation queries the KEL afresh — owner identity is the
+    // KEL prefix, not local state.
+    let owner_anchors: Option<BTreeSet<cesr::Digest256>> = match owner_prefix {
+        Some(p) => {
+            let owner_kel_prefix =
+                cesr::Digest256::from_qb64(p).context("Invalid --owner-prefix CESR")?;
+            let kel_source = HttpKelSource::new(&cli.kels_url(), "/api/v1/kels/kel/fetch")
+                .context("Failed to build KEL source for owner anchor walk")?;
+            let anchors: Mutex<BTreeSet<cesr::Digest256>> = Mutex::new(BTreeSet::new());
+            kels_core::verify_key_events_with(
+                &owner_kel_prefix,
+                &kel_source,
+                KelVerifier::new(&owner_kel_prefix),
+                kels_core::page_size(),
+                kels_core::max_pages(),
+                |events| {
+                    #[allow(clippy::expect_used)]
+                    let mut set = anchors.lock().expect("anchor collector mutex poisoned");
+                    for signed in events {
+                        if let Some(a) = signed.event.anchor {
+                            set.insert(a);
+                        }
+                    }
+                },
+            )
+            .await
+            .map_err(|e| anyhow!("Failed to verify owner's KEL ({}): {}", p, e))?;
+            Some(
+                anchors
+                    .into_inner()
+                    .map_err(|e| anyhow!("anchor collector mutex poisoned: {}", e))?,
+            )
+        }
+        None => None,
+    };
+
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
         .context("Failed to hydrate SE state from server")?;
 
-    let said = builder.repair().await.context("Failed to stage Rpr")?;
+    let said = builder
+        .repair(owner_anchors.as_ref())
+        .await
+        .context("Failed to stage Rpr")?;
 
     if publish {
         builder

@@ -94,12 +94,6 @@ Performance, not correctness. Each call sees fresh IEL state, which is the safe 
 
 Deferred to #147 (CLI + script migration). The CLI consumer drives the repeated-builder-call access pattern, so the cache shape (TTL, invalidation triggers, manual `flush()` semantics) can be designed against the actual usage rather than guessed up front.
 
-### [Gap 11 → #147] est/evl wire-format patterns exempted at `clients/test/scripts/`
-
-Path-scoped exemption via `clients/test/scripts/.terminology-forbidden`. The patterns `kels/sad/v1/events/est` and `kels/sad/v1/events/evl` are dropped from the test-scripts subtree's forbid file but retained in the production root file. Rationale: the test scripts in this directory still build pre-round-12 SE events (writePolicy on Icp, governancePolicy on Est-v1, SEL prefix derived from policy_said). They will be rewritten to drive the round-12 CLI surface in #147 (CLI + script migration). Until then the production lint stays strict and the test scripts compile/run as-is (they are runtime-broken vs. round-12 servers, but that's deferred).
-
-Restore those two patterns to the subtree forbid when #147 lands. The lint infrastructure now supports per-subtree forbid files (`scripts/lint-terminology.sh`, deepest-wins replacement semantics) — same mechanism can be used for future short-lived exemptions.
-
 ### [Gap 8 → end-of-round verification] Phase-1 anti-entropy unit + integration tests deferred
 
 The Gap 8 plan asks for:
@@ -173,6 +167,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Gap 11 → #147]** [est/evl wire-format patterns exempted at `clients/test/scripts/`](test-scripts-est-evl-exemption.md) — test-script migration rewrote every IEL/SE script onto the round-12 CLI surface (no inline event JSON), retired the subtree `.terminology-forbidden` exemption, and added `--owner-prefix` to `sel repair` for kels-style silent-extension boundary discovery.
 
 - **[Gap 5 → #147]** [Exchange CLI commands parked compile-clean since SE rewrite](cli-exchange-parked-gap-5-resolved-147.md) — `cmd_exchange_publish_key` / `_rotate_key` / `_lookup_key` rewired onto round-12 SE primitives; new `--identity <iel-prefix>` arg replaces inline `write_policy` derivation.
 

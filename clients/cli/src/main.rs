@@ -390,6 +390,14 @@ enum SelCommands {
         /// SEL prefix to repair
         sel_prefix: String,
 
+        /// Owner KEL prefix. Required to repair silent (linear)
+        /// adversary extensions: the builder walks this KEL to harvest
+        /// `Ixn` anchors and treats the first non-anchored SE event as
+        /// the rogue boundary. Omit to repair only divergence-driven
+        /// forks.
+        #[arg(long)]
+        owner_prefix: Option<String>,
+
         /// Publish the staged event to the SAD object store
         #[arg(long)]
         publish: bool,
@@ -488,9 +496,16 @@ enum MailCommands {
         #[arg(long)]
         prefix: String,
 
-        /// Recipient KEL prefix
+        /// Recipient KEL prefix (routing + ESSR binding)
         #[arg(long)]
         recipient: String,
+
+        /// Recipient IEL identity (encap-key lookup). Round-12 SEL
+        /// prefix derives from `(identity, ENCAP_KEY_KIND)`; the
+        /// recipient's KEL prefix is the routing handle but does not
+        /// determine the encap-key chain prefix.
+        #[arg(long)]
+        recipient_identity: String,
 
         /// Topic string (e.g., "kels/exchange/v1/topics/exchange")
         #[arg(long, default_value = "kels/exchange/v1/topics/exchange")]
@@ -710,8 +725,12 @@ async fn main() -> Result<()> {
             } => commands::sel::cmd_sel_seal(&cli, sel_prefix, *publish).await,
             SelCommands::Repair {
                 sel_prefix,
+                owner_prefix,
                 publish,
-            } => commands::sel::cmd_sel_repair(&cli, sel_prefix, *publish).await,
+            } => {
+                commands::sel::cmd_sel_repair(&cli, sel_prefix, owner_prefix.as_deref(), *publish)
+                    .await
+            }
             SelCommands::Contest {
                 sel_prefix,
                 publish,
@@ -800,9 +819,20 @@ async fn main() -> Result<()> {
             MailCommands::Send {
                 prefix,
                 recipient,
+                recipient_identity,
                 topic,
                 payload,
-            } => commands::mail::cmd_mail_send(&cli, prefix, recipient, topic, payload).await,
+            } => {
+                commands::mail::cmd_mail_send(
+                    &cli,
+                    prefix,
+                    recipient,
+                    recipient_identity,
+                    topic,
+                    payload,
+                )
+                .await
+            }
             MailCommands::Inbox { prefix } => commands::mail::cmd_mail_inbox(&cli, prefix).await,
             MailCommands::Fetch { prefix, said } => {
                 commands::mail::cmd_mail_fetch(&cli, prefix, said).await

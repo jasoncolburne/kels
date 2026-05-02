@@ -14,6 +14,7 @@ pub(crate) async fn cmd_mail_send(
     cli: &Cli,
     prefix: &str,
     recipient: &str,
+    recipient_identity: &str,
     topic: &str,
     payload_path: &PathBuf,
 ) -> Result<()> {
@@ -22,13 +23,18 @@ pub(crate) async fn cmd_mail_send(
     // Load sender's signing key
     let provider = provider_config(cli, prefix)?.load_provider().await?;
 
-    // Look up recipient's encapsulation key
+    // Recipient's KEL prefix is the routing/binding identity (mail
+    // service indexes inbox by it; ESSR seal binds to it). Recipient's
+    // IEL identity is what publishes their encap-key SE chain — round-12
+    // SEL prefix derives from `(identity, ENCAP_KEY_KIND)`.
     let recipient_digest =
-        cesr::Digest256::from_qb64(recipient).context("Invalid recipient prefix CESR")?;
-    let recipient_policy = exchange_write_policy(&recipient_digest)?;
-    let recipient_write_policy = recipient_policy.said;
-    let sel_prefix =
-        kels_core::compute_sad_event_prefix(recipient_write_policy, kels_exchange::ENCAP_KEY_KIND)?;
+        cesr::Digest256::from_qb64(recipient).context("Invalid recipient KEL prefix CESR")?;
+    let recipient_identity_digest = cesr::Digest256::from_qb64(recipient_identity)
+        .context("Invalid --recipient-identity CESR (IEL prefix)")?;
+    let sel_prefix = kels_core::compute_sad_event_prefix(
+        recipient_identity_digest,
+        kels_exchange::ENCAP_KEY_KIND,
+    )?;
     let sad_client = kels_core::SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client.fetch_sad_events(&sel_prefix, None).await?;
     let tip = page

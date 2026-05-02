@@ -115,13 +115,6 @@ pub(crate) async fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
         .context("Failed to create SAD store")
 }
 
-/// Build the write_policy for exchange key publication.
-/// Creates a single-endorser policy from the KEL prefix.
-pub(crate) fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> Result<kels_policy::Policy> {
-    kels_policy::Policy::build(&format!("endorse({})", kel_prefix), None, false)
-        .context("Failed to build exchange write policy")
-}
-
 pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("keys").join(prefix).join("kem.key"))
 }

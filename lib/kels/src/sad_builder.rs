@@ -115,7 +115,16 @@ impl SadEventBuilder {
         checker: Arc<dyn PolicyChecker + Send + Sync>,
         sel_prefix: &cesr::Digest256,
     ) -> Result<Self, KelsError> {
-        let mut builder = Self::new(Some(sad_client.clone()), None, Some(Arc::clone(&checker)));
+        // Capture the verified events into a fresh in-memory SAD store so
+        // `repair()`'s boundary-event lookup works without a persistent
+        // local store. Same trust boundary as `with_prefix` — events are
+        // checker-gated through the verifier walk before landing here.
+        let in_memory_store: Arc<dyn SadStore> = Arc::new(crate::store::InMemorySadStore::new());
+        let mut builder = Self::new(
+            Some(sad_client.clone()),
+            Some(Arc::clone(&in_memory_store)),
+            Some(Arc::clone(&checker)),
+        );
         builder.requested_prefix = Some(*sel_prefix);
 
         let source = sad_client.as_sad_source()?;
@@ -133,14 +142,41 @@ impl SadEventBuilder {
         };
 
         let resolver = builder.build_iel_resolver_from(&sad_client, &checker, queried)?;
-        match sad_client
-            .verify_sad_events(sel_prefix, Arc::clone(&checker), resolver)
-            .await
-        {
-            Ok(v) => builder.sad_verification = Some(v),
-            Err(KelsError::NotFound(_)) => {}
+
+        let captured: std::sync::Mutex<Vec<SadEvent>> = std::sync::Mutex::new(Vec::new());
+        let verification_result = crate::verify_sad_events_with(
+            sel_prefix,
+            &source,
+            Arc::clone(&checker),
+            resolver,
+            crate::page_size(),
+            crate::max_pages(),
+            |events| {
+                #[allow(clippy::expect_used)]
+                captured
+                    .lock()
+                    .expect("with_remote_prefix collector mutex poisoned")
+                    .extend_from_slice(events);
+            },
+        )
+        .await;
+
+        let verification = match verification_result {
+            Ok(v) => v,
+            Err(KelsError::NotFound(_)) => return Ok(builder),
             Err(e) => return Err(e),
+        };
+
+        // Verifier passed — adopt verified events into the local store so
+        // `repair()`'s boundary-version lookup can find them.
+        let events = captured
+            .into_inner()
+            .map_err(|_| KelsError::InvalidKel("collector mutex poisoned".into()))?;
+        for event in &events {
+            in_memory_store.store_sel_event(event).await?;
         }
+
+        builder.sad_verification = Some(verification);
         Ok(builder)
     }
 
@@ -350,11 +386,28 @@ impl SadEventBuilder {
     }
 
     /// Stage an `Rpr` (repair) at the truncation boundary so the
-    /// server-side `is_repair` path heals divergence (or
-    /// adversary-extended linear). Pre-flight runs
+    /// server-side `is_repair` path heals divergence or
+    /// adversary-extended linear chains. Pre-flight runs
     /// `verify_server_chain_pre_action` (full client-side re-verify of
     /// the server's view).
-    pub async fn repair(&mut self) -> Result<cesr::Digest256, KelsError> {
+    ///
+    /// `owner_anchored_saids` identifies the owner's authoritative tip on
+    /// non-divergent server chains (silent-extension repair):
+    /// - `None`: only divergence-driven repairs are supported. The
+    ///   builder uses the verified server view's
+    ///   `diverged_at_version` to compute the boundary.
+    /// - `Some(set)`: in addition to divergence repairs, walks the
+    ///   verified chain forward and treats the first event whose SAID
+    ///   is **not** in `set` as the rogue extension. The boundary is
+    ///   the version of the last anchored event. Caller is responsible
+    ///   for assembling `set` (typically by walking the owner's KEL and
+    ///   collecting `Ixn` anchor SAIDs). Mirrors the kels-style design:
+    ///   owner identity = stable KEL prefix, queried fresh per repair —
+    ///   never relies on local cache freshness.
+    pub async fn repair(
+        &mut self,
+        owner_anchored_saids: Option<&std::collections::BTreeSet<cesr::Digest256>>,
+    ) -> Result<cesr::Digest256, KelsError> {
         self.require_incepted()?;
         self.require_non_terminal()?;
 
@@ -386,10 +439,15 @@ impl SadEventBuilder {
             ));
         }
 
-        // Boundary derivation. Mirrors the round-10 logic but uses
-        // round-12 accessors.
-        let owner_tip = owner_verification.current_event().clone();
-        let prefix = owner_tip.prefix;
+        let prefix = *owner_verification.prefix();
+        let sad_store = self
+            .sad_store
+            .as_ref()
+            .ok_or_else(|| KelsError::OfflineMode("repair requires a sad_store".into()))?;
+
+        // Boundary derivation: divergence wins; otherwise fall back to the
+        // owner-anchor walk (silent-extension repair). Without anchors and
+        // without divergence, NothingToRepair.
         let boundary_version = match server_view.diverged_at_version() {
             Some(d) => {
                 if d == 0 {
@@ -401,33 +459,30 @@ impl SadEventBuilder {
                 }
                 d - 1
             }
-            None => {
-                let server_tip_v = server_view.current_event().version;
-                if server_tip_v <= owner_tip.version {
-                    return Err(KelsError::NothingToRepair);
+            None => match owner_anchored_saids {
+                Some(anchors) => {
+                    Self::find_owner_boundary_version(sad_store.as_ref(), &prefix, anchors).await?
                 }
-                owner_tip.version
-            }
+                None => return Err(KelsError::NothingToRepair),
+            },
         };
 
-        // Fetch boundary event from owner's local store.
-        let sad_store = self
-            .sad_store
-            .as_ref()
-            .ok_or_else(|| KelsError::OfflineMode("repair requires a sad_store".into()))?;
+        // Fetch boundary event from the verified store (local store on
+        // `with_prefix`-hydrated builders; the in-memory cache populated
+        // by `with_remote_prefix` for stage-and-exit CLI).
         let (boundary_events, _has_more) = sad_store
             .load_sel_events(&prefix, 1, boundary_version)
             .await?;
         let boundary = boundary_events.into_iter().next().ok_or_else(|| {
             KelsError::InvalidKel(format!(
-                "boundary event at version {} not in local store for prefix {} \
-                 — owner-local view may be incomplete",
+                "boundary event at version {} not in store for prefix {} \
+                 — verified view may be incomplete",
                 boundary_version, prefix
             ))
         })?;
         if boundary.version != boundary_version {
             return Err(KelsError::InvalidKel(format!(
-                "local store offset {} returned event at version {} (prefix {}) \
+                "store offset {} returned event at version {} (prefix {}) \
                  — index ordering is inconsistent",
                 boundary_version, boundary.version, prefix
             )));
@@ -439,6 +494,50 @@ impl SadEventBuilder {
         let said = rpr.said;
         self.pending_events.push(rpr);
         Ok(said)
+    }
+
+    /// Walk the verified chain forward and return the version of the last
+    /// event whose SAID is in `owner_anchors`. The first non-anchored event
+    /// marks the rogue-extension boundary; everything from that event
+    /// onward is truncated by the server's `is_repair` path.
+    ///
+    /// Returns `NothingToRepair` when every event is anchored (server
+    /// view is consistent with the owner's authority). Returns
+    /// `InvalidKel` when the chain's first event is not in `owner_anchors`
+    /// (the supplied KEL prefix is not the chain's owner).
+    async fn find_owner_boundary_version(
+        sad_store: &dyn SadStore,
+        prefix: &cesr::Digest256,
+        owner_anchors: &std::collections::BTreeSet<cesr::Digest256>,
+    ) -> Result<u64, KelsError> {
+        let mut last_anchored: Option<u64> = None;
+        let mut offset: u64 = 0;
+        let limit = crate::page_size() as u64;
+        loop {
+            let (page, has_more) = sad_store.load_sel_events(prefix, limit, offset).await?;
+            if page.is_empty() {
+                break;
+            }
+            let advanced = page.len() as u64;
+            for event in &page {
+                if owner_anchors.contains(&event.said) {
+                    last_anchored = Some(event.version);
+                } else {
+                    return last_anchored.ok_or_else(|| {
+                        KelsError::InvalidKel(format!(
+                            "first event ({}) of {} is not in the supplied owner \
+                             anchor set — chain is not owned by the supplied KEL",
+                            event.said, prefix
+                        ))
+                    });
+                }
+            }
+            if !has_more {
+                break;
+            }
+            offset = offset.saturating_add(advanced);
+        }
+        Err(KelsError::NothingToRepair)
     }
 
     /// Stage a `Cnt` (and any pending events) for submission.
