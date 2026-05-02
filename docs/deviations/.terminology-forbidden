@@ -1,0 +1,4 @@
+# The deviations log inherently references retired terminology by design —
+# its purpose is to record what was renamed/dropped/forbidden and why.
+# This subtree is therefore exempt from all root forbidden-token patterns.
+# See ./README.md "Conventions" section for the rules governing entries.

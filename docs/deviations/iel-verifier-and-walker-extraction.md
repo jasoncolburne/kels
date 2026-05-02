@@ -1,0 +1,9 @@
+# [Round-12 review fix → resolved] IEL verifier + walker structural extraction
+
+Eliminates the page-walk + queried/satisfied registration triplication across `AnchoredIelResolver::verification_for`, `RepositoryIelResolver::is_satisfied`, and the existing `verify_identity_events` / `iel_completed_verification` helpers. Adds `verify_identity_events_with_queried` and `iel_completed_verification_with_queried` in `lib/kels/src/types/iel/sync.rs`; existing helpers become thin wrappers (zero behavior change for legacy callers; new callers register `queried_saids` upfront).
+
+- `AnchoredIelResolver::verification_for` collapses to a one-liner delegating to `verify_identity_events_with_queried`.
+- `RepositoryIelResolver::is_satisfied` likewise — now driven through a new private `RepositoryIelPageSource` adapter wrapping the IEL repo's connection pool. **Closes Important #1** (multi-page IEL walk duplicate-event bug at page boundaries): the inline pool walk that lacked the strict-greater-than `(version, kind, said)` post-filter is gone; the new adapter goes through `IdentityEventRepository::fetch_iel_page_pool` (added in `services/sadstore/src/repository.rs`), which mirrors `fetch_iel_page`'s post-filter exactly.
+- `walk_back_to_branch_identity` made `pub` in `lib/kels/src/iel_resolver.rs` so the in-process resolver shares the algorithm; `RepositoryIelResolver` materializes the IEL chain once via a new `materialize_iel_chain` and feeds the shared walker (drops the per-step `fetch_event_by_said` walk and ~90 lines of duplicated walk-back logic).
+- `collect_all_events` (HTTP variant) now fail-secures on `max_pages` overrun (**M11 fix**) so the walk-back never operates on an incomplete chain map.
+- `collect_identity_event_saids` (HTTP variant) returns `Ok(collected)` instead of `InvalidKel` on empty mid-walk pages (**M1 fix**) — now consistent with the loader sibling.
