@@ -32,12 +32,6 @@ else
     CLI_B="kels-cli -d node-b.kels"
 fi
 
-# URLs used by the IEL/SE setup helpers (which take raw URLs rather than
-# $CLI strings — they need to be invariant across federated/non-federated
-# modes for setup_iel_identity).
-NODE_A_KELS_URL="http://${NODE_A_KELS_HOST}"
-NODE_A_SAD_URL="http://${NODE_A_SADSTORE_HOST}"
-
 init_temp_dir
 
 echo "========================================="
@@ -110,7 +104,7 @@ echo "Phase 1b: IEL Identity Setup"
 echo "========================================="
 
 test_create_alice_iel() {
-    ALICE_IEL=$(setup_iel_identity "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$ALICE_PREFIX" "alice-$$")
+    ALICE_IEL=$(setup_iel_identity "$CLI" "$ALICE_PREFIX" "alice-$$")
     if [ -z "$ALICE_IEL" ]; then
         echo "Failed to create Alice's IEL identity"
         return 1
@@ -120,7 +114,7 @@ test_create_alice_iel() {
 }
 
 test_create_bob_iel() {
-    BOB_IEL=$(setup_iel_identity "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$BOB_PREFIX" "bob-$$")
+    BOB_IEL=$(setup_iel_identity "$CLI" "$BOB_PREFIX" "bob-$$")
     if [ -z "$BOB_IEL" ]; then
         echo "Failed to create Bob's IEL identity"
         return 1

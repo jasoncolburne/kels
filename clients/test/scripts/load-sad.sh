@@ -67,8 +67,13 @@ create_group() {
     fi
 
     # 2. Set up an IEL identity (single-endorser immune policy bound to the KEL).
+    #    The helpers need the same `kels-cli` invocation flags the rest of
+    #    create_group uses — most importantly `--config-dir`, so the
+    #    `kel anchor` step inside `setup_iel_identity` can find the
+    #    per-group key store under `$tmpdir`. Sharing $cli_global keeps
+    #    every CLI call in a group rooted in the same isolated config.
     local iel_prefix
-    iel_prefix=$(setup_iel_identity "$KELS_URL" "$SADSTORE_URL" "$prefix" "load-${group}-$$") || {
+    iel_prefix=$(setup_iel_identity "kels-cli $cli_global" "$prefix" "load-${group}-$$") || {
         echo "ERROR [group $group]: IEL identity setup failed" >&2
         rm -rf "$tmpdir"
         return 1
@@ -81,7 +86,7 @@ create_group() {
         jq -nc --arg p "$PLACEHOLDER" --arg v "load-test-${group}-${i}-$(date +%s%N)" \
             '{said: $p, value: $v}' > "$content_json"
         local content_said
-        content_said=$(put_sad_object "$SADSTORE_URL" "$content_json") || {
+        content_said=$(put_sad_object "kels-cli $cli_global" "$content_json") || {
             echo "ERROR [group $group]: content SAD put failed for v${i}" >&2
             rm -rf "$tmpdir"
             return 1

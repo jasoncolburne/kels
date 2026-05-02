@@ -320,7 +320,7 @@ else
     echo "Created KEL: $KEL_PREFIX"
 
     # Set up an IEL identity bound to the KEL
-    IEL_PREFIX=$(setup_iel_identity "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$KEL_PREFIX" "scenario5")
+    IEL_PREFIX=$(setup_iel_identity "$NODE_A_CLI" "$KEL_PREFIX" "scenario5")
     run_test "IEL identity created" [ -n "$IEL_PREFIX" ]
     echo "IEL prefix: $IEL_PREFIX"
 
@@ -334,7 +334,7 @@ else
 
     # Put initial content object
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario5-v1-content\"}" > "$TEMP_DIR/scenario5-content.json"
-    CONTENT_SAID=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/scenario5-content.json")
+    CONTENT_SAID=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/scenario5-content.json")
     run_test "Content SAD object stored" [ -n "$CONTENT_SAID" ]
 
     # Stage atomic [Icp, Upd] via sel incept
@@ -434,7 +434,7 @@ if [ -z "$DIV_KEL_PREFIX" ]; then
 else
     echo "Created KEL: $DIV_KEL_PREFIX"
 
-    DIV_IEL_PREFIX=$(setup_iel_identity "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$DIV_KEL_PREFIX" "scenario7")
+    DIV_IEL_PREFIX=$(setup_iel_identity "$NODE_A_CLI" "$DIV_KEL_PREFIX" "scenario7")
     run_test "Divergence: IEL identity created" [ -n "$DIV_IEL_PREFIX" ]
 
     DIV_PREFIX=$(kels-cli sel prefix "$DIV_IEL_PREFIX" "$DIV_TOPIC" 2>/dev/null)
@@ -442,7 +442,7 @@ else
 
     # Initial content for sel incept
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario7-initial\"}" > "$TEMP_DIR/div-content-initial.json"
-    DIV_CONTENT_INIT=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/div-content-initial.json")
+    DIV_CONTENT_INIT=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/div-content-initial.json")
 
     # Stage atomic [Icp, Upd@v1] via sel incept
     DIV_INCEPT_OUT=$($NODE_A_CLI sel incept "$DIV_TOPIC" \
@@ -468,8 +468,8 @@ else
     # Put two distinct v2 content objects (one per node)
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario7-content-a\"}" > "$TEMP_DIR/div-content-a.json"
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario7-content-b\"}" > "$TEMP_DIR/div-content-b.json"
-    DIV_CONTENT_A=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/div-content-a.json")
-    DIV_CONTENT_B=$(put_sad_object "$NODE_B_SAD_URL" "$TEMP_DIR/div-content-b.json")
+    DIV_CONTENT_A=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/div-content-a.json")
+    DIV_CONTENT_B=$(put_sad_object "$NODE_B_CLI" "$TEMP_DIR/div-content-b.json")
 
     # Stage two competing v2 Upd events against the two nodes BEFORE
     # submitting either. Each `sel update` invocation hydrates from its
@@ -555,19 +555,19 @@ else
     echo "Bob KEL:   $BOB_KEL"
 
     # Disjunctive OR policy — both Alice and Bob are legitimate endorsers.
-    EXT_OR_POLICY=$(build_immune_or_policy "$NODE_A_SAD_URL" "$ALICE_KEL" "$BOB_KEL")
+    EXT_OR_POLICY=$(build_immune_or_policy "$NODE_A_CLI" "$ALICE_KEL" "$BOB_KEL")
     run_test "Extension: OR policy uploaded" [ -n "$EXT_OR_POLICY" ]
 
     # IEL identity, anchored by Alice. Both Alice and Bob can author SE
     # events on chains under this identity (the OR policy gates auth).
-    EXT_IEL=$(setup_iel_identity_with_policy "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$ALICE_KEL" "$EXT_OR_POLICY" "scenario8")
+    EXT_IEL=$(setup_iel_identity_with_policy "$NODE_A_CLI" "$ALICE_KEL" "$EXT_OR_POLICY" "scenario8")
     run_test "Extension: IEL identity created" [ -n "$EXT_IEL" ]
     EXT_PREFIX=$(kels-cli sel prefix "$EXT_IEL" "$EXT_TOPIC" 2>/dev/null)
     echo "SEL prefix: $EXT_PREFIX"
 
     # Alice incepts the SE chain (atomic [Icp, v1]).
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario8-initial\"}" > "$TEMP_DIR/ext-content-init.json"
-    EXT_CONTENT_INIT=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/ext-content-init.json")
+    EXT_CONTENT_INIT=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/ext-content-init.json")
 
     EXT_INCEPT_OUT=$($NODE_A_CLI sel incept "$EXT_TOPIC" \
         --identity "$EXT_IEL" --initial-content "$EXT_CONTENT_INIT" --publish 2>&1)
@@ -585,7 +585,7 @@ else
 
     # v2: Alice's authoritative update.
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario8-alice-v2\"}" > "$TEMP_DIR/ext-content-alice.json"
-    EXT_CONTENT_ALICE=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/ext-content-alice.json")
+    EXT_CONTENT_ALICE=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/ext-content-alice.json")
     E_V2_ALICE=$($NODE_A_CLI sel update "$EXT_PREFIX" "$EXT_CONTENT_ALICE" --publish)
     run_test "Extension: v2 (Alice) anchored by Alice" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$ALICE_KEL" --said "$E_V2_ALICE"
@@ -597,7 +597,7 @@ else
     # accepts. Bob anchors v3 with HIS KEL, not Alice's — that's what
     # makes it "silent" from Alice's perspective.
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario8-bob-v3-rogue\"}" > "$TEMP_DIR/ext-content-bob.json"
-    EXT_CONTENT_BOB=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/ext-content-bob.json")
+    EXT_CONTENT_BOB=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/ext-content-bob.json")
     E_V3_BOB=$($NODE_A_CLI sel update "$EXT_PREFIX" "$EXT_CONTENT_BOB" --publish)
     run_test "Extension: rogue v3 (Bob) anchored by Bob" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$BOB_KEL" --said "$E_V3_BOB"
@@ -647,12 +647,12 @@ if [ -z "$CLEAN_KEL_PREFIX" ]; then
 else
     echo "Created KEL: $CLEAN_KEL_PREFIX"
 
-    CLEAN_IEL_PREFIX=$(setup_iel_identity "$NODE_A_KELS_URL" "$NODE_A_SAD_URL" "$CLEAN_KEL_PREFIX" "scenario9")
+    CLEAN_IEL_PREFIX=$(setup_iel_identity "$NODE_A_CLI" "$CLEAN_KEL_PREFIX" "scenario9")
     run_test "Clean: IEL identity created" [ -n "$CLEAN_IEL_PREFIX" ]
     CLEAN_PREFIX=$(kels-cli sel prefix "$CLEAN_IEL_PREFIX" "$CLEAN_TOPIC" 2>/dev/null)
 
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario9-v1-content\"}" > "$TEMP_DIR/clean-content.json"
-    CLEAN_CONTENT=$(put_sad_object "$NODE_A_SAD_URL" "$TEMP_DIR/clean-content.json")
+    CLEAN_CONTENT=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/clean-content.json")
 
     CLEAN_INCEPT_OUT=$($NODE_A_CLI sel incept "$CLEAN_TOPIC" \
         --identity "$CLEAN_IEL_PREFIX" --initial-content "$CLEAN_CONTENT" --publish 2>&1)
