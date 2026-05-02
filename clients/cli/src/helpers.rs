@@ -1,13 +1,16 @@
 //! Shared helper functions for CLI commands.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
-    FileKelStore, FileSadStore, KelsClient, SoftwareProviderConfig, VerificationKeyCode,
+    FileKelStore, FileSadStore, HttpKelSource, KelsClient, PagedKelSource, PolicyChecker,
+    SadStoreClient, SoftwareProviderConfig, VerificationKeyCode,
 };
+use verifiable_storage::SelfAddressed;
 
 use crate::Cli;
 
@@ -121,6 +124,56 @@ pub(crate) fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> Result<kels
 
 pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("keys").join(prefix).join("kem.key"))
+}
+
+/// `PolicyResolver` that fetches policies from SADStore via
+/// `get_sad_object`. SAID-verified on read so a tampered server can't
+/// substitute a different policy under the same SAID.
+struct SadStoreSourcedPolicyResolver {
+    client: SadStoreClient,
+}
+
+#[async_trait::async_trait]
+impl kels_policy::PolicyResolver for SadStoreSourcedPolicyResolver {
+    async fn resolve_policy(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<kels_policy::Policy, kels_policy::PolicyError> {
+        let value = self.client.get_sad_object(said).await.map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("fetch {}: {}", said, e))
+        })?;
+        let policy: kels_policy::Policy = serde_json::from_value(value).map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("parse {}: {}", said, e))
+        })?;
+        policy.verify_said().map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!(
+                "SAID verification failed for {}: {}",
+                said, e
+            ))
+        })?;
+        Ok(policy)
+    }
+}
+
+/// Build an `AnchoredPolicyChecker` whose KEL source is the CLI's `kels`
+/// service and whose policy resolver fetches from the CLI's `sadstore`
+/// service. Used by the IEL/SEL stage-and-exit lifecycle commands when
+/// they need to hydrate a builder against the server's verified view.
+pub(crate) fn sad_store_anchored_checker(
+    cli: &Cli,
+    sad_client: &SadStoreClient,
+) -> Result<Arc<dyn PolicyChecker + Send + Sync>> {
+    let kel_source: Arc<dyn PagedKelSource + Send + Sync> = Arc::new(
+        HttpKelSource::new(&cli.kels_url(), "/api/v1/kels/kel/fetch")
+            .context("Failed to build KEL source")?,
+    );
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(SadStoreSourcedPolicyResolver {
+            client: sad_client.clone(),
+        });
+    Ok(Arc::new(kels_policy::AnchoredPolicyChecker::new(
+        kel_source, resolver,
+    )))
 }
 
 pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {

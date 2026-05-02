@@ -59,6 +59,10 @@ enum Commands {
     #[command(subcommand)]
     Sel(SelCommands),
 
+    /// Identity Event Log (IEL) commands
+    #[command(subcommand)]
+    Iel(IelCommands),
+
     /// SAD object store commands (self-addressed data)
     #[command(subcommand)]
     Sad(SadCommands),
@@ -261,6 +265,78 @@ enum SadCommands {
     Get {
         /// The SAID of the object to retrieve
         said: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum IelCommands {
+    /// Stage an Identity Event Log inception (Icp). Prints the SAID.
+    Incept {
+        /// Identity topic string (e.g., "kels/iel/v1/identity/main")
+        topic: String,
+
+        /// Auth-policy SAID (must already be in SADStore)
+        #[arg(long)]
+        auth_policy: String,
+
+        /// Governance-policy SAID (must already be in SADStore)
+        #[arg(long)]
+        governance_policy: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage an evolution (Evl) extending an existing IEL. Prints the SAID.
+    Evolve {
+        /// IEL prefix to evolve
+        iel_prefix: String,
+
+        /// New auth-policy SAID (carries forward when omitted)
+        #[arg(long)]
+        auth_policy: Option<String>,
+
+        /// New governance-policy SAID (carries forward when omitted)
+        #[arg(long)]
+        governance_policy: Option<String>,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a contest (Cnt) terminal event. Prints the SAID.
+    Contest {
+        /// IEL prefix to contest
+        iel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a decommission (Dec) terminal event. Prints the SAID.
+    Decommission {
+        /// IEL prefix to decommission
+        iel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Fetch and display an Identity Event Log
+    Get {
+        /// IEL prefix to fetch
+        iel_prefix: String,
+    },
+
+    /// Submit one or more staged IEL events by SAID
+    Submit {
+        /// SAIDs of events previously published to the SAD object store
+        #[arg(required = true, num_args = 1..)]
+        saids: Vec<String>,
     },
 }
 
@@ -535,6 +611,43 @@ async fn main() -> Result<()> {
             SelCommands::Prefix { identity, topic } => {
                 commands::sel::cmd_sel_prefix(identity, topic)
             }
+        },
+
+        Commands::Iel(iel_cmd) => match iel_cmd {
+            IelCommands::Incept {
+                topic,
+                auth_policy,
+                governance_policy,
+                publish,
+            } => {
+                commands::iel::cmd_iel_incept(&cli, topic, auth_policy, governance_policy, *publish)
+                    .await
+            }
+            IelCommands::Evolve {
+                iel_prefix,
+                auth_policy,
+                governance_policy,
+                publish,
+            } => {
+                commands::iel::cmd_iel_evolve(
+                    &cli,
+                    iel_prefix,
+                    auth_policy.as_deref(),
+                    governance_policy.as_deref(),
+                    *publish,
+                )
+                .await
+            }
+            IelCommands::Contest {
+                iel_prefix,
+                publish,
+            } => commands::iel::cmd_iel_contest(&cli, iel_prefix, *publish).await,
+            IelCommands::Decommission {
+                iel_prefix,
+                publish,
+            } => commands::iel::cmd_iel_decommission(&cli, iel_prefix, *publish).await,
+            IelCommands::Get { iel_prefix } => commands::iel::cmd_iel_get(&cli, iel_prefix).await,
+            IelCommands::Submit { saids } => commands::iel::cmd_iel_submit(&cli, saids).await,
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {

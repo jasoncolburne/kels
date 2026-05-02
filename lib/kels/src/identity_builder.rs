@@ -123,6 +123,32 @@ impl IdentityEventBuilder {
         Ok(builder)
     }
 
+    /// Construct a builder for an existing IEL at `iel_prefix` and hydrate
+    /// verified state from the **server**, via
+    /// `sad_client.verify_identity_events`.
+    ///
+    /// Used by the stage-and-exit CLI lifecycle commands (`evolve`,
+    /// `contest`, `decommission`) where each invocation is short-lived
+    /// and there is no useful local IEL store. The verification is
+    /// checker-gated, so the trust boundary matches `with_prefix` —
+    /// the server's wire output is verified end-to-end before being
+    /// adopted as the builder's tail. Returns a fresh builder with no
+    /// `iel_verification` if the server has no events for the prefix.
+    pub async fn with_remote_prefix(
+        sad_client: SadStoreClient,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
+        iel_prefix: &cesr::Digest256,
+    ) -> Result<Self, KelsError> {
+        let mut builder = Self::new(Some(sad_client.clone()), None, Some(Arc::clone(&checker)));
+        builder.requested_prefix = Some(*iel_prefix);
+        match sad_client.verify_identity_events(iel_prefix, checker).await {
+            Ok(v) => builder.iel_verification = Some(v),
+            Err(KelsError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(builder)
+    }
+
     // ==================== Accessors ====================
 
     pub fn pending_events(&self) -> &[IdentityEvent] {
@@ -244,6 +270,22 @@ impl IdentityEventBuilder {
     }
 
     // ==================== Submission (async) ====================
+
+    /// Publish staged events as generic SAD objects in the object store.
+    /// Idempotent (object store keys by SAID). Does not promote events
+    /// into the IEL — `flush()` (or the CLI's separate `iel submit`)
+    /// does that. Mirrors `SadEventBuilder::publish_pending`.
+    pub async fn publish_pending(&self) -> Result<(), KelsError> {
+        let client = self.sad_client.as_ref().ok_or_else(|| {
+            KelsError::OfflineMode("publish_pending requires a SadStoreClient".into())
+        })?;
+
+        for event in &self.pending_events {
+            let value = serde_json::to_value(event)?;
+            client.post_sad_object(&value).await?;
+        }
+        Ok(())
+    }
 
     /// Submit pending events to the IEL server, then absorb into verified
     /// state. Mirrors `SadEventBuilder::flush`.
