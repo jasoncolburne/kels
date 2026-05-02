@@ -109,6 +109,39 @@ impl RepositoryIelResolver {
             .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))
             .map(|mut v| v.pop())
     }
+
+    /// Verify the named IEL through the shared
+    /// `verify_identity_events_with_queried` helper, producing the
+    /// `IelVerification` token whose `auth_policy_at` /
+    /// `governance_policy_at` accessors expose the verifier-adopted
+    /// policy view (NOT raw event payloads). Mirrors
+    /// `AnchoredIelResolver::verification_for`.
+    ///
+    /// Used by `resolve_auth_policy_at` / `resolve_governance_policy_at`
+    /// to honor the trust contract documented on
+    /// `IelVerification::auth_policy_at`: post-divergence soft-fail
+    /// Evls have their *prior* tracked policies returned, never the
+    /// event's declared (unauthenticated) values. Reading
+    /// `event.auth_policy` / `event.governance_policy` directly bypasses
+    /// re-verification and risks trusting tampered payloads from the DB
+    /// (`AGENTS.md` §Verification Invariant: "the DB cannot be trusted").
+    async fn verification_for(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<kels_core::IelVerification, kels_core::KelsError> {
+        let source = RepositoryIelPageSource {
+            repo: Arc::clone(&self.repo),
+        };
+        kels_core::verify_identity_events_with_queried(
+            identity,
+            &source,
+            self.checker.clone(),
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            self.queried_saids.clone(),
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -142,22 +175,23 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         identity: &cesr::Digest256,
         iel_event_said: &cesr::Digest256,
     ) -> Result<cesr::Digest256, kels_core::KelsError> {
-        let event = self.fetch_iel_event(identity, iel_event_said).await?;
-        let divergent_at = self
-            .repo
-            .iel_events
-            .first_divergent_version(identity)
-            .await
-            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
-        if let Some(d) = divergent_at
-            && event.version >= d
+        let bound = self.fetch_iel_event(identity, iel_event_said).await?;
+        let verification = self.verification_for(identity).await?;
+        if let Some(divergence_at) = verification.diverged_at_version()
+            && bound.version >= divergence_at
         {
             return Err(kels_core::KelsError::IelDivergent(format!(
-                "IEL event {} bound at version {} sits at-or-after divergence {}",
-                iel_event_said, event.version, d
+                "IEL event {} bound at version {} sits at-or-after divergence at version {}",
+                iel_event_said, bound.version, divergence_at,
             )));
         }
-        Ok(event.auth_policy)
+        verification.auth_policy_at(iel_event_said).ok_or_else(|| {
+            kels_core::KelsError::BadIdentityBinding(format!(
+                "auth_policy not found for IEL event {} in IEL {} \
+                 (event not in policy_history — chain integrity breach)",
+                iel_event_said, identity,
+            ))
+        })
     }
 
     async fn resolve_governance_policy_at(
@@ -165,22 +199,25 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         identity: &cesr::Digest256,
         iel_event_said: &cesr::Digest256,
     ) -> Result<cesr::Digest256, kels_core::KelsError> {
-        let event = self.fetch_iel_event(identity, iel_event_said).await?;
-        let divergent_at = self
-            .repo
-            .iel_events
-            .first_divergent_version(identity)
-            .await
-            .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
-        if let Some(d) = divergent_at
-            && event.version >= d
+        let bound = self.fetch_iel_event(identity, iel_event_said).await?;
+        let verification = self.verification_for(identity).await?;
+        if let Some(divergence_at) = verification.diverged_at_version()
+            && bound.version >= divergence_at
         {
             return Err(kels_core::KelsError::IelDivergent(format!(
-                "IEL event {} bound at version {} sits at-or-after divergence {}",
-                iel_event_said, event.version, d
+                "IEL event {} bound at version {} sits at-or-after divergence at version {}",
+                iel_event_said, bound.version, divergence_at,
             )));
         }
-        Ok(event.governance_policy)
+        verification
+            .governance_policy_at(iel_event_said)
+            .ok_or_else(|| {
+                kels_core::KelsError::BadIdentityBinding(format!(
+                    "governance_policy not found for IEL event {} in IEL {} \
+                     (event not in policy_history — chain integrity breach)",
+                    iel_event_said, identity,
+                ))
+            })
     }
 
     async fn is_satisfied(

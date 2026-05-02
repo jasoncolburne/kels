@@ -2104,6 +2104,90 @@ async fn submit_returns_500_when_existing_se_chain_fails_reverification() {
     }
 }
 
+/// Round-12 group-A item-3 audit: `RepositoryIelResolver::resolve_auth_policy_at`
+/// (and the symmetric `resolve_governance_policy_at`) must consult the
+/// verifier-adopted policy view via `IelVerification::auth_policy_at`,
+/// not the raw `event.auth_policy` payload field. DB tampering of the
+/// `auth_policy` column on a stored Icp row without recomputing its SAID
+/// must surface as a verification failure (Blake3 mismatch in
+/// `verify_said` during the resolver's `verification_for` walk), not a
+/// silent leak of the tampered value to the SE verifier.
+///
+/// Per AGENTS.md §Verification Invariant ("the DB cannot be trusted"),
+/// resolvers must re-verify on lookup; this test pins that contract on
+/// the in-process `RepositoryIelResolver` consumed by the SE submit
+/// handler.
+#[tokio::test]
+#[serial]
+async fn repository_iel_resolver_resolve_at_detects_tampered_auth_policy() {
+    use kels_core::IelResolver;
+    use kels_sadstore::SadStoreRepository;
+    use kels_sadstore::iel_resolver::RepositoryIelResolver;
+    use verifiable_storage::RepositoryConnection;
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let setup = setup_kel_iel_policy(harness, "iel-resolver-tamper").await;
+    let identity = setup.iel_prefix;
+    let icp_said = setup.iel_icp_said;
+
+    let repo = Arc::new(
+        SadStoreRepository::connect(&harness.sad_db_url)
+            .await
+            .expect("connect sadstore repo"),
+    );
+    let resolver = RepositoryIelResolver::new(Arc::clone(&repo), Arc::clone(&setup.checker));
+
+    // Sanity: clean chain → resolver returns the verifier-adopted auth_policy.
+    let pre_tamper_auth = resolver
+        .resolve_auth_policy_at(&identity, &icp_said)
+        .await
+        .expect("clean chain resolves auth_policy");
+    assert_eq!(
+        pre_tamper_auth, setup.policy.said,
+        "verifier-adopted auth_policy must equal the policy declared at Icp"
+    );
+
+    // Tamper: rewrite the auth_policy column on the Icp row to a different
+    // (still-syntactically-valid) Digest256 without updating the SAID.
+    // The deserialized event now has a tampered auth_policy field; on
+    // verifier re-walk, `verify_said()` blake3-hashes the (modified)
+    // content with the said field blanked and compares to the said
+    // column — those no longer match.
+    let bogus_auth = cesr::Digest256::blake3_256(b"bogus-tampered-auth-policy");
+    let rows =
+        sqlx::query("UPDATE iel_events SET auth_policy = $1 WHERE prefix = $2 AND said = $3")
+            .bind(bogus_auth.to_string())
+            .bind(identity.to_string())
+            .bind(icp_said.to_string())
+            .execute(repo.iel_events.pool.inner())
+            .await
+            .expect("tamper iel_events row")
+            .rows_affected();
+    assert_eq!(rows, 1, "tampering must hit exactly one row");
+
+    // After tampering, the resolver must NOT silently return the bogus
+    // value — `verification_for` runs the verifier, `verify_said` fails
+    // on the tampered Icp, and the error propagates out.
+    let result = resolver.resolve_auth_policy_at(&identity, &icp_said).await;
+    assert!(
+        result.is_err(),
+        "tampered auth_policy must fail to resolve (re-verification catches it); got {result:?}",
+    );
+
+    // Symmetric pin for governance_policy resolution: the same tampered
+    // chain fails on this path too because the chain re-walk happens in
+    // `verification_for`, shared by both accessors.
+    let result_gov = resolver
+        .resolve_governance_policy_at(&identity, &icp_said)
+        .await;
+    assert!(
+        result_gov.is_err(),
+        "tampered chain must also fail governance_policy resolution; got {result_gov:?}",
+    );
+}
+
 // ==================== Suppress unused-import warnings ====================
 //
 // The 4 gossip-propagation cases (full-chain to empty sink, Cnt to

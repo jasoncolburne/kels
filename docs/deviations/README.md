@@ -56,12 +56,6 @@ For round-12 production (short chains, 1–3 v1+ events) this is fine. Pre-produ
 
 **Fix path:** cache the per-identity `IelVerification` inside the resolver (Mutex<HashMap<Digest256, IelVerification>> or OnceCell keyed by identity). Cache lifetime equals resolver lifetime equals SE-verification lifetime, so no invalidation needed during the SE walk. Same shape on both impls. Not blocking #147 e2e gating; tracked here for the #152 perf pass.
 
-### [Round-12 review fix → standalone, deliberate] Post-divergence auth-failed Evl: `policy_history` records prior tracked policies, not event-declared values
-
-When a post-IEL-divergence Evl auth-fails (soft path), the IEL verifier records `policy_history[event.said] = (PRIOR auth, PRIOR governance)` — the event payload's declared policies are NOT adopted into branch state (the unauthenticated evolution is rejected from trust). Consumers calling `auth_policy_at(post_div_evl_auth_failed.said)` get prior policies, not the event's stated values.
-
-This is the verifier's adopted-state view, distinct from the raw event payload. Documented on `auth_policy_at` / `governance_policy_at`'s doc-comment in `lib/kels/src/types/iel/verification.rs` (see "Verifier-view, not raw-event-view"). Consumers must use these accessors rather than reading `event.auth_policy` directly to honor the trust contract.
-
 ### [Round-12 third follow-up commit 1] Verifier-side queried/satisfied SAID + post-divergence soft-fail propagation
 
 Closes Important #1 from the second max review. Two mechanisms shipped together because they share the same per-event flow rewrite.
@@ -187,6 +181,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Round-12 review fix → audit + resolver fix on KELS-126]** [Post-divergence auth-failed Evl: `policy_history` records prior tracked policies, not event-declared values](iel-resolver-verifier-adopted-policy-view.md) — KELS-126 Group A audit found one consumer (`RepositoryIelResolver::resolve_{auth,governance}_policy_at`) reading `event.auth_policy` / `event.governance_policy` directly; rerouted through a new `verification_for` helper + `verification.auth_policy_at(said)` / `governance_policy_at(said)` so the resolver consults the verifier-adopted view (mirroring `AnchoredIelResolver`). DB-tamper integration test pins the new contract.
 
 - **[Round-12 review fix → audit confirmed clean]** [Auth-passing post-SE-divergence event keeps `chain.policy_satisfied=true`](policy-satisfied-consumer-audit.md) — KELS-126 Group A consumer audit walked all five `.policy_satisfied()` production sites; every one answers "did any auth check fail in the walk?" rather than the divergence/terminal questions. SE Cnt path explicitly does NOT gate on the flag (SOFT-auth design respected). No code changes needed; design contract pinned for future consumers.
 
