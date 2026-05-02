@@ -120,7 +120,7 @@ variables:
     accessKey: "minioadmin"
     secretKey: "minioadmin"
   sadstore:
-    replicas: 1
+    replicas: 2
     port: "80"
     bucket: "kels-sad"
     maxEventsPerEventLogPerDay: "8"
