@@ -40,7 +40,7 @@ use crate::{
 pub struct FlushIdentityOutcome {
     /// Server-reported divergence version, if a fork was created or
     /// already-existed at submit time.
-    pub diverged_at_at_submit: Option<u64>,
+    pub diverged_at: Option<u64>,
     /// `true` iff the submit committed at least one new event server-side.
     pub applied: bool,
     /// `Some(_)` when the server skipped the batch because the chain is
@@ -292,7 +292,7 @@ impl IdentityEventBuilder {
     pub async fn flush(&mut self) -> Result<FlushIdentityOutcome, KelsError> {
         if self.pending_events.is_empty() {
             return Ok(FlushIdentityOutcome {
-                diverged_at_at_submit: None,
+                diverged_at: None,
                 applied: false,
                 terminal: None,
             });
@@ -312,7 +312,7 @@ impl IdentityEventBuilder {
         // signal so the caller can reconcile.
         if let Some(terminal) = response.terminal {
             return Ok(FlushIdentityOutcome {
-                diverged_at_at_submit: response.diverged_at,
+                diverged_at: response.diverged_at,
                 applied: response.applied,
                 terminal: Some(terminal),
             });
@@ -339,7 +339,7 @@ impl IdentityEventBuilder {
         }
 
         Ok(FlushIdentityOutcome {
-            diverged_at_at_submit: response.diverged_at,
+            diverged_at: response.diverged_at,
             applied: response.applied,
             terminal: None,
         })
@@ -613,7 +613,7 @@ mod tests {
         let mut b = IdentityEventBuilder::new(None, None, None);
         let outcome = b.flush().await.unwrap();
         assert!(!outcome.applied);
-        assert!(outcome.diverged_at_at_submit.is_none());
+        assert!(outcome.diverged_at.is_none());
     }
 
     #[tokio::test]

@@ -181,7 +181,7 @@ pub(crate) async fn cmd_exchange_publish_key(
             "warning: server reported no events submitted (chain already present?)".yellow()
         );
     }
-    if let Some(at) = outcome.diverged_at_at_submit {
+    if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
             format!("warning: SE chain diverged at version {}", at).yellow()
@@ -245,7 +245,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
             "warning: server reported no events submitted (Upd already present?)".yellow()
         );
     }
-    if let Some(at) = outcome.diverged_at_at_submit {
+    if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
             format!("warning: SE chain diverged at version {}", at).yellow()

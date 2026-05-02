@@ -755,7 +755,7 @@ async fn incept_lands_chain_with_upd_in_same_batch() {
 
     let outcome = builder.flush().await.expect("flush");
     assert!(outcome.applied, "fresh chain should commit");
-    assert!(outcome.diverged_at_at_submit.is_none());
+    assert!(outcome.diverged_at.is_none());
 
     let prefix = *builder.prefix().expect("prefix");
     let events = fetch_chain(&setup.sad_client, &prefix).await;

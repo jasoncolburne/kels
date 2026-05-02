@@ -44,9 +44,9 @@ use crate::{
 
 /// Outcome of a successful `SadEventBuilder::flush`.
 #[derive(Debug, Clone)]
-#[must_use = "FlushOutcome carries divergence signals — check diverged_at_at_submit before continuing"]
+#[must_use = "FlushOutcome carries divergence signals — check diverged_at before continuing"]
 pub struct FlushOutcome {
-    pub diverged_at_at_submit: Option<u64>,
+    pub diverged_at: Option<u64>,
     pub applied: bool,
     /// `Some(_)` when the server skipped the batch because the chain is
     /// already terminal (gossip-race-already-contested / decommissioned).
@@ -538,7 +538,7 @@ impl SadEventBuilder {
     pub async fn flush(&mut self) -> Result<FlushOutcome, KelsError> {
         if self.pending_events.is_empty() {
             return Ok(FlushOutcome {
-                diverged_at_at_submit: None,
+                diverged_at: None,
                 applied: false,
                 terminal: None,
             });
@@ -562,7 +562,7 @@ impl SadEventBuilder {
         // the signal so the caller can reconcile.
         if let Some(terminal) = response.terminal {
             return Ok(FlushOutcome {
-                diverged_at_at_submit: response.diverged_at,
+                diverged_at: response.diverged_at,
                 applied: response.applied,
                 terminal: Some(terminal),
             });
@@ -627,7 +627,7 @@ impl SadEventBuilder {
         }
 
         Ok(FlushOutcome {
-            diverged_at_at_submit: response.diverged_at,
+            diverged_at: response.diverged_at,
             applied: response.applied,
             terminal: None,
         })

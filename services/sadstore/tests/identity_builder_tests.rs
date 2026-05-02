@@ -408,7 +408,7 @@ async fn incept_lands_chain() {
 
     let outcome = builder.flush().await.expect("flush Icp");
     assert!(outcome.applied);
-    assert!(outcome.diverged_at_at_submit.is_none());
+    assert!(outcome.diverged_at.is_none());
 
     let prefix = iel_prefix_for(policy.said, policy.said, TEST_TOPIC);
     let page = sad_client
