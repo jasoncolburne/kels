@@ -124,7 +124,7 @@ pub use types::{
     hash_effective_said, iel_completed_verification, iel_completed_verification_with_queried,
     parse_and_validate_custody, sel_completed_verification, single_signer,
     truncate_incomplete_generation, validate_timestamp, verify_identity_events,
-    verify_identity_events_with_queried, verify_key_events,
+    verify_identity_events_with, verify_identity_events_with_queried, verify_key_events,
     verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sad_events,
 };
 

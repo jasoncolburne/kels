@@ -581,6 +581,59 @@ pub async fn verify_identity_events_with_queried(
     max_pages: usize,
     queried_saids: BTreeSet<cesr::Digest256>,
 ) -> Result<IelVerification, KelsError> {
+    verify_identity_events_inner(
+        prefix,
+        source,
+        checker,
+        page_size,
+        max_pages,
+        queried_saids,
+        |_| {},
+    )
+    .await
+}
+
+/// Verify an IEL with a per-page callback that fires after each page passes
+/// verification. Mirrors `verify_key_events_with` for the IEL primitive.
+///
+/// The callback receives `&[IdentityEvent]` for each page batch in the
+/// canonical sort order delivered by the source. Used by the CLI's
+/// `kels iel get` to stream events while the verifier walks the chain.
+pub async fn verify_identity_events_with<F>(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedIelSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    on_page: F,
+) -> Result<IelVerification, KelsError>
+where
+    F: FnMut(&[IdentityEvent]) + Send,
+{
+    verify_identity_events_inner(
+        prefix,
+        source,
+        checker,
+        page_size,
+        max_pages,
+        BTreeSet::new(),
+        on_page,
+    )
+    .await
+}
+
+async fn verify_identity_events_inner<F>(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedIelSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    queried_saids: BTreeSet<cesr::Digest256>,
+    mut on_page: F,
+) -> Result<IelVerification, KelsError>
+where
+    F: FnMut(&[IdentityEvent]) + Send,
+{
     let mut verifier = IelVerifier::new(Some(prefix), checker);
     if !queried_saids.is_empty() {
         verifier.check_satisfied(queried_saids);
@@ -599,6 +652,7 @@ pub async fn verify_identity_events_with_queried(
 
         saw_any = true;
         verifier.verify_page(&events).await?;
+        on_page(&events);
 
         if !has_more {
             exhausted = true;

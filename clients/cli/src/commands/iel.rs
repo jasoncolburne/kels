@@ -10,10 +10,12 @@
 //! store by SAID before posting the batch — the always-publish flow is
 //! load-bearing here.
 
+use std::sync::Mutex;
+
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
-use kels_core::{IdentityEvent, IdentityEventBuilder, SadStoreClient};
+use kels_core::{HttpIelSource, IdentityEvent, IdentityEventBuilder, SadStoreClient};
 
 use crate::Cli;
 use crate::helpers::sad_store_anchored_checker;
@@ -135,12 +137,58 @@ pub(crate) async fn cmd_iel_decommission(cli: &Cli, iel_prefix: &str, publish: b
 
 pub(crate) async fn cmd_iel_get(cli: &Cli, iel_prefix: &str) -> Result<()> {
     let prefix = cesr::Digest256::from_qb64(iel_prefix).context("Invalid IEL prefix CESR")?;
-    let client = SadStoreClient::new(&cli.sadstore_url())?;
-    let page = client
-        .fetch_identity_events(&prefix, None)
-        .await
-        .context("Failed to fetch IEL")?;
-    println!("{}", serde_json::to_string_pretty(&page)?);
+    let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
+    let checker = sad_store_anchored_checker(cli, &sad_client)?;
+    let source = HttpIelSource::new(&cli.sadstore_url())?;
+
+    println!("{}", format!("Fetching IEL {}...", iel_prefix).green());
+
+    // Verifier-driven walk mirrors `kels kel get` (which uses
+    // `verify_key_events_with`). Stream summary lines per page while
+    // collecting events for the JSON dump, and read divergent /
+    // terminal state off the resulting verification token.
+    let collected: Mutex<Vec<IdentityEvent>> = Mutex::new(Vec::new());
+    let verification = kels_core::verify_identity_events_with(
+        &prefix,
+        &source,
+        checker,
+        kels_core::page_size(),
+        kels_core::max_pages(),
+        |events| {
+            for event in events {
+                let said_str: &str = event.said.as_ref();
+                println!(
+                    "  [{}] {:?} - {}",
+                    event.version,
+                    event.kind,
+                    &said_str[..16]
+                );
+            }
+            #[allow(clippy::expect_used)]
+            collected
+                .lock()
+                .expect("collector mutex poisoned")
+                .extend_from_slice(events);
+        },
+    )
+    .await
+    .map_err(|e| anyhow!("{}", e))?;
+
+    let events = collected
+        .into_inner()
+        .map_err(|e| anyhow!("collector mutex poisoned: {}", e))?;
+
+    let output = serde_json::json!({
+        "prefix": iel_prefix,
+        "events": events,
+        "diverged_at": verification.diverged_at_version(),
+        "is_divergent": verification.is_divergent(),
+        "is_contested": verification.is_contested(),
+        "is_decommissioned": verification.is_decommissioned(),
+    });
+
+    println!();
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -168,16 +216,29 @@ pub(crate) async fn cmd_iel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
         .await
         .context("Failed to submit IEL events")?;
 
-    if response.applied {
-        println!(
-            "{}",
-            format!("{} IEL event(s) submitted", events.len()).green()
-        );
-    } else {
-        println!(
-            "{}",
-            "no new events submitted (all already present on server)".yellow()
-        );
+    match (response.applied, &response.terminal) {
+        (true, _) => {
+            println!(
+                "{}",
+                format!("{} IEL event(s) submitted", events.len()).green()
+            );
+        }
+        (false, Some(terminal)) => {
+            println!(
+                "{}",
+                format!(
+                    "chain is already terminal ({:?}) — submit was a no-op",
+                    terminal
+                )
+                .yellow()
+            );
+        }
+        (false, None) => {
+            println!(
+                "{}",
+                "no new events submitted (all already present on server)".yellow()
+            );
+        }
     }
     if let Some(at) = response.diverged_at {
         eprintln!(
@@ -185,16 +246,6 @@ pub(crate) async fn cmd_iel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
             format!(
                 "warning: IEL diverged at version {} — stage a contest to resolve",
                 at
-            )
-            .yellow()
-        );
-    }
-    if let Some(terminal) = &response.terminal {
-        eprintln!(
-            "{}",
-            format!(
-                "note: chain is already terminal ({:?}) — submit was a no-op",
-                terminal
             )
             .yellow()
         );
