@@ -231,7 +231,7 @@ seed-kels:
 	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 500 5 ml-dsa-65 50 
 
 seed-sads:
-	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 50
+	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 10
 
 wait-for-gossip:
 	scripts/wait-for-gossip.sh 180 node-a node-b node-c node-d node-e node-f
