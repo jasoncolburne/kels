@@ -176,10 +176,10 @@ get_kel_effective_said() {
 #
 # Why this exists (round-12 Gap 9): the test anchors a SAID in node-A's
 # KEL (`kel anchor` produces an `Ixn` event with `anchor=said` advancing
-# node-A's KEL tip), then immediately submits an SE event referencing
-# that SAID via `sel submit`. If the SE event reaches node-B (directly
+# node-A's KEL tip), then immediately submits an SEL event referencing
+# that SAID via `sel submit`. If the SEL event reaches node-B (directly
 # or via gossip) before node-A's KEL anchor does, node-B's verifier
-# rejects the SE event because the IEL-resolved policy's anchor isn't
+# rejects the SEL event because the IEL-resolved policy's anchor isn't
 # visible in node-B's local KEL view yet. The race is invisible in
 # logs and produces flaky failures.
 #
@@ -565,7 +565,7 @@ else
     EXT_PREFIX=$(kels-cli sel prefix "$EXT_IEL" "$EXT_TOPIC" 2>/dev/null)
     echo "SEL prefix: $EXT_PREFIX"
 
-    # Alice incepts the SE chain (atomic [Icp, v1]).
+    # Alice incepts the SEL chain (atomic [Icp, v1]).
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario8-initial\"}" > "$TEMP_DIR/ext-content-init.json"
     EXT_CONTENT_INIT=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/ext-content-init.json")
 

@@ -128,10 +128,12 @@ build_immune_policy() {
     echo "$said"
 }
 
-# Build an immune disjunctive policy SAD object that accepts either of
-# two endorsers (`endorse(A) | endorse(B)`). Used by tests that need
-# multiple legitimate authors on the same chain — e.g., a silent-extension
-# scenario where Bob extends past Alice's authoritative tip.
+# Build an immune 1-of-2 threshold policy SAD object that accepts either
+# of two endorsers (`threshold(1, [endorse(A), endorse(B)])`). Used by
+# tests that need multiple legitimate authors on the same chain — e.g.,
+# a silent-extension scenario where Bob extends past Alice's
+# authoritative tip. The policy DSL has no infix OR; threshold is the
+# canonical disjunction.
 # Echoes the policy SAID to stdout.
 # Usage: POLICY_SAID=$(build_immune_or_policy "$CLI_INVOCATION" "$KEL_A" "$KEL_B")
 build_immune_or_policy() {
@@ -139,14 +141,15 @@ build_immune_or_policy() {
     local kel_a="$2"
     local kel_b="$3"
     local tmp; tmp=$(mktemp)
-    jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_a) | endorse($kel_b)" \
+    jq -nc --arg p "$PLACEHOLDER" \
+        --arg expr "threshold(1, [endorse($kel_a), endorse($kel_b)])" \
         '{said: $p, expression: $expr, immune: true}' > "$tmp"
     local said
     said=$($cli_invocation sad put "$tmp")
     local rc=$?
     rm -f "$tmp"
     [ "$rc" -eq 0 ] || {
-        echo "build_immune_or_policy: sad put failed for endorse($kel_a) | endorse($kel_b)" >&2
+        echo "build_immune_or_policy: sad put failed for threshold(1, [endorse($kel_a), endorse($kel_b)])" >&2
         return "$rc"
     }
     echo "$said"
@@ -204,6 +207,21 @@ setup_iel_identity_with_policy() {
         echo "setup_iel_identity_with_policy: kel anchor failed for icp $icp_said (anchor KEL $anchor_kel)" >&2
         return 1
     }
+
+    # Multi-node race fix: `iel submit` triggers an IEL gossip
+    # announcement that fan out to peers, who then try to verify the
+    # IEL against their local KEL view of `anchor_kel`. If the anchor
+    # `Ixn` hasn't propagated to those peers yet, IEL verification
+    # fails permanently (IEL has no anti-entropy fallback). Wait for
+    # the anchor to converge first if the caller has defined a
+    # `wait_for_kel_anchor_convergence` helper (test-sadstore.sh
+    # multi-node mode); otherwise (single-node tests) skip.
+    if [ "$(type -t wait_for_kel_anchor_convergence)" = "function" ]; then
+        wait_for_kel_anchor_convergence "$anchor_kel" "$icp_said" || {
+            echo "setup_iel_identity_with_policy: KEL anchor for icp $icp_said did not converge to peers" >&2
+            return 1
+        }
+    fi
 
     $cli_invocation iel submit "$icp_said" >/dev/null || {
         echo "setup_iel_identity_with_policy: iel submit failed for icp $icp_said" >&2

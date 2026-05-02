@@ -342,7 +342,7 @@ enum IelCommands {
 
 #[derive(Subcommand, Debug)]
 enum SelCommands {
-    /// Stage atomic [Icp, Upd] for a fresh SE chain bound to an IEL
+    /// Stage atomic [Icp, Upd] for a fresh SEL chain bound to an IEL
     /// identity. Prints the Icp SAID and the Upd SAID, one per line.
     Incept {
         /// SE topic string (e.g., "kels/sad/v1/keys/mlkem")
@@ -361,7 +361,7 @@ enum SelCommands {
         publish: bool,
     },
 
-    /// Stage an Upd extending an existing SE chain. Prints the SAID.
+    /// Stage an Upd extending an existing SEL chain. Prints the SAID.
     Update {
         /// SEL prefix to update
         sel_prefix: String,
@@ -385,14 +385,14 @@ enum SelCommands {
     },
 
     /// Stage a repair (Rpr) on an unsealed-divergent or
-    /// adversary-extended SE chain. Prints the SAID.
+    /// adversary-extended SEL chain. Prints the SAID.
     Repair {
         /// SEL prefix to repair
         sel_prefix: String,
 
         /// Owner KEL prefix. Required to repair silent (linear)
         /// adversary extensions: the builder walks this KEL to harvest
-        /// `Ixn` anchors and treats the first non-anchored SE event as
+        /// `Ixn` anchors and treats the first non-anchored SEL event as
         /// the rogue boundary. Omit to repair only divergence-driven
         /// forks.
         #[arg(long)]
@@ -423,7 +423,7 @@ enum SelCommands {
         publish: bool,
     },
 
-    /// Submit one or more staged SE events by SAID
+    /// Submit one or more staged SEL events by SAID
     Submit {
         /// SAIDs of events previously published to the SAD object store
         #[arg(required = true, num_args = 1..)]
@@ -450,13 +450,13 @@ enum SelCommands {
 #[allow(clippy::enum_variant_names)]
 enum ExchangeCommands {
     /// Publish an ML-KEM encapsulation key to the SADStore. Stages,
-    /// anchors, and submits an SE chain bound to `--identity`.
+    /// anchors, and submits an SEL chain bound to `--identity`.
     PublishKey {
         /// KEL prefix whose key signs the anchoring Ixn events
         #[arg(long)]
         prefix: String,
 
-        /// IEL identity (prefix) the SE chain binds to. Must already
+        /// IEL identity (prefix) the SEL chain binds to. Must already
         /// exist in SADStore with auth/governance policies set.
         #[arg(long)]
         identity: String,
@@ -472,7 +472,7 @@ enum ExchangeCommands {
         #[arg(long)]
         prefix: String,
 
-        /// IEL identity (prefix) the SE chain binds to
+        /// IEL identity (prefix) the SEL chain binds to
         #[arg(long)]
         identity: String,
 

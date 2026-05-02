@@ -52,7 +52,7 @@ fn parse_kem_algorithm(
 }
 
 /// Build, save, and post a new ML-KEM encapsulation-key publication SAD
-/// object. Returns the publication's SAID — used as the SE chain's content
+/// object. Returns the publication's SAID — used as the SEL chain's content
 /// reference.
 async fn build_and_post_publication(
     cli: &Cli,
@@ -149,12 +149,12 @@ pub(crate) async fn cmd_exchange_publish_key(
             publication_said,
         )
         .await
-        .context("Failed to stage atomic [Icp, Upd] for SE chain")?;
+        .context("Failed to stage atomic [Icp, Upd] for SEL chain")?;
 
     sad_builder
         .publish_pending()
         .await
-        .context("Failed to publish staged SE events to SAD object store")?;
+        .context("Failed to publish staged SEL events to SAD object store")?;
 
     println!("  Anchoring Icp ({}) in KEL...", icp_said);
     anchor_in_kel(cli, kel_prefix, &icp_said).await?;
@@ -164,7 +164,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     let outcome = sad_builder
         .flush()
         .await
-        .context("Failed to submit SE events")?;
+        .context("Failed to submit SEL events")?;
 
     if outcome.applied {
         println!("{}", "Publish successful!".green().bold());
@@ -172,7 +172,7 @@ pub(crate) async fn cmd_exchange_publish_key(
         println!("  Upd SAID: {}", upd_said);
     } else if let Some(terminal) = outcome.terminal {
         return Err(anyhow!(
-            "SE chain is already terminal ({:?}) — submit was a no-op",
+            "SEL chain is already terminal ({:?}) — submit was a no-op",
             terminal
         ));
     } else {
@@ -184,7 +184,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
-            format!("warning: SE chain diverged at version {}", at).yellow()
+            format!("warning: SEL chain diverged at version {}", at).yellow()
         );
     }
 
@@ -236,7 +236,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         println!("  SEL Prefix: {}", sel_prefix);
     } else if let Some(terminal) = outcome.terminal {
         return Err(anyhow!(
-            "SE chain is already terminal ({:?}) — submit was a no-op",
+            "SEL chain is already terminal ({:?}) — submit was a no-op",
             terminal
         ));
     } else {
@@ -248,7 +248,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
-            format!("warning: SE chain diverged at version {}", at).yellow()
+            format!("warning: SEL chain diverged at version {}", at).yellow()
         );
     }
 

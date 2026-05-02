@@ -123,7 +123,8 @@ variables:
     replicas: 2
     port: "80"
     bucket: "kels-sad"
-    maxEventsPerEventLogPerDay: "8"
+    maxSelEventsPerPrefixPerDay: "256"
+    maxIelEventsPerPrefixPerDay: "8"
     maxWritesPerIpPerSecond: "256"
     ipRateLimitBurst: "1024"
     maxObjectSize: "1048576"

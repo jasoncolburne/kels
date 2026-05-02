@@ -197,7 +197,8 @@ impl SharedHarness {
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
             std::env::set_var("KELS_NONCE_WINDOW_SECS", "0");
-            std::env::set_var("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", "10000");
+            std::env::set_var("SADSTORE_MAX_SEL_EVENTS_PER_PREFIX_PER_DAY", "10000");
+            std::env::set_var("SADSTORE_MAX_IEL_EVENTS_PER_PREFIX_PER_DAY", "10000");
         }
 
         let kels_db = kels_db_url.clone();

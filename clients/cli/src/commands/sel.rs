@@ -50,7 +50,7 @@ pub(crate) async fn cmd_sel_incept(
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE events to SAD object store")?;
+            .context("Failed to publish staged SEL events to SAD object store")?;
     }
 
     println!("{}", icp_said);
@@ -84,7 +84,7 @@ pub(crate) async fn cmd_sel_update(
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE event to SAD object store")?;
+            .context("Failed to publish staged SEL event to SAD object store")?;
     }
 
     println!("{}", said);
@@ -107,7 +107,7 @@ pub(crate) async fn cmd_sel_seal(cli: &Cli, sel_prefix: &str, publish: bool) -> 
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE event to SAD object store")?;
+            .context("Failed to publish staged SEL event to SAD object store")?;
     }
 
     println!("{}", said);
@@ -177,7 +177,7 @@ pub(crate) async fn cmd_sel_repair(
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE event to SAD object store")?;
+            .context("Failed to publish staged SEL event to SAD object store")?;
     }
 
     println!("{}", said);
@@ -200,7 +200,7 @@ pub(crate) async fn cmd_sel_contest(cli: &Cli, sel_prefix: &str, publish: bool) 
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE event to SAD object store")?;
+            .context("Failed to publish staged SEL event to SAD object store")?;
     }
 
     println!("{}", said);
@@ -226,7 +226,7 @@ pub(crate) async fn cmd_sel_decommission(cli: &Cli, sel_prefix: &str, publish: b
         builder
             .publish_pending()
             .await
-            .context("Failed to publish staged SE event to SAD object store")?;
+            .context("Failed to publish staged SEL event to SAD object store")?;
     }
 
     println!("{}", said);
@@ -242,11 +242,11 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
     let mut events = Vec::with_capacity(saids.len());
     for s in saids {
         let said = cesr::Digest256::from_qb64(s)
-            .with_context(|| format!("Invalid SE event SAID: {}", s))?;
+            .with_context(|| format!("Invalid SEL event SAID: {}", s))?;
         let value = client
             .get_sad_object(&said)
             .await
-            .with_context(|| format!("Failed to fetch SE event {} from SAD object store", s))?;
+            .with_context(|| format!("Failed to fetch SEL event {} from SAD object store", s))?;
         let event: SadEvent = serde_json::from_value(value)
             .with_context(|| format!("Failed to parse {} as SadEvent", s))?;
         events.push(event);
@@ -255,13 +255,13 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
     let response = client
         .submit_sad_events(&events)
         .await
-        .context("Failed to submit SE events")?;
+        .context("Failed to submit SEL events")?;
 
     match (response.applied, &response.terminal) {
         (true, _) => {
             println!(
                 "{}",
-                format!("{} SE event(s) submitted", events.len()).green()
+                format!("{} SEL event(s) submitted", events.len()).green()
             );
         }
         (false, Some(terminal)) => {
@@ -323,7 +323,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
         kels_core::max_pages(),
     )
     .await
-    .context("Failed to pre-walk SE chain for queried IEL SAIDs")?;
+    .context("Failed to pre-walk SEL chain for queried IEL SAIDs")?;
 
     let iel_source: std::sync::Arc<dyn kels_core::PagedIelSource + Send + Sync> =
         std::sync::Arc::new(sad_client.as_iel_source()?);

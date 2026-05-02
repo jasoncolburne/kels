@@ -96,7 +96,7 @@ BOB_PREFIX=$(cat "$TEMP_DIR/bob_prefix")
 echo ""
 
 # ================================================================
-# Phase 1b: IEL Identity Setup — round-12 SE chains bind to an IEL
+# Phase 1b: IEL Identity Setup — round-12 SEL chains bind to an IEL
 # ================================================================
 
 echo "========================================="

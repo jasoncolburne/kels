@@ -136,9 +136,19 @@ async fn reap_expired_objects(
     Ok(())
 }
 
-/// Max SAD events per SEL prefix per day. Low — SELs represent stable state.
-fn max_events_per_prefix_per_day() -> u32 {
-    kels_core::env_usize("SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY", 8) as u32
+/// Max SAD events per SEL prefix per day per pod. SELs are the foundational
+/// chains (identity built from them, content updates flow through them); a
+/// higher ceiling matches their write profile and parallels the KEL daily
+/// per-prefix limit.
+fn max_sel_events_per_prefix_per_day() -> u32 {
+    kels_core::env_usize("SADSTORE_MAX_SEL_EVENTS_PER_PREFIX_PER_DAY", 256) as u32
+}
+
+/// Max IEL events per identity prefix per day per pod. IELs evolve slowly
+/// (auth/governance policy changes are rare); the tighter ceiling bounds
+/// adversary churn at the identity boundary.
+fn max_iel_events_per_prefix_per_day() -> u32 {
+    kels_core::env_usize("SADSTORE_MAX_IEL_EVENTS_PER_PREFIX_PER_DAY", 8) as u32
 }
 
 /// Max write operations per IP per second (token bucket refill rate).
@@ -156,19 +166,21 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-SEL-prefix daily rate limit. Checks whether adding `event_count` units
-/// of budget would exceed the daily limit. When `accrue` is `true`, also
-/// charges the budget on success — used by the request gate above the dedup
-/// branch so duplicate-submit campaigns still consume budget. When `false`,
-/// behaves as a pure check (legacy; no current callers).
+/// Per-prefix daily rate limit. Checks whether adding `event_count` units
+/// of budget would exceed `max_events` over a 24h window. Caller supplies
+/// the limit so SEL and IEL submit paths can enforce different ceilings
+/// (see `max_sel_events_per_prefix_per_day` and
+/// `max_iel_events_per_prefix_per_day`). When `accrue` is `true`, also
+/// charges the budget on success — used by the request gate above the
+/// dedup branch so duplicate-submit campaigns still consume budget.
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
     event_count: u32,
+    max_events: u32,
     accrue: bool,
 ) -> Result<(), String> {
     let now = Instant::now();
-    let max_events = max_events_per_prefix_per_day();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
 
     if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
@@ -177,7 +189,7 @@ fn check_prefix_rate_limit(
     }
 
     if entry.0 + event_count > max_events {
-        return Err("Too many events for this SEL prefix".to_string());
+        return Err("Too many events for this prefix".to_string());
     }
 
     if accrue {
@@ -1299,6 +1311,7 @@ pub async fn submit_sad_events(
         &state.prefix_rate_limits,
         sel_prefix,
         events.len() as u32,
+        max_sel_events_per_prefix_per_day(),
         true,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -2247,6 +2260,7 @@ pub async fn submit_identity_events(
         &state.prefix_rate_limits,
         iel_prefix,
         events.len() as u32,
+        max_iel_events_per_prefix_per_day(),
         true,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
