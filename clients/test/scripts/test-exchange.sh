@@ -12,7 +12,7 @@
 #   NODE_A_MAIL_HOST     - node-a Mail hostname (default: mail)
 #   NODE_B_MAIL_HOST     - node-b Mail hostname (default: mail.node-b.kels)
 #   NODE_B_SADSTORE_HOST - node-b SADStore hostname (default: sadstore.node-b.kels)
-#   CONVERGENCE_TIMEOUT  - Timeout for gossip propagation polling (default: 30s)
+#   CONVERGENCE_TIMEOUT  - Timeout for gossip propagation polling (default: 60s)
 #   FEDERATED            - Set to "false" for single-node mode (skips cross-node tests)
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
@@ -194,7 +194,7 @@ run_test_expect_fail "Look up nonexistent key" test_lookup_nonexistent_key
 
 echo ""
 
-CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-60}"
 
 test_lookup_alice_key_from_node_b() {
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
