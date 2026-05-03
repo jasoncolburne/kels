@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum SadAnnouncement {
-    /// A new SAD object was stored (content-addressed blob in MinIO).
+    /// A new SAD object was stored (content-addressed blob in object store).
     Object {
         /// The SAID of the stored object.
         said: cesr::Digest256,

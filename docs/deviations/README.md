@@ -48,16 +48,6 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ## Open
 
-### [Issue #154 → follow-up] Sadstore integration tests still use `minio/minio:latest` testcontainer
-
-`#154` substitutes RustFS for MinIO in the production deployment surface. Sadstore's three integration test files — `services/sadstore/tests/sad_builder_tests.rs`, `tests/identity_builder_tests.rs`, `tests/integration_tests.rs` — continue spinning up `GenericImage::new("minio/minio", "latest")` as their black-box S3 fixture. Only the env vars consumed by sadstore source (`MINIO_*` → `OBJECTS_*`) were renamed in those tests; the testcontainer image and its container-side env vars (`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`) are unchanged.
-
-**Why deferred.** The MinIO testcontainer uses `WaitFor::message_on_stderr("API:")` as its readiness signal — a MinIO-specific stdout pattern. Migrating to `rustfs/rustfs:latest` requires a verified RustFS-compatible wait strategy (HTTP wait on `/health` if testcontainers-rs supports it at our pinned version, or a confirmed RustFS startup-log marker). Without running RustFS in the testcontainer harness to capture its readiness signal, blindly switching the image would land flaky waits.
-
-**Why acceptable for now.** The aws-sdk-s3 client doesn't differentiate MinIO from RustFS at the wire — both are S3 servers. Tests exercise sadstore's S3 client surface, not RustFS-specific behavior. The MinIO license shift that drove `#154` is a *production deployment* concern; using MinIO as a dev/CI test fixture has different posture.
-
-**Fix path.** Either pin a tested RustFS testcontainer wait strategy (likely HTTP wait on `/health` against port 9000) or run RustFS once in the harness to capture a stable stdout marker for `WaitFor::message_on_stdout`. Once verified, swap all three test files in lockstep and update the testcontainer env vars to the `RUSTFS_*` set. Track as a follow-up to `#154`.
-
 ### [Round-12 review fix → pre-production / #152] `is_satisfied` per-call IEL re-verification
 
 `AnchoredIelResolver::is_satisfied` and `RepositoryIelResolver::is_satisfied` each rebuild the full `IelVerification` token on every call (now via the shared `verify_identity_events_with_queried` helper). For an SE chain with N v1+ events, that's N IEL walks per SE verification — bounded by `max_pages × page_size = 4096` events per walk at default config.
@@ -169,6 +159,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Issue #154 → Issue #154]** [Sadstore integration tests still use minio/minio:latest testcontainer](sadstore-tests-rustfs-testcontainer.md) — testcontainer fixture migrated to `rustfs/rustfs:latest` with `WaitFor::seconds(5)`; container env vars switched to `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`/`RUSTFS_VOLUMES`/`RUSTFS_ADDRESS`/`RUSTFS_CONSOLE_ADDRESS`; locals + struct field renamed `_minio`→`_objects`.
 
 - **[Gap 5 → #162]** [Builder-level IEL state caching retargeted to client-side caching strategy](gap-5-builder-iel-state-caching-retargeted-to-162.md) — narrow CLI-builder-cache item reframed as one instance of a broader client-side dep-graph caching strategy; #162 captures the general concern.
 

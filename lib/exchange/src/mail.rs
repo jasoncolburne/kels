@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 /// Mail message metadata. Stored in PostgreSQL at every node (gossiped network-wide).
-/// The actual ESSR envelope blob is stored in MinIO at the origin node only.
+/// The actual ESSR envelope blob is stored in object store at the origin node only.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "mail_messages")]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +17,7 @@ pub struct MailMessage {
     pub source_node_prefix: cesr::Digest256,
     /// Recipient's KEL prefix.
     pub recipient_kel_prefix: cesr::Digest256,
-    /// Blake3 digest of the ESSR envelope blob (content-addressable MinIO key).
+    /// Blake3 digest of the ESSR envelope blob (content-addressable object store key).
     pub blob_digest: cesr::Digest256,
     /// Size of the ESSR envelope blob in bytes.
     pub blob_size: i64,

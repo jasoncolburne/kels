@@ -10,7 +10,7 @@ The mail service is payload-agnostic — it handles opaque ESSR envelopes. The e
 
 Two layers, split between routing metadata and bulk encrypted data:
 
-- **Envelope blobs** (MinIO) — ESSR envelopes stored as opaque binary objects at the **origin node only**. Key: `messages/{blob_digest}` where digest is qb64 Blake3. Content-addressable and integrity-verified on fetch.
+- **Envelope blobs** (RustFS, S3-compatible) — ESSR envelopes stored as opaque binary objects at the **origin node only**. Key: `messages/{blob_digest}` where digest is qb64 Blake3. Content-addressable and integrity-verified on fetch.
 - **Message metadata** (PostgreSQL) — Routing information stored at **every node** via gossip. Tells recipients where their mail lives without replicating the encrypted payloads.
 
 ### MailMessage
@@ -21,7 +21,7 @@ pub struct MailMessage {
     pub sender_kel_prefix: String,    // sender's KEL prefix
     pub source_node_prefix: String,   // node where blob lives
     pub recipient_kel_prefix: String, // recipient's KEL prefix
-    pub blob_digest: String,          // qb64 Blake3 digest (MinIO key)
+    pub blob_digest: String,          // qb64 Blake3 digest (object store key)
     pub blob_size: i64,               // envelope size in bytes
     pub created_at: StorageDatetime,
     pub expires_at: StorageDatetime,
@@ -43,11 +43,11 @@ Announcements published to Redis, picked up by the gossip service, and broadcast
 
 ## Message Lifecycle
 
-1. **Send** — Sender submits ESSR envelope to their local mail node. Node stores blob in MinIO + metadata in PostgreSQL, gossips `Message` announcement.
+1. **Send** — Sender submits ESSR envelope to their local mail node. Node stores blob in the object store + metadata in PostgreSQL, gossips `Message` announcement.
 2. **Discover** — Recipient queries any node's inbox endpoint. Gets `MailMessage` entries with `source_node_prefix` identifying where blobs live.
 3. **Fetch** — Recipient resolves source node URL via registry peer lookup (`source_node_prefix` → `base_domain`), authenticates to source node's mail service, retrieves blob. Client verifies `blob_digest` and `blob_size` match.
 4. **Open** — Recipient deserializes blob as `SignedEssrEnvelope`, verifies sender's KEL, ESSR-opens with local decapsulation key.
-5. **Acknowledge** — Recipient sends ack to local node. Source node deletes blob from MinIO, gossips `Removal` announcement. All nodes delete metadata.
+5. **Acknowledge** — Recipient sends ack to local node. Source node deletes blob from the object store, gossips `Removal` announcement. All nodes delete metadata.
 
 ## HTTP API
 
@@ -88,7 +88,7 @@ A background reaper runs every 5 minutes to:
 - **kels-core** — `SignedRequest`, `KelsClient`, `IdentityClient`, crypto utilities
 - **kels-exchange** — `MailMessage`, `MailAnnouncement`, `SendRequest`, `InboxRequest`, `FetchRequest`, `AckRequest`, `compute_blob_digest`
 - **verifiable-storage** / **verifiable-storage-postgres** — `SelfAddressed`, `Stored` derives, query builder
-- **aws-sdk-s3** — MinIO blob storage (same pattern as SADStore)
+- **aws-sdk-s3** — object store blob storage (same pattern as SADStore)
 - **redis** — pub/sub for gossip announcements
 - **dashmap** — in-memory rate limiting (same pattern as SADStore)
 - **axum** — HTTP framework
@@ -104,17 +104,17 @@ Environment variables:
 | `REDIS_URL` | (none) | Redis for gossip pub/sub (optional, standalone mode without) |
 | `KELS_URL` | `http://kels:80` | Co-located KELS instance for KEL verification |
 | `IDENTITY_URL` | `http://identity:80` | Identity service for node prefix |
-| `MINIO_ENDPOINT` | `http://minio:9000` | MinIO endpoint |
-| `MINIO_REGION` | `us-east-1` | MinIO region |
-| `MINIO_ACCESS_KEY` | (required) | MinIO credentials |
-| `MINIO_SECRET_KEY` | (required) | MinIO credentials |
-| `KELS_MAIL_BUCKET` | `kels-mail` | MinIO bucket name |
+| `OBJECTS_ENDPOINT` | `http://objects:9000` | Object store endpoint |
+| `OBJECTS_REGION` | `us-east-1` | Object store region |
+| `OBJECTS_ACCESS_KEY` | (required) | Object store credentials |
+| `OBJECTS_SECRET_KEY` | (required) | Object store credentials |
+| `KELS_MAIL_BUCKET` | `kels-mail` | Object store bucket name |
 
 ## Deployment Modes
 
 ### Federated (node)
 
-The default mode. Requires all dependencies: PostgreSQL, MinIO, KELS, identity service, and Redis. The identity service provides the node prefix (used to tag which node stores each blob). Redis distributes gossip announcements (`MailAnnouncement::Message` and `MailAnnouncement::Removal`) to peers via the `mail_updates` channel.
+The default mode. Requires all dependencies: PostgreSQL, the object store, KELS, identity service, and Redis. The identity service provides the node prefix (used to tag which node stores each blob). Redis distributes gossip announcements (`MailAnnouncement::Message` and `MailAnnouncement::Removal`) to peers via the `mail_updates` channel.
 
 ### Standalone (single-node)
 
@@ -123,7 +123,7 @@ For single-node deployments with no peers. Omit `REDIS_URL`:
 - **No Redis**: All gossip publish calls are guarded by `if let Some(ref redis)` and become no-ops. No subscription loops exist (the mail service only publishes, never subscribes).
 - **Health**: Returns 200 unconditionally, no Redis check.
 
-Required dependencies in standalone: PostgreSQL, MinIO, KELS (for KEL verification of signed requests), identity (for node prefix).
+Required dependencies in standalone: PostgreSQL, the object store, KELS (for KEL verification of signed requests), identity (for node prefix).
 
 ## Future: Access Control
 

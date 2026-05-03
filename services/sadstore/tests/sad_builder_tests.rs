@@ -15,7 +15,7 @@
 //! verifies by calling `AnchoredPolicyChecker` (KEL anchoring) and
 //! `RepositoryIelResolver` (IEL binding). HTTP-level mocks would split
 //! invariants — bring the real services up against testcontainers
-//! (Postgres x2, Redis, MinIO, KELS service, SADStore service).
+//! (Postgres x2, Redis, RustFS, KELS service, SADStore service).
 //! Harness shared via `OnceCell`; tests `#[serial]` to keep state
 //! isolated across the cross-test prefix space.
 
@@ -98,7 +98,7 @@ struct SharedHarness {
     _pg_kels: ContainerAsync<Postgres>,
     _pg_sad: ContainerAsync<Postgres>,
     _redis: ContainerAsync<Redis>,
-    _minio: ContainerAsync<GenericImage>,
+    _objects: ContainerAsync<GenericImage>,
 }
 
 static SHARED_HARNESS: OnceLock<OnceCell<Option<SharedHarness>>> = OnceLock::new();
@@ -163,21 +163,23 @@ impl SharedHarness {
         let redis_port = retry_get_port(&redis, 6379).await.expect("redis port");
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
 
-        let minio = GenericImage::new("minio/minio", "latest")
+        let objects = GenericImage::new("rustfs/rustfs", "latest")
             .with_exposed_port(9000.into())
-            .with_wait_for(WaitFor::message_on_stderr("API:"))
+            .with_wait_for(WaitFor::seconds(5))
             .with_label(TEST_CONTAINER_LABEL.0, TEST_CONTAINER_LABEL.1)
-            .with_env_var("MINIO_ROOT_USER", "minioadmin")
-            .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-            .with_cmd(vec!["server".to_string(), "/data".to_string()])
+            .with_env_var("RUSTFS_ACCESS_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_SECRET_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_VOLUMES", "/data")
+            .with_env_var("RUSTFS_ADDRESS", "0.0.0.0:9000")
+            .with_env_var("RUSTFS_CONSOLE_ADDRESS", "0.0.0.0:9001")
             .start()
             .await
-            .expect("MinIO failed to start");
-        let minio_host = minio.get_host().await.expect("minio host");
-        let minio_port = retry_get_port_generic(&minio, 9000)
+            .expect("object store failed to start");
+        let objects_host = objects.get_host().await.expect("object store host");
+        let objects_port = retry_get_port_generic(&objects, 9000)
             .await
-            .expect("minio port");
-        let minio_endpoint = format!("http://{}:{}", minio_host, minio_port);
+            .expect("object store port");
+        let objects_endpoint = format!("http://{}:{}", objects_host, objects_port);
 
         let kels_listener = TcpListener::bind("127.0.0.1:0").expect("kels bind");
         let kels_port = kels_listener.local_addr().unwrap().port();
@@ -190,10 +192,10 @@ impl SharedHarness {
         let sad_url = format!("http://127.0.0.1:{}", sad_port);
 
         unsafe {
-            std::env::set_var("OBJECTS_ENDPOINT", &minio_endpoint);
+            std::env::set_var("OBJECTS_ENDPOINT", &objects_endpoint);
             std::env::set_var("OBJECTS_REGION", "us-east-1");
-            std::env::set_var("OBJECTS_ACCESS_KEY", "minioadmin");
-            std::env::set_var("OBJECTS_SECRET_KEY", "minioadmin");
+            std::env::set_var("OBJECTS_ACCESS_KEY", "rustfsadmin");
+            std::env::set_var("OBJECTS_SECRET_KEY", "rustfsadmin");
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
             std::env::set_var("KELS_NONCE_WINDOW_SECS", "0");
@@ -260,7 +262,7 @@ impl SharedHarness {
             _pg_kels: pg_kels,
             _pg_sad: pg_sad,
             _redis: redis,
-            _minio: minio,
+            _objects: objects,
         })
     }
 }

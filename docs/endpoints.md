@@ -133,7 +133,7 @@ Custom gossip protocol (HyParView + PlumTree) for KEL replication across nodes.
 
 ## KELS SADStore Service
 
-Replicated self-addressed data store. Provides content-addressed object storage (MinIO) and authenticated SAD Event Logs (PostgreSQL). See `docs/design/sadstore.md` for full design.
+Replicated self-addressed data store. Provides content-addressed object storage (object store) and authenticated SAD Event Logs (PostgreSQL). See `docs/design/sadstore.md` for full design.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -157,7 +157,7 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 - `POST sad/events`: Verifies event SAID, verifies `write_policy` via KEL-anchoring (endorsers required by the policy must have anchored the event's SAID in their KELs), stores events atomically with advisory lock and full chain verification. Repairs are auto-detected from `Rpr` records in the submitted batch. Per-SEL-prefix daily rate limited (default 16/day). Per-IP rate limited.
 - `POST sad/events/fetch`: Returns `SadEventPage { events: Vec<SadEvent>, hasMore }`.
 - `POST sad/saids`, `POST sad/events/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
-- SAD events reference content in MinIO via `content_said`. Client workflow: POST content first, then POST SAD event.
+- SAD events reference content in object store via `content_said`. Client workflow: POST content first, then POST SAD event.
 - Bucket auto-created on startup if it doesn't exist.
 
 ## Authentication Methods Summary

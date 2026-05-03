@@ -1,7 +1,7 @@
 //! SAD (Self-Addressing Data) event types for the replicated SADStore.
 //!
 //! Two layers:
-//! - **SAD objects** — content-addressed JSON blobs stored/retrieved by SAID (MinIO).
+//! - **SAD objects** — content-addressed JSON blobs stored/retrieved by SAID (object store).
 //! - **SAD events** — versioned event chains with deterministic prefix discovery
 //!   bound to an Identity Event Log (IEL). Each non-inception event references
 //!   content in the SAD object store via `content`.

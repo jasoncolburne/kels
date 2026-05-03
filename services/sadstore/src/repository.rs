@@ -732,7 +732,7 @@ impl SadEventRepository {
     }
 }
 
-/// Tracks SAD object SAIDs stored in MinIO.
+/// Tracks SAD object SAIDs stored in object store.
 #[derive(Stored)]
 #[stored(item_type = kels_core::SadObjectEntry, table = "sad_objects", chained = false)]
 pub struct SadObjectIndex {
@@ -740,7 +740,7 @@ pub struct SadObjectIndex {
 }
 
 impl SadObjectIndex {
-    /// Store a SAD object in MinIO and track it in the index atomically.
+    /// Store a SAD object in object store and track it in the index atomically.
     pub async fn store(
         &self,
         sad_said: &cesr::Digest256,
@@ -770,7 +770,7 @@ impl SadObjectIndex {
         Ok(())
     }
 
-    /// Fetch a SAD object index entry by its MinIO SAID.
+    /// Fetch a SAD object index entry by its object store SAID.
     pub async fn get_by_sad_said(
         &self,
         sad_said: &cesr::Digest256,
@@ -785,7 +785,7 @@ impl SadObjectIndex {
         self.pool.fetch_optional(query).await
     }
 
-    /// Atomically delete a SAD object index entry by its MinIO SAID.
+    /// Atomically delete a SAD object index entry by its object store SAID.
     /// Returns the number of rows deleted (1 = consumed, 0 = not found/already consumed).
     /// Used for `once` semantics.
     pub async fn delete_by_sad_said(
@@ -889,7 +889,7 @@ impl CustodyRepository {
     }
 }
 
-/// Cached policy SADs for evaluation without MinIO round-trips.
+/// Cached policy SADs for evaluation without object store round-trips.
 #[derive(Stored)]
 #[stored(item_type = Policy, table = "policies", chained = false)]
 pub struct PolicyRepository {

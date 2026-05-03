@@ -24,7 +24,7 @@ A standalone KELS node requires:
 - `kels` — KEL storage and retrieval API
 - `sadstore` — replicated self-addressed data store (SAD objects + SAD Event Logs)
 - `postgres` — event, signature, and SAD Event Log storage
-- `minio` — S3-compatible object storage for SAD content blobs
+- `objects` — S3-compatible object storage (RustFS) for SAD content blobs
 
 This provides the full KEL API: event submission, paginated retrieval, divergence detection, recovery, contest, and decommission. Redis is not required — the kels service runs without caching in standalone mode. When `REDIS_URL` is not set, the service starts without Redis and the `/ready` endpoint returns `{"ready": true, "status": "standalone"}`.
 
@@ -55,7 +55,7 @@ Each **gossip node** runs:
 - `identity` — the node's own cryptographic identity (KEL + signing), loads PKCS#11 .so directly for HSM operations
 - `postgres` — KEL storage, SAD Event Log storage, and gossip peer cache
 - `redis` — KEL caching, pub/sub invalidation, and SAD gossip announcements
-- `minio` — S3-compatible object storage for SAD content blobs
+- `objects` — S3-compatible object storage (RustFS) for SAD content blobs
 
 The identity service ships with `kels_mock_hsm.so` (a PKCS#11 cdylib implementing ML-DSA-65 and ML-DSA-87 via fips204). In production, swap the `PKCS11_LIBRARY_PATH` env var to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). A PVC is needed for `KELS_HSM_DATA_DIR` in development for key persistence (real HSMs persist natively).
 
@@ -236,10 +236,10 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KELS_URL` | KELS service URL for KEL verification (default: `http://kels:80`) |
 | `FEDERATION_REGISTRY_URLS` | Registry URLs (comma-separated, for peer verification) |
 | `REDIS_URL` | Redis for caching (optional) |
-| `MINIO_ENDPOINT` | MinIO/S3 endpoint URL (default: `http://minio:9000`) |
-| `MINIO_REGION` | MinIO/S3 region (default: `us-east-1`) |
-| `MINIO_ACCESS_KEY` | MinIO/S3 access key (required) |
-| `MINIO_SECRET_KEY` | MinIO/S3 secret key (required) |
+| `OBJECTS_ENDPOINT` | Object store / S3 endpoint URL (default: `http://objects:9000`) |
+| `OBJECTS_REGION` | Object store / S3 region (default: `us-east-1`) |
+| `OBJECTS_ACCESS_KEY` | Object store / S3 access key (required) |
+| `OBJECTS_SECRET_KEY` | Object store / S3 secret key (required) |
 | `KELS_SAD_BUCKET` | S3 bucket for SAD objects (default: `kels-sad`) |
 | `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints. (default: `false`) |
 | `RUST_LOG` | Logging level |
@@ -260,11 +260,13 @@ The S3-compatible object store (RustFS) backs SAD content blobs and mail message
 
 | Resource | Request | Limit | Notes |
 |----------|---------|-------|-------|
-| CPU | 25m | 500m | Inherited from MinIO defaults; the workload is small-object S3 (≤1 MB SAD/mail blobs) at modest concurrency. |
-| Memory | 128Mi | 512Mi | Inherited from MinIO defaults; RustFS is a Rust binary (no GC) so the idle floor may be lower than MinIO's, but the limit is generous enough for write storms during the heisenbug long-loop. |
+| CPU | 25m | 500m | Carry-over starting points (not yet RustFS-tuned); the workload is small-object S3 (≤1 MB SAD/mail blobs) at modest concurrency. |
+| Memory | 128Mi | 512Mi | Carry-over starting points (not yet RustFS-tuned); RustFS is a Rust binary (no GC) so the idle floor may be lower in practice, but the limit is generous enough for write storms during the heisenbug long-loop. |
 | PVC | 1Gi | — | Test workloads produce hundreds of small objects per node (realistic ceiling ~50 MB). 1Gi is comfortable headroom for 50+ heisenbug long-loop iterations without bloating disk across 6 federated namespaces. |
 
 **Trigger to revisit:** OOM-kills, CPU throttling visible in `kubectl top`, or PVC `Used` approaching `Capacity` during the heisenbug long-loop. PVC IOPS / throughput class is not tunable on Garden's `local-docker` substrate (the default storage class is used); revisit when running against a real cloud cluster.
+
+**Empirical sizing is gated on #157.** Current load tests show sadstore PG-pool starvation (16 connections, ~30 s acquire-timeout cliff) at modest concurrency (≥20 concurrent submits). The cause is the tx-holds-object-store pattern: `SadStorePolicyResolver::resolve_policy` performs `object_store.get()` against the object store inside an open DB transaction during cold-cache policy resolution, pinning each connection on external IO. Until #157 lifts the object-store fetch out of the tx scope, observed CPU/memory numbers reflect pool-starvation behavior, not RustFS's actual resource footprint — so the values above remain carry-over starting points rather than empirical tunes.
 
 **Replicas:** `1`. Multi-replica HA is deferred to #155, which will need to first re-evaluate RustFS's distributed-mode beta status.
 

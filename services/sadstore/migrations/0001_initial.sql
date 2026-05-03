@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS sad_events (
 
 CREATE INDEX IF NOT EXISTS sad_events_prefix_idx ON sad_events(prefix);
 
--- SAD object index (tracks which SAIDs exist in MinIO for bootstrap/anti-entropy)
+-- SAD object index (tracks which SAIDs exist in the object store for bootstrap/anti-entropy)
 CREATE TABLE IF NOT EXISTS sad_objects (
     said TEXT PRIMARY KEY,
     sad_said TEXT NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS custodies (
     nodes TEXT                       -- SAID of NodeSet SAD
 );
 
--- Cached policy SADs for evaluation without MinIO round-trips
+-- Cached policy SADs for evaluation without the object store round-trips
 CREATE TABLE IF NOT EXISTS policies (
     said TEXT PRIMARY KEY,
     expression TEXT NOT NULL,

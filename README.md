@@ -68,7 +68,7 @@ Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/ev
 
 - **Credential framework** ([kels-creds](docs/design/creds.md)) — issuance, schema-aware compacted disclosure, and verification against KEL anchors
 - **Policy engine** ([kels-policy](docs/design/policy.md)) — composable trust policies with `endorse`, `delegate`, `threshold`, `weighted`, and nested `policy` references; soft/hard/immune poisoning
-- **Replicated self-addressed data store** ([sadstore](docs/design/sadstore.md)) — content-addressed objects (MinIO) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
+- **Replicated self-addressed data store** ([sadstore](docs/design/sadstore.md)) — content-addressed objects (RustFS) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
 
 ### Encrypted Exchange
 
@@ -156,12 +156,12 @@ kels/
 │   └── mock-hsm/       # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
 ├── services/
 │   ├── kels/           # KEL HTTP API (event submission, verification, retrieval)
-│   ├── sadstore/       # Replicated self-addressed data store (MinIO + PostgreSQL)
+│   ├── sadstore/       # Replicated self-addressed data store (RustFS + PostgreSQL)
 │   ├── mail/           # Encrypted message delivery service
 │   ├── gossip/         # Gossip service (cross-deployment KEL/SAD/mail sync)
 │   ├── registry/       # Federation registry (Raft consensus, peer voting)
 │   ├── identity/       # Registry identity service (HSM-backed KEL management)
-│   ├── minio/          # MinIO configuration (S3-compatible object storage)
+│   ├── objects/        # Object store configuration (RustFS, S3-compatible)
 │   ├── postgres/       # PostgreSQL configuration
 │   └── redis/          # Redis configuration
 ├── clients/
@@ -180,7 +180,7 @@ Each registry runs: `identity`, `registry`, `postgres`, `redis`
 
 ### Gossip Nodes
 
-Each gossip node runs: `identity`, `kels` (2 replicas), `gossip`, `sadstore`, `mail`, `postgres`, `redis`, `minio`
+Each gossip node runs: `identity`, `kels` (2 replicas), `gossip`, `sadstore`, `mail`, `postgres`, `redis`, `objects`
 
 ## Querying from the Host
 

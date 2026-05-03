@@ -39,7 +39,7 @@ pub trait SadStore: Send + Sync {
     /// Required for owner-local `SelVerification` derivation in
     /// `SadEventBuilder::with_prefix` (KEL parity with `KelStore::store` →
     /// `KelStore::load`). Backends that can't support prefix-keyed iteration
-    /// (e.g., the read-only MinIO adapter on the server) must error here
+    /// (e.g., the read-only object store adapter on the server) must error here
     /// rather than silently dropping the index update — owner code that
     /// hydrates from such a backend would get an empty token and
     /// silently extend from the wrong tip.

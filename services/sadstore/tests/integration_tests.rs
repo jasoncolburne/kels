@@ -1,6 +1,6 @@
 //! Integration tests for the KELS SADStore service.
 //!
-//! Shared server instance with Postgres + MinIO testcontainers.
+//! Shared server instance with Postgres + RustFS testcontainers.
 //! Tests cover: PUT/GET SAD objects, SAD event submission/fetch,
 //! prefix computation, chain integrity rejection, effective SAID.
 
@@ -64,7 +64,7 @@ async fn retry_get_port_generic(
 struct SharedHarness {
     base_url: String,
     _postgres: ContainerAsync<Postgres>,
-    _minio: ContainerAsync<GenericImage>,
+    _objects: ContainerAsync<GenericImage>,
 }
 
 static SHARED_HARNESS: OnceLock<OnceCell<Option<SharedHarness>>> = OnceLock::new();
@@ -106,23 +106,28 @@ impl SharedHarness {
             pg_host, pg_port
         );
 
-        // Start MinIO
-        let minio = GenericImage::new("minio/minio", "latest")
+        // Start the object store (RustFS)
+        let objects = GenericImage::new("rustfs/rustfs", "latest")
             .with_exposed_port(9000.into())
-            .with_wait_for(WaitFor::message_on_stderr("API:"))
+            .with_wait_for(WaitFor::seconds(5))
             .with_label(TEST_CONTAINER_LABEL.0, TEST_CONTAINER_LABEL.1)
-            .with_env_var("MINIO_ROOT_USER", "minioadmin")
-            .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-            .with_cmd(vec!["server".to_string(), "/data".to_string()])
+            .with_env_var("RUSTFS_ACCESS_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_SECRET_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_VOLUMES", "/data")
+            .with_env_var("RUSTFS_ADDRESS", "0.0.0.0:9000")
+            .with_env_var("RUSTFS_CONSOLE_ADDRESS", "0.0.0.0:9001")
             .start()
             .await
-            .expect("MinIO container failed to start");
+            .expect("object store container failed to start");
 
-        let minio_host = minio.get_host().await.expect("failed to get MinIO host");
-        let minio_port = retry_get_port_generic(&minio, 9000)
+        let objects_host = objects
+            .get_host()
             .await
-            .expect("failed to get MinIO port");
-        let minio_endpoint = format!("http://{}:{}", minio_host, minio_port);
+            .expect("failed to get object store host");
+        let objects_port = retry_get_port_generic(&objects, 9000)
+            .await
+            .expect("failed to get object store port");
+        let objects_endpoint = format!("http://{}:{}", objects_host, objects_port);
 
         // Bind to random port
         let std_listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind");
@@ -132,10 +137,10 @@ impl SharedHarness {
 
         // Set env vars for the server
         unsafe {
-            std::env::set_var("OBJECTS_ENDPOINT", &minio_endpoint);
+            std::env::set_var("OBJECTS_ENDPOINT", &objects_endpoint);
             std::env::set_var("OBJECTS_REGION", "us-east-1");
-            std::env::set_var("OBJECTS_ACCESS_KEY", "minioadmin");
-            std::env::set_var("OBJECTS_SECRET_KEY", "minioadmin");
+            std::env::set_var("OBJECTS_ACCESS_KEY", "rustfsadmin");
+            std::env::set_var("OBJECTS_SECRET_KEY", "rustfsadmin");
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
         }
@@ -174,7 +179,7 @@ impl SharedHarness {
                 return Some(Self {
                     base_url,
                     _postgres: postgres,
-                    _minio: minio,
+                    _objects: objects,
                 });
             }
             sleep(Duration::from_millis(100)).await;

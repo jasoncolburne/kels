@@ -30,7 +30,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
-        // SAD object store (Layer 1 — MinIO)
+        // SAD object store (Layer 1 — object store)
         .route("/api/v1/sad", post(handlers::post_sad_object))
         .route("/api/v1/sad/fetch", post(handlers::fetch_sad_object))
         .route("/api/v1/sad/exists", post(handlers::sad_object_exists))

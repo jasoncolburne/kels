@@ -1,7 +1,7 @@
 //! Custody and node set SAD types for per-SAD storage policy.
 //!
 //! `custody` is a reserved top-level key on any SAD. It is itself a SAD
-//! (with its own SAID), compacted and stored independently in MinIO,
+//! (with its own SAID), compacted and stored independently in object store,
 //! referenced by SAID in the parent SAD. The SAID covers all custody
 //! fields, making storage policy tamper-evident.
 

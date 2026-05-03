@@ -92,3 +92,14 @@ test_sad_chain_verifier_
 \bSadEvent::evl\b
 kels/sad/v1/events/est
 kels/sad/v1/events/evl
+
+# === Issue #154: MinIO → RustFS substitution ===
+# Catches all-caps, proper-noun, and lowercase forms of "minio" plus the
+# `MINIO_*` env-var-key prefix. The deviations subtree exempts itself
+# (empty `.terminology-forbidden` there) so resolved-deviation entries
+# describing the rename remain free to mention `minio/minio:latest` as
+# the prior testcontainer fixture.
+\bMinIO\b
+\bMINIO\b
+\bMINIO_[A-Z_]+\b
+\bminio\b

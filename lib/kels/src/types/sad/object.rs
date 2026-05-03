@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime};
 
-/// Index entry tracking a SAD object stored in MinIO.
+/// Index entry tracking a SAD object stored in object store.
 ///
 /// Has its own content-addressed SAID. The `sad_said` field is the
-/// SAID of the actual object in MinIO (foreign key to object storage).
+/// SAID of the actual object in object store (foreign key to object storage).
 /// `custody` is the SAID of the custody SAD (if present).
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_objects")]

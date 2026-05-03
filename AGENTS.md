@@ -78,7 +78,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 ### Services
 
 - **kels** — KEL submission and retrieval
-- **sadstore** — content-addressed data store (MinIO + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/sadstore.md`, `docs/design/iel/`
+- **sadstore** — content-addressed data store (RustFS + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/sadstore.md`, `docs/design/iel/`
 - **gossip** — KEL/SAD sync between peers (HyParView + PlumTree). See `docs/gossip.md`
 - **registry** — peer lifecycle via OpenRaft. See `docs/registry.md`
 - **identity** — node KEL and signing keys

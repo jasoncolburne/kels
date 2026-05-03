@@ -65,7 +65,7 @@ const TTL_REAPER_BATCH_SIZE: usize = 100;
 
 /// Spawn a background task that periodically deletes TTL-expired objects.
 /// Queries custodies with TTL, then finds expired sad_objects for each,
-/// deletes from DB and MinIO.
+/// deletes from DB and object store.
 pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     let interval = Duration::from_secs(ttl_reaper_interval_secs());
     tokio::spawn(async move {
@@ -120,11 +120,11 @@ async fn reap_expired_objects(
                 .delete_by_sad_said(&entry.sad_said)
                 .await?;
 
-            // Delete from MinIO (best-effort — if this fails, orphaned object
+            // Delete from object store (best-effort — if this fails, orphaned object
             // is harmless and will be cleaned up on next cycle or manually)
             if let Err(e) = state.object_store.delete(&entry.sad_said).await {
                 warn!(
-                    "Failed to delete expired object {} from MinIO: {}",
+                    "Failed to delete expired object {} from object store: {}",
                     entry.sad_said, e
                 );
             } else {
@@ -407,7 +407,7 @@ pub async fn ready() -> impl IntoResponse {
     (StatusCode::OK, "ready")
 }
 
-// === Layer 1: SAD Object Store (MinIO) ===
+// === Layer 1: SAD Object Store (object store) ===
 
 pub async fn post_sad_object(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -442,7 +442,7 @@ pub async fn post_sad_object(
     }
 
     // Phase 1: compact in memory — compute SAIDs, build compacted JSON, collect
-    // nested SAD bytes. No MinIO writes yet (prevents resource amplification).
+    // nested SAD bytes. No object store writes yet (prevents resource amplification).
     let collected = match crate::compaction::compact_sad(&mut value) {
         Ok(c) => c,
         Err(e) => {
@@ -458,7 +458,7 @@ pub async fn post_sad_object(
 
     let canonical_said = value.get_said();
 
-    // HEAD check — short-circuit if already exists (before any MinIO writes)
+    // HEAD check — short-circuit if already exists (before any object store writes)
     match state.object_store.exists(&canonical_said).await {
         Ok(true) => {
             debug!("SAD object already exists: {}", canonical_said);
@@ -477,7 +477,7 @@ pub async fn post_sad_object(
         }
     }
 
-    // Phase 2: commit nested SADs to MinIO (only after HEAD check passes)
+    // Phase 2: commit nested SADs to object store (only after HEAD check passes)
     if let Err(e) = crate::compaction::commit_compacted(&collected, &state.object_store).await {
         warn!("Failed to commit nested SADs: {}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
@@ -491,7 +491,7 @@ pub async fn post_sad_object(
             Err(response) => return response,
         };
 
-    // Store compacted parent SAD in MinIO + track in DB index with custody
+    // Store compacted parent SAD in object store + track in DB index with custody
     let compacted_bytes = match serde_json::to_vec(&value) {
         Ok(b) => b,
         Err(e) => {
@@ -555,7 +555,7 @@ enum GossipPolicy {
 /// Resolve the gossip policy from a custody SAID.
 ///
 /// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
-/// NodeSet from MinIO: 0 prefixes → LocalOnly (local cache), 1 prefix →
+/// NodeSet from object store: 0 prefixes → LocalOnly (local cache), 1 prefix →
 /// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
 /// gossip not yet implemented — objects are accepted but not replicated).
 ///
@@ -591,7 +591,7 @@ async fn resolve_gossip_policy(
         return GossipPolicy::BroadcastAll;
     };
 
-    // Resolve the NodeSet from MinIO to check prefix count.
+    // Resolve the NodeSet from object store to check prefix count.
     // Fail secure: if resolution fails, skip gossip rather than broadcasting
     // restricted data to all peers.
     match state.object_store.get(&nodes_said).await {
@@ -640,7 +640,7 @@ async fn extract_and_cache_custody(
 ) -> Result<Option<cesr::Digest256>, axum::response::Response> {
     let custody_value = match value.get("custody") {
         Some(v) if v.is_string() => {
-            // Already compacted to a SAID string — resolve from cache/MinIO,
+            // Already compacted to a SAID string — resolve from cache/object store,
             // validate, and cache before accepting.
             let custody_said_str = v.as_str().unwrap_or_default();
             let custody_said = cesr::Digest256::from_qb64(custody_said_str)
@@ -683,7 +683,7 @@ async fn extract_and_cache_custody(
     Ok(Some(custody_said))
 }
 
-/// Resolve a pre-compacted custody SAID: fetch from cache (or MinIO fallback),
+/// Resolve a pre-compacted custody SAID: fetch from cache (or object store fallback),
 /// validate the allowlist for the given context, and cache custody + policies.
 /// Rejects if the custody is unresolvable or fails context validation.
 async fn resolve_and_cache_custody_by_said(
@@ -695,7 +695,7 @@ async fn resolve_and_cache_custody_by_said(
     let custody = if let Ok(Some(c)) = state.repo.custodies.get_by_said(custody_said).await {
         c
     } else {
-        // Fallback: fetch from MinIO
+        // Fallback: fetch from object store
         let data = state
             .object_store
             .get(custody_said)
@@ -751,7 +751,7 @@ async fn resolve_and_cache_custody_by_said(
 }
 
 /// Cache the write_policy and read_policy SADs referenced by a custody.
-/// Fetches each from MinIO if not already cached in Postgres.
+/// Fetches each from object store if not already cached in Postgres.
 async fn cache_referenced_policies(
     custody: &kels_core::Custody,
     state: &AppState,
@@ -900,13 +900,13 @@ pub async fn fetch_sad_object(
             .await
         {
             Ok(1) => {
-                // We consumed it — serve from MinIO. If MinIO fetch fails after
+                // We consumed it — serve from object store. If object store fetch fails after
                 // the PG delete, the object becomes inaccessible. Acceptable for
                 // ephemeral objects — that's the semantics of once.
                 let response =
                     serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
 
-                // Best-effort MinIO cleanup — prevents orphaned objects from
+                // Best-effort object store cleanup — prevents orphaned objects from
                 // accumulating. The reaper catches failures on its next cycle.
                 let os = state.object_store.clone();
                 let said = object_said;
@@ -982,7 +982,7 @@ async fn authenticate_fetch_request(
 
 /// Serve a SAD object, applying disclosure expansion if requested.
 ///
-/// If `disclosure` is None, serves raw bytes from MinIO (no parsing overhead).
+/// If `disclosure` is None, serves raw bytes from object store (no parsing overhead).
 /// If `disclosure` is Some, applies heuristic expansion via the disclosure DSL.
 async fn serve_sad(
     object_store: &ObjectStore,
@@ -1021,7 +1021,7 @@ async fn serve_sad(
     }
 }
 
-/// Serve a SAD object directly from MinIO (no disclosure expansion).
+/// Serve a SAD object directly from object store (no disclosure expansion).
 async fn serve_from_object_store(
     object_store: &ObjectStore,
     said: &cesr::Digest256,
@@ -1043,7 +1043,7 @@ async fn serve_from_object_store(
     }
 }
 
-/// Policy resolver backed by the Postgres `policies` cache with MinIO fallback.
+/// Policy resolver backed by the Postgres `policies` cache with object store fallback.
 /// Fail secure: if a policy can't be resolved, return an error.
 struct SadStorePolicyResolver {
     policies: Arc<SadStoreRepository>,
@@ -1061,7 +1061,7 @@ impl kels_policy::PolicyResolver for SadStorePolicyResolver {
             return Ok(policy);
         }
 
-        // Fallback: MinIO
+        // Fallback: object store
         let data = self
             .object_store
             .get(said)

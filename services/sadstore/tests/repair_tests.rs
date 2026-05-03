@@ -1,7 +1,7 @@
 //! Repository-level tests for SAD Event Log repair: truncate_and_replace,
 //! get_repairs, get_repair_events, and save_batch.
 //!
-//! Uses a shared Postgres testcontainer (no MinIO or KELS service needed).
+//! Uses a shared Postgres testcontainer (no object store or KELS service needed).
 //! Each test connects independently to avoid cross-runtime pool issues.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

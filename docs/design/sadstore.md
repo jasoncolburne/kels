@@ -6,7 +6,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 
 Two layers:
 
-- **SAD Object Store** (MinIO) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
+- **SAD Object Store** (RustFS, S3-compatible) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
 - **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and policy-based ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
@@ -23,7 +23,7 @@ Fields:
 - `previous` — SAID of previous event (None for v0)
 - `version` — Monotonically increasing (0, 1, 2, ...)
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
-- `content` — SAID of the content object in MinIO (None for v0)
+- `content` — SAID of the content object in the object store (None for v0)
 - `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
 - `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Sea` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`/`Cnt`/`Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
 
@@ -39,7 +39,7 @@ This constructs the v0 inception event (which has only deterministic fields), de
 
 ### Custody
 
-Per-SAD storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in MinIO, referenced by SAID in the parent SAD. The SAID covers all custody fields, making storage policy tamper-evident.
+Per-SAD storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in the object store, referenced by SAID in the parent SAD. The SAID covers all custody fields, making storage policy tamper-evident.
 
 Fields:
 - `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
@@ -179,10 +179,10 @@ Environment variables:
 | `DATABASE_URL` | `postgres://...` | PostgreSQL connection |
 | `REDIS_URL` | (optional) | Redis for pub/sub |
 | `KELS_URL` | `http://kels:80` | KELS service for KEL verification |
-| `MINIO_ENDPOINT` | `http://minio:9000` | MinIO endpoint |
-| `MINIO_REGION` | `us-east-1` | S3 region |
-| `MINIO_ACCESS_KEY` | (required) | S3 access key |
-| `MINIO_SECRET_KEY` | (required) | S3 secret key |
+| `OBJECTS_ENDPOINT` | `http://objects:9000` | Object store endpoint |
+| `OBJECTS_REGION` | `us-east-1` | S3 region |
+| `OBJECTS_ACCESS_KEY` | (required) | S3 access key |
+| `OBJECTS_SECRET_KEY` | (required) | S3 secret key |
 | `KELS_SAD_BUCKET` | `kels-sad` | S3 bucket name (auto-created on startup) |
 | `SADSTORE_MAX_SEL_EVENTS_PER_PREFIX_PER_DAY` | `256` | Max SAD events per SEL prefix per day per pod |
 | `SADSTORE_MAX_IEL_EVENTS_PER_PREFIX_PER_DAY` | `8` | Max IEL events per identity prefix per day per pod |

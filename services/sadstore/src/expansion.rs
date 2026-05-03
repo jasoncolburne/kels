@@ -1,7 +1,7 @@
 //! Schema-free SAD expansion for SADStore.
 //!
 //! Heuristic expansion: any string field that parses as a `cesr::Digest256`
-//! and resolves from MinIO is treated as a compacted reference and expanded.
+//! and resolves from object store is treated as a compacted reference and expanded.
 //! No schema required — mirrors the schema-free compaction in `compaction.rs`.
 
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use kels_core::{
 
 use crate::object_store::{ObjectStore, ObjectStoreError};
 
-/// Adapter wrapping MinIO `ObjectStore` as a `SadStore` for disclosure expansion.
+/// Adapter wrapping object store `ObjectStore` as a `SadStore` for disclosure expansion.
 /// Read-only — write/list/delete operations return errors.
 struct ObjectStoreSadAdapter<'a> {
     object_store: &'a ObjectStore,
@@ -69,7 +69,7 @@ impl SadStore for ObjectStoreSadAdapter<'_> {
         _limit: u64,
         _offset: u64,
     ) -> Result<(Vec<SadEvent>, bool), KelsError> {
-        // The MinIO adapter exists for disclosure expansion only — it has no
+        // The object store adapter exists for disclosure expansion only — it has no
         // prefix-keyed iteration. Owner-local hydration paths must use a
         // proper local SadStore (FileSadStore / InMemorySadStore / similar).
         Err(KelsError::OfflineMode(
@@ -78,7 +78,7 @@ impl SadStore for ObjectStoreSadAdapter<'_> {
     }
 }
 
-/// Apply a disclosure expression to a SAD stored in MinIO.
+/// Apply a disclosure expression to a SAD stored in object store.
 ///
 /// Parses the disclosure DSL, loads the root SAD, and applies heuristic
 /// expansion (SAID-detection, no schema). Returns the expanded value.
