@@ -54,13 +54,13 @@ spec:
               value: "${var.redisUrl}"
             - name: KELS_URL
               value: "${var.kels.url}"
-            - name: MINIO_ENDPOINT
+            - name: OBJECTS_ENDPOINT
               value: "http://${var.objects.host}:${var.objects.port}"
-            - name: MINIO_REGION
+            - name: OBJECTS_REGION
               value: "${var.objects.region}"
-            - name: MINIO_ACCESS_KEY
+            - name: OBJECTS_ACCESS_KEY
               value: "${var.objects.accessKey}"
-            - name: MINIO_SECRET_KEY
+            - name: OBJECTS_SECRET_KEY
               value: "${var.objects.secretKey}"
             - name: KELS_SAD_BUCKET
               value: "${var.sadstore.bucket}"

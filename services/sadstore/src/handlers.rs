@@ -990,7 +990,7 @@ async fn serve_sad(
     disclosure: Option<&str>,
 ) -> axum::response::Response {
     let Some(disclosure) = disclosure else {
-        return serve_from_minio(object_store, said).await;
+        return serve_from_object_store(object_store, said).await;
     };
 
     match crate::expansion::apply_disclosure_to_sad(said, disclosure, object_store).await {
@@ -1022,7 +1022,7 @@ async fn serve_sad(
 }
 
 /// Serve a SAD object directly from MinIO (no disclosure expansion).
-async fn serve_from_minio(
+async fn serve_from_object_store(
     object_store: &ObjectStore,
     said: &cesr::Digest256,
 ) -> axum::response::Response {

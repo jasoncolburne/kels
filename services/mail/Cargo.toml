@@ -48,12 +48,11 @@ async-trait = "0.1"
 # Per-prefix rate limiting
 dashmap = "6"
 
-# S3-compatible object storage (MinIO)
-aws-sdk-s3 = { version = "1", default-features = false, features = [                                                                                                                               
-    "sigv4a",                                                                                                                                                                                            
+# S3-compatible object storage (RustFS)
+aws-sdk-s3 = { version = "1", default-features = false, features = [
     "http-1x",
-    "default-https-client",   # modern rustls-aws-lc path                                                                                                                                                
-    "rt-tokio",                                                                                                                                                                                          
+    "default-https-client",   # modern rustls-aws-lc path
+    "rt-tokio",
 ] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 

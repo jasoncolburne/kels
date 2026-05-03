@@ -186,10 +186,10 @@ impl SharedHarness {
 
         // SAFETY: called before the server threads spawn, so no concurrent env reads.
         unsafe {
-            std::env::set_var("MINIO_ENDPOINT", &minio_endpoint);
-            std::env::set_var("MINIO_REGION", "us-east-1");
-            std::env::set_var("MINIO_ACCESS_KEY", "minioadmin");
-            std::env::set_var("MINIO_SECRET_KEY", "minioadmin");
+            std::env::set_var("OBJECTS_ENDPOINT", &minio_endpoint);
+            std::env::set_var("OBJECTS_REGION", "us-east-1");
+            std::env::set_var("OBJECTS_ACCESS_KEY", "minioadmin");
+            std::env::set_var("OBJECTS_SECRET_KEY", "minioadmin");
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test-iel");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
             std::env::set_var("KELS_NONCE_WINDOW_SECS", "0");

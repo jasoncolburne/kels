@@ -78,13 +78,13 @@ spec:
               value: "${var.kels.url}"
             - name: IDENTITY_URL
               value: "${var.identity.url}"
-            - name: MINIO_ENDPOINT
+            - name: OBJECTS_ENDPOINT
               value: "http://${var.objects.host}:${var.objects.port}"
-            - name: MINIO_REGION
+            - name: OBJECTS_REGION
               value: "${var.objects.region}"
-            - name: MINIO_ACCESS_KEY
+            - name: OBJECTS_ACCESS_KEY
               value: "${var.objects.accessKey}"
-            - name: MINIO_SECRET_KEY
+            - name: OBJECTS_SECRET_KEY
               value: "${var.objects.secretKey}"
             - name: KELS_MAIL_BUCKET
               value: "${var.mail.bucket}"
