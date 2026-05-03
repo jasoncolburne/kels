@@ -19,17 +19,35 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_A_MAIL_HOST="${NODE_A_MAIL_HOST:-mail}"
 NODE_B_MAIL_HOST="${NODE_B_MAIL_HOST:-mail.node-b.kels}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 FEDERATED="${FEDERATED:-true}"
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
+
+NODE_A_KELS_URL="http://${NODE_A_KELS_HOST}"
+NODE_B_KELS_URL="http://${NODE_B_KELS_HOST}"
 
 if [ "$FEDERATED" = "false" ]; then
     CLI="kels-cli --kels-url http://${NODE_A_KELS_HOST} --sadstore-url http://${NODE_A_SADSTORE_HOST} --mail-url http://${NODE_A_MAIL_HOST}"
 else
     CLI="kels-cli -d node-a.kels"
     CLI_B="kels-cli -d node-b.kels"
+fi
+
+# Cross-chain race resolution (see lib/test-common.sh):
+# `wait_for_kel_anchor_convergence` reads these globals to know which
+# KELS URL the anchor was written to and which peers must converge.
+# Exchange operations (`publish-key`, `rotate-key`) and `kel rotate`
+# advance node-A's KEL tip; subsequent peer-side IEL/SEL operations
+# need that tip to be visible on node-B before they can be verified.
+KELS_ORIGIN_URL="$NODE_A_KELS_URL"
+if [ "$FEDERATED" = "true" ]; then
+    KELS_PEER_URLS=("$NODE_B_KELS_URL")
+else
+    KELS_PEER_URLS=()
 fi
 
 init_temp_dir
@@ -140,19 +158,22 @@ echo "Phase 2: Key Publication"
 echo "========================================="
 
 test_alice_publish_key() {
-    $CLI exchange publish-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange publish-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to publish Alice's key"
         return 1
-    fi
+    }
+    # publish-key internally anchors the SEL Icp+Upd in Alice's KEL.
+    # Subsequent peer-side lookups need the new KEL tip visible on node-b
+    # so its verifier can resolve the anchor when SEL gossip arrives.
+    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-publish-key" || return 1
 }
 
 test_bob_publish_key() {
-    $CLI exchange publish-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange publish-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1 || {
         echo "Failed to publish Bob's key"
         return 1
-    fi
+    }
+    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-publish-key" || return 1
 }
 
 run_test "Alice publishes ML-KEM key" test_alice_publish_key
@@ -194,8 +215,6 @@ run_test_expect_fail "Look up nonexistent key" test_lookup_nonexistent_key
 
 echo ""
 
-CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
-
 test_lookup_alice_key_from_node_b() {
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
@@ -226,11 +245,11 @@ echo "Phase 4: Key Rotation"
 echo "========================================="
 
 test_alice_rotate_kem_key() {
-    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to rotate Alice's KEM key"
         return 1
-    fi
+    }
+    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-rotate-kem" || return 1
 }
 
 test_lookup_alice_rotated_key() {
@@ -256,14 +275,17 @@ test_alice_rotate_signing_key() {
     OUTPUT=$($CLI kel rotate --prefix "$ALICE_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
+    # `kel rotate` advances the KEL with a Rot event; downstream peer-side
+    # signature checks need the new key view visible on node-b.
+    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-kel-rotate" || return 1
 }
 
 test_alice_rotate_kem_after_signing_rotation() {
-    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to rotate Alice's KEM key after signing key rotation"
         return 1
-    fi
+    }
+    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-rotate-kem-post-signing" || return 1
 }
 
 test_lookup_alice_key_after_rotations() {
@@ -276,15 +298,15 @@ test_bob_rotate_signing_key() {
     OUTPUT=$($CLI kel rotate --prefix "$BOB_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
+    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-kel-rotate" || return 1
 }
 
 test_bob_publish_key_after_signing_rotation() {
-    # Bob deletes his KEM chain and re-publishes after signing key rotation
-    $CLI exchange rotate-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1 || {
         echo "Failed to rotate Bob's KEM key after signing key rotation"
         return 1
-    fi
+    }
+    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-rotate-kem-post-signing" || return 1
 }
 
 run_test "Alice rotates signing key" test_alice_rotate_signing_key

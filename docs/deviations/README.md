@@ -86,14 +86,6 @@ Rationale: `HttpSadSink::store_page` (lib/kels/src/types/sad/sync.rs:279-301) al
 
 Implementation: dropped the shared `sync_ok` boolean; PUSH and PULL each end with their own outcome dispatch (PUSH returns `Repaired` directly on success; PULL keeps the local-SAID re-fetch). Direction-anchored comments replace the conflated comment block. `any_peer_differs` semantics (NoOp vs Failed) unchanged.
 
-### [Gap 5 → #147] Builder-level IEL state caching not implemented
-
-Plan §Gap 5 (lines 359-361) called for cached IEL state on the `SadEventBuilder` plus `iel_client` caching, so that successive `update()` / `seal()` / `repair()` / `contest()` / `decommission()` calls don't each round-trip to the IEL HTTP endpoint to resolve `identity_event`. Implementer skipped without tracking — every lifecycle op currently re-fetches the current IEL binding via `fetch_current_iel_binding(&identity)` (sad_builder.rs).
-
-Performance, not correctness. Each call sees fresh IEL state, which is the safe default; the tradeoff is N HTTP round-trips for N builder calls within a session.
-
-Deferred to #147 (CLI + script migration). The CLI consumer drives the repeated-builder-call access pattern, so the cache shape (TTL, invalidation triggers, manual `flush()` semantics) can be designed against the actual usage rather than guessed up front.
-
 ### [Gap 8 → end-of-round verification] Phase-1 anti-entropy unit + integration tests deferred
 
 The Gap 8 plan asks for:
@@ -167,6 +159,8 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 ## Resolved
 
 Newest first. Each entry's body lives in its own slug file in this directory.
+
+- **[Gap 5 → #162]** [Builder-level IEL state caching retargeted to client-side caching strategy](gap-5-builder-iel-state-caching-retargeted-to-162.md) — narrow CLI-builder-cache item reframed as one instance of a broader client-side dep-graph caching strategy; #162 captures the general concern.
 
 - **[Gap 11 → #147]** [est/evl wire-format patterns exempted at `clients/test/scripts/`](test-scripts-est-evl-exemption.md) — test-script migration rewrote every IEL/SE script onto the round-12 CLI surface (no inline event JSON), retired the subtree `.terminology-forbidden` exemption, and added `--owner-prefix` to `sel repair` for kels-style silent-extension boundary discovery.
 

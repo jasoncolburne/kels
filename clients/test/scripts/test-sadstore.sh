@@ -53,6 +53,16 @@ NODE_B_KELS_URL="http://${NODE_B_KELS_HOST}"
 NODE_A_CLI="kels-cli --kels-url $NODE_A_KELS_URL --sadstore-url $NODE_A_SAD_URL"
 NODE_B_CLI="kels-cli --kels-url $NODE_B_KELS_URL --sadstore-url $NODE_B_SAD_URL"
 
+# Cross-chain race resolution (see lib/test-common.sh):
+# `wait_for_kel_anchor_convergence` reads these globals to know which
+# KELS URL the anchor was written to and which peers must converge.
+KELS_ORIGIN_URL="$NODE_A_KELS_URL"
+if [ "$FEDERATED" = "true" ]; then
+    KELS_PEER_URLS=("$NODE_B_KELS_URL")
+else
+    KELS_PEER_URLS=()
+fi
+
 init_temp_dir
 
 echo "========================================="
@@ -161,65 +171,6 @@ wait_for_sad_event_divergence_convergence() {
     done
     echo "Timeout waiting for divergence convergence on $prefix"
     return 1
-}
-
-get_kel_effective_said() {
-    local url="$1"
-    local prefix="$2"
-    curl -sf -X POST -H 'Content-Type: application/json' \
-        -d "{\"prefix\":\"${prefix}\"}" \
-        "${url}/api/v1/kels/kel/effective-said" | jq -r '.said // empty'
-}
-
-# Wait until `kel_prefix`'s tip on every federated peer's KELS matches
-# the originating node-A KELS's tip after a `kels-cli kel anchor` call.
-#
-# Why this exists (round-12 Gap 9): the test anchors a SAID in node-A's
-# KEL (`kel anchor` produces an `Ixn` event with `anchor=said` advancing
-# node-A's KEL tip), then immediately submits an SEL event referencing
-# that SAID via `sel submit`. If the SEL event reaches node-B (directly
-# or via gossip) before node-A's KEL anchor does, node-B's verifier
-# rejects the SEL event because the IEL-resolved policy's anchor isn't
-# visible in node-B's local KEL view yet. The race is invisible in
-# logs and produces flaky failures.
-#
-# This wait removes the cross-chain race from the test surface entirely
-# — any remaining failure is a real bug. Production gossip is
-# deliberately offline-tolerant; this convergence wait lives only in
-# the test harness (NOT in the round-12 production submit path).
-#
-# In non-federated mode this is a no-op.
-wait_for_kel_anchor_convergence() {
-    local kel_prefix="$1"
-    local said="$2"  # informational; surfaced in timeout messages
-    local timeout="${3:-$CONVERGENCE_TIMEOUT}"
-
-    [ "$FEDERATED" != "true" ] && return 0
-
-    local origin_eff
-    origin_eff=$(get_kel_effective_said "$NODE_A_KELS_URL" "$kel_prefix")
-    if [ -z "$origin_eff" ]; then
-        echo "wait_for_kel_anchor_convergence: failed to read node-a KEL effective SAID for $kel_prefix"
-        return 1
-    fi
-
-    local peer_url
-    for peer_url in "$NODE_B_KELS_URL"; do
-        local deadline=$((SECONDS + timeout))
-        local peer_eff=""
-        while [ $SECONDS -lt $deadline ]; do
-            peer_eff=$(get_kel_effective_said "$peer_url" "$kel_prefix")
-            if [ "$peer_eff" = "$origin_eff" ]; then
-                break
-            fi
-            sleep 1
-        done
-        if [ "$peer_eff" != "$origin_eff" ]; then
-            echo "Timeout waiting for KEL anchor $said in $kel_prefix to converge on $peer_url (got '$peer_eff', expected '$origin_eff')"
-            return 1
-        fi
-    done
-    return 0
 }
 
 # ========================================

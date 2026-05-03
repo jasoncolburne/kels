@@ -508,6 +508,78 @@ wait_for_divergence_or_ror() {
     return 1
 }
 
+# --- KEL anchor convergence (cross-chain race resolution) ---
+
+# Fetch the effective SAID of a KEL on a given KELS URL.
+# Returns empty string on error or 404.
+# Usage: get_kel_effective_said URL PREFIX
+get_kel_effective_said() {
+    local url="$1"
+    local prefix="$2"
+    curl -sf -X POST -H 'Content-Type: application/json' \
+        -d "{\"prefix\":\"${prefix}\"}" \
+        "${url}/api/v1/kels/kel/effective-said" | jq -r '.said // empty'
+}
+
+# Wait for `kel_prefix`'s effective SAID on every peer KELS to match the
+# origin KELS's. This removes the cross-chain race from tests that anchor
+# a SAID in the origin node's KEL and then submit an IEL/SEL event
+# referencing it: the SAD/IEL gossip announcement can reach peers before
+# the KEL `Ixn` anchor, peer verification fails the policy-anchor check,
+# and the announcement is silently dropped (AE eventually reconciles
+# but past test timeouts).
+#
+# Reads two globals (set by the calling test script):
+#   KELS_ORIGIN_URL  — KELS URL where the anchor was just written.
+#   KELS_PEER_URLS   — array of peer KELS URLs that need to converge.
+#                      Empty/unset → no-op (single-node mode).
+#
+# Production gossip is deliberately offline-tolerant; this convergence
+# wait lives only in the test harness — NOT on the round-12 production
+# submit path.
+#
+# `said_label` is informational only, surfaced in timeout messages.
+# Usage: wait_for_kel_anchor_convergence KEL_PREFIX SAID_LABEL [TIMEOUT]
+wait_for_kel_anchor_convergence() {
+    local kel_prefix="$1"
+    local said_label="$2"
+    local timeout="${3:-${CONVERGENCE_TIMEOUT:-30}}"
+
+    # Single-node mode: no peers to converge to.
+    if [ -z "${KELS_PEER_URLS+x}" ] || [ "${#KELS_PEER_URLS[@]}" -eq 0 ]; then
+        return 0
+    fi
+    if [ -z "${KELS_ORIGIN_URL:-}" ]; then
+        echo "wait_for_kel_anchor_convergence: KELS_ORIGIN_URL must be set when KELS_PEER_URLS is non-empty" >&2
+        return 1
+    fi
+
+    local origin_eff
+    origin_eff=$(get_kel_effective_said "$KELS_ORIGIN_URL" "$kel_prefix")
+    if [ -z "$origin_eff" ]; then
+        echo "wait_for_kel_anchor_convergence: failed to read origin KEL effective SAID for $kel_prefix at $KELS_ORIGIN_URL" >&2
+        return 1
+    fi
+
+    local peer_url
+    for peer_url in "${KELS_PEER_URLS[@]}"; do
+        local deadline=$((SECONDS + timeout))
+        local peer_eff=""
+        while [ $SECONDS -lt $deadline ]; do
+            peer_eff=$(get_kel_effective_said "$peer_url" "$kel_prefix")
+            if [ "$peer_eff" = "$origin_eff" ]; then
+                break
+            fi
+            sleep 1
+        done
+        if [ "$peer_eff" != "$origin_eff" ]; then
+            echo "wait_for_kel_anchor_convergence: $kel_prefix did not converge to $peer_url for anchor $said_label (got '$peer_eff', expected '$origin_eff')" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
 # Get KEL kel status (OK, DIVERGENT, CONTESTED, DECOMMISSIONED) from kels-cli.
 # Usage: get_kel_status URL PREFIX
 get_kel_status() {
