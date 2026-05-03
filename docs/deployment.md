@@ -244,6 +244,34 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `KELS_TEST_ENDPOINTS` | **NEVER set in production.** Enables unauthenticated test endpoints. (default: `false`) |
 | `RUST_LOG` | Logging level |
 
+### Object Store Service (`objects`)
+
+The S3-compatible object store (RustFS) backs SAD content blobs and mail message blobs. Deployed as a single-replica StatefulSet with a PVC.
+
+| Variable | Description |
+|----------|-------------|
+| `RUSTFS_ACCESS_KEY` | Root access key (default: `rustfsadmin`) |
+| `RUSTFS_SECRET_KEY` | Root secret key (default: `rustfsadmin`) |
+| `RUSTFS_VOLUMES` | Data volume path inside container (default: `/data`) |
+| `RUSTFS_ADDRESS` | S3 API listen address (default: `0.0.0.0:9000`) |
+| `RUSTFS_CONSOLE_ADDRESS` | Console listen address (default: `0.0.0.0:9001`) |
+
+**Resource sizing.** Current values in `services/objects/manifests.yml.tpl`:
+
+| Resource | Request | Limit | Notes |
+|----------|---------|-------|-------|
+| CPU | 25m | 500m | Inherited from MinIO defaults; the workload is small-object S3 (≤1 MB SAD/mail blobs) at modest concurrency. |
+| Memory | 128Mi | 512Mi | Inherited from MinIO defaults; RustFS is a Rust binary (no GC) so the idle floor may be lower than MinIO's, but the limit is generous enough for write storms during the heisenbug long-loop. |
+| PVC | 1Gi | — | Test workloads produce hundreds of small objects per node (realistic ceiling ~50 MB). 1Gi is comfortable headroom for 50+ heisenbug long-loop iterations without bloating disk across 6 federated namespaces. |
+
+**Trigger to revisit:** OOM-kills, CPU throttling visible in `kubectl top`, or PVC `Used` approaching `Capacity` during the heisenbug long-loop. PVC IOPS / throughput class is not tunable on Garden's `local-docker` substrate (the default storage class is used); revisit when running against a real cloud cluster.
+
+**Replicas:** `1`. Multi-replica HA is deferred to #155, which will need to first re-evaluate RustFS's distributed-mode beta status.
+
+**Antiaffinity:** not configured at single replica; revisit when scaling.
+
+The container runs as non-root UID `10001`; the StatefulSet's `securityContext.fsGroup: 10001` lets the process write to the mounted PVC. Health probes hit `/health` on the S3 API port (`9000`).
+
 ## Peer Lifecycle
 
 ### Adding a Peer
