@@ -113,12 +113,12 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
-  minio:
-    host: minio
+  objects:
+    host: objects
     port: "9000"
     region: "us-east-1"
-    accessKey: "minioadmin"
-    secretKey: "minioadmin"
+    accessKey: "rustfsadmin"
+    secretKey: "rustfsadmin"
   sadstore:
     replicas: 1
     port: "80"

@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: minio-pvc
+  name: objects-pvc
   labels:
-    app: minio
+    app: objects
 spec:
   accessModes:
     - ReadWriteOnce
@@ -16,36 +16,45 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: minio
+  name: objects
   labels:
-    app: minio
+    app: objects
 spec:
-  serviceName: minio
+  serviceName: objects
   replicas: 1
   selector:
     matchLabels:
-      app: minio
+      app: objects
   template:
     metadata:
       labels:
-        app: minio
+        app: objects
     spec:
+      # RustFS runs as non-root UID 10001; fsGroup applies that group to
+      # the mounted PVC so the process can write to /data.
+      securityContext:
+        fsGroup: 10001
       containers:
-        - name: minio
-          image: minio/minio:latest
-          args:
-            - server
-            - /data
+        - name: objects
+          image: rustfs/rustfs:latest
           ports:
             - containerPort: 9000
               name: s3
+            - containerPort: 9001
+              name: console
           env:
-            - name: MINIO_ROOT_USER
-              value: "${var.minio.accessKey}"
-            - name: MINIO_ROOT_PASSWORD
-              value: "${var.minio.secretKey}"
+            - name: RUSTFS_VOLUMES
+              value: "/data"
+            - name: RUSTFS_ADDRESS
+              value: "0.0.0.0:9000"
+            - name: RUSTFS_CONSOLE_ADDRESS
+              value: "0.0.0.0:9001"
+            - name: RUSTFS_ACCESS_KEY
+              value: "${var.objects.accessKey}"
+            - name: RUSTFS_SECRET_KEY
+              value: "${var.objects.secretKey}"
           volumeMounts:
-            - name: minio-storage
+            - name: objects-storage
               mountPath: /data
           resources:
             requests:
@@ -56,35 +65,35 @@ spec:
               memory: 512Mi
           livenessProbe:
             httpGet:
-              path: /minio/health/live
+              path: /health
               port: 9000
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /minio/health/ready
+              path: /health
               port: 9000
             initialDelaySeconds: 5
             periodSeconds: 5
       volumes:
-        - name: minio-storage
+        - name: objects-storage
           persistentVolumeClaim:
-            claimName: minio-pvc
+            claimName: objects-pvc
 
 ---
 
 apiVersion: v1
 kind: Service
 metadata:
-  name: minio
+  name: objects
   labels:
-    app: minio
+    app: objects
 spec:
   type: ClusterIP
   ports:
-    - port: ${var.minio.port}
+    - port: ${var.objects.port}
       targetPort: 9000
       protocol: TCP
       name: s3
   selector:
-    app: minio
+    app: objects

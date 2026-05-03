@@ -28,7 +28,7 @@ disabled: ${var.envType == "registry"}
 dependencies:
   - build.mail
   - deploy.postgres
-  - deploy.minio
+  - deploy.objects
   - deploy.kels
   - deploy.identity
   # Note: deploy.redis is intentionally not listed as a dependency. Redis is

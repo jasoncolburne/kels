@@ -26,17 +26,17 @@ spec:
                 sleep 2;
               done;
               echo "PostgreSQL is ready!";
-        - name: wait-for-minio
+        - name: wait-for-objects
           image: busybox:1.36
           command:
             - sh
             - -c
             - |
-              until nc -z minio 9000; do
-                echo "Waiting for MinIO...";
+              until nc -z objects 9000; do
+                echo "Waiting for object store...";
                 sleep 2;
               done;
-              echo "MinIO is ready!";
+              echo "Object store is ready!";
         - name: wait-for-identity
           image: busybox:1.36
           command:
@@ -66,13 +66,13 @@ spec:
             - name: IDENTITY_URL
               value: "${var.identity.url}"
             - name: MINIO_ENDPOINT
-              value: "http://${var.minio.host}:${var.minio.port}"
+              value: "http://${var.objects.host}:${var.objects.port}"
             - name: MINIO_REGION
-              value: "${var.minio.region}"
+              value: "${var.objects.region}"
             - name: MINIO_ACCESS_KEY
-              value: "${var.minio.accessKey}"
+              value: "${var.objects.accessKey}"
             - name: MINIO_SECRET_KEY
-              value: "${var.minio.secretKey}"
+              value: "${var.objects.secretKey}"
             - name: KELS_MAIL_BUCKET
               value: "${var.mail.bucket}"
             - name: MAIL_MAX_MESSAGES_PER_SENDER_PER_DAY

@@ -1,8 +1,8 @@
 kind: Deploy
-name: minio
+name: objects
 type: kubernetes
 
-# MinIO is not needed in the registry environment
+# Object store is not needed in the registry environment
 disabled: ${var.envType == "registry"}
 
 spec:
