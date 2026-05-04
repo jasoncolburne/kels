@@ -1,7 +1,7 @@
 //! SAD Event Log builder.
 //!
 //! Single-actor, protocol-agnostic construction surface for SAD Event Logs.
-//! Round-12 shape: chains are identity-rooted, so every staging method that
+//! #147: chains are identity-rooted, so every staging method that
 //! produces a v1+ event must bind it to a specific IEL event via
 //! `identity_event`. The builder fetches the IEL's current state from the
 //! server on demand to find the binding.
@@ -184,7 +184,7 @@ impl SadEventBuilder {
     /// hydrate verified state from the **local SAD store only**.
     ///
     /// Hydration runs only when both `sad_store` and `checker` are set —
-    /// the round-12 verifier also needs an `IelResolver`, which the
+    /// the verifier also needs an `IelResolver`, which the
     /// builder constructs from `sad_client`. Without `sad_client` the
     /// hydration path is skipped (the prefix-mismatch guard at flush
     /// catches misuse). `KelsError::NotFound` from the local walk is
@@ -623,7 +623,7 @@ impl SadEventBuilder {
 
     /// Submit pending events to SADStore, then absorb into verified state.
     ///
-    /// Three phases (mirrors round-10 / IEL flush):
+    /// Three phases (mirrors IEL flush):
     /// 1. `sad_client.submit_sad_events(...)` — server commits.
     /// 2. `sad_store.store_sel_event` per event — local cache write-through.
     /// 3. `absorb_pending` — re-verify against server-accepted state.
@@ -775,7 +775,7 @@ impl SadEventBuilder {
     /// `sad_client` / `checker` / `prefix` is missing (offline-staging
     /// flows). Mirrors `IdentityEventBuilder::verify_server_chain_pre_action`.
     ///
-    /// Round-12 third follow-up: pre-walks the server's SE chain to collect
+    /// #147 follow-up: pre-walks the server's SE chain to collect
     /// the unique `identity_event` SAIDs the IEL verification needs to query.
     /// The collected set is forwarded to the `IelResolver` via
     /// `with_queried_saids` so `is_satisfied` answers correctly during the
@@ -843,7 +843,7 @@ impl SadEventBuilder {
                 identity
             ))
         })?;
-        // Round-12 SE bindings target Icp / Evl events (the kinds that
+        // SE bindings target Icp / Evl events (the kinds that
         // carry policy state forward). Terminal IEL kinds (Cnt / Dec)
         // shouldn't be reachable here because we just gated on
         // `is_contested` / `is_decommissioned`, but stay defensive.

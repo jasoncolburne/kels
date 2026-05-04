@@ -113,7 +113,7 @@ Both follow the same algorithmic shape as SEL's `truncate_and_replace`:
 8. **Delete** archived events from `kels_key_events` by SAID (NOT by serial range — owner's events at the same serials must remain).
 9. Insert the batch's new events: pending first, then `Rec` (+ optional `Rot`).
 
-The page+resume-verify pattern is the round-10 backport from SEL: prior to the round-10 work, `archive_adversary_chain` issued one DB query per walk hop. The new shape is one DB round-trip plus in-memory traversal, identical in structure to SEL's `truncate_and_replace` discriminator. The cryptographic gate is signature verification on both sides — KEL verifies signatures directly attached to the events; SEL verifies signatures on the anchoring `ixn` events that policy resolution requires. Trust posture is the same.
+The page+resume-verify pattern is the SEL backport: prior to it, `archive_adversary_chain` issued one DB query per walk hop. The new shape is one DB round-trip plus in-memory traversal, identical in structure to SEL's `truncate_and_replace` discriminator. The cryptographic gate is signature verification on both sides — KEL verifies signatures directly attached to the events; SEL verifies signatures on the anchoring `ixn` events that policy resolution requires. Trust posture is the same.
 
 ### Bounds
 
@@ -152,7 +152,7 @@ A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequi
 Both KEL and SEL `Cnt` require the chain's privileged primitive. The asymmetry of *mechanism* derives from the difference in primitives:
 
 - KEL's signing key and recovery key are independent cryptographic primitives. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual signature.
-- SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to be inclusive of `write_policy`. Hence SEL `Cnt` requires only governance satisfaction.
+- SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to subsume the matching `auth_policy`. Hence SEL `Cnt` requires only governance satisfaction.
 
 The symmetry of *intent* — terminal authority assertion — is preserved on both sides.
 
@@ -224,7 +224,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
 - `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `diverged_at_serial`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_serial`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
 - `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
-- `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. The round-10 backport replaces per-hop DB queries with a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
+- `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. The SEL backport replaces per-hop DB queries with a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.
 
 **Tests:**

@@ -1,6 +1,6 @@
 //! Exchange protocol command handlers.
 //!
-//! Single-device ergonomic wrappers around the round-12 SE primitive for
+//! Single-device ergonomic wrappers around the SE primitive for
 //! ML-KEM encapsulation-key publication. Each command runs the full
 //! stage → publish → anchor → submit cycle in one CLI invocation against
 //! a caller-supplied `--identity` (IEL prefix). Multi-device flows use

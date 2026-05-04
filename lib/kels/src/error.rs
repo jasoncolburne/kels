@@ -197,14 +197,14 @@ pub enum KelsError {
     // returned by the crate.
     SadStorePayloadMissing { prefix: String, said: String },
 
-    /// Round-12: an SE batch contained an `Icp` but did not also contain an
+    /// #147: an SE batch contained an `Icp` but did not also contain an
     /// `Upd` at v1. The inception batch rule (`docs/design/sel/events.md`)
     /// requires `[Icp, Upd, ...]` minimum so every chain is born with both
     /// content and an IEL binding; lone-Icp batches are rejected.
     #[error("Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1")]
     IncompleteInception(String),
 
-    /// Round-12: an SE event's `identity_event` binding is structurally
+    /// #147: an SE event's `identity_event` binding is structurally
     /// invalid. Covers three cases (the `String` payload describes which):
     /// 1. The named SAID doesn't exist in the bound IEL.
     /// 2. The named SAID's IEL prefix doesn't match the SE chain's
@@ -218,7 +218,7 @@ pub enum KelsError {
     #[error("Bad identity binding: {0}")]
     BadIdentityBinding(String),
 
-    /// Round-12: `SadEventBuilder::decommission()` pre-flight refused
+    /// #147: `SadEventBuilder::decommission()` pre-flight refused
     /// because the SE chain is divergent. Generic — does not distinguish
     /// sealed vs. unsealed (the routing rules differ — sealed →
     /// `ContestRequired`, unsealed → `RepairRequired`); operators see the

@@ -511,7 +511,7 @@ async fn contest_terminates_chain() {
     let _ = builder.flush().await.expect("flush Cnt");
 
     // Subsequent submission returns 200 OK with `terminal: Some(Contested)`
-    // (round-12 third follow-up commit 2 — gossip-race-already-terminal
+    // (#147 follow-up — gossip-race-already-terminal
     // idempotency). The body shape replaces the prior 403 + text body.
     let mut builder2 = IdentityEventBuilder::new(
         Some(sad_client.clone()),

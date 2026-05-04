@@ -6,11 +6,11 @@
 //!   bound to an Identity Event Log (IEL). Each non-inception event references
 //!   content in the SAD object store via `content`.
 //!
-//! Round-12 shape: SE chains are **identity-rooted**. The chain prefix is
+//! #147 shape: SE chains are **identity-rooted**. The chain prefix is
 //! derived from `(identity, topic)`; every v1+ event binds to a specific IEL
 //! event by SAID via `identity_event` to resolve its authorization policy
 //! (auth_policy for `Upd`; governance_policy for `Sea` / `Rpr` / `Cnt` / `Dec`).
-//! SE no longer carries `write_policy` / `governance_policy` fields — those
+//! SE no longer carries first-class authorization-policy fields — those
 //! live on IEL.
 
 use std::{collections::BTreeSet, fmt, str::FromStr};
@@ -167,7 +167,7 @@ impl FromStr for SadEventKind {
 
 /// A chained, self-addressed event in the SADStore.
 ///
-/// Round 12 shape: identity-rooted. The v0 `Icp` carries `identity` (the IEL
+/// #147: identity-rooted. The v0 `Icp` carries `identity` (the IEL
 /// prefix the chain is bound to) and no `content`; v1+ events carry
 /// `identity_event` (the SAID of the IEL event whose policy authorizes them).
 /// SE has no first-class policy fields — authorization is resolved by walking
@@ -193,10 +193,6 @@ pub struct SadEvent {
     /// on `Upd`; preserved (carry-forward) on `Sea` / `Rpr` / `Cnt` / `Dec`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub content: Option<cesr::Digest256>,
-    /// SAID of the custody SAD (optional; controls readPolicy / nodes for the
-    /// chain). Independent of the round-12 IEL binding.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub custody: Option<cesr::Digest256>,
     /// IEL prefix the chain is bound to. `Some` on `Icp` (where it participates
     /// in prefix derivation alongside `topic`); `None` on every other kind.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -211,7 +207,7 @@ pub struct SadEvent {
 ///
 /// Anyone can call this offline — no server needed. The prefix is derived from
 /// the v0 inception event content (with said+prefix as placeholders), which
-/// contains only `(identity, topic)` as discriminators. Round-12 SE inception
+/// contains only `(identity, topic)` as discriminators. #147 SE inception
 /// is permissionless: prefix derivation grants no authority by itself, since
 /// the chain cannot advance past `Icp` without satisfying the IEL-resolved
 /// `auth_policy`.
@@ -228,19 +224,12 @@ pub fn compute_sad_event_prefix(
 impl SadEvent {
     /// Build a v0 `Icp` (inception) event bound to an IEL identity.
     ///
-    /// `content`, `custody`, and `identity_event` are all `None` on `Icp`. The
+    /// `content` and `identity_event` are both `None` on `Icp`. The
     /// chain prefix is derived from `(identity, topic)`. Inception is
     /// permissionless — no authorization check fires until the v1 `Upd` lands
     /// (per the inception batch rule enforced by the submit handler).
     pub fn icp(identity: cesr::Digest256, topic: impl Into<String>) -> Result<Self, KelsError> {
-        let event = Self::create(
-            topic.into(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(identity),
-            None,
-        )?;
+        let event = Self::create(topic.into(), SadEventKind::Icp, None, Some(identity), None)?;
         event
             .validate_structure()
             .map_err(KelsError::InvalidKeyEvent)?;
@@ -393,7 +382,7 @@ impl SadEvent {
 /// A verified SE branch endpoint: tip event plus the per-branch state the
 /// verifier needs to authorize extension and to ratchet the IEL binding.
 ///
-/// Round-12 shape: the chain is identity-rooted, so every branch carries
+/// #147 shape: the chain is identity-rooted, so every branch carries
 /// the bound IEL prefix (`identity`, set at Icp) and the highest IEL event
 /// the branch has ratcheted to (`last_identity_event`). Authorization
 /// policies are not tracked per branch — they live on the IEL and are
@@ -415,7 +404,7 @@ pub struct SadBranchTip {
     pub last_identity_event: Option<cesr::Digest256>,
     /// Number of non-evaluation events on this branch since the last
     /// authorized governance evaluation (or since chain start if none).
-    /// Tracked for the round-12 builder's evaluation-required gates.
+    /// Tracked for the #147 builder's evaluation-required gates.
     pub events_since_evaluation: usize,
     /// Version of the most recent governance evaluation (`Sea` / `Rpr`)
     /// on this branch. `None` until the first authorized evaluation.
@@ -427,7 +416,7 @@ pub struct SadBranchTip {
 ///
 /// Cannot be constructed outside this crate — only via `SelVerifier`.
 ///
-/// Round-12 shape: per-branch tips plus chain-wide aggregates. The terminal
+/// #147 shape: per-branch tips plus chain-wide aggregates. The terminal
 /// flags (`is_contested` / `is_decommissioned`) are content-based — set
 /// unconditionally on any landed `Cnt` / `Dec` regardless of whether the
 /// terminating event passed its governance anchor check; auth status is
@@ -544,7 +533,7 @@ impl SelVerification {
 
     /// True when at least one `Cnt` event has landed on the chain.
     /// Content-based (set unconditionally on landed `Cnt` regardless of
-    /// whether its governance anchor check passed) — mirrors the round-11
+    /// whether its governance anchor check passed) — mirrors the
     /// IEL terminal-flag rule.
     pub fn is_contested(&self) -> bool {
         self.is_contested
@@ -614,7 +603,7 @@ impl SelVerification {
     ///
     /// Currently unused — Gap 4's submit-handler rewrite will re-introduce
     /// the call site that stamps server-reported divergence onto local
-    /// tokens (the round-10 builder code that called this was stubbed in
+    /// tokens (the builder code that called this was stubbed in
     /// Gap 1).
     #[allow(dead_code)]
     pub(crate) fn set_diverged_at_version(&mut self, version: u64) {

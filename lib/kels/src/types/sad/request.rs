@@ -3,9 +3,10 @@ use verifiable_storage::{SelfAddressed, StorageDatetime};
 
 /// Authenticated fetch request for a SAD object.
 ///
-/// Used as `SignedRequest<SadFetchRequest>` for objects with `readPolicy`.
-/// The `object_said` binds the request to a specific object — the server knows
-/// the object's custody and evaluates the readPolicy directly.
+/// Used as `SignedRequest<SadFetchRequest>` for objects whose `custody.read`
+/// gates user-facing reads (per #167). The `object_said` binds the request
+/// to a specific object — the server resolves the IEL prefix's current
+/// auth_policy and evaluates it against the verified signer set.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedSadFetchRequest {

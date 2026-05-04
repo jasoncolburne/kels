@@ -240,7 +240,7 @@ struct SelVerifier {
 
 ### Two-trait split: `PolicyChecker` and `IelResolver`
 
-Round 12 splits SE-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
+#147 splits SE-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
 
 `PolicyChecker` is unchanged from KEL/IEL — anchor-and-immunity only:
 

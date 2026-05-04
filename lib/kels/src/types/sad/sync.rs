@@ -291,7 +291,7 @@ impl PagedSadSink for HttpSadSink {
             // divergence/applied/terminal signals aren't actionable here —
             // owner submission goes through `SadStoreClient::submit_sad_events`,
             // which surfaces the response. The 200-OK terminal-state-skip
-            // path (round-12 third follow-up commit 2) lands here too: a
+            // path (#147 follow-up commit 2) lands here too: a
             // gossip-race-already-terminal remote returns 200 with
             // `terminal: Some(_)` instead of 4xx, so the sink reads it as
             // idempotent success.
@@ -524,7 +524,7 @@ async fn send_divergent_sad_events(
 /// Verify a SAD Event Log by paging through a source. Returns a verification token.
 ///
 /// Structural + policy verification. Verifies SAID, prefix, topic, chain linkage,
-/// and write_policy authorization via the provided `PolicyChecker`.
+/// and per-event authorization via the provided `PolicyChecker`.
 pub async fn verify_sad_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedSadSource + Sync),
@@ -611,7 +611,7 @@ impl<F: FnMut(&[SadEvent]) + Send> PagedSadSink for CallbackSadSink<F> {
 /// Walk is bounded by `max_pages`; fail-secure when exceeded. Stops early
 /// when the source signals `has_more=false`.
 ///
-/// Round-12 third-follow-up addition: paired with
+/// #147 follow-up: paired with
 /// `IelResolver::with_queried_saids` and `is_satisfied` for the
 /// caller-bounded SAID querying pattern (see
 /// `docs/design/sel/verification.md §Caller-bounded SAID querying`).
@@ -778,7 +778,7 @@ mod tests {
 
     /// Wire-level mapping contract: a 409 from the SE submit endpoint
     /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`, not
-    /// `InternalError` (silent-skip dropped — round-12 third follow-up
+    /// `InternalError` (silent-skip dropped — #147 follow-up
     /// commit 2). Production conflict-409 paths in the submit handler
     /// (`save_batch` sealed-fork, `truncate_and_replace` repair
     /// preconditions) are pre-screened by the routing matrix; this

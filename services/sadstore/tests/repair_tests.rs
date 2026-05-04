@@ -138,14 +138,12 @@ async fn truncate_and_replace_txn(repo: &SadStoreRepository, events: &[SadEvent]
     tx.commit().await.unwrap();
 }
 
-/// Build a chain of `count` events. Round-12 Gap-1 shape: v0 `Icp` (bound
-/// to an `identity`) + (`count`-1) `Upd` events binding to a stub IEL
-/// event. The `kel_prefix` argument is reused as the identity-derivation
-/// salt so existing callers' uniqueness assumptions hold.
+/// Build a chain of `count` events. v0 `Icp` (bound to an `identity`) +
+/// (`count`-1) `Upd` events binding to a stub IEL event. The `kel_prefix`
+/// argument is reused as the identity-derivation salt so existing callers'
+/// uniqueness assumptions hold.
 ///
-/// Bypasses `SadEventBuilder` entirely since round-12 Gap 1 stubs the
-/// builder's staging methods; Gap 10 will swap this back to the
-/// `incept_chain` flow once Gap 5 ships.
+/// Bypasses `SadEventBuilder` (this test stubs builder staging methods).
 fn build_chain(kel_prefix: &str, topic: &str, count: usize) -> Vec<SadEvent> {
     assert!(
         count >= 2,
@@ -191,7 +189,6 @@ fn build_replacement(
         content: Some(cesr::Digest256::blake3_256(
             format!("K{}_{}", content_tag, from_version).as_bytes(),
         )),
-        custody: None,
         identity: None,
         identity_event: Some(cesr::Digest256::blake3_256(
             format!("iel-event-{}", content_tag).as_bytes(),

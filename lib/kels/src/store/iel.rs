@@ -6,7 +6,7 @@
 //!   prefix and by SAID.
 //! - `load_iel_events` — paginated reads ordered
 //!   `(version ASC, kind sort_priority ASC, said ASC)`.
-//! - `load_iel_event` — by-SAID lookup (round-12 SE binding resolution will
+//! - `load_iel_event` — by-SAID lookup (#147 SE binding resolution will
 //!   consume this; convenient for tests now).
 //!
 //! `InMemoryIdentityStore` is the test-tier in-process implementation.

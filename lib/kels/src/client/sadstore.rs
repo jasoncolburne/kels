@@ -210,8 +210,9 @@ impl SadStoreClient {
     /// Submit SAD events to the SADStore.
     ///
     /// Authorization is via KEL anchoring: each event's SAID must be anchored
-    /// via ixn by `write_policy` endorsers in their KELs. There are no per-event
-    /// signatures — the server validates anchoring against the endorsers' KELs.
+    /// via ixn by the IEL-resolved auth-policy endorsers in their KELs. There
+    /// are no per-event signatures — the server validates anchoring against
+    /// the endorsers' KELs.
     ///
     /// Returns the server-reported `SubmitSadEventsResponse`. The `diverged_at`
     /// field carries the server's authoritative divergence signal — a fork
@@ -542,8 +543,8 @@ impl SadStoreClient {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     //! Wire-level mapping contracts for the typed `SadStoreClient` submit
-    //! methods. The bare 409→`ErrorCode::Conflict` mapping (round-12 third
-    //! follow-up commit 2) is what callers depend on to branch on conflict
+    //! methods. The bare 409→`ErrorCode::Conflict` mapping (#147 follow-up)
+    //! is what callers depend on to branch on conflict
     //! semantics without parsing error bodies; the 500→`InternalError`
     //! mapping preserves the body so callers can prefix-match the typed
     //! variant via Display (e.g., `KelsError::ChainVerificationFailed`).

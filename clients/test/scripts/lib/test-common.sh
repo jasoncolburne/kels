@@ -535,7 +535,7 @@ get_kel_effective_said() {
 #                      Empty/unset → no-op (single-node mode).
 #
 # Production gossip is deliberately offline-tolerant; this convergence
-# wait lives only in the test harness — NOT on the round-12 production
+# wait lives only in the test harness — NOT on the post-#147 production
 # submit path.
 #
 # `said_label` is informational only, surfaced in timeout messages.

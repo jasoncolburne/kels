@@ -93,6 +93,32 @@ test_sad_chain_verifier_
 kels/sad/v1/events/est
 kels/sad/v1/events/evl
 
+# === No "round N" labels: cite issue numbers (e.g., #147 / #167) instead ===
+# These are review-iteration counts that bled into source/docs and are
+# untraceable. Mapping for reference: round-12 ↔ #147 (SE identity-rooting),
+# round 13 ↔ #167 (custody reshape). Only rounds 10–13 are offenders;
+# narrower than \b1[0-9]\b to avoid future false positives. docs/deviations/
+# has its own subtree rule and is exempt; docs/claudit/ is excluded by the
+# lint script.
+\b[rR]ound[- ]?1[0-3]\b
+
+# === Issue #167: Custody reshape ===
+# Pre-#167 Custody fields: `writePolicy` / `readPolicy` (renamed to
+# `write` / `read`), and the `nodes` / `ttl` / `once` keys that relocated
+# from `custody.*` to `availability.*`. The bare `nodes` / `ttl` / `once`
+# tokens are too generic to forbid (they appear in unrelated code), so
+# the camelCase Custody-field forms are the catchable surface here.
+\bwritePolicy\b
+\breadPolicy\b
+\bwrite_policy\b
+\bread_policy\b
+# Pre-#167 type forms that don't survive the reshape.
+\bSadCustodyContext\b
+\bCustodyRepository\b
+# Pre-#167 SQL/table names that don't survive the reshape.
+\bcustodies_idx\b
+\bsad_objects_custody_idx\b
+
 # === Issue #154: MinIO → RustFS substitution ===
 # Catches all-caps, proper-noun, and lowercase forms of "minio" plus the
 # `MINIO_*` env-var-key prefix. The deviations subtree exempts itself

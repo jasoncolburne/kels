@@ -2,9 +2,8 @@
 
 use std::collections::HashSet;
 
-use kels_core::{
-    Custody, IdentityEvent, IdentityEventKind, SadEvent, SadEventRepair, SelRepairEvent,
-};
+use cesr::Matter;
+use kels_core::{IdentityEvent, IdentityEventKind, SadEvent, SadEventRepair, SelRepairEvent};
 use kels_policy::Policy;
 use verifiable_storage::{
     ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
@@ -132,7 +131,7 @@ impl SadEventRepository {
     }
 
     /// Insert a single event under a caller-managed transaction without the
-    /// divergent-chain check. Used by the round-12 contest / decommission
+    /// divergent-chain check. Used by the #147 contest / decommission
     /// paths where `Cnt` / `Dec` are the only events allowed to land on a
     /// (sealed-)divergent chain. Caller must hold an advisory lock on the
     /// prefix and must have verified the event is structurally valid +
@@ -164,9 +163,9 @@ impl SadEventRepository {
 
         let prefix = events[0].prefix;
 
-        // Note: write_policy evolution is tracked by the verifier's branch state across
-        // versions; no consistency check at the repo layer — callers must verify via
-        // SelVerifier (the handler does this with PolicyChecker after
+        // Note: per-event authorization is tracked by the verifier's branch state
+        // across versions; no consistency check at the repo layer — callers must
+        // verify via SelVerifier (the handler does this with PolicyChecker after
         // truncate_and_replace).
 
         // Skip leading events that already exist locally
@@ -512,7 +511,7 @@ impl SadEventRepository {
 
     /// Get the effective SAID for a SEL prefix.
     ///
-    /// Round-12 terminal-state precedence (mirrors
+    /// Terminal-state precedence (mirrors
     /// `IdentityEventRepository::effective_said`):
     /// 1. Decommissioned → the latest `Dec` event's SAID.
     /// 2. Contested → `hash_effective_said("contested:{prefix}")`.
@@ -667,7 +666,7 @@ impl SadEventRepository {
             None
         };
 
-        // Round-12 terminal-state-aware effective-SAID resolution. Apply
+        // Terminal-state-aware effective-SAID resolution. Apply
         // precedence per prefix in three batch passes (matches the
         // `effective_said` order):
         //   1. Decommissioned: replace SAID with the prefix's `Dec` SAID.
@@ -741,14 +740,30 @@ pub struct SadObjectIndex {
 
 impl SadObjectIndex {
     /// Store a SAD object in object store and track it in the index atomically.
+    ///
+    /// #167: the pre-reshape `custody` SAID parameter is replaced
+    /// by denormalized lifecycle fields sourced from the parent SAD's inline
+    /// `custody.read` and `availability.{nodes,ttl,once}`. All four
+    /// participate in the entry's SAID computation, so the index row is
+    /// reverifiable from the parent SAD's bytes.
+    #[allow(clippy::too_many_arguments)]
     pub async fn store(
         &self,
         sad_said: &cesr::Digest256,
-        custody: Option<cesr::Digest256>,
+        custody_read: Option<cesr::Digest256>,
+        availability_nodes: Option<cesr::Digest256>,
+        availability_ttl: Option<u64>,
+        availability_once: Option<bool>,
         object_store: &crate::object_store::ObjectStore,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        let entry = kels_core::SadObjectEntry::create(*sad_said, custody)?;
+        let entry = kels_core::SadObjectEntry::create(
+            *sad_said,
+            custody_read,
+            availability_nodes,
+            availability_ttl,
+            availability_once,
+        )?;
 
         let mut tx = self.pool.begin_transaction().await?;
 
@@ -856,36 +871,33 @@ impl SadObjectIndex {
 
         Ok(kels_core::SadObjectListResponse { saids, next_cursor })
     }
-}
 
-/// Cached custody SADs for the fetch-time hot path.
-#[derive(Stored)]
-#[stored(item_type = Custody, table = "custodies", chained = false)]
-pub struct CustodyRepository {
-    pub pool: PgPool,
-}
-
-impl CustodyRepository {
-    /// Store a custody SAD in the cache (idempotent).
-    pub async fn store(&self, custody: &Custody) -> Result<(), StorageError> {
-        match self.insert(custody.clone()).await {
-            Ok(_) => Ok(()),
-            Err(StorageError::DuplicateRecord(_)) => Ok(()),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Fetch a cached custody by SAID.
-    pub async fn get_by_said(
+    /// Fetch up to `limit` index entries whose `availability_ttl` is set,
+    /// for the TTL reaper. Returns `(sad_said, ttl, created_at)` triples
+    /// so the caller can compute expiry without a second round-trip.
+    pub async fn fetch_ttl_set(
         &self,
-        said: &cesr::Digest256,
-    ) -> Result<Option<Custody>, StorageError> {
-        use verifiable_storage_postgres::QueryExecutor;
+        limit: u64,
+    ) -> Result<Vec<(cesr::Digest256, u64, verifiable_storage::StorageDatetime)>, StorageError>
+    {
+        type TtlRow = (String, i64, chrono::DateTime<chrono::Utc>);
+        let rows: Vec<TtlRow> = sqlx::query_as(
+            "SELECT sad_said, availability_ttl, created_at FROM sad_objects \
+             WHERE availability_ttl IS NOT NULL \
+             LIMIT $1",
+        )
+        .bind(limit as i64)
+        .fetch_all(self.pool.inner())
+        .await
+        .map_err(|e| StorageError::StorageError(e.to_string()))?;
 
-        let query = verifiable_storage_postgres::Query::<Custody>::for_table(Self::TABLE_NAME)
-            .eq("said", said.as_ref())
-            .limit(1);
-        self.pool.fetch_optional(query).await
+        rows.into_iter()
+            .map(|(s, t, created)| {
+                let said = cesr::Digest256::from_qb64(&s)
+                    .map_err(|e| StorageError::StorageError(e.to_string()))?;
+                Ok((said, t as u64, created.into()))
+            })
+            .collect()
     }
 }
 
@@ -1347,7 +1359,6 @@ impl IdentityEventRepository {
 pub struct SadStoreRepository {
     pub sad_events: SadEventRepository,
     pub sad_objects: SadObjectIndex,
-    pub custodies: CustodyRepository,
     pub policies: PolicyRepository,
     pub iel_events: IdentityEventRepository,
 }

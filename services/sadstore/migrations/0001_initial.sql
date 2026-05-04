@@ -3,11 +3,17 @@ BEGIN;
 
 -- SAD Event Log events table.
 --
--- Round 12: SE chains are identity-rooted (bound to an IEL via `identity` at
+-- #147: SE chains are identity-rooted (bound to an IEL via `identity` at
 -- Icp; subsequent events bind via `identity_event` to a specific IEL event
--- whose policy authorizes them). Pre-round-12 `write_policy` /
--- `governance_policy` columns are gone — those policy values now live on
--- the IEL and are resolved on demand. See `docs/design/sel/events.md`.
+-- whose policy authorizes them). Pre-#147 SE-side authorization fields are
+-- gone — those policy values now live on the IEL and are resolved on
+-- demand.
+--
+-- #167: the `custody` column is gone. SE/IEL events reject
+-- inline `custody` and `availability` (chains replicate as a unit;
+-- differential authority/availability across links breaks descendant
+-- verification). Replication and lifecycle are SAD-object concerns; chains
+-- broadcast unconditionally. See `docs/design/sel/events.md`.
 CREATE TABLE IF NOT EXISTS sad_events (
     said TEXT PRIMARY KEY,
     prefix TEXT NOT NULL,
@@ -15,7 +21,6 @@ CREATE TABLE IF NOT EXISTS sad_events (
     version BIGINT NOT NULL,
     topic TEXT NOT NULL,
     content TEXT,
-    custody TEXT,                    -- SAID of custody SAD
     -- Event kind: one of kels/sad/v1/events/{icp,upd,sea,rpr,cnt,dec}
     kind TEXT NOT NULL,
     -- IEL prefix the chain is bound to. Non-NULL only on Icp; NULL on every
@@ -28,26 +33,33 @@ CREATE TABLE IF NOT EXISTS sad_events (
 
 CREATE INDEX IF NOT EXISTS sad_events_prefix_idx ON sad_events(prefix);
 
--- SAD object index (tracks which SAIDs exist in the object store for bootstrap/anti-entropy)
+-- SAD object index — tracks which SAIDs exist in the object store for
+-- bootstrap/anti-entropy, plus per-SAD lifecycle metadata denormalized from
+-- the parent SAD's inline `custody.read` / `availability.{nodes,ttl,once}`
+-- fields. #167: the pre-reshape `custody` SAID column (which
+-- pointed to a separately-addressable Custody SAD) is replaced by
+-- denormalized columns; Custody is now inline on the parent SAD, so the
+-- columns are derivable from the parent SAD's bytes and contribute to the
+-- entry's SAID. The DB stays untrusted: a verifier reconstructs the entry
+-- from the SAID-verified parent SAD and cross-checks.
+--
+-- `custody.write` is intentionally not denormalized: write-policy
+-- enforcement happens at POST time and doesn't need a fetch-path lookup.
 CREATE TABLE IF NOT EXISTS sad_objects (
     said TEXT PRIMARY KEY,
     sad_said TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    custody TEXT                     -- SAID of custody SAD (nullable, absent = no custody)
+    custody_read TEXT,                  -- IEL prefix gating user-facing reads
+    availability_nodes TEXT,            -- SAID of NodeSet SAD
+    availability_ttl BIGINT,            -- lifetime in seconds
+    availability_once BOOLEAN           -- read-once semantics
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS sad_objects_sad_said_idx ON sad_objects(sad_said);
-CREATE INDEX IF NOT EXISTS sad_objects_custody_idx ON sad_objects(custody);
 
--- Cached custody SADs for fetch-time hot path (one row per distinct custody config)
-CREATE TABLE IF NOT EXISTS custodies (
-    said TEXT PRIMARY KEY,
-    write_policy TEXT,
-    read_policy TEXT,
-    ttl BIGINT,
-    once BOOLEAN,
-    nodes TEXT                       -- SAID of NodeSet SAD
-);
+CREATE INDEX IF NOT EXISTS sad_objects_ttl_idx
+    ON sad_objects(availability_ttl)
+    WHERE availability_ttl IS NOT NULL;
 
 -- Cached policy SADs for evaluation without the object store round-trips
 CREATE TABLE IF NOT EXISTS policies (
@@ -80,8 +92,9 @@ CREATE TABLE IF NOT EXISTS sel_repair_events (
 CREATE INDEX IF NOT EXISTS sel_repair_events_repair_idx ON sel_repair_events(repair_said);
 
 -- Identity Event Log (IEL) events. Mirrors `sad_events` shape but trims
--- fields IEL doesn't carry (no `content` / `custody` / `write_policy`) and
--- keeps `auth_policy` / `governance_policy` as NOT NULL (every IEL event
+-- fields IEL doesn't carry (no `content` / `custody`; no SE-side write
+-- authorization column) and keeps `auth_policy` / `governance_policy` as
+-- NOT NULL (every IEL event
 -- always declares both — see `docs/design/iel/events.md §Per-Kind Field Rules`).
 --
 -- No archive table: IEL has no `Rpr` kind. Divergence is preserved in-place

@@ -500,8 +500,8 @@ enum MailCommands {
         #[arg(long)]
         recipient: String,
 
-        /// Recipient IEL identity (encap-key lookup). Round-12 SEL
-        /// prefix derives from `(identity, ENCAP_KEY_KIND)`; the
+        /// Recipient IEL identity (encap-key lookup). SEL prefix
+        /// derives from `(identity, ENCAP_KEY_KIND)`; the
         /// recipient's KEL prefix is the routing handle but does not
         /// determine the encap-key chain prefix.
         #[arg(long)]

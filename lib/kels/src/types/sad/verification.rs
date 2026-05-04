@@ -1,7 +1,7 @@
 //! SAD Event Log verification.
 //!
 //! Streaming structural + cross-chain authorization verifier for SAD Event
-//! Logs. Round-12 shape: chains are identity-rooted and bound to a specific
+//! Logs. #147: chains are identity-rooted and bound to a specific
 //! Identity Event Log (IEL) via `event.identity` (set at Icp) and
 //! `event.identity_event` (set at v1+). Authorization for v1+ events is
 //! resolved by walking the bound IEL event via [`IelResolver`] — `Upd`
@@ -34,7 +34,7 @@
 //! unconditionally on any landed `Cnt` / `Dec`, regardless of whether the
 //! terminating event passed its governance anchor check. The auth status
 //! is conveyed separately via `policy_satisfied`. This mirrors the
-//! round-11 IEL fix that pinned terminal flags to chain content.
+//! IEL fix that pinned terminal flags to chain content.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -122,7 +122,7 @@ impl SelVerifier {
     /// Like the IEL parallel, rehydrates `queried_saids` / `satisfied_saids`
     /// from the prior token (KEL's `resume` resets these; the IEL/SE
     /// streaming pre-walk pattern needs them to persist across pages).
-    /// KEL's symmetric fix is deferred to round 13.
+    /// KEL's symmetric fix is deferred to #161.
     pub fn resume(
         verification: &SelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,
@@ -204,7 +204,7 @@ impl SelVerifier {
 
         if self.branches.is_empty() {
             // First generation — must be a single Icp at v0. Permissionless;
-            // no anchor / immunity check (round-12 inception is granted no
+            // no anchor / immunity check (#147: inception is granted no
             // authority on its own — the chain cannot advance past Icp
             // without satisfying the IEL-resolved auth_policy at v1).
             if events.len() != 1 {
@@ -367,12 +367,12 @@ impl SelVerifier {
             // Two distinct soft-fail rules govern the auth gates below; each
             // gate (IelDivergent, IEL-satisfied, anchor) consults their union.
             //
-            //  1. **Terminal-soft** (round-11 baseline): Cnt/Dec auth-failures
+            //  1. **Terminal-soft** (baseline): Cnt/Dec auth-failures
             //     soft-fail under any chain state. Terminal flags are
             //     content-based; auth status surfaces via `policy_satisfied`.
             //     Mirrors `docs/design/sel/verification.md §Soft-fail policy`.
             //
-            //  2. **Post-divergence-soft** (round-12 third follow-up): on
+            //  2. **Post-divergence-soft** (#147 follow-up): on
             //     SE chains where Cnt has structurally created divergence
             //     (`diverged_at_version <= event.version`), ALL v1+ kinds'
             //     auth-failures soft-fail. The chain is already invalidated
@@ -1626,7 +1626,7 @@ mod tests {
         );
     }
 
-    // ==================== Round-12 third follow-up commit 3: missing taxonomy ====================
+    // ==================== #147 follow-up: missing taxonomy ====================
 
     /// Sea binding to a divergent-IEL post-divergence event: HARD reject
     /// (advancement event; chain does not advance). Parallel of
@@ -1798,7 +1798,7 @@ mod tests {
 
     // ==================== Post-SE-divergence taxonomy ====================
     //
-    // The post-divergence soft-fail rule (round-12 third follow-up commit 1)
+    // The post-divergence soft-fail rule (#147 follow-up)
     // converts auth-related failures (IelDivergent / is_satisfied=false /
     // is_anchored=false) on post-SE-divergence non-terminals from HARD to
     // SOFT. Structural integrity rules stay HARD regardless.
@@ -1934,7 +1934,7 @@ mod tests {
     // fake's `is_satisfied` returns false for any post-IEL-divergence
     // event, but `resolve_*_at` only returns IelDivergent for events at
     // `version >= IEL.first_divergent_version`. To model auth-fail-pre-
-    // divergence (the round-11 Cnt's-own-soft-fail case for IEL) the
+    // divergence (the Cnt's-own-soft-fail case for IEL) the
     // fake would need a hand-driven IEL verification — overkill for the
     // unit surface. Covered by the integration tests via the full IEL
     // verifier path; the SE-side severity wiring is exercised by the

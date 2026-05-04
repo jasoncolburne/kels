@@ -1,4 +1,4 @@
-//! Cross-chain IEL access for SE-side verification (round 12).
+//! Cross-chain IEL access for SE-side verification (per #147).
 //!
 //! `IelResolver` is a separate concern from [`PolicyChecker`](crate::PolicyChecker):
 //! the policy checker evaluates `(said, policy)` anchoring without any
@@ -93,8 +93,8 @@ impl IelChainPosition {
 ///
 /// Implementations must scope every operation to a specific IEL prefix
 /// (`identity`) — they reject any SAID whose stored event prefix doesn't
-/// match. Mismatch surfaces as [`KelsError::BadIdentityBinding`] (round-12
-/// addition; see Gap 6).
+/// match. Mismatch surfaces as [`KelsError::BadIdentityBinding`] (added
+/// per #147).
 ///
 /// The trait deliberately omits any SE-chain awareness: a resolver knows
 /// only how to look up an IEL event by SAID and how to map that SAID to the
@@ -103,7 +103,7 @@ impl IelChainPosition {
 pub trait IelResolver: Send + Sync {
     /// Fetch a single IEL event by SAID, scoped to `identity`.
     ///
-    /// Returns [`KelsError::BadIdentityBinding`] (round-12 addition) when the
+    /// Returns [`KelsError::BadIdentityBinding`] (added per #147) when the
     /// SAID isn't present in the named IEL or when the stored event's
     /// `prefix` doesn't equal `identity`. Other errors propagate as-is from
     /// the storage layer.

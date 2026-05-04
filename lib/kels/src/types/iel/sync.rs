@@ -170,8 +170,8 @@ impl PagedIelSink for HttpIelSink {
             // divergence/applied/terminal signals aren't actionable here —
             // owner submission goes through
             // `SadStoreClient::submit_identity_events`, which surfaces the
-            // response. The 200-OK terminal-state-skip path (round-12
-            // third follow-up commit 2) lands here too: a gossip-race-
+            // response. The 200-OK terminal-state-skip path (#147
+            // follow-up) lands here too: a gossip-race-
             // already-terminal remote returns 200 with `terminal: Some(_)`
             // instead of 4xx, so the sink reads it as idempotent success.
             let _ = resp
@@ -272,7 +272,7 @@ async fn send_divergent_iel_events(
             sink.store_page(chunk).await?;
         }
 
-        // The cnt-chain must fit in one page — under round-12 routing,
+        // The cnt-chain must fit in one page — under #147 routing,
         // post-Cnt extension on the cnt branch is structurally rare
         // (handler rejects further events on contested chains via the
         // terminal-state gate), so a long cnt-chain indicates corrupted
@@ -287,7 +287,7 @@ async fn send_divergent_iel_events(
         // Best-effort: the receiver may already be contested on this
         // chain (gossip race). The submit handler's terminal-state gate
         // returns 200 OK with `terminal: Some(Contested)` for that case
-        // (round-12 third follow-up commit 2), so the sink reads it as
+        // (#147 follow-up), so the sink reads it as
         // idempotent success. Errors here are reserved for genuine
         // failures (now propagating uniformly via `ErrorCode::Conflict`
         // for 409 and `ErrorCode::InternalError` for 5xx).
@@ -490,7 +490,7 @@ pub async fn iel_completed_verification(
 /// resulting token's `is_said_satisfied` answers correctly. Mirrors
 /// `KelVerifier::check_anchors` integrated with the verification helper.
 ///
-/// Round-12 third follow-up: shared entry point for resolver impls
+/// #147 follow-up: shared entry point for resolver impls
 /// ([`AnchoredIelResolver::is_satisfied`](crate::AnchoredIelResolver),
 /// the in-process `RepositoryIelResolver`) so the page-walk + verifier
 /// construction lives in one place.
@@ -570,7 +570,7 @@ pub async fn verify_identity_events(
 /// `queried_saids` on the `IelVerifier` before the walk so the resulting
 /// token's `is_said_satisfied` answers correctly.
 ///
-/// Round-12 third follow-up: shared entry point for `AnchoredIelResolver`
+/// #147 follow-up: shared entry point for `AnchoredIelResolver`
 /// (HTTP source) and any other `PagedIelSource` consumer that needs the
 /// queried/satisfied surface.
 pub async fn verify_identity_events_with_queried(
@@ -763,9 +763,9 @@ mod tests {
     /// Wire-level mapping contract: a 409 from the IEL submit endpoint
     /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`,
     /// not `InternalError`. Mirrors the SE-side test in
-    /// `lib/kels/src/types/sad/sync.rs` — round-12 third follow-up
-    /// commit 2 dropped both 409 and 403 silent-skips (replaced by
-    /// 200-with-`terminal` for the gossip-race-already-terminal case).
+    /// `lib/kels/src/types/sad/sync.rs` — #147 follow-up dropped
+    /// both 409 and 403 silent-skips (replaced by 200-with-`terminal`
+    /// for the gossip-race-already-terminal case).
     /// Owner-side and gossip-relay callers now both see `Conflict`
     /// for genuine `save_batch` conflicts.
     #[tokio::test]
@@ -951,7 +951,7 @@ mod tests {
         }
     }
 
-    // ==================== Round-12 third follow-up commit 4 ====================
+    // ==================== #147 follow-up: page partitioning ====================
 
     /// Collecting sink — records every page passed to `store_page` so tests
     /// can assert the exact partitioning sequence.

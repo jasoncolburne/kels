@@ -710,7 +710,7 @@ mod tests {
     }
 
     /// Concurrent `store_sel_event` calls on the same prefix don't lose
-    /// entries — round-10 M1 fix. Pre-fix, the read-modify-write on
+    /// entries. Pre-fix, the read-modify-write on
     /// `sel-index/{prefix}.json` had no locking, so two tasks could each
     /// read the index, append their entry, and clobber each other's
     /// append on write. Post-fix, the in-process `index_lock` serializes
@@ -767,7 +767,7 @@ mod tests {
             task.await.unwrap();
         }
 
-        // Read the index back. With the round-10 fix all 200 entries are
+        // Read the index back. With the index_lock fix all 200 entries are
         // present (plus v0 from the seed = 201 total). Pre-fix: some
         // entries lost to the read-modify-write race.
         let (loaded, has_more) = store.load_sel_events(&prefix, 1000, 0).await.unwrap();
@@ -776,15 +776,15 @@ mod tests {
             loaded.len(),
             201,
             "all 200 staged events plus v0 must be in the index — \
-             pre-M1-fix this would be lower due to the lost-update race"
+             without the index lock this would be lower due to the lost-update race"
         );
     }
 
     /// `load_sel_events` raises `SadStorePayloadMissing` (not `NotFound`)
-    /// when the index has an entry but the keyed payload is absent. Round-10
-    /// L1 fix — distinguishes partial local-store corruption from "fresh
-    /// chain" so `with_prefix` propagates rather than silently treating the
-    /// chain as empty.
+    /// when the index has an entry but the keyed payload is absent.
+    /// Distinguishes partial local-store corruption from "fresh chain" so
+    /// `with_prefix` propagates rather than silently treating the chain
+    /// as empty.
     #[tokio::test]
     async fn load_sel_events_raises_payload_missing_on_partial_corruption() {
         use crate::types::SadEvent;

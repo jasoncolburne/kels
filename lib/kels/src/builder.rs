@@ -578,7 +578,7 @@ impl<K: KeyProvider> KeyEventBuilder<K> {
     }
 
     /// Refuse recovery/contest/ror on non-empty pending. Mirrors SEL's
-    /// `repair` pending-empty gate (round-10 audit L2): combining stale
+    /// `repair` pending-empty gate: combining stale
     /// pending events with a recovery event would produce a wrong-version
     /// batch that doesn't heal.
     ///

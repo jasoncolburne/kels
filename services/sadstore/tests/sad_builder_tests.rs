@@ -1,16 +1,14 @@
-//! Round-12 full-stack tests for the SE submit handler + builder.
+//! Full-stack tests for the #147 SE submit handler + builder.
 //!
-//! **Gap 10a — critical-subset coverage.** The plan's full taxonomy is
-//! 30+ cases; this file ships ~10 high-value tests covering the
-//! genuinely-new round-12 surface (HARD Upd auth, soft govfailed
-//! Cnt/Dec live-handler elevation, sealed/unsealed routing matrix,
-//! terminal-chain refusal). The remaining cases (gossip propagation,
-//! more sealed-* combinations, prefix-derivation contract pin, etc.)
-//! land in a follow-up Gap 10b pass; the Heisenbug-carry-forward
-//! deployment-test sweep covers some of the same surface in the
-//! interim.
+//! **Critical-subset coverage.** The plan's full taxonomy is 30+ cases;
+//! this file ships ~10 high-value tests covering the genuinely-new #147
+//! surface (HARD Upd auth, soft govfailed Cnt/Dec live-handler elevation,
+//! sealed/unsealed routing matrix, terminal-chain refusal). The remaining
+//! cases (gossip propagation, more sealed-* combinations, prefix-derivation
+//! contract pin, etc.) land in a follow-up pass; the deployment-test
+//! sweep covers some of the same surface in the interim.
 //!
-//! Why the full harness (carry-over from round-10): `SadEventBuilder::flush`
+//! Why the full harness: `SadEventBuilder::flush`
 //! round-trips through `submit_sad_events`, which the sadstore server
 //! verifies by calling `AnchoredPolicyChecker` (KEL anchoring) and
 //! `RepositoryIelResolver` (IEL binding). HTTP-level mocks would split
@@ -269,7 +267,7 @@ impl SharedHarness {
 
 // ==================== Per-test setup helpers ====================
 
-/// Ground-truth setup for any round-12 SE test: creates a KEL on the KELS
+/// Ground-truth setup for any #147 SE test: creates a KEL on the KELS
 /// service, a single-endorser policy `endorse(KEL_PREFIX)` (acts as both
 /// auth_policy and governance_policy on the IEL — testing-grade default),
 /// uploads the policy SAD, incepts an IEL on the sadstore service via
@@ -311,7 +309,7 @@ async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
     let kel_prefix = *kel_builder.prefix().expect("KEL has prefix after incept");
 
     // --- Policy: `endorse(KEL_PREFIX)`, used for both IEL auth + governance. ---
-    // Round-12 IEL requires `immune: true` on both auth_policy and
+    // #147 IEL requires `immune: true` on both auth_policy and
     // governance_policy at Icp (see `docs/design/iel/events.md`'s
     // immunity rule). Build the policy with `immune=true` so the IEL
     // verifier accepts the inception.
@@ -564,7 +562,7 @@ async fn create_iel_divergence(
 
     // Build two policies that differ in their endorse-target. Both
     // must be IMMUNE (per IEL verifier rule on evolved policies); the
-    // round-12 `Policy::build` rejects `Some(poison)` paired with
+    // `Policy::build` rejects `Some(poison)` paired with
     // `immune=true` (mutually exclusive), so we differentiate via the
     // expression itself. The endorse target is a synthetic Digest256
     // unique to this test label — never used as a real KEL prefix, so
@@ -797,7 +795,7 @@ async fn incept_alone_rejected_with_incomplete_inception() {
 
 /// HARD `Upd` auth check: govfailed Upd is rejected at submit time, the
 /// chain does NOT advance, and the client gets an error with the
-/// "not anchored" fragment in the body. Pins the round-12 design choice
+/// "not anchored" fragment in the body. Pins the #147 design choice
 /// that replaces the dual-policy SEL's soft-Upd behavior.
 #[tokio::test]
 #[serial]
@@ -893,7 +891,7 @@ async fn submit_lands_govfailed_cnt_chain_becomes_contested_with_policy_unsatisf
     );
 
     // And subsequent submits to the contested chain return 200 OK with
-    // `terminal: Some(Contested)` (round-12 third follow-up commit 2 —
+    // `terminal: Some(Contested)` (#147 follow-up —
     // gossip-race-already-terminal idempotency on owner-side too).
     let further_content = upload_content(&setup.sad_client, "post-cnt").await;
     let further_upd = SadEvent::upd(&cnt, setup.iel_icp_said, further_content).expect("build Upd");
@@ -1201,7 +1199,7 @@ async fn decommission_terminates_chain() {
 }
 
 /// `decommission()` fail-fast on divergent: surfaces a typed
-/// `DecommissionBlockedByDivergence` (round-12 deviations resolved in
+/// `DecommissionBlockedByDivergence` (#147 deviations resolved in
 /// Gap 6). The error stays generic — operator routes to `repair()`
 /// (unsealed) or `contest()` (sealed) based on server response.
 #[tokio::test]
@@ -1273,7 +1271,7 @@ async fn builder_decommission_fail_fasts_on_divergent_chain() {
 
 // ==================== Gap 10b: remaining taxonomy ====================
 //
-// The cases below complete the round-12 plan's prescribed test list,
+// The cases below complete the #147 plan's prescribed test list,
 // minus the four gossip-propagation cases (which require a 2-SADStore
 // harness — deferred to deployment-test sweep).
 
@@ -1545,7 +1543,7 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     let mut setup = setup_kel_iel_policy(harness, "seal-advances").await;
 
     // Evolve the IEL so we have a later non-terminal IEL event to bind
-    // the seal to (round-12 builder picks the most recent IEL Icp/Evl).
+    // the seal to (the builder picks the most recent IEL Icp/Evl).
     let iel_evl_said = evolve_iel(&mut setup, "seal-advances").await;
 
     let v1 = establish_se_chain(&mut setup, "seal-advances").await;
@@ -1899,7 +1897,7 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
 
 // ==================== RepositoryIelResolver walk-back ====================
 //
-// Round-12 third follow-up commit 2: pin `RepositoryIelResolver`'s
+// #147 follow-up: pin `RepositoryIelResolver`'s
 // `iel_chain_positions` walk-back against the real IEL repository.
 // The walk-back algorithm is unit-tested against a fake source at
 // `lib/kels/src/iel_resolver.rs` (covers V=D base case + V=D+1
@@ -2107,7 +2105,7 @@ async fn submit_returns_500_when_existing_se_chain_fails_reverification() {
     }
 }
 
-/// Round-12 group-A item-3 audit: `RepositoryIelResolver::resolve_auth_policy_at`
+/// Audit: `RepositoryIelResolver::resolve_auth_policy_at`
 /// (and the symmetric `resolve_governance_policy_at`) must consult the
 /// verifier-adopted policy view via `IelVerification::auth_policy_at`,
 /// not the raw `event.auth_policy` payload field. DB tampering of the
@@ -2195,7 +2193,7 @@ async fn repository_iel_resolver_resolve_at_detects_tampered_auth_policy() {
 //
 // The 4 gossip-propagation cases (full-chain to empty sink, Cnt to
 // divergent sink, Cnt/Dec to active sink) need a 2-SADStore harness
-// that's outside this file's scope; per the round-12 plan they're
+// that's outside this file's scope; per the #147 plan they're
 // covered by the Heisenbug-carry-forward deployment-test sweep
 // (`clients/test/scripts/test-sadstore.sh` × 50+ runs after Gap 11).
 // `IdentityEvent` / `IelVerification` / `fetch_effective` are kept in

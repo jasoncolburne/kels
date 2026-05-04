@@ -1762,7 +1762,7 @@ pub async fn run_sad_anti_entropy_loop(
                             _ => (None, false),
                         };
 
-                    // Round-12 Gap 8 lifecycle parity with KEL Phase 1:
+                    // SEL lifecycle parity with KEL Phase 1:
                     // track whether any peer's effective SAID differs from
                     // local. If none do → `NoOp` (clear stale entry; no
                     // retry). The success signal differs by sync direction

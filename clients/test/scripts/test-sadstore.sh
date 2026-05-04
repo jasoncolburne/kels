@@ -13,8 +13,8 @@
 #   NODE_A_KELS_HOST     - node-a KELS hostname (default: kels)
 #   PROPAGATION_DELAY    - Time to wait for gossip propagation (default: 5s)
 #
-# Round-12 (#147 migration). All happy-path scenarios drive the round-12
-# CLI surface: `kels iel incept` for identity setup, `kels sel incept` for
+# #147 migration. All happy-path scenarios drive the post-#147 CLI
+# surface: `kels iel incept` for identity setup, `kels sel incept` for
 # atomic [Icp, Upd] inception, `kels sel update` for content advances,
 # `kels sel repair` for divergence resolution, `kels kel anchor` for the
 # KEL Ixn anchors, and `kels {iel,sel} submit` for the multi-device flow's
@@ -207,7 +207,7 @@ run_test "GET non-existent chain returns 404" \
 run_test "Effective SAID non-existent returns 404" \
     bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' '${NODE_A_SAD_URL}/api/v1/sad/events/Knonexistent________________________________/effective-said') = '404' ]"
 
-# Submit event with tampered SAID (round-12 Icp shape: identity-rooted, no policy fields)
+# Submit event with tampered SAID (#147 Icp shape: identity-rooted, no policy fields)
 run_test "Submit tampered SAID rejected" \
     bash -c "[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST '${NODE_A_SAD_URL}/api/v1/sad/events' -H 'Content-Type: application/json' -d '[{\"said\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"prefix\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB\",\"version\":0,\"topic\":\"test\",\"kind\":\"kels/sad/v1/events/icp\",\"identity\":\"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC\"}]') = '400' ]"
 
@@ -275,7 +275,7 @@ else
     run_test "IEL identity created" [ -n "$IEL_PREFIX" ]
     echo "IEL prefix: $IEL_PREFIX"
 
-    # Compute SEL prefix from (identity, topic) — round-12 derivation
+    # Compute SEL prefix from (identity, topic) — #147 derivation
     SEL_PREFIX=$(kels-cli sel prefix "$IEL_PREFIX" "$SAD_TOPIC" 2>/dev/null)
     echo "SEL prefix: $SEL_PREFIX"
     run_test "SEL prefix computed" [ -n "$SEL_PREFIX" ]

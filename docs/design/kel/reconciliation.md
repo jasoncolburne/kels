@@ -14,7 +14,7 @@ All cases below depend on these invariants:
 
 3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contest batch (`events + cnt`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
-These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (round-10 backport from SEL) relies on bound 3.
+These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (SEL backport) relies on bound 3.
 
 ## KEL States
 
@@ -103,7 +103,7 @@ The merge engine identifies owner events via two strategies depending on the div
 
 Everything not in the owner's chain is archived to mirror tables.
 
-The round-10 backport from SEL replaces per-hop DB queries in both strategies with a single page fetch + resume-mode verifier trust gate + in-memory walkback. The case enumeration in this doc is unchanged; only the implementation efficiency changes. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
+The SEL backport replaces per-hop DB queries in both strategies with a single page fetch + resume-mode verifier trust gate + in-memory walkback. The case enumeration in this doc is unchanged; only the implementation efficiency changes. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
 
 ### Archival bounds
 

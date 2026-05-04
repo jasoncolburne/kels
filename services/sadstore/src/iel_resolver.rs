@@ -8,7 +8,7 @@
 //! gates `resolve_*_at` on `first_divergent_version` per the trait
 //! contract. `iel_chain_positions` walks back from each post-divergence
 //! SAID via `fetch_event_by_said` to determine its branch identity
-//! (round-12 third follow-up).
+//! (#147 follow-up).
 
 use std::{collections::BTreeSet, sync::Arc};
 

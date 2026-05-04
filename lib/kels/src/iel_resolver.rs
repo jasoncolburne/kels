@@ -1,5 +1,5 @@
 //! Production [`IelResolver`] implementation backed by an HTTP / paged IEL
-//! source plus the round-11 `IelVerification` token.
+//! source plus the `IelVerification` token.
 //!
 //! Lives in `lib/kels` (not `lib/policy`) so `SadEventBuilder` and friends
 //! can construct one from their `SadStoreClient` without crossing the
@@ -32,7 +32,7 @@ use crate::{
 /// the chain exceeds the limit.
 ///
 /// `queried_saids` is the set the SE caller pre-walked from its own chain
-/// (round-12 third follow-up). The resolver registers it on every `IelVerifier`
+/// (#147 follow-up). The resolver registers it on every `IelVerifier`
 /// it constructs so `is_satisfied` answers consistently across calls. Set
 /// once at construction via [`Self::with_queried_saids`]; lifetime of the
 /// resolver = lifetime of the SE verification it serves.
@@ -79,7 +79,7 @@ impl AnchoredIelResolver {
         &self,
         identity: &cesr::Digest256,
     ) -> Result<IelVerification, KelsError> {
-        // Round-12 third follow-up: delegate to the shared
+        // #147 follow-up: delegate to the shared
         // `verify_identity_events_with_queried` helper so the page-walk +
         // verifier construction lives in one place. Forwards
         // `queried_saids` so the resulting token's `is_said_satisfied`
@@ -306,7 +306,7 @@ impl IelResolver for AnchoredIelResolver {
                 ))
             })?;
 
-            // Round-12 third follow-up: walk back from each post-divergence
+            // #147 follow-up: walk back from each post-divergence
             // SAID to its branch's first-divergent ancestor. The ancestor's
             // SAID becomes the branch identity, so two events on the same
             // branch share a `branch_marker` and compare via canonical
@@ -343,7 +343,7 @@ impl IelResolver for AnchoredIelResolver {
 /// missing event, walked past `divergence_version`, `previous=None` on a
 /// non-Icp event, or step-bound exceeded.
 ///
-/// Round-12 third follow-up: shared walker used by both
+/// #147 follow-up: shared walker used by both
 /// [`AnchoredIelResolver::iel_chain_positions`] and the in-process
 /// `RepositoryIelResolver` (in `services/sadstore`). Each impl supplies
 /// its own materialized chain map; the algorithm is identical.

@@ -13,7 +13,6 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use cesr::Matter;
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use tracing::{debug, warn};
@@ -64,8 +63,9 @@ fn ttl_reaper_interval_secs() -> u64 {
 const TTL_REAPER_BATCH_SIZE: usize = 100;
 
 /// Spawn a background task that periodically deletes TTL-expired objects.
-/// Queries custodies with TTL, then finds expired sad_objects for each,
-/// deletes from DB and object store.
+/// Queries `sad_object_lifecycles` for rows with `availability_ttl` set,
+/// joins to the index entry's `created_at`, and reaps expired SADs from DB
+/// and object store.
 pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     let interval = Duration::from_secs(ttl_reaper_interval_secs());
     tokio::spawn(async move {
@@ -78,58 +78,35 @@ pub fn spawn_ttl_reaper(state: Arc<AppState>) {
     });
 }
 
-// TODO: periodic custody GC — delete custodies with zero references from sad_objects and events
 async fn reap_expired_objects(
     state: &AppState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use verifiable_storage_postgres::QueryExecutor;
-
-    // Fetch all custodies with TTL set
-    let query = verifiable_storage_postgres::Query::<kels_core::Custody>::for_table("custodies")
-        .filter(verifiable_storage_postgres::Filter::IsNotNull(
-            "ttl".to_string(),
-        ))
-        .limit(TTL_REAPER_BATCH_SIZE as u64);
-    let custodies: Vec<kels_core::Custody> = state.repo.custodies.pool.fetch(query).await?;
-
     let now = verifiable_storage::StorageDatetime::now();
+    let now_ts = now.inner().timestamp();
 
-    for custody in &custodies {
-        let Some(ttl) = custody.ttl else { continue };
+    let candidates = state
+        .repo
+        .sad_objects
+        .fetch_ttl_set(TTL_REAPER_BATCH_SIZE as u64)
+        .await?;
 
-        // Compute the expiry threshold: objects created before this time are expired
-        let threshold: verifiable_storage::StorageDatetime =
-            (*now.inner() - chrono::Duration::seconds(ttl as i64)).into();
+    for (sad_said, ttl, created_at) in candidates {
+        let created = created_at.inner().timestamp();
+        if now_ts <= created + ttl as i64 {
+            continue;
+        }
 
-        // Find expired objects for this custody
-        let expired_query =
-            verifiable_storage_postgres::Query::<kels_core::SadObjectEntry>::for_table(
-                "sad_objects",
-            )
-            .eq("custody", custody.said.to_string())
-            .lt("created_at", threshold)
-            .limit(TTL_REAPER_BATCH_SIZE as u64);
-        let expired: Vec<kels_core::SadObjectEntry> =
-            state.repo.sad_objects.pool.fetch(expired_query).await?;
+        // Expired — delete the index entry and the object store blob
+        // (best-effort on the blob).
+        state.repo.sad_objects.delete_by_sad_said(&sad_said).await?;
 
-        for entry in &expired {
-            // Delete from DB (via repository method for consistency with `once` path)
-            state
-                .repo
-                .sad_objects
-                .delete_by_sad_said(&entry.sad_said)
-                .await?;
-
-            // Delete from object store (best-effort — if this fails, orphaned object
-            // is harmless and will be cleaned up on next cycle or manually)
-            if let Err(e) = state.object_store.delete(&entry.sad_said).await {
-                warn!(
-                    "Failed to delete expired object {} from object store: {}",
-                    entry.sad_said, e
-                );
-            } else {
-                debug!("Reaped expired SAD object: {}", entry.sad_said);
-            }
+        if let Err(e) = state.object_store.delete(&sad_said).await {
+            warn!(
+                "Failed to delete expired object {} from object store: {}",
+                sad_said, e
+            );
+        } else {
+            debug!("Reaped expired SAD object: {}", sad_said);
         }
     }
 
@@ -483,15 +460,20 @@ pub async fn post_sad_object(
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
     }
 
-    // Extract and validate custody if present
-    let custody_said =
-        match extract_and_cache_custody(&value, kels_core::SadCustodyContext::Object, &state).await
-        {
-            Ok(said) => said,
-            Err(response) => return response,
-        };
+    // Parse inline custody and availability from the (compacted) parent SAD.
+    // #167: both are inline JSON objects on the parent — not
+    // separately-addressable SADs. Compaction leaves them in place because
+    // they have no `said` field.
+    let (custody, availability) = match parse_inline_custody_and_availability(&value) {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
 
-    // Store compacted parent SAD in object store + track in DB index with custody
+    // Store compacted parent SAD in object store + track in DB index. The
+    // index entry's columns denormalize the parent SAD's inline
+    // `custody.read` and `availability.{nodes,ttl,once}`; all four
+    // contribute to the entry's SAID, so the index row is reverifiable
+    // against the parent SAD's bytes.
     let compacted_bytes = match serde_json::to_vec(&value) {
         Ok(b) => b,
         Err(e) => {
@@ -500,12 +482,20 @@ pub async fn post_sad_object(
         }
     };
 
+    let custody_read = custody.as_ref().and_then(|c| c.read);
+    let availability_nodes = availability.as_ref().and_then(|a| a.nodes);
+    let availability_ttl = availability.as_ref().and_then(|a| a.ttl);
+    let availability_once = availability.as_ref().and_then(|a| a.once);
+
     if let Err(e) = state
         .repo
         .sad_objects
         .store(
             &canonical_said,
-            custody_said,
+            custody_read,
+            availability_nodes,
+            availability_ttl,
+            availability_once,
             &state.object_store,
             &compacted_bytes,
         )
@@ -515,8 +505,8 @@ pub async fn post_sad_object(
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
     }
 
-    // Gossip: check nodes replication policy before publishing
-    match resolve_gossip_policy(&custody_said, &state).await {
+    // Gossip: route per inline `availability.nodes`.
+    match resolve_gossip_policy(availability.as_ref(), &state).await {
         GossipPolicy::BroadcastAll => {
             if let Some(ref conn) = state.redis_conn {
                 let mut conn = conn.clone();
@@ -531,7 +521,7 @@ pub async fn post_sad_object(
             }
         }
         GossipPolicy::LocalOnly => {
-            debug!("Skipping gossip: custody.nodes restricts to local/home-node");
+            debug!("Skipping gossip: availability.nodes restricts to local/home-node");
         }
     }
 
@@ -544,6 +534,41 @@ pub async fn post_sad_object(
         .into_response()
 }
 
+/// Parse the inline `custody` and `availability` JSON objects from a SAD
+/// value. Both are independently optional. Returns `(None, None)` when both
+/// keys are absent. Bad shapes return a 400 response.
+#[allow(clippy::result_large_err)]
+fn parse_inline_custody_and_availability(
+    value: &serde_json::Value,
+) -> Result<(Option<kels_core::Custody>, Option<kels_core::Availability>), axum::response::Response>
+{
+    let custody = match value.get("custody") {
+        None => None,
+        Some(v) => match kels_core::parse_and_validate_custody(v) {
+            Ok(Some(c)) if c.is_empty() => None,
+            Ok(Some(c)) => Some(c),
+            Ok(None) => None, // safety valve — unknown fields, no enforcement
+            Err(e) => {
+                return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response());
+            }
+        },
+    };
+
+    let availability = match value.get("availability") {
+        None => None,
+        Some(v) => match kels_core::parse_and_validate_availability(v) {
+            Ok(Some(a)) if a.is_empty() => None,
+            Ok(Some(a)) => Some(a),
+            Ok(None) => None,
+            Err(e) => {
+                return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response());
+            }
+        },
+    };
+
+    Ok((custody, availability))
+}
+
 /// Gossip replication decision for an object.
 enum GossipPolicy {
     /// No nodes restriction — broadcast to all peers (default).
@@ -552,48 +577,27 @@ enum GossipPolicy {
     LocalOnly,
 }
 
-/// Resolve the gossip policy from a custody SAID.
+/// Resolve the gossip policy from a SAD's inline `availability` block.
 ///
-/// No `nodes` field → BroadcastAll. If `nodes` is present, resolves the
-/// NodeSet from object store: 0 prefixes → LocalOnly (local cache), 1 prefix →
-/// LocalOnly (home-node), >1 prefixes → LocalOnly (selective multi-node
-/// gossip not yet implemented — objects are accepted but not replicated).
+/// No `availability` / no `nodes` field → BroadcastAll. If `nodes` is present,
+/// resolves the referenced NodeSet from object store and decides:
+/// 0 prefixes → LocalOnly (local cache), 1 prefix → LocalOnly (home-node),
+/// >1 prefixes → LocalOnly (selective multi-node gossip not yet implemented).
 ///
-/// Fails secure: if `nodes` is set but can't be resolved, skip gossip
-/// (LocalOnly) to avoid leaking restricted data to unauthorized peers.
+/// Fails secure: if `nodes` is set but can't be resolved, skip gossip rather
+/// than broadcasting restricted data to unauthorized peers.
 async fn resolve_gossip_policy(
-    custody_said: &Option<cesr::Digest256>,
+    availability: Option<&kels_core::Availability>,
     state: &AppState,
 ) -> GossipPolicy {
-    let Some(said) = custody_said else {
+    let Some(av) = availability else {
         return GossipPolicy::BroadcastAll;
     };
 
-    let custody = match state.repo.custodies.get_by_said(said).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            warn!(
-                "Custody {} referenced but not cached — skipping gossip (fail secure)",
-                said
-            );
-            return GossipPolicy::LocalOnly;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to resolve custody {} — skipping gossip (fail secure): {}",
-                said, e
-            );
-            return GossipPolicy::LocalOnly;
-        }
-    };
-
-    let Some(nodes_said) = custody.nodes else {
+    let Some(nodes_said) = av.nodes else {
         return GossipPolicy::BroadcastAll;
     };
 
-    // Resolve the NodeSet from object store to check prefix count.
-    // Fail secure: if resolution fails, skip gossip rather than broadcasting
-    // restricted data to all peers.
     match state.object_store.get(&nodes_said).await {
         Ok(data) => {
             if let Ok(node_set) = serde_json::from_slice::<kels_core::NodeSet>(&data) {
@@ -629,174 +633,6 @@ async fn resolve_gossip_policy(
     }
 }
 
-/// Extract the `custody` key from a compacted SAD, validate it, and cache
-/// the custody and any referenced policies in Postgres.
-/// Returns `Ok(Some(custody_said))` if custody is present and enforced,
-/// `Ok(None)` if absent or safety-valve disengaged.
-async fn extract_and_cache_custody(
-    value: &serde_json::Value,
-    context: kels_core::SadCustodyContext,
-    state: &AppState,
-) -> Result<Option<cesr::Digest256>, axum::response::Response> {
-    let custody_value = match value.get("custody") {
-        Some(v) if v.is_string() => {
-            // Already compacted to a SAID string — resolve from cache/object store,
-            // validate, and cache before accepting.
-            let custody_said_str = v.as_str().unwrap_or_default();
-            let custody_said = cesr::Digest256::from_qb64(custody_said_str)
-                .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid custody SAID").into_response())?;
-            return resolve_and_cache_custody_by_said(&custody_said, context, state).await;
-        }
-        Some(v) if v.is_object() => v.clone(),
-        Some(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "custody must be an object or SAID string",
-            )
-                .into_response());
-        }
-        None => return Ok(None),
-    };
-
-    // Validate the custody object
-    let custody = match kels_core::parse_and_validate_custody(&custody_value, context) {
-        Ok(Some(c)) => c,
-        Ok(None) => return Ok(None), // Safety valve — unknown fields, no enforcement
-        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
-    };
-
-    // Verify custody SAID
-    if custody.verify_said().is_err() {
-        return Err((StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response());
-    }
-
-    let custody_said = custody.said;
-
-    // Cache custody in Postgres (idempotent)
-    state.repo.custodies.store(&custody).await.map_err(|e| {
-        warn!("Failed to cache custody: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
-    })?;
-
-    cache_referenced_policies(&custody, state).await?;
-
-    Ok(Some(custody_said))
-}
-
-/// Resolve a pre-compacted custody SAID: fetch from cache (or object store fallback),
-/// validate the allowlist for the given context, and cache custody + policies.
-/// Rejects if the custody is unresolvable or fails context validation.
-async fn resolve_and_cache_custody_by_said(
-    custody_said: &cesr::Digest256,
-    context: kels_core::SadCustodyContext,
-    state: &AppState,
-) -> Result<Option<cesr::Digest256>, axum::response::Response> {
-    // Try Postgres cache first
-    let custody = if let Ok(Some(c)) = state.repo.custodies.get_by_said(custody_said).await {
-        c
-    } else {
-        // Fallback: fetch from object store
-        let data = state
-            .object_store
-            .get(custody_said)
-            .await
-            .map_err(|e| match e {
-                crate::object_store::ObjectStoreError::NotFound(_) => (
-                    StatusCode::BAD_REQUEST,
-                    format!("Referenced custody {} not found in SADStore", custody_said),
-                )
-                    .into_response(),
-                other => {
-                    warn!("Failed to fetch custody {}: {}", custody_said, other);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
-                }
-            })?;
-
-        let custody: kels_core::Custody = serde_json::from_slice(&data).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Failed to parse custody {}: {}", custody_said, e),
-            )
-                .into_response()
-        })?;
-
-        if custody.verify_said().is_err() {
-            return Err(
-                (StatusCode::BAD_REQUEST, "Custody SAID verification failed").into_response(),
-            );
-        }
-
-        // Cache for future lookups
-        if let Err(e) = state.repo.custodies.store(&custody).await {
-            warn!("Failed to cache custody {}: {}", custody_said, e);
-        }
-
-        custody
-    };
-
-    // Validate context-specific allowlist
-    let custody_json = serde_json::to_value(&custody).map_err(|e| {
-        warn!("Failed to serialize custody for validation: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-    })?;
-    match kels_core::parse_and_validate_custody(&custody_json, context) {
-        Ok(Some(_)) => {}
-        Ok(None) => return Ok(None), // Safety valve
-        Err(e) => return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
-    }
-
-    cache_referenced_policies(&custody, state).await?;
-
-    Ok(Some(*custody_said))
-}
-
-/// Cache the write_policy and read_policy SADs referenced by a custody.
-/// Fetches each from object store if not already cached in Postgres.
-async fn cache_referenced_policies(
-    custody: &kels_core::Custody,
-    state: &AppState,
-) -> Result<(), axum::response::Response> {
-    for policy_said in [custody.write_policy, custody.read_policy]
-        .into_iter()
-        .flatten()
-    {
-        if state
-            .repo
-            .policies
-            .get_by_said(&policy_said)
-            .await
-            .unwrap_or(None)
-            .is_some()
-        {
-            continue;
-        }
-
-        match state.object_store.get(&policy_said).await {
-            Ok(data) => {
-                if let Ok(policy) = serde_json::from_slice::<kels_policy::Policy>(&data)
-                    && policy.verify_said().is_ok()
-                    && let Err(e) = state.repo.policies.store(&policy).await
-                {
-                    warn!("Failed to cache policy {}: {}", policy_said, e);
-                }
-            }
-            Err(crate::object_store::ObjectStoreError::NotFound(_)) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Referenced policy {} not found in SADStore", policy_said),
-                )
-                    .into_response());
-            }
-            Err(e) => {
-                warn!("Failed to fetch policy {}: {}", policy_said, e);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response());
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub async fn fetch_sad_object(
     State(state): State<Arc<AppState>>,
     body: Bytes,
@@ -815,7 +651,7 @@ pub async fn fetch_sad_object(
         return (StatusCode::BAD_REQUEST, format!("invalid disclosure: {e}")).into_response();
     }
 
-    // Look up the object in sad_objects to get custody info
+    // Look up the object in sad_objects to confirm presence.
     let entry = match state.repo.sad_objects.get_by_sad_said(&object_said).await {
         Ok(Some(entry)) => entry,
         Ok(None) => {
@@ -827,61 +663,20 @@ pub async fn fetch_sad_object(
         }
     };
 
-    // No custody → serve directly
-    let Some(custody_said) = entry.custody else {
-        return serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
-    };
+    // #167: per-SAD constraints (custody.read, availability.ttl,
+    // availability.once) live on the index entry directly — denormalized
+    // from the parent SAD's inline `custody` and `availability` fields and
+    // covered by the entry's SAID.
 
-    // Fetch cached custody
-    let custody = match state.repo.custodies.get_by_said(&custody_said).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            warn!("Custody {} referenced but not cached", custody_said);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "custody not found").into_response();
-        }
-        Err(e) => {
-            warn!("Failed to fetch custody: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
-        }
-    };
+    // Read-policy enforcement is reintroduced in Gap 3 against `custody.read`
+    // (IELPrefix → current `auth_policy`). Until that lands, the
+    // `signed_request` parsed from the wire is acknowledged but not used —
+    // clients can keep submitting `SignedRequest<SadFetchRequest>` without
+    // breaking.
+    let _ = (&entry.custody_read, &signed_request);
 
-    // readPolicy enforcement
-    if let Some(ref record_read_policy) = custody.read_policy {
-        let Some(ref signed) = signed_request else {
-            return (
-                StatusCode::FORBIDDEN,
-                "readPolicy requires authenticated request",
-            )
-                .into_response();
-        };
-
-        // Verify signatures and evaluate policy
-        let verified = match authenticate_fetch_request(&state, signed).await {
-            Ok(v) => v,
-            Err(response) => return response,
-        };
-
-        let policy_resolver = SadStorePolicyResolver {
-            policies: state.repo.clone(),
-            object_store: state.object_store.clone(),
-        };
-
-        match kels_policy::evaluate_signed_policy(record_read_policy, &verified, &policy_resolver)
-            .await
-        {
-            Ok(v) if v.is_satisfied => {}
-            Ok(_) => {
-                return (StatusCode::FORBIDDEN, "readPolicy not satisfied").into_response();
-            }
-            Err(e) => {
-                warn!("Policy evaluation failed: {}", e);
-                return (StatusCode::FORBIDDEN, "policy evaluation failed").into_response();
-            }
-        }
-    }
-
-    // TTL check (per-object: sad_objects.created_at + custodies.ttl)
-    if let Some(ttl) = custody.ttl {
+    // TTL check (per-object: sad_objects.created_at + availability.ttl)
+    if let Some(ttl) = entry.availability_ttl {
         let created = entry.created_at.inner().timestamp();
         let now = verifiable_storage::StorageDatetime::now()
             .inner()
@@ -891,8 +686,10 @@ pub async fn fetch_sad_object(
         }
     }
 
-    // once: atomic delete — if we delete the row, we serve; if count=0, already consumed
-    if custody.once == Some(true) {
+    // once: atomic delete — if we delete the row, we serve; if count=0,
+    // already consumed. The reaper bypasses already-empty entries on its
+    // next cycle.
+    if entry.availability_once == Some(true) {
         match state
             .repo
             .sad_objects
@@ -900,9 +697,6 @@ pub async fn fetch_sad_object(
             .await
         {
             Ok(1) => {
-                // We consumed it — serve from object store. If object store fetch fails after
-                // the PG delete, the object becomes inaccessible. Acceptable for
-                // ephemeral objects — that's the semantics of once.
                 let response =
                     serve_sad(&state.object_store, &object_said, disclosure.as_deref()).await;
 
@@ -966,6 +760,12 @@ fn parse_fetch_request(
 }
 
 /// Verify signatures on a fetch request and return verified prefixes.
+///
+/// #167 Gap 3 (in-flight): unused under Gap 1's no-read-enforcement posture.
+/// Reintroduced when `custody.read` → `IELPrefix → current auth_policy`
+/// resolution lands. Kept now to preserve the function signature so Gap 3's
+/// diff is mechanical.
+#[allow(dead_code)]
 async fn authenticate_fetch_request(
     state: &AppState,
     signed: &kels_core::SignedRequest<kels_core::SignedSadFetchRequest>,
@@ -1228,9 +1028,9 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
 /// Submit SAD events — unified endpoint for clients, gossip sync, and repair.
 ///
 /// Accepts `Vec<SadEvent>`. Validates structure (SAID, prefix consistency)
-/// and write_policy authorization via verify-then-extend: re-verifies the entire
-/// existing chain from scratch, then verifies new events in context. Rejects
-/// unauthorized write_policy advances with 403.
+/// and IEL-resolved authorization via verify-then-extend: re-verifies the
+/// entire existing chain from scratch, then verifies new events in context.
+/// Rejects unauthorized advances with 403.
 ///
 /// When any submitted event has `kind: Rpr`, the handler takes the repair path:
 /// truncates all events at version >= the first event's version, then re-verifies
@@ -1281,25 +1081,12 @@ pub async fn submit_sad_events(
             .into_response();
     }
 
-    // Validate custody for event context — reject ttl/once (structurally
-    // incompatible with chained data). This is a hard design requirement.
-    // Check every unique custody SAID in the batch, not just the first event.
-    {
-        let mut validated_custodies = std::collections::HashSet::new();
-        for event in &events {
-            if let Some(custody_said) = event.custody
-                && validated_custodies.insert(custody_said)
-                && let Err(response) = resolve_and_cache_custody_by_said(
-                    &custody_said,
-                    kels_core::SadCustodyContext::Event,
-                    &state,
-                )
-                .await
-            {
-                return response;
-            }
-        }
-    }
+    // #167: SE events reject `custody` and `availability`
+    // entirely — chains replicate as a unit; differential authority or
+    // lifecycle across links breaks descendant verification. The struct
+    // doesn't carry these fields anymore, so a well-formed
+    // `Vec<SadEvent>` deserialize already rejects them; the upcoming
+    // `deny_unknown_fields` hardening (Gap 1 polish) tightens this further.
 
     // Per-SEL-prefix request gate. Runs BEFORE the transaction setup and
     // dedup query so duplicate-submit campaigns consume budget proportional
@@ -1317,7 +1104,7 @@ pub async fn submit_sad_events(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // Round-12 inception batch rule: a batch that contains an `Icp` MUST
+    // #147 inception batch rule: a batch that contains an `Icp` MUST
     // also contain an `Upd` at v1. Enforced here at the submit handler
     // (per-batch rule, not per-event — `validate_structure` can't see this).
     // The Icp itself stays dedup-idempotent across submitters; only fresh
@@ -1438,11 +1225,11 @@ pub async fn submit_sad_events(
             return (StatusCode::CREATED, Json(response)).into_response();
         }
 
-        // Round-12 pre-batch state snapshots. The verifier sees existing+new
+        // #147 pre-batch state snapshots. The verifier sees existing+new
         // events together, so a batch that *creates* a fork (overlap) shows
         // up as divergent post-finish; we route based on the chain state
         // BEFORE the new batch lands. Mirrors the IEL handler's hygiene
-        // (round-11 IEL fix that surfaced this self-triggering trap).
+        // (IEL fix that surfaced this self-triggering trap).
         let pre_batch_first_divergent = match state
             .repo
             .sad_events
@@ -1948,20 +1735,11 @@ pub async fn submit_sad_events(
     // above — duplicate submits and rejected requests both consume budget at
     // the rate of their claimed event count, so no post-commit accrual here.
 
-    // Check nodes replication policy for gossip
-    let event_custody = events.first().and_then(|r| r.custody);
-    if matches!(
-        resolve_gossip_policy(&event_custody, &state).await,
-        GossipPolicy::LocalOnly
-    ) {
-        debug!("Skipping event gossip: custody.nodes restricts to local/home-node");
-        let response = kels_core::SubmitSadEventsResponse {
-            diverged_at: diverged_at_version,
-            applied: new_event_count > 0,
-            terminal: None,
-        };
-        return (StatusCode::CREATED, Json(response)).into_response();
-    }
+    // #167: SE events broadcast unconditionally. Replication
+    // gating is a SAD-object concern (via `availability.nodes`); chains
+    // replicate as a unit because a chain's events all participate in the
+    // same identity-rooted history. The pre-#167 per-event custody-routing
+    // is gone.
 
     // Publish the effective SAID to Redis for gossip.
     let effective_said = if should_publish {

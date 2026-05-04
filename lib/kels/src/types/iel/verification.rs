@@ -70,7 +70,7 @@ pub struct IdentityBranchTip {
 /// Carries per-branch tip state plus a SAID-keyed map of every event's
 /// declared/tracked `(auth_policy, governance_policy)`. The SAID-keyed map is
 /// the data source for `auth_policy_at` and `governance_policy_at`, which
-/// SE-side verification (round 12) will use to resolve `identity_event`
+/// SE-side verification (per #147) will use to resolve `identity_event`
 /// bindings.
 #[derive(Debug, Clone)]
 pub struct IelVerification {
@@ -208,7 +208,7 @@ impl IelVerification {
     /// **Verifier-view, not raw-event-view.** The returned policy reflects
     /// what the verifier *adopted* into branch state when it walked the
     /// chain — which can diverge from what the event itself declares in
-    /// the rare case of a post-divergence Evl that auth-failed (round-12
+    /// the rare case of a post-divergence Evl that auth-failed (#147
     /// post-divergence soft-fail propagation). For such an event the
     /// verifier records prior tracked policies (the unauthenticated
     /// evolution is not adopted) even though the event payload declares
@@ -328,7 +328,7 @@ impl IelVerifier {
     /// interest to persist across page boundaries; resetting would force the
     /// caller to re-register on every resume, which conflicts with the
     /// streaming pre-walk pattern where the queried set is collected once
-    /// upfront. KEL's symmetric fix is deferred to round 13.
+    /// upfront. KEL's symmetric fix is deferred to #161.
     pub fn resume(
         verification: &IelVerification,
         checker: Arc<dyn PolicyChecker + Send + Sync>,

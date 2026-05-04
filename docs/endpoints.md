@@ -142,7 +142,7 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | POST | `/api/v1/sad` | None | Store a self-addressed JSON object (idempotent, SAID verified from body) |
 | POST | `/api/v1/sad/fetch` | None | Retrieve a self-addressed object; `SadFetchRequest` body (`said`) |
 | POST | `/api/v1/sad/exists` | None | Check if a SAD object exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
-| POST | `/api/v1/sad/events` | **KEL anchoring** | Submit SAD event(s) (`Vec<SadEvent>`) — each event's SAID must be anchored via ixn in its endorsers' KELs per `write_policy` |
+| POST | `/api/v1/sad/events` | **KEL anchoring** | Submit SAD event(s) (`Vec<SadEvent>`) — each event's SAID must be anchored via ixn in its endorsers' KELs per the IEL-resolved auth policy |
 | POST | `/api/v1/sad/events/fetch` | None | Fetch SAD Event Log; `SadEventPageRequest` body (`prefix`, `since`, `limit`); returns `SadEventPage` |
 | POST | `/api/v1/sad/events/exists` | None | Check if an event exists; `SadFetchRequest` body (`said`); returns 200 or 404 |
 | POST | `/api/v1/sad/events/effective-said` | None | Tip SAID for sync comparison; `SadEventEffectiveSaidRequest` body (`prefix`) |
@@ -154,7 +154,7 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 **Notes:**
 - `POST sad`: SAID derived from body. HEAD check before write (prevents write amplification). Verifies SAID via `SelfAddressed for serde_json::Value`. Object size limited (default 1 MiB via `SADSTORE_MAX_OBJECT_SIZE`). Publishes to Redis `sad_updates` for gossip. Per-IP rate limited.
 - `POST sad/fetch`: Returns the SAD object bytes. Keeps the SAID out of URL path to prevent leakage via access logs, proxies, and intermediaries.
-- `POST sad/events`: Verifies event SAID, verifies `write_policy` via KEL-anchoring (endorsers required by the policy must have anchored the event's SAID in their KELs), stores events atomically with advisory lock and full chain verification. Repairs are auto-detected from `Rpr` records in the submitted batch. Per-SEL-prefix daily rate limited (default 16/day). Per-IP rate limited.
+- `POST sad/events`: Verifies event SAID, verifies the IEL-resolved auth policy via KEL-anchoring (endorsers required by the policy must have anchored the event's SAID in their KELs), stores events atomically with advisory lock and full chain verification. Repairs are auto-detected from `Rpr` records in the submitted batch. Per-SEL-prefix daily rate limited (default 16/day). Per-IP rate limited.
 - `POST sad/events/fetch`: Returns `SadEventPage { events: Vec<SadEvent>, hasMore }`.
 - `POST sad/saids`, `POST sad/events/prefixes`: Used by gossip bootstrap and anti-entropy for discovery. Paginated via cursor.
 - SAD events reference content in object store via `content_said`. Client workflow: POST content first, then POST SAD event.
@@ -171,6 +171,6 @@ Replicated self-addressed data store. Provides content-addressed object storage 
 | **Gossip handshake** | Gossip connections | ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256; signature verified against peer's KEL; ML-DSA-65/87 only (P-256 rejected) |
 | **Allowlist** | Gossip connections | NodePrefix checked against verified peer allowlist with full KEL verification |
 | **SAID integrity** | Peer records, votes | `SelfAddressed::verify()` — content hash matches declared SAID |
-| **KEL anchoring** | Peer records, votes, SAD Event Log records | SAID must appear in an ixn event in the authorizing KEL; for SEL records, the record's `write_policy` determines which endorsers must anchor |
+| **KEL anchoring** | Peer records, votes, SAD Event Log records | SAID must appear in an ixn event in the authorizing KEL; for SEL records, the IEL-resolved auth policy determines which endorsers must anchor |
 | **Compile-time trust** | All clients | `TRUSTED_REGISTRY_PREFIXES` env var baked at compile time; KEL prefixes must match |
 | **No auth** | Health checks, public reads, SAD objects | `/health`, `/ready`, KEL fetches, peer listing, federation status, SAD PUT/GET |

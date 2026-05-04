@@ -7,13 +7,13 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (RustFS, S3-compatible) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and policy-based ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: `write_policy` is consumer-side, endorsing parties anchor the event's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SE event's authorization resolves through the bound IEL (`identity` at Icp; `identity_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
 
 ### SadEvent
 
-A chained, self-addressed event. The v0 (inception) event has `content: None`, making the prefix fully deterministic from `write_policy` + `topic` alone. Content is added in v1+ events.
+A chained, self-addressed event. The v0 (inception) event has `content: None`, making the prefix fully deterministic from `(identity, topic)` alone. Content is added in v1+ events.
 
 No `created_at` field — intentionally omitted so inception events produce deterministic prefixes.
 
@@ -24,33 +24,39 @@ Fields:
 - `version` — Monotonically increasing (0, 1, 2, ...)
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
-- `custody` — SAID of the custody SAD (optional, controls readPolicy/nodes for the chain)
-- `write_policy` — SAID of the write policy (denormalized from custody for chain keying). Required on `Icp` (seeds prefix derivation), optional on `Sea` (present only when evolving the policy), forbidden on `Est`/`Upd`/`Rpr`/`Cnt`/`Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
+- `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
+- `identity_event` — SAID of the IEL event whose policy authorizes this SE event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
+
+#167: SE events reject inline `custody` and `availability` fields entirely. Replication and lifecycle are SAD-object concerns, not chain-event concerns; chains broadcast as a unit.
 
 ### Deterministic Prefix
 
-Chains are keyed by `(write_policy SAID, topic)`. Anyone can compute a SEL prefix offline:
+Chains are keyed by `(identity, topic)`. Anyone can compute a SEL prefix offline:
 
 ```rust
-let prefix = compute_sad_event_prefix(write_policy, topic)?;
+let prefix = compute_sad_event_prefix(identity, topic)?;
 ```
 
 This constructs the v0 inception event (which has only deterministic fields), derives its prefix via the standard `SelfAddressed` mechanism, and returns it. No server interaction needed.
 
-### Custody
+### Custody (per-SAD-object authority)
 
-Per-SAD storage policy. A custody is itself a SAD (with its own SAID), compacted and stored independently in the object store, referenced by SAID in the parent SAD. The SAID covers all custody fields, making storage policy tamper-evident.
+#167: per-SAD authority. Inline-on-parent struct (no separate SAID). Both fields independently optional:
 
-Fields:
-- `writePolicy` — SAID of a policy SAD controlling writes (consumer-side, anchoring model)
-- `readPolicy` — SAID of a policy SAD controlling reads (server-enforced at fetch time)
-- `ttl` — Seconds until expiry (per-object: `sad_objects.created_at + ttl`)
-- `once` — Atomic delete on first successful retrieval
-- `nodes` — SAID of a `NodeSet` SAD for selective replication
+- `write` — IEL event SAID whose `auth_policy` was satisfied at write time. Anchored, point-in-time write attestation. `None` for unsigned (anonymous) content.
+- `read` — IEL prefix; reads resolve through the IEL's current `auth_policy` at evaluation. Identity-current. `None` for publicly readable content.
 
-**Safety valve:** If the custody object contains any unrecognized fields (e.g., from a newer client), all server-side enforcement is disengaged. This ensures forward compatibility without blocking storage.
+The four valid combinations correspond to public/anonymous, signed-public, anonymous-drop-box, and identity-bound-private patterns. See [#167](https://github.com/jasoncolburne/kels/issues/167) for the table.
 
-**Context validation:** `ttl` and `once` are rejected on events (structurally incompatible with chained data). `once: true` requires `nodes` for consistent delete-on-read semantics.
+### Availability (per-SAD-object replication + lifecycle)
+
+#167: sibling top-level inline struct, factored apart from custody. Independently optional:
+
+- `nodes` — SAID of a `NodeSet` SAD declaring serving nodes. `None` = default broadcast.
+- `ttl` — Seconds until expiry (per-object: `sad_objects.created_at + ttl`).
+- `once` — Atomic delete on first successful retrieval. Only valid when `nodes` references a single-prefix NodeSet matching the accepting node.
+
+**Safety valve:** Unrecognized fields in either struct disengage server-side enforcement (forward compatibility). **Context rejection:** both `custody` and `availability` are forbidden on chain events (replicate as a unit).
 
 ### NodeSet
 
@@ -96,13 +102,13 @@ Used for credential issuance and endorsement verification. Evaluates a policy ag
 - `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
 - Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
 
-### `evaluate_signed_policy` — Access Control Context (readPolicy)
+### `evaluate_signed_policy` — Access Control Context (`custody.read` enforcement)
 
-Used for `readPolicy` enforcement at SAD object fetch time. Evaluates a policy against a verified prefix set from a `SignedRequest`.
+Used for SAD-object read enforcement at fetch time, against the IEL-resolved auth_policy referenced by `custody.read`. Evaluates a policy against a verified prefix set from a `SignedRequest`.
 
 - Checks prefix set membership: the caller has already verified the signers' KELs and collected verified prefixes
 - Supports `Endorse`, `Weighted`, and `Policy` (nested) nodes only
-- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. readPolicies should use direct `endorse()` nodes for any party that needs read access
+- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. Read-gating policies should use direct `endorse()` nodes for any party that needs read access
 - No poison checks, no async KEL calls — synchronous evaluation against the verified set
 
 ## API
@@ -154,9 +160,9 @@ enum SadAnnouncement {
 
 ### Gossip Policy
 
-When a custody specifies `nodes`, the gossip policy controls replication:
+When a SAD's `availability.nodes` references a NodeSet, the gossip policy controls replication:
 
-- No `nodes` field → broadcast to all peers (default)
+- No `availability` / no `nodes` field → broadcast to all peers (default)
 - `nodes` present → skip gossip (selective multi-node gossip not yet implemented)
 
 **Fail secure:** If the NodeSet can't be resolved (fetch or parse error), gossip is skipped rather than broadcasting restricted data to unauthorized peers.
@@ -200,12 +206,12 @@ kels-cli sad put <file>                          # Store a self-addressed object
 kels-cli sad get <said>                          # Retrieve object by SAID
 kels-cli sel submit <file>                       # Submit SEL events
 kels-cli sel get <prefix>                        # Fetch a SEL
-kels-cli sel prefix <write-policy> <topic>       # Compute SEL prefix offline
+kels-cli sel prefix <identity> <topic>           # Compute SEL prefix offline
 ```
 
 ## Use Cases
 
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
-- **Ephemeral objects** — `once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `ttl` for auto-expiring objects.
-- **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a policy.
+- **Ephemeral objects** — `availability.once: true` + `custody.read` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
+- **Access-controlled data** — `custody.read` enforces fetch-time access control via signed requests evaluated against the IEL's current auth_policy.

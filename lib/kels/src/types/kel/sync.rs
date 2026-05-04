@@ -1800,7 +1800,7 @@ mod tests {
     }
 
     /// `recover` refuses with `PendingEventsBlockRepair` when the builder
-    /// has a kels_client AND non-empty pending. Round-10 KEL parity with
+    /// has a kels_client AND non-empty pending. KEL parity with
     /// SEL's `repair` pending-empty gate. Offline builders (kels_client =
     /// None) bypass the gate (tests/bench depend on accumulating pending
     /// for inspection).
