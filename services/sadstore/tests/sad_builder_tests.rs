@@ -2212,3 +2212,117 @@ async fn _deferred_helper_keeps_fetch_effective_in_scope(
 ) {
     let _ = fetch_effective(sad_client, prefix).await;
 }
+
+// ==================== #167 custody.write enforcement ====================
+
+/// Build a SAD object with `custody.write = iel_event_said`. Returns the
+/// JSON value with its canonical SAID derived. Anchoring is the caller's
+/// responsibility (call `setup.kel_builder.interact(&canonical_said)` to
+/// satisfy `endorse(kel_prefix)` policies).
+fn build_write_gated_sad(write_iel_said: &Digest256, payload: &str) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "said": "",
+        "custody": { "write": write_iel_said.to_string() },
+        "payload": payload,
+    });
+    value.derive_said().expect("derive canonical SAID");
+    value
+}
+
+#[tokio::test]
+#[serial]
+async fn custody_write_anchored_sad_accepted() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "custody-write-happy").await;
+
+    // Build a SAD gated by `custody.write = <IEL Icp SAID>`. The IEL Icp's
+    // auth_policy is `endorse(kel_prefix)`, which requires the canonical
+    // SAD's SAID to be anchored in the owner's KEL. Anchor before posting.
+    let value = build_write_gated_sad(&setup.iel_icp_said, "happy-path");
+    let canonical_said = value.get_said();
+
+    setup
+        .kel_builder
+        .interact(&canonical_said)
+        .await
+        .expect("anchor canonical SAID");
+
+    let posted = setup
+        .sad_client
+        .post_sad_object(&value)
+        .await
+        .expect("custody.write-gated SAD with anchor accepted");
+    assert_eq!(posted, canonical_said);
+}
+
+#[tokio::test]
+#[serial]
+async fn custody_write_unanchored_sad_rejected() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let setup = setup_kel_iel_policy(harness, "custody-write-rej").await;
+
+    // Same shape, but skip the KEL anchor → auth_policy isn't satisfied →
+    // server returns 403.
+    let value = build_write_gated_sad(&setup.iel_icp_said, "no-anchor");
+
+    let result = setup.sad_client.post_sad_object(&value).await;
+    assert_err_contains(
+        result,
+        "auth_policy",
+        "unanchored custody.write SAD must be rejected",
+    );
+}
+
+// ==================== #167 custody.read enforcement ====================
+
+#[tokio::test]
+#[serial]
+async fn custody_read_unauthenticated_fetch_rejected() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "custody-read-unauth").await;
+
+    // Build and POST a SAD with `custody.read = <iel_prefix>`. The write
+    // side still requires anchoring under the IEL Icp's auth_policy, so
+    // reuse the same `iel_icp_said` for `write` and pin `read` to the
+    // identity prefix.
+    let mut value = serde_json::json!({
+        "said": "",
+        "custody": {
+            "write": setup.iel_icp_said.to_string(),
+            "read": setup.iel_prefix.to_string(),
+        },
+        "payload": "private",
+    });
+    value.derive_said().expect("derive canonical SAID");
+    let canonical_said = value.get_said();
+
+    setup
+        .kel_builder
+        .interact(&canonical_said)
+        .await
+        .expect("anchor canonical SAID");
+    setup
+        .sad_client
+        .post_sad_object(&value)
+        .await
+        .expect("custody.read-bearing SAD posted");
+
+    // Plain (unauthenticated) fetch → 403.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{}/api/v1/sad/fetch", harness.sad_url))
+        .json(&serde_json::json!({ "said": canonical_said.to_string() }))
+        .send()
+        .await
+        .expect("send fetch");
+    assert_eq!(resp.status(), 403);
+}

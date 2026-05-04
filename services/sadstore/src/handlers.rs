@@ -14,6 +14,7 @@ use axum::{
     response::IntoResponse,
 };
 use dashmap::DashMap;
+use kels_core::IelResolver;
 use redis::AsyncCommands;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecutor};
@@ -469,6 +470,16 @@ pub async fn post_sad_object(
         Err(response) => return response,
     };
 
+    // #167 write enforcement: if `custody.write` is set, the named IEL event's
+    // `auth_policy` must be satisfied (the canonical SAD's SAID anchored under
+    // it). Missing IEL event surfaces as `BadIdentityBinding` — stable error
+    // shape that #156 retrofits to a typed 422 in the deferred-deps protocol.
+    if let Some(write_iel_said) = custody.as_ref().and_then(|c| c.write)
+        && let Err(response) = verify_custody_write(&state, &canonical_said, &write_iel_said).await
+    {
+        return response;
+    }
+
     // Store compacted parent SAD in object store + track in DB index. The
     // index entry's columns denormalize the parent SAD's inline
     // `custody.read` and `availability.{nodes,ttl,once}`; all four
@@ -577,6 +588,102 @@ enum GossipPolicy {
     LocalOnly,
 }
 
+/// #167 `custody.write` enforcement. Resolves the named IEL event's
+/// `auth_policy` and confirms the SAD's canonical SAID is anchored under it.
+///
+/// Errors map to HTTP responses:
+/// - Missing IEL event (`BadIdentityBinding`) → 400 with stable shape; #156
+///   will retrofit this to a typed 422 with `iel_event` dep type.
+/// - Divergent / contested / decommissioned IEL → 400 (the chain can't
+///   authoritatively prove auth_policy was satisfied at the named event).
+/// - Anchor not satisfied → 403.
+/// - Storage / resolver failure → 500.
+#[allow(clippy::result_large_err)]
+async fn verify_custody_write(
+    state: &AppState,
+    canonical_said: &cesr::Digest256,
+    write_iel_said: &cesr::Digest256,
+) -> Result<(), axum::response::Response> {
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = state
+        .kels_client
+        .as_kel_source()
+        .map(Arc::new)
+        .map_err(|e| {
+            warn!("Failed to build KEL source for custody.write check: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build KEL source",
+            )
+                .into_response()
+        })?;
+    let policy_resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(SadStorePolicyResolver {
+            policies: state.repo.clone(),
+            object_store: state.object_store.clone(),
+        });
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+        Arc::new(kels_policy::AnchoredPolicyChecker::new(
+            Arc::clone(&kel_source),
+            Arc::clone(&policy_resolver),
+        ));
+    let resolver = RepositoryIelResolver::new(state.repo.clone(), Arc::clone(&checker))
+        .with_queried_saids(std::iter::once(*write_iel_said));
+
+    let identity = resolver
+        .resolve_identity_for_event(write_iel_said)
+        .await
+        .map_err(custody_write_resolver_error)?;
+    let auth_policy = resolver
+        .resolve_auth_policy_at(&identity, write_iel_said)
+        .await
+        .map_err(custody_write_resolver_error)?;
+
+    let satisfied = checker
+        .is_anchored(canonical_said, &auth_policy)
+        .await
+        .map_err(|e| {
+            warn!("custody.write anchor check failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "anchor check failed").into_response()
+        })?;
+    if !satisfied {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "custody.write auth_policy {} not anchored for SAD {}",
+                auth_policy, canonical_said
+            ),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn custody_write_resolver_error(err: kels_core::KelsError) -> axum::response::Response {
+    use kels_core::KelsError;
+    match err {
+        KelsError::BadIdentityBinding(msg) => (
+            StatusCode::BAD_REQUEST,
+            format!("custody.write IEL event not locally known: {}", msg),
+        )
+            .into_response(),
+        KelsError::IelDivergent(msg) => (
+            StatusCode::BAD_REQUEST,
+            format!("custody.write IEL event sits past divergence: {}", msg),
+        )
+            .into_response(),
+        KelsError::ContestedIel(msg) | KelsError::IelDecommissioned(msg) => (
+            StatusCode::BAD_REQUEST,
+            format!("custody.write IEL is terminal: {}", msg),
+        )
+            .into_response(),
+        other => {
+            warn!("custody.write resolver failure: {}", other);
+            (StatusCode::INTERNAL_SERVER_ERROR, "resolver failure").into_response()
+        }
+    }
+}
+
 /// Resolve the gossip policy from a SAD's inline `availability` block.
 ///
 /// No `availability` / no `nodes` field → BroadcastAll. If `nodes` is present,
@@ -668,12 +775,22 @@ pub async fn fetch_sad_object(
     // from the parent SAD's inline `custody` and `availability` fields and
     // covered by the entry's SAID.
 
-    // Read-policy enforcement is reintroduced in Gap 3 against `custody.read`
-    // (IELPrefix → current `auth_policy`). Until that lands, the
-    // `signed_request` parsed from the wire is acknowledged but not used —
-    // clients can keep submitting `SignedRequest<SadFetchRequest>` without
-    // breaking.
-    let _ = (&entry.custody_read, &signed_request);
+    // #167 read enforcement: when `custody.read = Some(prefix)`, gate user
+    // reads on the IEL's current `auth_policy`. The verifier resolves the
+    // tip's auth_policy and confirms the request's signers satisfy it.
+    if let Some(read_prefix) = entry.custody_read {
+        let Some(signed) = signed_request.as_ref() else {
+            return (
+                StatusCode::FORBIDDEN,
+                "custody.read requires authenticated request",
+            )
+                .into_response();
+        };
+        match verify_custody_read(&state, &read_prefix, signed).await {
+            Ok(()) => {}
+            Err(response) => return response,
+        }
+    }
 
     // TTL check (per-object: sad_objects.created_at + availability.ttl)
     if let Some(ttl) = entry.availability_ttl {
@@ -759,13 +876,89 @@ fn parse_fetch_request(
     Err((StatusCode::BAD_REQUEST, "Invalid request body").into_response())
 }
 
-/// Verify signatures on a fetch request and return verified prefixes.
+/// #167 `custody.read` enforcement. Authenticates the fetch request,
+/// resolves the IEL's current `auth_policy` (via the prefix-to-current
+/// resolver), and evaluates it against the verified signers.
 ///
-/// #167 Gap 3 (in-flight): unused under Gap 1's no-read-enforcement posture.
-/// Reintroduced when `custody.read` → `IELPrefix → current auth_policy`
-/// resolution lands. Kept now to preserve the function signature so Gap 3's
-/// diff is mechanical.
-#[allow(dead_code)]
+/// Status mapping per #167:
+/// - IEL not locally known (`NotFound`) → 403 (clients can't distinguish
+///   from terminal cases; uniform "no read access" signal).
+/// - `IelDivergent` → 503 (transient — divergence resolves to either Cnt
+///   terminal or recovers linear).
+/// - `ContestedIel` / `IelDecommissioned` → 403.
+/// - Policy not satisfied → 403.
+#[allow(clippy::result_large_err)]
+async fn verify_custody_read(
+    state: &AppState,
+    read_prefix: &cesr::Digest256,
+    signed: &kels_core::SignedRequest<kels_core::SignedSadFetchRequest>,
+) -> Result<(), axum::response::Response> {
+    let verified = authenticate_fetch_request(state, signed).await?;
+
+    let kel_source: Arc<dyn kels_core::PagedKelSource + Send + Sync> = state
+        .kels_client
+        .as_kel_source()
+        .map(Arc::new)
+        .map_err(|e| {
+            warn!("Failed to build KEL source for custody.read check: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build KEL source",
+            )
+                .into_response()
+        })?;
+    let policy_resolver = SadStorePolicyResolver {
+        policies: state.repo.clone(),
+        object_store: state.object_store.clone(),
+    };
+    let policy_resolver_arc: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(SadStorePolicyResolver {
+            policies: state.repo.clone(),
+            object_store: state.object_store.clone(),
+        });
+    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(kel_source, Arc::clone(&policy_resolver_arc)),
+    );
+    let resolver = RepositoryIelResolver::new(state.repo.clone(), checker);
+
+    let auth_policy = resolver
+        .resolve_current_auth_policy(read_prefix)
+        .await
+        .map_err(custody_read_resolver_error)?;
+
+    match kels_policy::evaluate_signed_policy(&auth_policy, &verified, &policy_resolver).await {
+        Ok(v) if v.is_satisfied => Ok(()),
+        Ok(_) => Err((StatusCode::FORBIDDEN, "custody.read not satisfied").into_response()),
+        Err(e) => {
+            warn!("custody.read policy evaluation failed: {}", e);
+            Err((StatusCode::FORBIDDEN, "policy evaluation failed").into_response())
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn custody_read_resolver_error(err: kels_core::KelsError) -> axum::response::Response {
+    use kels_core::KelsError;
+    match err {
+        KelsError::NotFound(_) => {
+            (StatusCode::FORBIDDEN, "custody.read IEL not locally known").into_response()
+        }
+        KelsError::IelDivergent(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "custody.read IEL is divergent — retry after resolution",
+        )
+            .into_response(),
+        KelsError::ContestedIel(_) | KelsError::IelDecommissioned(_) => {
+            (StatusCode::FORBIDDEN, "custody.read IEL is terminal").into_response()
+        }
+        other => {
+            warn!("custody.read resolver failure: {}", other);
+            (StatusCode::INTERNAL_SERVER_ERROR, "resolver failure").into_response()
+        }
+    }
+}
+
+/// Verify signatures on a fetch request and return verified prefixes.
 async fn authenticate_fetch_request(
     state: &AppState,
     signed: &kels_core::SignedRequest<kels_core::SignedSadFetchRequest>,
