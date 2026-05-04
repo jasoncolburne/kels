@@ -18,7 +18,7 @@ use colored::Colorize;
 use kels_core::{HttpIelSource, IdentityEvent, IdentityEventBuilder, SadStoreClient};
 
 use crate::Cli;
-use crate::helpers::sad_store_anchored_checker;
+use crate::helpers::{sad_store_anchored_checker, submit_with_deferred_deps_poll};
 
 pub(crate) async fn cmd_iel_incept(
     cli: &Cli,
@@ -206,10 +206,10 @@ pub(crate) async fn cmd_iel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
         events.push(event);
     }
 
-    let response = client
-        .submit_identity_events(&events)
-        .await
-        .context("Failed to submit IEL events")?;
+    let response =
+        submit_with_deferred_deps_poll("IEL submit", || client.submit_identity_events(&events))
+            .await
+            .context("Failed to submit IEL events")?;
 
     match (response.applied, &response.terminal) {
         (true, _) => {

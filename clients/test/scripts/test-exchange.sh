@@ -37,19 +37,6 @@ else
     CLI_B="kels-cli -d node-b.kels"
 fi
 
-# Cross-chain race resolution (see lib/test-common.sh):
-# `wait_for_kel_anchor_convergence` reads these globals to know which
-# KELS URL the anchor was written to and which peers must converge.
-# Exchange operations (`publish-key`, `rotate-key`) and `kel rotate`
-# advance node-A's KEL tip; subsequent peer-side IEL/SEL operations
-# need that tip to be visible on node-B before they can be verified.
-KELS_ORIGIN_URL="$NODE_A_KELS_URL"
-if [ "$FEDERATED" = "true" ]; then
-    KELS_PEER_URLS=("$NODE_B_KELS_URL")
-else
-    KELS_PEER_URLS=()
-fi
-
 init_temp_dir
 
 echo "========================================="
@@ -162,10 +149,6 @@ test_alice_publish_key() {
         echo "Failed to publish Alice's key"
         return 1
     }
-    # publish-key internally anchors the SEL Icp+Upd in Alice's KEL.
-    # Subsequent peer-side lookups need the new KEL tip visible on node-b
-    # so its verifier can resolve the anchor when SEL gossip arrives.
-    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-publish-key" || return 1
 }
 
 test_bob_publish_key() {
@@ -173,7 +156,6 @@ test_bob_publish_key() {
         echo "Failed to publish Bob's key"
         return 1
     }
-    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-publish-key" || return 1
 }
 
 run_test "Alice publishes ML-KEM key" test_alice_publish_key
@@ -249,7 +231,6 @@ test_alice_rotate_kem_key() {
         echo "Failed to rotate Alice's KEM key"
         return 1
     }
-    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-rotate-kem" || return 1
 }
 
 test_lookup_alice_rotated_key() {
@@ -275,9 +256,6 @@ test_alice_rotate_signing_key() {
     OUTPUT=$($CLI kel rotate --prefix "$ALICE_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
-    # `kel rotate` advances the KEL with a Rot event; downstream peer-side
-    # signature checks need the new key view visible on node-b.
-    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-kel-rotate" || return 1
 }
 
 test_alice_rotate_kem_after_signing_rotation() {
@@ -285,7 +263,6 @@ test_alice_rotate_kem_after_signing_rotation() {
         echo "Failed to rotate Alice's KEM key after signing key rotation"
         return 1
     }
-    wait_for_kel_anchor_convergence "$ALICE_PREFIX" "alice-rotate-kem-post-signing" || return 1
 }
 
 test_lookup_alice_key_after_rotations() {
@@ -298,7 +275,6 @@ test_bob_rotate_signing_key() {
     OUTPUT=$($CLI kel rotate --prefix "$BOB_PREFIX" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Rotation successful\|rotated" || return 1
-    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-kel-rotate" || return 1
 }
 
 test_bob_publish_key_after_signing_rotation() {
@@ -306,7 +282,6 @@ test_bob_publish_key_after_signing_rotation() {
         echo "Failed to rotate Bob's KEM key after signing key rotation"
         return 1
     }
-    wait_for_kel_anchor_convergence "$BOB_PREFIX" "bob-rotate-kem-post-signing" || return 1
 }
 
 run_test "Alice rotates signing key" test_alice_rotate_signing_key

@@ -161,8 +161,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     println!("  Anchoring Upd ({}) in KEL...", upd_said);
     anchor_in_kel(cli, kel_prefix, &upd_said).await?;
 
-    let outcome = sad_builder
-        .flush()
+    let outcome = flush_with_deferred_deps_poll("exchange publish-key flush", &mut sad_builder)
         .await
         .context("Failed to submit SEL events")?;
 
@@ -228,7 +227,9 @@ pub(crate) async fn cmd_exchange_rotate_key(
     println!("  Anchoring Upd ({}) in KEL...", upd_said);
     anchor_in_kel(cli, kel_prefix, &upd_said).await?;
 
-    let outcome = sad_builder.flush().await.context("Failed to submit Upd")?;
+    let outcome = flush_with_deferred_deps_poll("exchange rotate-key flush", &mut sad_builder)
+        .await
+        .context("Failed to submit Upd")?;
 
     if outcome.applied {
         println!("{}", "Rotation successful!".green().bold());

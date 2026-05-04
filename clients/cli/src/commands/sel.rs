@@ -21,7 +21,7 @@ use kels_core::{
 };
 
 use crate::Cli;
-use crate::helpers::sad_store_anchored_checker;
+use crate::helpers::{sad_store_anchored_checker, submit_with_deferred_deps_poll};
 
 pub(crate) async fn cmd_sel_incept(
     cli: &Cli,
@@ -252,10 +252,10 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
         events.push(event);
     }
 
-    let response = client
-        .submit_sel_events(&events)
-        .await
-        .context("Failed to submit SEL events")?;
+    let response =
+        submit_with_deferred_deps_poll("SEL submit", || client.submit_sel_events(&events))
+            .await
+            .context("Failed to submit SEL events")?;
 
     match (response.applied, &response.terminal) {
         (true, _) => {

@@ -53,16 +53,6 @@ NODE_B_KELS_URL="http://${NODE_B_KELS_HOST}"
 NODE_A_CLI="kels-cli --kels-url $NODE_A_KELS_URL --sadstore-url $NODE_A_SAD_URL"
 NODE_B_CLI="kels-cli --kels-url $NODE_B_KELS_URL --sadstore-url $NODE_B_SAD_URL"
 
-# Cross-chain race resolution (see lib/test-common.sh):
-# `wait_for_kel_anchor_convergence` reads these globals to know which
-# KELS URL the anchor was written to and which peers must converge.
-KELS_ORIGIN_URL="$NODE_A_KELS_URL"
-if [ "$FEDERATED" = "true" ]; then
-    KELS_PEER_URLS=("$NODE_B_KELS_URL")
-else
-    KELS_PEER_URLS=()
-fi
-
 init_temp_dir
 
 echo "========================================="
@@ -298,10 +288,8 @@ else
     # Anchor both SAIDs in the KEL
     run_test "Icp SAID anchored in KEL" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$ICP_SAID"
-    wait_for_kel_anchor_convergence "$KEL_PREFIX" "$ICP_SAID"
     run_test "Upd SAID anchored in KEL" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$KEL_PREFIX" --said "$UPD_SAID"
-    wait_for_kel_anchor_convergence "$KEL_PREFIX" "$UPD_SAID"
 
     # Submit the atomic batch via sel submit
     run_test "Inception batch [Icp, Upd] submitted via CLI (sel submit)" \
@@ -403,10 +391,8 @@ else
 
     run_test "Divergence: Icp SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_ICP_SAID"
-    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_ICP_SAID"
     run_test "Divergence: v1 (Upd) SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V1_SAID"
-    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V1_SAID"
 
     run_test "Divergence: [Icp, v1] submitted to node-a" \
         $NODE_A_CLI sel submit "$D_ICP_SAID" "$D_V1_SAID"
@@ -434,10 +420,8 @@ else
     # explicitly for each to reach the peer KEL)
     run_test "Divergence: v2-a SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V2A_SAID"
-    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V2A_SAID"
     run_test "Divergence: v2-b SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_V2B_SAID"
-    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_V2B_SAID"
 
     # Submit each to its own node — divergence is created at v2 once both
     # commits land server-side and gossip converges.
@@ -463,7 +447,6 @@ else
 
     run_test "Repair: SAID anchored" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$DIV_KEL_PREFIX" --said "$D_REPAIR_SAID"
-    wait_for_kel_anchor_convergence "$DIV_KEL_PREFIX" "$D_REPAIR_SAID"
 
     run_test "Repair: submitted to node-a" \
         $NODE_A_CLI sel submit "$D_REPAIR_SAID"
@@ -527,10 +510,8 @@ else
 
     run_test "Extension: Icp anchored by Alice" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$ALICE_KEL" --said "$E_ICP_SAID"
-    wait_for_kel_anchor_convergence "$ALICE_KEL" "$E_ICP_SAID"
     run_test "Extension: v1 anchored by Alice" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$ALICE_KEL" --said "$E_V1_SAID"
-    wait_for_kel_anchor_convergence "$ALICE_KEL" "$E_V1_SAID"
     run_test "Extension: [Icp, v1] submitted" \
         $NODE_A_CLI sel submit "$E_ICP_SAID" "$E_V1_SAID"
 
@@ -540,7 +521,6 @@ else
     E_V2_ALICE=$($NODE_A_CLI sel update "$EXT_PREFIX" "$EXT_CONTENT_ALICE" --publish)
     run_test "Extension: v2 (Alice) anchored by Alice" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$ALICE_KEL" --said "$E_V2_ALICE"
-    wait_for_kel_anchor_convergence "$ALICE_KEL" "$E_V2_ALICE"
     run_test "Extension: v2 (Alice) submitted" \
         $NODE_A_CLI sel submit "$E_V2_ALICE"
 
@@ -552,7 +532,6 @@ else
     E_V3_BOB=$($NODE_A_CLI sel update "$EXT_PREFIX" "$EXT_CONTENT_BOB" --publish)
     run_test "Extension: rogue v3 (Bob) anchored by Bob" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$BOB_KEL" --said "$E_V3_BOB"
-    wait_for_kel_anchor_convergence "$BOB_KEL" "$E_V3_BOB"
     run_test "Extension: rogue v3 (Bob) submitted" \
         $NODE_A_CLI sel submit "$E_V3_BOB"
 
@@ -569,7 +548,6 @@ else
 
     run_test "Extension: Rpr anchored by Alice" \
         kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$ALICE_KEL" --said "$E_RPR_SAID"
-    wait_for_kel_anchor_convergence "$ALICE_KEL" "$E_RPR_SAID"
     run_test "Extension: Rpr submitted" \
         $NODE_A_CLI sel submit "$E_RPR_SAID"
 
@@ -611,9 +589,7 @@ else
     C_V1_SAID=$(echo "$CLEAN_INCEPT_OUT" | tail -1)
 
     kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_ICP_SAID" >/dev/null
-    wait_for_kel_anchor_convergence "$CLEAN_KEL_PREFIX" "$C_ICP_SAID"
     kels-cli --kels-url "$NODE_A_KELS_URL" kel anchor --prefix "$CLEAN_KEL_PREFIX" --said "$C_V1_SAID" >/dev/null
-    wait_for_kel_anchor_convergence "$CLEAN_KEL_PREFIX" "$C_V1_SAID"
 
     run_test "Clean: [Icp, v1] submitted to node-a" \
         $NODE_A_CLI sel submit "$C_ICP_SAID" "$C_V1_SAID"
