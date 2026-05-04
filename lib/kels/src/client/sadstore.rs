@@ -37,24 +37,24 @@ impl SadStoreClient {
         &self.base_url
     }
 
-    /// Create an `HttpSadSource` for this client's events endpoint.
+    /// Create an `HttpSelSource` for this client's events endpoint.
     ///
     /// Constructs a fresh `reqwest::Client` (with its own connection pool)
     /// rather than sharing this `SadStoreClient`'s. Acceptable for one-off
     /// flows like `SadEventBuilder::repair` (called once per repair); if a
     /// caller invokes this in a hot loop, refactor to share the underlying
     /// `reqwest::Client` to reuse pooled connections.
-    pub fn as_sad_source(&self) -> Result<crate::HttpSadSource, KelsError> {
-        crate::HttpSadSource::new(&self.base_url)
+    pub fn as_sel_source(&self) -> Result<crate::HttpSelSource, KelsError> {
+        crate::HttpSelSource::new(&self.base_url)
     }
 
-    /// Create an `HttpSadSink` for this client's events endpoint.
+    /// Create an `HttpSelSink` for this client's events endpoint.
     ///
-    /// Constructs a fresh `reqwest::Client` per call — see `as_sad_source` for
+    /// Constructs a fresh `reqwest::Client` per call — see `as_sel_source` for
     /// the same trade-off note. Gossip/sync flows that call this repeatedly
     /// would benefit from sharing the underlying client.
-    pub fn as_sad_sink(&self) -> Result<crate::HttpSadSink, KelsError> {
-        crate::HttpSadSink::new(&self.base_url)
+    pub fn as_sel_sink(&self) -> Result<crate::HttpSelSink, KelsError> {
+        crate::HttpSelSink::new(&self.base_url)
     }
 
     pub async fn health(&self) -> Result<String, KelsError> {
@@ -220,7 +220,7 @@ impl SadStoreClient {
     /// the local verifier (which only sees the owner's batch). Callers that
     /// build on the local verification token (`SadEventBuilder::flush`) must
     /// propagate this to avoid silent state drift.
-    pub async fn submit_sad_events(
+    pub async fn submit_sel_events(
         &self,
         events: &[crate::SadEvent],
     ) -> Result<SubmitSadEventsResponse, KelsError> {
@@ -246,7 +246,7 @@ impl SadStoreClient {
     /// `since` is an effective SAID cursor — returns events after this SAID's
     /// position. If the SAID is not found (e.g. synthetic divergent SAID), the
     /// server returns the full chain.
-    pub async fn fetch_sad_events(
+    pub async fn fetch_sel_events(
         &self,
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
@@ -276,7 +276,7 @@ impl SadStoreClient {
     /// pull only the chain segment the walk could possibly need (bounded by
     /// `MAX_NON_EVALUATION_EVENTS = 63` per the governance invariant), in a
     /// single round-trip independent of chain length.
-    pub async fn fetch_sad_events_tail(
+    pub async fn fetch_sel_events_tail(
         &self,
         prefix: &cesr::Digest256,
         limit: usize,
@@ -320,7 +320,7 @@ impl SadStoreClient {
     }
 
     /// Check if an event with the given SAID exists on this SADStore.
-    pub async fn sad_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
+    pub async fn sel_event_exists(&self, said: &cesr::Digest256) -> Result<bool, KelsError> {
         let url = format!("{}/api/v1/sad/events/exists", self.base_url);
         let body = crate::SadFetchRequest {
             said: *said,
@@ -416,15 +416,15 @@ impl SadStoreClient {
     /// linkage, version monotonicity, topic consistency, plus IEL-resolved
     /// auth/governance policy checks via the provided `PolicyChecker` and
     /// `IelResolver`.
-    pub async fn verify_sad_events(
+    pub async fn verify_sel_events(
         &self,
         prefix: &cesr::Digest256,
         checker: Arc<dyn crate::PolicyChecker + Send + Sync>,
         iel_resolver: Arc<dyn crate::IelResolver + Send + Sync>,
     ) -> Result<SelVerification, KelsError> {
-        crate::verify_sad_events(
+        crate::verify_sel_events(
             prefix,
-            &self.as_sad_source()?,
+            &self.as_sel_source()?,
             checker,
             iel_resolver,
             crate::page_size(),
@@ -437,7 +437,7 @@ impl SadStoreClient {
 
     /// Construct an `HttpIelSource` for paging through an IEL on this server.
     ///
-    /// Constructs a fresh `reqwest::Client` per call (mirrors `as_sad_source`).
+    /// Constructs a fresh `reqwest::Client` per call (mirrors `as_sel_source`).
     pub fn as_iel_source(&self) -> Result<crate::HttpIelSource, KelsError> {
         crate::HttpIelSource::new(&self.base_url)
     }
@@ -523,7 +523,7 @@ impl SadStoreClient {
     }
 
     /// Verify an IEL by paging through this server. Returns the verification
-    /// token. Mirrors `verify_sad_events` for IEL.
+    /// token. Mirrors `verify_sel_events` for IEL.
     pub async fn verify_identity_events(
         &self,
         prefix: &cesr::Digest256,
@@ -549,7 +549,7 @@ mod tests {
     //! semantics without parsing error bodies; the 500→`InternalError`
     //! mapping preserves the body so callers can prefix-match the typed
     //! variant via Display (e.g., `KelsError::ChainVerificationFailed`).
-    //! `HttpSadSink` / `HttpIelSink` carry parallel tests in
+    //! `HttpSelSink` / `HttpIelSink` carry parallel tests in
     //! `lib/kels/src/types/{sad,iel}/sync.rs`.
     use super::*;
     use crate::{IdentityEvent, SadEvent};
@@ -576,7 +576,7 @@ mod tests {
         let identity = test_digest(b"identity-409-typed");
         let v0 = SadEvent::icp(identity, "kels/test").expect("icp");
 
-        let result = client.submit_sad_events(&[v0]).await;
+        let result = client.submit_sel_events(&[v0]).await;
         match result {
             Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
                 assert!(
@@ -605,7 +605,7 @@ mod tests {
         let identity = test_digest(b"identity-500-typed");
         let v0 = SadEvent::icp(identity, "kels/test").expect("icp");
 
-        let result = client.submit_sad_events(&[v0]).await;
+        let result = client.submit_sel_events(&[v0]).await;
         match result {
             Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
                 assert!(

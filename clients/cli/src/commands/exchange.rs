@@ -264,7 +264,7 @@ pub(crate) async fn cmd_exchange_lookup_key(cli: &Cli, identity: &str) -> Result
 
     let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let page = sad_client
-        .fetch_sad_events(&sel_prefix, None)
+        .fetch_sel_events(&sel_prefix, None)
         .await
         .context("Failed to fetch key chain")?;
 

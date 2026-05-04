@@ -98,7 +98,7 @@ impl SadEventBuilder {
 
     /// Construct a builder for an existing SE chain at `sel_prefix` and
     /// hydrate verified state from the **server**, via
-    /// `sad_client.verify_sad_events`.
+    /// `sad_client.verify_sel_events`.
     ///
     /// Used by the stage-and-exit CLI lifecycle commands (`update`, `seal`,
     /// `repair`, `contest`, `decommission`) where each invocation is
@@ -127,7 +127,7 @@ impl SadEventBuilder {
         );
         builder.requested_prefix = Some(*sel_prefix);
 
-        let source = sad_client.as_sad_source()?;
+        let source = sad_client.as_sel_source()?;
         let queried = match crate::collect_identity_event_saids(
             sel_prefix,
             &source,
@@ -144,7 +144,7 @@ impl SadEventBuilder {
         let resolver = builder.build_iel_resolver_from(&sad_client, &checker, queried)?;
 
         let captured: std::sync::Mutex<Vec<SadEvent>> = std::sync::Mutex::new(Vec::new());
-        let verification_result = crate::verify_sad_events_with(
+        let verification_result = crate::verify_sel_events_with(
             sel_prefix,
             &source,
             Arc::clone(&checker),
@@ -653,7 +653,7 @@ impl SadEventBuilder {
             ));
         }
 
-        let response = client.submit_sad_events(&self.pending_events).await?;
+        let response = client.submit_sel_events(&self.pending_events).await?;
 
         // Terminal-state skip: server reports the chain is already
         // contested / decommissioned. No events landed; do NOT write
@@ -793,7 +793,7 @@ impl SadEventBuilder {
         // only SAIDs.
         let queried_iel_saids = crate::collect_identity_event_saids(
             prefix,
-            &client.as_sad_source()?,
+            &client.as_sel_source()?,
             crate::page_size(),
             crate::max_pages(),
         )
@@ -802,7 +802,7 @@ impl SadEventBuilder {
         let resolver = self.build_iel_resolver_from(client, checker, queried_iel_saids)?;
         Ok(Some(
             client
-                .verify_sad_events(prefix, Arc::clone(checker), resolver)
+                .verify_sel_events(prefix, Arc::clone(checker), resolver)
                 .await?,
         ))
     }

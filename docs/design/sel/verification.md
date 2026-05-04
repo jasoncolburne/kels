@@ -289,7 +289,7 @@ The production resolver (`AnchoredIelResolver`, `lib/kels/src/iel_resolver.rs`) 
 
 Two top-level helpers in `lib/kels/src/types/sad/sync.rs`:
 
-- **`verify_sad_events(client, prefix, checker)`** — Pages through a remote SADStore, verifying each page. Returns a trusted `SelVerification` token.
+- **`verify_sel_events(client, prefix, checker)`** — Pages through a remote SADStore, verifying each page. Returns a trusted `SelVerification` token.
 - **`sel_completed_verification(loader, prefix, page_size, max_pages)`** — Pages through a `SelPageLoader`, calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations spanning pages.
 
 ## Path-Agnostic Validation

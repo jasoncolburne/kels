@@ -285,10 +285,10 @@ impl BootstrapSync {
                     let since_digest = local_said
                         .as_deref()
                         .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                    if let Err(e) = kels_core::forward_sad_events(
+                    if let Err(e) = kels_core::forward_sel_events(
                         &state.prefix,
-                        &remote_client.as_sad_source()?,
-                        &local_client.as_sad_sink()?,
+                        &remote_client.as_sel_source()?,
+                        &local_client.as_sel_sink()?,
                         kels_core::page_size(),
                         kels_core::max_pages(),
                         since_digest.as_ref(),

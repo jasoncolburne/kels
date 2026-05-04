@@ -66,7 +66,7 @@ impl AnchoredIelResolver {
     /// answers correctly.
     ///
     /// Caller pattern: SE pre-walks its own chain (streaming over a
-    /// `PagedSadSource`), accumulates `event.identity_event` SAIDs into a
+    /// `PagedSelSource`), accumulates `event.identity_event` SAIDs into a
     /// `BTreeSet`, then constructs the resolver via
     /// `AnchoredIelResolver::new(...).with_queried_saids(saids)`.
     #[must_use]

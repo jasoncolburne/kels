@@ -233,7 +233,7 @@ pub unsafe extern "C" fn kels_sad_submit_events(
         }
     };
 
-    match runtime.block_on(client.submit_sad_events(&events)) {
+    match runtime.block_on(client.submit_sel_events(&events)) {
         // FFI surface stays a single status code — divergence signals on the
         // response are not currently propagated across the C boundary.
         // Server-side state is correct; callers that need the divergence
@@ -310,7 +310,7 @@ pub unsafe extern "C" fn kels_sad_fetch_events(
         }
     };
 
-    match runtime.block_on(client.fetch_sad_events(&prefix, since_digest.as_ref())) {
+    match runtime.block_on(client.fetch_sel_events(&prefix, since_digest.as_ref())) {
         Ok(page) => match serde_json::to_string(&page) {
             Ok(json) => to_c_string(&json),
             Err(e) => {

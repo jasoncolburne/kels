@@ -58,7 +58,7 @@ pub trait PagedIelSource: Send + Sync {
 
 /// Destination for a batch of Identity Event Log events. The HTTP impl posts
 /// to the IEL submit endpoint; the local-store impl writes through to an
-/// `IdentityStore`. Mirrors `PagedSadSink` for SE.
+/// `IdentityStore`. Mirrors `PagedSelSink` for SE.
 #[async_trait]
 pub trait PagedIelSink: Send + Sync {
     async fn store_page(&self, events: &[IdentityEvent]) -> Result<(), KelsError>;
@@ -104,7 +104,7 @@ impl IelPageLoader for IdentityStorePageLoader<'_> {
 
 // ==================== HTTP Source ====================
 
-/// HTTP-backed `PagedIelSource`. Mirrors `HttpSadSource`.
+/// HTTP-backed `PagedIelSource`. Mirrors `HttpSelSource`.
 pub struct HttpIelSource {
     base_url: String,
     client: reqwest::Client,
@@ -179,7 +179,7 @@ impl HttpIelSource {
 // ==================== HTTP Sink ====================
 
 /// HTTP-backed `PagedIelSink`. POSTs each page to the IEL submit endpoint
-/// (`/api/v1/iel/events`). Mirrors `HttpSadSink`.
+/// (`/api/v1/iel/events`). Mirrors `HttpSelSink`.
 pub struct HttpIelSink {
     base_url: String,
     client: reqwest::Client,
@@ -366,7 +366,7 @@ async fn send_divergent_iel_events(
 /// mode, accumulates remaining events, and submits them via
 /// [`send_divergent_iel_events`] in an order the remote can accept.
 ///
-/// Mirrors SE's `transfer_sad_events` (`lib/kels/src/types/sad/sync.rs`).
+/// Mirrors SE's `transfer_sel_events` (`lib/kels/src/types/sad/sync.rs`).
 /// Uses the held-back-event strategy: holds the last event of each page
 /// (when `has_more`) so a same-version overlap with the next page's
 /// first event is detectable.
@@ -487,7 +487,7 @@ async fn transfer_identity_events(
 /// Forward a remote IEL chain into a local sink, paged. Detects divergence
 /// at page boundaries and uses [`send_divergent_iel_events`] to partition
 /// the post-divergence events into batches the receiver's submit handler
-/// will accept under its routing rules. Mirrors `forward_sad_events`.
+/// will accept under its routing rules. Mirrors `forward_sel_events`.
 pub async fn forward_identity_events(
     prefix: &cesr::Digest256,
     source: &(dyn PagedIelSource + Sync),
@@ -589,7 +589,7 @@ pub async fn iel_completed_verification_with_queried(
 }
 
 /// Verify an IEL by paging through a `PagedIelSource`. Returns a verification
-/// token. Mirrors SE's `verify_sad_events`.
+/// token. Mirrors SE's `verify_sel_events`.
 ///
 /// `max_pages` bounds resource exhaustion; fails secure if exceeded.
 pub async fn verify_identity_events(

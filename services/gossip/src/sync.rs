@@ -577,7 +577,7 @@ impl SyncHandler {
         // For normal: delta fetch from local tip — but if the remote's effective
         // SAID is not a real event (e.g., synthetic divergent hash), delta fetch
         // from our local tip may miss branches. Use full fetch in that case.
-        let sink = match local_client.as_sad_sink() {
+        let sink = match local_client.as_sel_sink() {
             Ok(s) => s,
             Err(e) => {
                 warn!("Failed to build HTTP SAD sink: {}", e);
@@ -585,7 +585,7 @@ impl SyncHandler {
             }
         };
         let remote_is_real_event = local_client
-            .sad_event_exists(remote_said)
+            .sel_event_exists(remote_said)
             .await
             .unwrap_or(false);
         let since_digest = if !remote_is_real_event {
@@ -602,7 +602,7 @@ impl SyncHandler {
                 })
         };
 
-        let source = match remote_client.as_sad_source() {
+        let source = match remote_client.as_sel_source() {
             Ok(s) => s,
             Err(e) => {
                 warn!("Failed to build HTTP SAD source: {}", e);
@@ -616,7 +616,7 @@ impl SyncHandler {
             "Fetching SAD Event Log from peer"
         );
 
-        match kels_core::forward_sad_events(
+        match kels_core::forward_sel_events(
             sel_prefix,
             &source,
             &sink,
@@ -1797,17 +1797,17 @@ pub async fn run_sad_anti_entropy_loop(
                             None => continue,
                         };
                         let we_have_remote = local
-                            .sad_event_exists(&remote_said_digest)
+                            .sel_event_exists(&remote_said_digest)
                             .await
                             .unwrap_or(false);
 
                         if we_have_remote {
                             // We're ahead — push to remote.
                             let use_repair = remote_divergent && !local_divergent;
-                            let Ok(local_source) = local.as_sad_source() else {
+                            let Ok(local_source) = local.as_sel_source() else {
                                 continue;
                             };
-                            let Ok(remote_sink) = remote.as_sad_sink() else {
+                            let Ok(remote_sink) = remote.as_sel_sink() else {
                                 continue;
                             };
                             // Full fetch when repairing or when local is divergent
@@ -1830,17 +1830,17 @@ pub async fn run_sad_anti_entropy_loop(
                                 )
                             };
                             // PUSH success criterion: HTTP-2xx from
-                            // `forward_sad_events`. The remote's submit
+                            // `forward_sel_events`. The remote's submit
                             // handler runs the verifier inside the request/
                             // response cycle, so verifier rejection surfaces
-                            // as a 4xx and `HttpSadSink::store_page`
+                            // as a 4xx and `HttpSelSink::store_page`
                             // converts it into `Err`. A successful PUSH
                             // therefore genuinely means the remote accepted
                             // and advanced, even though our local SAID
                             // didn't change. Don't re-fetch local SAID
                             // here — that's the PULL-shaped check and on
                             // PUSH it would always return false.
-                            match kels_core::forward_sad_events(
+                            match kels_core::forward_sel_events(
                                 prefix,
                                 &local_source,
                                 &remote_sink,
@@ -1864,10 +1864,10 @@ pub async fn run_sad_anti_entropy_loop(
                         } else {
                             // Remote is ahead — pull from remote.
                             let use_repair = local_divergent && !remote_divergent;
-                            let Ok(remote_source) = remote.as_sad_source() else {
+                            let Ok(remote_source) = remote.as_sel_source() else {
                                 continue;
                             };
-                            let Ok(local_sink) = local.as_sad_sink() else {
+                            let Ok(local_sink) = local.as_sel_sink() else {
                                 continue;
                             };
                             let since_digest = if use_repair {
@@ -1894,7 +1894,7 @@ pub async fn run_sad_anti_entropy_loop(
                             // effective SAID and declare `Repaired` only
                             // on actual advancement; otherwise continue to
                             // the next peer.
-                            if let Err(e) = kels_core::forward_sad_events(
+                            if let Err(e) = kels_core::forward_sel_events(
                                 prefix,
                                 &remote_source,
                                 &local_sink,
@@ -1938,7 +1938,7 @@ pub async fn run_sad_anti_entropy_loop(
                     }
                     RepairResult::Contested => {
                         // Not currently produced by the SE Phase 1 path
-                        // (forward_sad_events doesn't translate
+                        // (forward_sel_events doesn't translate
                         // ContestedSel into a typed signal). Reserved for
                         // future symmetry with KEL.
                         warn!("SAD anti-entropy: SE contested for {}", sel_prefix);
@@ -2057,7 +2057,7 @@ pub async fn run_sad_anti_entropy_loop(
                 && let Ok(digest) = cesr::Digest256::from_qb64(said)
             {
                 local_client
-                    .sad_event_exists(&digest)
+                    .sel_event_exists(&digest)
                     .await
                     .unwrap_or(false)
             } else {
@@ -2079,10 +2079,10 @@ pub async fn run_sad_anti_entropy_loop(
             if we_have_remote {
                 // We're ahead — push to remote
                 let use_repair = remote_divergent && !local_divergent;
-                let Ok(local_source) = local_client.as_sad_source() else {
+                let Ok(local_source) = local_client.as_sel_source() else {
                     continue;
                 };
-                let Ok(remote_sink) = remote_client.as_sad_sink() else {
+                let Ok(remote_sink) = remote_client.as_sel_sink() else {
                     continue;
                 };
                 let since = if use_repair {
@@ -2101,7 +2101,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix_d = prefix_digest;
                 let peer = peer_kel_prefix;
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_events(
+                    let result = kels_core::forward_sel_events(
                         &prefix_d,
                         &local_source,
                         &remote_sink,
@@ -2115,10 +2115,10 @@ pub async fn run_sad_anti_entropy_loop(
             } else {
                 // Remote is ahead — pull from remote
                 let use_repair = local_divergent && !remote_divergent;
-                let Ok(remote_source) = remote_client.as_sad_source() else {
+                let Ok(remote_source) = remote_client.as_sel_source() else {
                     continue;
                 };
-                let Ok(local_sink) = local_client.as_sad_sink() else {
+                let Ok(local_sink) = local_client.as_sel_sink() else {
                     continue;
                 };
                 let since = if use_repair {
@@ -2137,7 +2137,7 @@ pub async fn run_sad_anti_entropy_loop(
                 let prefix_d = prefix_digest;
                 let peer = peer_kel_prefix;
                 sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sad_events(
+                    let result = kels_core::forward_sel_events(
                         &prefix_d,
                         &remote_source,
                         &local_sink,

@@ -129,3 +129,17 @@ kels/sad/v1/events/evl
 \bMINIO\b
 \bMINIO_[A-Z_]+\b
 \bminio\b
+
+# === SelStore rename ===
+\bHttpSadSource\b
+\bHttpSadSink\b
+\bPagedSadSource\b
+\bPagedSadSink\b
+\bNoOpSadSink\b
+\bverify_sad_events\b
+\bverify_sad_events_with\b
+\bforward_sad_events\b
+\btransfer_sad_events\b
+\bsend_divergent_sad_events\b
+\bas_sad_source\b
+\bas_sad_sink\b

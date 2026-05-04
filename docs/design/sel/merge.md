@@ -213,7 +213,7 @@ All SEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for 
 
 Propagating a divergent SEL chain to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ContestRequired`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
 
-`send_divergent_sad_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
+`send_divergent_sel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
 
 1. Trace forward from each fork event to partition post-divergence events into `chain_a` and `chain_b`.
 2. Send **pre-divergence + non-cnt chain** as paged appends; each page lands as a non-divergent extension.

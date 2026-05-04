@@ -425,7 +425,7 @@ async fn fetch_effective(
 /// what it has).
 async fn fetch_chain(sad_client: &SadStoreClient, prefix: &Digest256) -> Vec<SadEvent> {
     sad_client
-        .fetch_sad_events(prefix, None)
+        .fetch_sel_events(prefix, None)
         .await
         .expect("fetch chain")
         .events
@@ -444,7 +444,7 @@ async fn verify_chain(
     use kels_core::{AnchoredIelResolver, IelResolver, PagedIelSource};
     let queried = kels_core::collect_identity_event_saids(
         prefix,
-        &sad_client.as_sad_source().expect("sad source"),
+        &sad_client.as_sel_source().expect("sad source"),
         kels_core::page_size(),
         kels_core::max_pages(),
     )
@@ -462,7 +462,7 @@ async fn verify_chain(
         .with_queried_saids(queried),
     );
     sad_client
-        .verify_sad_events(prefix, Arc::clone(&setup.checker), resolver)
+        .verify_sel_events(prefix, Arc::clone(&setup.checker), resolver)
         .await
         .expect("verify chain")
 }
@@ -649,7 +649,7 @@ async fn verify_chain_with_policies(
     // pattern in `SadEventBuilder::verify_server_chain_pre_action`.
     let queried = kels_core::collect_identity_event_saids(
         prefix,
-        &sad_client.as_sad_source().expect("sad source"),
+        &sad_client.as_sel_source().expect("sad source"),
         kels_core::page_size(),
         kels_core::max_pages(),
     )
@@ -667,7 +667,7 @@ async fn verify_chain_with_policies(
         .with_queried_saids(queried),
     );
     sad_client
-        .verify_sad_events(prefix, checker, iel_resolver)
+        .verify_sel_events(prefix, checker, iel_resolver)
         .await
         .expect("verify chain with policies")
 }
@@ -683,7 +683,7 @@ async fn seal_se_chain(setup: &mut Setup, v1_or_later: &SadEvent, label: &str) -
         .unwrap_or_else(|e| panic!("anchor Sea [{label}]: {e:?}"));
     let _ = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&sea))
+        .submit_sel_events(std::slice::from_ref(&sea))
         .await
         .unwrap_or_else(|e| panic!("submit Sea [{label}]: {e:?}"));
     sea
@@ -707,12 +707,12 @@ async fn create_se_divergence(
         .unwrap();
     let _ = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&v_a))
+        .submit_sel_events(std::slice::from_ref(&v_a))
         .await
         .unwrap();
     let _ = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&v_b))
+        .submit_sel_events(std::slice::from_ref(&v_b))
         .await
         .unwrap();
     (v_a, v_b)
@@ -785,7 +785,7 @@ async fn incept_alone_rejected_with_incomplete_inception() {
     let icp = SadEvent::icp(setup.iel_prefix, TEST_TOPIC).expect("build Icp");
 
     let result: Result<SubmitSadEventsResponse, KelsError> =
-        setup.sad_client.submit_sad_events(&[icp]).await;
+        setup.sad_client.submit_sel_events(&[icp]).await;
     assert_err_contains(
         result,
         "Incomplete inception",
@@ -870,7 +870,7 @@ async fn submit_lands_govfailed_cnt_chain_becomes_contested_with_policy_unsatisf
 
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&cnt))
+        .submit_sel_events(std::slice::from_ref(&cnt))
         .await
         .expect("Cnt should land via SOFT path despite govfail");
     assert!(
@@ -897,7 +897,7 @@ async fn submit_lands_govfailed_cnt_chain_becomes_contested_with_policy_unsatisf
     let further_upd = SadEvent::upd(&cnt, setup.iel_icp_said, further_content).expect("build Upd");
     let resp = setup
         .sad_client
-        .submit_sad_events(&[further_upd])
+        .submit_sel_events(&[further_upd])
         .await
         .expect("contested chain returns 200 with terminal indicator");
     assert!(!resp.applied);
@@ -935,7 +935,7 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
     let dec = SadEvent::dec(&v1, setup.iel_icp_said).expect("build Dec");
     let resp = setup
         .sad_client
-        .submit_sad_events(&[dec])
+        .submit_sel_events(&[dec])
         .await
         .expect("Dec should land via SOFT path");
     assert!(resp.applied);
@@ -955,7 +955,7 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).expect("build Upd");
     let resp = setup
         .sad_client
-        .submit_sad_events(&[further_upd])
+        .submit_sel_events(&[further_upd])
         .await
         .expect("decommissioned chain returns 200 with terminal indicator");
     assert!(!resp.applied);
@@ -1005,12 +1005,12 @@ async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
         .unwrap();
     let _ = setup
         .sad_client
-        .submit_sad_events(&[v2_a])
+        .submit_sel_events(&[v2_a])
         .await
         .expect("v2_a");
     let div_resp = setup
         .sad_client
-        .submit_sad_events(&[v2_b])
+        .submit_sel_events(&[v2_b])
         .await
         .expect("v2_b creates divergence");
     assert!(
@@ -1024,7 +1024,7 @@ async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
     let chain_after_div = fetch_chain(&setup.sad_client, &prefix).await;
     let last = chain_after_div.last().cloned().expect("post-div tip");
     let cnt = SadEvent::cnt(&last, setup.iel_icp_said).expect("build Cnt");
-    let result = setup.sad_client.submit_sad_events(&[cnt]).await;
+    let result = setup.sad_client.submit_sel_events(&[cnt]).await;
     assert_err_contains(
         result,
         "Repair required",
@@ -1069,14 +1069,14 @@ async fn unsealed_divergent_chain_rejects_dec_with_repair_required() {
         .interact_batch(&[v2_a.said, v2_b.said])
         .await
         .unwrap();
-    let _ = setup.sad_client.submit_sad_events(&[v2_a]).await.unwrap();
-    let _ = setup.sad_client.submit_sad_events(&[v2_b]).await.unwrap();
+    let _ = setup.sad_client.submit_sel_events(&[v2_a]).await.unwrap();
+    let _ = setup.sad_client.submit_sel_events(&[v2_b]).await.unwrap();
 
     let prefix = *builder.prefix().expect("prefix");
     let chain = fetch_chain(&setup.sad_client, &prefix).await;
     let last = chain.last().cloned().expect("tip");
     let dec = SadEvent::dec(&last, setup.iel_icp_said).expect("build Dec");
-    let result = setup.sad_client.submit_sad_events(&[dec]).await;
+    let result = setup.sad_client.submit_sel_events(&[dec]).await;
     assert_err_contains(
         result,
         "Repair required",
@@ -1137,7 +1137,7 @@ async fn contest_terminates_chain() {
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(&[further_upd])
+        .submit_sel_events(&[further_upd])
         .await
         .expect("contested chain returns 200 with terminal indicator");
     assert!(!resp.applied);
@@ -1191,7 +1191,7 @@ async fn decommission_terminates_chain() {
         SadEvent::upd(v.current_event(), setup.iel_icp_said, further_content).unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(&[further_upd])
+        .submit_sel_events(&[further_upd])
         .await
         .expect("decommissioned chain returns 200 with terminal indicator");
     assert!(!resp.applied);
@@ -1244,8 +1244,8 @@ async fn builder_decommission_fail_fasts_on_divergent_chain() {
         .interact_batch(&[v2_a.said, v2_b.said])
         .await
         .unwrap();
-    let _ = setup.sad_client.submit_sad_events(&[v2_a]).await.unwrap();
-    let _ = setup.sad_client.submit_sad_events(&[v2_b]).await.unwrap();
+    let _ = setup.sad_client.submit_sel_events(&[v2_a]).await.unwrap();
+    let _ = setup.sad_client.submit_sel_events(&[v2_b]).await.unwrap();
 
     // Refresh the builder. `with_prefix` hydrates from owner_store
     // (sees only the owner-authored Icp/Upd, NOT the divergent v2_b).
@@ -1319,7 +1319,7 @@ async fn update_rejects_when_identity_event_unknown_in_iel() {
     let upd = SadEvent::upd(&v1, bogus_iel_event, content).unwrap();
     setup.kel_builder.interact(&upd.said).await.unwrap();
 
-    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    let result = setup.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
         "Bad identity binding",
@@ -1350,7 +1350,7 @@ async fn update_rejects_when_identity_event_prefix_mismatches_branch_identity() 
     let upd = SadEvent::upd(&v1, setup_b.iel_icp_said, content).unwrap();
     setup_a.kel_builder.interact(&upd.said).await.unwrap();
 
-    let result = setup_a.sad_client.submit_sad_events(&[upd]).await;
+    let result = setup_a.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
         "Bad identity binding",
@@ -1384,7 +1384,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
         .unwrap();
     let _ = setup
         .sad_client
-        .submit_sad_events(&[icp.clone(), upd.clone()])
+        .submit_sel_events(&[icp.clone(), upd.clone()])
         .await
         .expect("incept ratcheted to IEL Evl");
 
@@ -1392,7 +1392,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
     let regress_content = upload_content(&setup.sad_client, "monotonic-regress").await;
     let v2 = SadEvent::upd(&upd, setup.iel_icp_said, regress_content).unwrap();
     setup.kel_builder.interact(&v2.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[v2]).await;
+    let result = setup.sad_client.submit_sel_events(&[v2]).await;
     assert_err_contains(
         result,
         "regresses prior ratchet",
@@ -1423,7 +1423,7 @@ async fn update_rejects_when_bound_iel_event_lives_on_divergent_iel_branch() {
     let content = upload_content(&setup.sad_client, "post-iel-div").await;
     let upd = SadEvent::upd(&v1, evl_a, content).unwrap();
     setup.kel_builder.interact(&upd.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    let result = setup.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
         "IEL is divergent",
@@ -1450,7 +1450,7 @@ async fn submit_lands_iel_divergent_cnt_chain_becomes_contested_with_policy_unsa
     setup.kel_builder.interact(&cnt.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&cnt))
+        .submit_sel_events(std::slice::from_ref(&cnt))
         .await
         .expect("Cnt soft-passes IelDivergent for terminal kinds");
     assert!(resp.applied);
@@ -1488,7 +1488,7 @@ async fn submit_lands_iel_divergent_dec_chain_becomes_decommissioned_with_policy
     setup.kel_builder.interact(&dec.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&dec))
+        .submit_sel_events(std::slice::from_ref(&dec))
         .await
         .expect("Dec soft-passes IelDivergent for terminal kinds");
     assert!(resp.applied);
@@ -1526,7 +1526,7 @@ async fn pre_divergence_iel_event_resolves_even_when_iel_is_divergent() {
     setup.kel_builder.interact(&v2.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(&[v2])
+        .submit_sel_events(&[v2])
         .await
         .expect("pre-divergence IEL Icp resolves cleanly");
     assert!(resp.applied);
@@ -1555,7 +1555,7 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     setup.kel_builder.interact(&sea.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&sea))
+        .submit_sel_events(std::slice::from_ref(&sea))
         .await
         .expect("Sea lands");
     assert!(resp.applied);
@@ -1597,7 +1597,7 @@ async fn repair_resolves_divergence_archives_adversary_events() {
     setup.kel_builder.interact(&rpr.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&rpr))
+        .submit_sel_events(std::slice::from_ref(&rpr))
         .await
         .expect("Rpr lands");
     assert!(resp.applied);
@@ -1652,7 +1652,7 @@ async fn sealed_divergent_chain_accepts_cnt_terminates_with_contested() {
     setup.kel_builder.interact(&cnt.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&cnt))
+        .submit_sel_events(std::slice::from_ref(&cnt))
         .await
         .expect("Cnt accepts on sealed-divergent");
     assert!(resp.applied);
@@ -1683,7 +1683,7 @@ async fn sealed_divergent_chain_rejects_dec_with_contest_required() {
     let tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
     let dec = SadEvent::dec(&tip, setup.iel_icp_said).unwrap();
     setup.kel_builder.interact(&dec.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[dec]).await;
+    let result = setup.sad_client.submit_sel_events(&[dec]).await;
     assert_err_contains(
         result,
         "Contest required",
@@ -1715,7 +1715,7 @@ async fn sealed_divergent_chain_rejects_upd_with_contest_required() {
     let content = upload_content(&setup.sad_client, "sealed-div-upd").await;
     let upd = SadEvent::upd(&tip, setup.iel_icp_said, content).unwrap();
     setup.kel_builder.interact(&upd.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[upd]).await;
+    let result = setup.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
         "Contest required",
@@ -1744,7 +1744,7 @@ async fn sealed_divergent_chain_rejects_sea_with_contest_required() {
     let tip = chain.iter().min_by_key(|e| e.said).cloned().expect("tip");
     let sea2 = SadEvent::sea(&tip, setup.iel_icp_said).unwrap();
     setup.kel_builder.interact(&sea2.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[sea2]).await;
+    let result = setup.sad_client.submit_sel_events(&[sea2]).await;
     assert_err_contains(
         result,
         "Contest required",
@@ -1773,7 +1773,7 @@ async fn sealed_divergent_chain_rejects_rpr_with_contest_required() {
     // reject with ContestRequired since seal is past it.
     let rpr = SadEvent::rpr(&sea, setup.iel_icp_said).unwrap();
     setup.kel_builder.interact(&rpr.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[rpr]).await;
+    let result = setup.sad_client.submit_sel_events(&[rpr]).await;
     assert_err_contains(
         result,
         "Contest required",
@@ -1815,7 +1815,7 @@ async fn contest_after_seal_via_algorithmic_trigger() {
     let content = upload_content(&setup.sad_client, "algorithmic-contest").await;
     let upd_at_seal = SadEvent::upd(&v1, setup.iel_icp_said, content).unwrap();
     setup.kel_builder.interact(&upd_at_seal.said).await.unwrap();
-    let result = setup.sad_client.submit_sad_events(&[upd_at_seal]).await;
+    let result = setup.sad_client.submit_sel_events(&[upd_at_seal]).await;
     assert_err_contains(
         result,
         "Contest required",
@@ -1844,7 +1844,7 @@ async fn active_sealed_chain_accepts_dec_terminates_decommissioned() {
     setup.kel_builder.interact(&dec.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&dec))
+        .submit_sel_events(std::slice::from_ref(&dec))
         .await
         .expect("Dec lands on linear sealed chain");
     assert!(resp.applied);
@@ -1880,7 +1880,7 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
     setup.kel_builder.interact(&upd.said).await.unwrap();
     let resp = setup
         .sad_client
-        .submit_sad_events(std::slice::from_ref(&upd))
+        .submit_sel_events(std::slice::from_ref(&upd))
         .await
         .expect("Upd binds to later IEL Evl cleanly");
     assert!(resp.applied);
@@ -2091,7 +2091,7 @@ async fn submit_returns_500_when_existing_se_chain_fails_reverification() {
     let further_content = upload_content(&setup.sad_client, "post-tamper").await;
     let v1 = builder.last_event().cloned().expect("v1 tip");
     let v2 = SadEvent::upd(&v1, setup.iel_icp_said, further_content).expect("build Upd");
-    let result = setup.sad_client.submit_sad_events(&[v2]).await;
+    let result = setup.sad_client.submit_sel_events(&[v2]).await;
     match result {
         Err(KelsError::ServerError(body, kels_core::ErrorCode::InternalError)) => {
             assert!(

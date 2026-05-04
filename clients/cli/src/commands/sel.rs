@@ -8,7 +8,7 @@
 //! `submit` and `get` operate against the server directly. `submit` fetches
 //! each pending event from the SAD object store by SAID before posting the
 //! batch — the always-publish flow is load-bearing here. `get` runs a
-//! verifier-driven walk via `verify_sad_events_with` (mirrors `kel get`).
+//! verifier-driven walk via `verify_sel_events_with` (mirrors `kel get`).
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
-    HttpKelSource, HttpSadSource, KelVerifier, SadEvent, SadEventBuilder, SadStoreClient,
+    HttpKelSource, HttpSelSource, KelVerifier, SadEvent, SadEventBuilder, SadStoreClient,
 };
 
 use crate::Cli;
@@ -253,7 +253,7 @@ pub(crate) async fn cmd_sel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
     }
 
     let response = client
-        .submit_sad_events(&events)
+        .submit_sel_events(&events)
         .await
         .context("Failed to submit SEL events")?;
 
@@ -299,14 +299,14 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
     let prefix = cesr::Digest256::from_qb64(sel_prefix).context("Invalid SEL prefix CESR")?;
     let sad_client = SadStoreClient::new(&cli.sadstore_url())?;
     let checker = sad_store_anchored_checker(cli, &sad_client)?;
-    let source = HttpSadSource::new(&cli.sadstore_url())?;
+    let source = HttpSelSource::new(&cli.sadstore_url())?;
 
     // Streaming/diagnostic lines go to stderr; stdout is reserved for the
     // final JSON so callers can pipe `sel get` through `jq` cleanly.
     eprintln!("{}", format!("Fetching SEL {}...", sel_prefix).green());
 
-    // Verifier-driven walk through `transfer_sad_events` (via
-    // `verify_sad_events_with`). Streams summary lines per page while
+    // Verifier-driven walk through `transfer_sel_events` (via
+    // `verify_sel_events_with`). Streams summary lines per page while
     // collecting events for the JSON dump; reads divergent / terminal
     // state off the resulting verification token. Mirrors
     // `kels kel get` and `kels iel get`.
@@ -339,7 +339,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
         );
 
     let collected: Mutex<Vec<SadEvent>> = Mutex::new(Vec::new());
-    let verification = kels_core::verify_sad_events_with(
+    let verification = kels_core::verify_sel_events_with(
         &prefix,
         &source,
         checker,

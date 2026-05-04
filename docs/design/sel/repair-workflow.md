@@ -23,7 +23,7 @@ The builder API exposes three terminal-state operations on `SadEventBuilder`:
 
 Each operation runs the same pre-flight (mirrors KEL's `recover` / `contest` / `rotate_recovery`):
 
-- Verify the server's chain via `client.verify_sad_events(prefix, checker)` — defense-in-depth against a buggy/malicious server.
+- Verify the server's chain via `client.verify_sel_events(prefix, checker)` — defense-in-depth against a buggy/malicious server.
 - (Repair) Derive boundary uniformly: `boundary = owner_tip.version`. `Rpr.previous = owner_tip.said`.
 - Build the appropriate event extending the bundled-pending tip (or owner's verified tip if pending is empty).
 - Submit `[pending..., Rpr/Cnt/Dec]` atomically.
@@ -63,7 +63,7 @@ The DB cannot be trusted. All SEL operations fall into three categories (mirrors
 2. **Consuming** — using chain data for security decisions. Requires a `SelVerification` token.
 3. **Resolving** — comparing state to decide whether to sync. Wrong answers trigger unnecessary syncs, not security holes.
 
-Owner's `repair`/`contest`/`decommission` builders run `verify_sad_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
+Owner's `repair`/`contest`/`decommission` builders run `verify_sel_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
 
 ## Operator Recovery Workflow
 
