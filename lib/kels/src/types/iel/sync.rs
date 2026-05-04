@@ -743,12 +743,15 @@ mod tests {
 
     #[async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<crate::types::AnchorEvaluation, KelsError> {
+            Ok(crate::types::AnchorEvaluation {
+                satisfied: true,
+                missing_anchors: Vec::new(),
+            })
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)

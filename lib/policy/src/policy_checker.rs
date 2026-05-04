@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use kels_core::{KelsError, PagedKelSource, PolicyChecker};
+use kels_core::{AnchorEvaluation, KelsError, PagedKelSource, PolicyChecker};
 
-use crate::{evaluate_anchored_policy, resolver::PolicyResolver};
+use crate::{evaluate_anchored_policy, resolver::PolicyResolver, verification::EndorsementStatus};
 
 /// `PolicyChecker` backed by `evaluate_anchored_policy`.
 ///
-/// `is_anchored(said, policy)` resolves the policy via the configured resolver
+/// `evaluate(said, policy)` resolves the policy via the configured resolver
 /// and checks that the endorsers it names anchored `said` in their KELs. The
 /// caller decides which `(said, policy)` pair to evaluate; for chain verifiers
 /// that's typically `(event.said, branch_or_event_policy)`.
@@ -41,20 +41,45 @@ impl AnchoredPolicyChecker {
 
 #[async_trait::async_trait]
 impl PolicyChecker for AnchoredPolicyChecker {
-    async fn is_anchored(
+    async fn evaluate(
         &self,
         said: &cesr::Digest256,
         policy: &cesr::Digest256,
-    ) -> Result<bool, KelsError> {
+    ) -> Result<AnchorEvaluation, KelsError> {
         let policy = self
             .resolver
             .resolve_policy(policy)
             .await
             .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
-        match evaluate_anchored_policy(&policy, said, &*self.kel_source, &*self.resolver).await {
-            Ok(v) => Ok(v.is_satisfied),
-            Err(e) => Err(KelsError::VerificationFailed(e.to_string())),
-        }
+        let verification =
+            evaluate_anchored_policy(&policy, said, &*self.kel_source, &*self.resolver)
+                .await
+                .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
+        // #156 contract: `missing_anchors` enumerates KEL prefixes whose
+        // commitment could flip the policy outcome — i.e., endorsers
+        // currently in `NotEndorsed` status (chain live, hasn't anchored
+        // yet). Endorsers in `KelError` (chain unknown / inaccessible)
+        // also count as deferrable for now; Gap 4 (handler retrofit) can
+        // refine the chain-state inspection to omit contested/Dec'd
+        // anchors per the AnchorEvaluation contract.
+        let missing_anchors = if verification.is_satisfied {
+            Vec::new()
+        } else {
+            verification
+                .endorsements
+                .iter()
+                .filter_map(|(prefix, status)| match status {
+                    EndorsementStatus::NotEndorsed | EndorsementStatus::KelError(_) => {
+                        Some(*prefix)
+                    }
+                    EndorsementStatus::Endorsed | EndorsementStatus::Poisoned => None,
+                })
+                .collect()
+        };
+        Ok(AnchorEvaluation {
+            satisfied: verification.is_satisfied,
+            missing_anchors,
+        })
     }
 
     async fn is_immune(&self, policy: &cesr::Digest256) -> Result<bool, KelsError> {

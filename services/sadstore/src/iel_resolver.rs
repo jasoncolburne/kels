@@ -223,16 +223,25 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         &self,
         identity: &cesr::Digest256,
         said: &cesr::Digest256,
-    ) -> Result<bool, kels_core::KelsError> {
-        // Chain-integrity check: `MissingIelEvent` (deferrable) or
-        // `IdentityBindingViolation` (permanent) propagates from
-        // `fetch_iel_event` if the SAID isn't in the named IEL or has a
-        // prefix mismatch. After that, delegate to the shared
-        // `verify_identity_events_with_queried` helper through a
-        // `PagedIelSource` adapter wrapping the IEL repo pool. The shared
-        // walker handles pagination + post-filter correctly; this impl
-        // doesn't duplicate the loop.
-        let _ = self.fetch_iel_event(identity, said).await?;
+    ) -> Result<kels_core::IelSatisfaction, kels_core::KelsError> {
+        // Chain-integrity check via `fetch_iel_event`: missing-by-SAID
+        // surfaces `MissingIelEvent` → re-classify into
+        // `IelSatisfaction::MissingEvent` (deferrable); cross-IEL
+        // contamination surfaces `IdentityBindingViolation` →
+        // re-classify into `IelSatisfaction::PermanentFailure`.
+        match self.fetch_iel_event(identity, said).await {
+            Ok(_) => {}
+            Err(kels_core::KelsError::MissingIelEvent(dep)) => {
+                return Ok(kels_core::IelSatisfaction::MissingEvent {
+                    iel_prefix: dep.iel_prefix,
+                    event_said: dep.event_said,
+                });
+            }
+            Err(kels_core::KelsError::IdentityBindingViolation(violation)) => {
+                return Ok(kels_core::IelSatisfaction::PermanentFailure(violation));
+            }
+            Err(other) => return Err(other),
+        }
 
         let mut queried = self.queried_saids.clone();
         queried.insert(*said);
@@ -248,7 +257,17 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             queried,
         )
         .await?;
-        Ok(verification.is_said_satisfied(said))
+        if verification.is_said_satisfied(said) {
+            Ok(kels_core::IelSatisfaction::Satisfied)
+        } else {
+            Ok(kels_core::IelSatisfaction::AuthFailed {
+                reason: format!(
+                    "IEL event {} did not satisfy IEL verification \
+                     (auth-fail or post-IEL-divergence soft) in IEL {}",
+                    said, identity,
+                ),
+            })
+        }
     }
 
     async fn resolve_identity_for_event(
@@ -314,13 +333,19 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         &self,
         identity: &cesr::Digest256,
         saids: &[cesr::Digest256],
-    ) -> Result<
-        std::collections::HashMap<cesr::Digest256, kels_core::IelChainPosition>,
-        kels_core::KelsError,
-    > {
+    ) -> Result<kels_core::IelChainPositionBatch, kels_core::KelsError> {
         if saids.is_empty() {
-            return Ok(std::collections::HashMap::new());
+            return Ok(kels_core::IelChainPositionBatch {
+                found: Vec::new(),
+                missing: Vec::new(),
+            });
         }
+
+        // Dedup input per the partial-results contract.
+        let mut deduped: Vec<cesr::Digest256> = saids.to_vec();
+        deduped.sort();
+        deduped.dedup();
+
         let divergent_at = self
             .repo
             .iel_events
@@ -339,26 +364,34 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             None
         };
 
-        let mut out = std::collections::HashMap::new();
-        for said in saids {
-            let event = self.fetch_iel_event(identity, said).await?;
+        let mut found: Vec<kels_core::IelChainPosition> = Vec::new();
+        let mut missing: Vec<cesr::Digest256> = Vec::new();
+        for said in &deduped {
+            // Per-SAID fetch swallows `MissingIelEvent` into the `missing`
+            // bucket; `IdentityBindingViolation` (cross-IEL contamination)
+            // and other errors propagate as-is.
+            let event = match self.fetch_iel_event(identity, said).await {
+                Ok(e) => e,
+                Err(kels_core::KelsError::MissingIelEvent(_)) => {
+                    missing.push(*said);
+                    continue;
+                }
+                Err(other) => return Err(other),
+            };
             let branch_marker = match (divergent_at, chain_map.as_ref()) {
                 (Some(d), Some(chain)) if event.version >= d => Some(
                     kels_core::walk_back_to_branch_identity(chain, *said, d, identity)?,
                 ),
                 _ => None,
             };
-            out.insert(
-                *said,
-                kels_core::IelChainPosition {
-                    version: event.version,
-                    kind: event.kind,
-                    said: *said,
-                    branch_marker,
-                },
-            );
+            found.push(kels_core::IelChainPosition {
+                version: event.version,
+                kind: event.kind,
+                said: *said,
+                branch_marker,
+            });
         }
-        Ok(out)
+        Ok(kels_core::IelChainPositionBatch { found, missing })
     }
 }
 

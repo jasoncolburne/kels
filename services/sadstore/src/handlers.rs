@@ -641,14 +641,14 @@ async fn verify_custody_write(
         .await
         .map_err(custody_write_resolver_error)?;
 
-    let satisfied = checker
-        .is_anchored(canonical_said, &auth_policy)
+    let evaluation = checker
+        .evaluate(canonical_said, &auth_policy)
         .await
         .map_err(|e| {
             warn!("custody.write anchor check failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "anchor check failed").into_response()
         })?;
-    if !satisfied {
+    if !evaluation.satisfied {
         return Err((
             StatusCode::FORBIDDEN,
             format!(
@@ -675,7 +675,11 @@ fn custody_write_resolver_error(err: kels_core::KelsError) -> axum::response::Re
             .into_response(),
         KelsError::IdentityBindingViolation(violation) => (
             StatusCode::BAD_REQUEST,
-            format!("custody.write identity binding violation: {}", violation),
+            // "not locally known" is preserved in the prefix for callers
+            // that match on the substring; the violation Display carries
+            // the resolver's specific reason (cross-IEL contamination,
+            // SAID-not-found-in-any-IEL, walk-back failure, etc.).
+            format!("custody.write IEL event not locally known: {}", violation),
         )
             .into_response(),
         KelsError::IelDivergent(msg) => (

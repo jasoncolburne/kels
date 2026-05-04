@@ -21,10 +21,74 @@
 //! IEL's `first_divergent_version`. Pre-divergence shared events resolve
 //! cleanly even on a divergent IEL.
 
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 
 use super::iel::{IdentityEvent, IdentityEventKind};
-use crate::KelsError;
+use crate::{KelsError, error::IdentityBindingViolation};
+
+/// #156: structured outcome of [`IelResolver::is_satisfied`].
+///
+/// Four legitimate verifier products (not errors); `Err(KelsError)` is
+/// reserved for operational failures (DB, malformed input, etc.).
+///
+/// Wire mapping at the deferred-deps layer:
+/// - `Satisfied` → 200 (commit).
+/// - `MissingEvent` → 422 + `iel_event` dep (deferrable; the SAID may
+///   commit later via gossip propagation).
+/// - `AuthFailed` → 4xx-permanent (the IEL event and its pre-state are
+///   fixed; re-eval won't change). The SE verifier's existing
+///   soft-eligible carve-out applies here: terminals or
+///   post-SE-divergence land soft (`policy_satisfied=false`); else HARD.
+/// - `PermanentFailure` → 4xx-permanent (chain-integrity violation).
+///   SE verifier always hard-fails; no soft-eligible carve-out.
+///
+/// `AuthFailed` is wire-equivalent to `PermanentFailure` but distinct
+/// internally because the soft-eligible path differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IelSatisfaction {
+    /// Referenced IEL event found, auth-check passed at the IEL pre-event
+    /// state, lives at version `< first_divergent_version` (or chain
+    /// non-divergent).
+    Satisfied,
+    /// Referenced IEL event SAID not present in the named IEL locally.
+    /// Deferrable — the SAID may commit later.
+    MissingEvent {
+        iel_prefix: cesr::Digest256,
+        event_said: cesr::Digest256,
+    },
+    /// Referenced IEL event found in chain, but the IEL event's own auth
+    /// check failed (Cnt's-own-soft-fail, or auth policy not satisfied at
+    /// the IEL event's pre-state). The `reason` describes which.
+    /// Permanent at the wire layer; soft-eligible inside the SE walk.
+    AuthFailed { reason: String },
+    /// Chain-integrity violation (cross-IEL contamination, IEL chain-order
+    /// regression, etc.). Permanent. Always hard-fails.
+    PermanentFailure(IdentityBindingViolation),
+}
+
+/// #156: partial-results surface for [`IelResolver::iel_chain_positions`].
+///
+/// Replaces the prior fail-on-first-unresolvable behavior with
+/// enumerate-all-missing — required for the deferred-deps layer to surface
+/// every missing SAID in one 422 (not N round-trips).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IelChainPositionBatch {
+    /// Positions that resolved cleanly. Each entry's `said` field is the
+    /// input SAID.
+    pub found: Vec<IelChainPosition>,
+    /// SAIDs that didn't resolve in the named IEL locally. Deferrable
+    /// (each maps to a `MissingIelEvent` deferred-failure / wire-format
+    /// `iel_event` dep). Empty when every input SAID resolved.
+    pub missing: Vec<cesr::Digest256>,
+}
+
+impl IelChainPositionBatch {
+    /// Look up a position by SAID. Returns `None` if the SAID is in
+    /// `missing` (or wasn't an input).
+    pub fn get(&self, said: &cesr::Digest256) -> Option<&IelChainPosition> {
+        self.found.iter().find(|p| &p.said == said)
+    }
+}
 
 /// The position of an IEL event within its chain's canonical order.
 ///
@@ -145,43 +209,51 @@ pub trait IelResolver: Send + Sync {
     /// current `last_identity_event` and calls this once; subsequent
     /// `try_cmp` calls on the returned positions are O(1) hashmap lookups.
     ///
-    /// **Errors:** returns [`KelsError::MissingIelEvent`] when any SAID
-    /// in `saids` doesn't resolve in the named IEL, or
-    /// [`KelsError::IdentityBindingViolation`] on prefix mismatch
-    /// (cross-IEL contamination) — the entire call fails (chain-integrity
-    /// breach). Gap 2 will replace this with partial-results enumeration.
+    /// **Partial-results contract (#156):** returns an
+    /// [`IelChainPositionBatch`] enumerating every input SAID — resolved
+    /// SAIDs in `found`, unresolved SAIDs in `missing`. The deferred-deps
+    /// layer maps each `missing` entry to an `iel_event` dep on the wire.
+    ///
+    /// **Errors:** returns [`KelsError::IdentityBindingViolation`] on
+    /// chain-integrity breach (cross-IEL contamination, walk-back
+    /// failure). Storage / operational failures propagate as-is.
     async fn iel_chain_positions(
         &self,
         identity: &cesr::Digest256,
         saids: &[cesr::Digest256],
-    ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError>;
+    ) -> Result<IelChainPositionBatch, KelsError>;
 
-    /// Whether the named IEL event passed its IEL auth check AND lives at
-    /// `version < first_divergent_version` (or chain non-divergent), per
-    /// `IelVerification::is_said_satisfied`.
+    /// Whether the named IEL event satisfies binding from an SE chain.
     ///
     /// Used by the SE verifier (β-ordering: after `resolve_*_at`, before
-    /// `is_anchored`) to gate SE bindings. SE chains binding to an IEL event
-    /// that didn't pass IEL's verification (Cnt's-own-soft-fail or
-    /// post-IEL-divergence soft) are SOFT for terminals / post-SE-divergence
-    /// non-terminals, HARD for pre-SE-divergence non-terminals.
+    /// the anchor check) to gate SE bindings.
+    ///
+    /// Returns an [`IelSatisfaction`] with one of four legitimate verifier
+    /// products:
+    /// - [`IelSatisfaction::Satisfied`] — SAID found, auth-passed,
+    ///   pre-divergence.
+    /// - [`IelSatisfaction::MissingEvent`] — SAID not in the named IEL
+    ///   locally (deferrable per #156).
+    /// - [`IelSatisfaction::AuthFailed`] — SAID found in chain but the
+    ///   IEL event's own auth check failed (Cnt's-own-soft-fail or
+    ///   post-IEL-divergence soft). Wire-permanent; the SE verifier
+    ///   applies its existing soft-eligible carve-out internally.
+    /// - [`IelSatisfaction::PermanentFailure`] — chain-integrity breach
+    ///   (cross-IEL contamination, regression). Always hard.
+    ///
+    /// `Err(KelsError)` is reserved for operational failures (DB,
+    /// malformed input).
     ///
     /// Implementations must scope SAID resolution to `identity` (cross-IEL
-    /// contamination surfaces as `IdentityBindingViolation`) and must
-    /// register the SAID via `IelVerifier::check_satisfied` before walking
-    /// the IEL — production impls do this internally from a caller-supplied
+    /// contamination surfaces as `PermanentFailure`) and must register
+    /// the SAID via `IelVerifier::check_satisfied` before walking the IEL
+    /// — production impls do this internally from a caller-supplied
     /// `queried_saids` set fixed at construction.
-    ///
-    /// Returns `false` (not Err) when the SAID is in the IEL's chain but
-    /// either (a) failed its auth check, or (b) lives at-or-after the IEL's
-    /// `first_divergent_version`. Returns `Err(MissingIelEvent)` when the
-    /// SAID doesn't resolve in the named IEL at all (deferrable — the
-    /// event may commit later via gossip propagation).
     async fn is_satisfied(
         &self,
         identity: &cesr::Digest256,
         said: &cesr::Digest256,
-    ) -> Result<bool, KelsError>;
+    ) -> Result<IelSatisfaction, KelsError>;
 
     /// Resolve the IEL prefix that owns the given event SAID. Used by the
     /// `custody.write` verifier (per #167), which holds an IEL event SAID

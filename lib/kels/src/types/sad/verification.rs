@@ -299,14 +299,22 @@ impl SelVerifier {
                 needed_saids.push(said);
             }
         }
-        // Deduplicate (the resolver is permitted to error on the whole batch
-        // if any SAID is unresolvable; deduping reduces unnecessary repo hits).
+        // Deduplicate (the resolver also dedups internally but we save one
+        // `clone()` by deduping here too).
         needed_saids.sort();
         needed_saids.dedup();
-        let positions = self
+        let position_batch = self
             .iel_resolver
             .iel_chain_positions(&identity, &needed_saids)
             .await?;
+        // Gap-2 behavior preservation: any SAID the resolver couldn't
+        // resolve is currently a HARD chain-integrity failure on the SE
+        // walk. Gap 3 will reshape this to feed the deferrable accumulator
+        // instead. Surface as `MissingIelEvent` so the soon-to-land
+        // collect-mode walk catches it cleanly.
+        if let Some(missing) = position_batch.missing.first() {
+            return Err(KelsError::missing_iel_event(identity, *missing));
+        }
 
         let mut new_branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
 
@@ -445,40 +453,60 @@ impl SelVerifier {
             };
 
             // Step 3.5 (β-ordering) — IEL satisfied-check. After resolve_*_at,
-            // before is_anchored. If the bound IEL event resolved cleanly but
-            // didn't pass IEL's auth in IEL's verification (Cnt's-own-soft-fail,
-            // post-IEL-divergence soft), SE's auth chain is implicitly broken.
-            // Same severity mapping as IelDivergent: HARD pre-divergence on
-            // non-terminals; SOFT for terminals OR post-SE-divergence.
-            let iel_said_satisfied = self
+            // before the anchor check. The trait now returns
+            // `IelSatisfaction` (#156); the SE walk maps each variant per
+            // the documented contract:
+            //   - Satisfied        → continue.
+            //   - AuthFailed       → soft-eligible carve-out (terminals or
+            //                        post-SE-divergence land soft); else HARD.
+            //   - MissingEvent     → HARD here; Gap 3's collect-mode walk
+            //                        will route this to deferrable accumulation.
+            //   - PermanentFailure → HARD always (chain-integrity).
+            let iel_satisfaction = self
                 .iel_resolver
                 .is_satisfied(&branch.identity, &identity_event_said)
                 .await?;
-            if !iel_said_satisfied {
-                if auth_soft_eligible {
-                    self.policy_satisfied = false;
-                    if is_terminal {
-                        self.record_terminal_landing(event, &mut new_branches, branch, false);
-                    } else {
-                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+            match iel_satisfaction {
+                crate::IelSatisfaction::Satisfied => {}
+                crate::IelSatisfaction::AuthFailed { reason: _ } => {
+                    if auth_soft_eligible {
+                        self.policy_satisfied = false;
+                        if is_terminal {
+                            self.record_terminal_landing(event, &mut new_branches, branch, false);
+                        } else {
+                            Self::record_non_terminal_soft_landing(
+                                event,
+                                &mut new_branches,
+                                branch,
+                            );
+                        }
+                        continue;
                     }
-                    continue;
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SE {} event {}: bound IEL event {} did not satisfy IEL verification \
+                         (auth-fail; non-terminal pre-SE-divergence)",
+                        event.kind, event.said, identity_event_said,
+                    )));
                 }
-                return Err(KelsError::VerificationFailed(format!(
-                    "SE {} event {}: bound IEL event {} did not satisfy IEL verification \
-                     (auth-fail or post-IEL-divergence; non-terminal pre-SE-divergence)",
-                    event.kind, event.said, identity_event_said,
-                )));
+                crate::IelSatisfaction::MissingEvent {
+                    iel_prefix,
+                    event_said,
+                } => {
+                    return Err(KelsError::missing_iel_event(iel_prefix, event_said));
+                }
+                crate::IelSatisfaction::PermanentFailure(violation) => {
+                    return Err(KelsError::IdentityBindingViolation(violation));
+                }
             }
 
             // Step 4 — anchor check. HARD pre-divergence on non-terminals;
-            // SOFT for terminals OR post-divergence.
-            let anchored = self
-                .checker
-                .is_anchored(&event.said, &resolved_policy)
-                .await?;
+            // SOFT for terminals OR post-divergence. Gap 2 consumes only
+            // `evaluation.satisfied` for behavior-equivalence; Gap 3's
+            // collect-mode walk will route `evaluation.missing_anchors`
+            // into the deferrable accumulator.
+            let evaluation = self.checker.evaluate(&event.said, &resolved_policy).await?;
 
-            if !anchored {
+            if !evaluation.satisfied {
                 if auth_soft_eligible {
                     self.policy_satisfied = false;
                     if is_terminal {
@@ -497,7 +525,7 @@ impl SelVerifier {
 
             // Step 5 — monotonic ratchet (uses positions fetched above). HARD
             // for all kinds.
-            let new_position = positions.get(&identity_event_said).ok_or_else(|| {
+            let new_position = position_batch.get(&identity_event_said).ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
                     "SE event {} identity_event {} missing from prefetched IEL positions \
                      (resolver invariant breach)",
@@ -511,7 +539,7 @@ impl SelVerifier {
                     Some(identity_event_said)
                 }
                 Some(prior_said) => {
-                    let prior_position = positions.get(&prior_said).ok_or_else(|| {
+                    let prior_position = position_batch.get(&prior_said).ok_or_else(|| {
                         KelsError::VerificationFailed(format!(
                             "Branch's prior last_identity_event {} missing from prefetched \
                              IEL positions (resolver invariant breach)",
@@ -733,7 +761,10 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use crate::types::{IdentityEvent, IdentityEventKind, IelChainPosition};
+    use crate::types::{
+        AnchorEvaluation, IdentityEvent, IdentityEventKind, IelChainPosition,
+        IelChainPositionBatch, IelSatisfaction,
+    };
 
     const TEST_TOPIC: &str = "kels/sad/v1/keys/mlkem";
 
@@ -743,36 +774,42 @@ mod tests {
 
     // ==================== Test fakes ====================
 
-    /// `PolicyChecker` that always returns `Ok(true)`.
+    /// `PolicyChecker` that always returns satisfied.
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(AnchorEvaluation {
+                satisfied: true,
+                missing_anchors: Vec::new(),
+            })
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
 
-    /// `PolicyChecker` that returns `Ok(false)` (not anchored) for SAIDs in a
-    /// reject-list, `Ok(true)` otherwise. Used to drive soft/hard fail cases
+    /// `PolicyChecker` that returns `satisfied=false` for SAIDs in a
+    /// reject-list, satisfied otherwise. Used to drive soft/hard fail cases
     /// per kind.
     struct RejectingChecker {
         reject: HashSet<cesr::Digest256>,
     }
     #[async_trait::async_trait]
     impl PolicyChecker for RejectingChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             said: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(!self.reject.contains(said))
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(AnchorEvaluation {
+                satisfied: !self.reject.contains(said),
+                missing_anchors: Vec::new(),
+            })
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
@@ -903,55 +940,74 @@ mod tests {
             &self,
             identity: &cesr::Digest256,
             said: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            // Test fake: chain-integrity check via fetch (`MissingIelEvent`
-            // on miss; `IdentityBindingViolation` on prefix mismatch). For
-            // the satisfied-predicate, mirror
-            // the production rule: pre-divergence (or chain non-divergent)
-            // AND would-have-passed-its-auth. The fake's `events` map doesn't
-            // record auth-pass-status, so default to "auth-passed" — tests
-            // that need to pin auth-fail-soft cases construct chains where
-            // the SE checker rejects, exercising the SE-side gate without
-            // having to drive an in-fake IEL verifier.
-            let event = self.fetch_iel_event(identity, said).await?;
+        ) -> Result<IelSatisfaction, KelsError> {
+            // Test fake: re-classify fetch errors into the new
+            // `IelSatisfaction` variants per #156. For the satisfied
+            // predicate, mirror the production rule: pre-divergence (or
+            // chain non-divergent) → Satisfied; post-divergence → AuthFailed
+            // (analog of "in-chain but soft-failed"). The fake's `events`
+            // map doesn't record auth-pass-status, so otherwise default to
+            // "auth-passed" — tests that need to pin auth-fail-soft cases
+            // construct chains where the SE checker rejects, exercising the
+            // SE-side gate without driving an in-fake IEL verifier.
+            let event = match self.fetch_iel_event(identity, said).await {
+                Ok(e) => e,
+                Err(KelsError::MissingIelEvent(dep)) => {
+                    return Ok(IelSatisfaction::MissingEvent {
+                        iel_prefix: dep.iel_prefix,
+                        event_said: dep.event_said,
+                    });
+                }
+                Err(KelsError::IdentityBindingViolation(violation)) => {
+                    return Ok(IelSatisfaction::PermanentFailure(violation));
+                }
+                Err(other) => return Err(other),
+            };
             let post_divergence = self
                 .first_divergent_version
                 .is_some_and(|d| event.version >= d);
-            Ok(!post_divergence)
+            if post_divergence {
+                Ok(IelSatisfaction::AuthFailed {
+                    reason: format!(
+                        "FakeIelResolver: event {} at version {} is post-divergence",
+                        said, event.version,
+                    ),
+                })
+            } else {
+                Ok(IelSatisfaction::Satisfied)
+            }
         }
 
         async fn iel_chain_positions(
             &self,
             identity: &cesr::Digest256,
             saids: &[cesr::Digest256],
-        ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError> {
+        ) -> Result<IelChainPositionBatch, KelsError> {
             if identity != &self.identity {
                 return Err(KelsError::identity_binding_violation(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
             }
-            let mut out = HashMap::new();
+            let mut found: Vec<IelChainPosition> = Vec::new();
+            let mut missing: Vec<cesr::Digest256> = Vec::new();
             for said in saids {
-                let entry = self
-                    .events
-                    .get(said)
-                    .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
+                let Some(entry) = self.events.get(said) else {
+                    missing.push(*said);
+                    continue;
+                };
                 let branch_marker = match self.first_divergent_version {
                     Some(d) if entry.version >= d => Some(*said),
                     _ => None,
                 };
-                out.insert(
-                    *said,
-                    IelChainPosition {
-                        version: entry.version,
-                        kind: entry.kind,
-                        said: *said,
-                        branch_marker,
-                    },
-                );
+                found.push(IelChainPosition {
+                    version: entry.version,
+                    kind: entry.kind,
+                    said: *said,
+                    branch_marker,
+                });
             }
-            Ok(out)
+            Ok(IelChainPositionBatch { found, missing })
         }
 
         async fn resolve_identity_for_event(

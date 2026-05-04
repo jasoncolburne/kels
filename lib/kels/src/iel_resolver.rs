@@ -259,27 +259,61 @@ impl IelResolver for AnchoredIelResolver {
         &self,
         identity: &cesr::Digest256,
         said: &cesr::Digest256,
-    ) -> Result<bool, KelsError> {
+    ) -> Result<crate::IelSatisfaction, KelsError> {
         // The verifier walks the IEL with `queried_saids` registered (set
         // at construction). After the walk, `is_said_satisfied` is the
         // direct answer. The fetch step doubles as the chain-integrity
-        // check: `MissingIelEvent` (deferrable) or `IdentityBindingViolation`
-        // (permanent) propagates from the trait's existing
-        // `fetch_iel_event` if the SAID isn't in the named IEL or has a
-        // prefix mismatch.
-        let _ = self.fetch_iel_event(identity, said).await?;
+        // check: missing-by-SAID surfaces `MissingIelEvent`, which we
+        // re-classify into `IelSatisfaction::MissingEvent` (deferrable);
+        // cross-IEL contamination surfaces `IdentityBindingViolation`,
+        // re-classified into `IelSatisfaction::PermanentFailure`. In-chain
+        // auth-fail surfaces as `IelSatisfaction::AuthFailed` (the SE
+        // verifier's soft-eligible carve-out path; wire-permanent).
+        match self.fetch_iel_event(identity, said).await {
+            Ok(_) => {}
+            Err(KelsError::MissingIelEvent(dep)) => {
+                return Ok(crate::IelSatisfaction::MissingEvent {
+                    iel_prefix: dep.iel_prefix,
+                    event_said: dep.event_said,
+                });
+            }
+            Err(KelsError::IdentityBindingViolation(violation)) => {
+                return Ok(crate::IelSatisfaction::PermanentFailure(violation));
+            }
+            Err(other) => return Err(other),
+        }
         let verification = self.verification_for(identity).await?;
-        Ok(verification.is_said_satisfied(said))
+        if verification.is_said_satisfied(said) {
+            Ok(crate::IelSatisfaction::Satisfied)
+        } else {
+            Ok(crate::IelSatisfaction::AuthFailed {
+                reason: format!(
+                    "IEL event {} did not satisfy IEL verification \
+                     (auth-fail or post-IEL-divergence soft) in IEL {}",
+                    said, identity,
+                ),
+            })
+        }
     }
 
     async fn iel_chain_positions(
         &self,
         identity: &cesr::Digest256,
         saids: &[cesr::Digest256],
-    ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError> {
+    ) -> Result<crate::IelChainPositionBatch, KelsError> {
         if saids.is_empty() {
-            return Ok(HashMap::new());
+            return Ok(crate::IelChainPositionBatch {
+                found: Vec::new(),
+                missing: Vec::new(),
+            });
         }
+
+        // Dedup input per the partial-results contract — multiple callers
+        // may pass the same SAID twice, and the wire-format dep emission
+        // upstream wants distinct entries.
+        let mut deduped: Vec<cesr::Digest256> = saids.to_vec();
+        deduped.sort();
+        deduped.dedup();
 
         // One verification call to learn the divergence point.
         let verification = self.verification_for(identity).await?;
@@ -290,17 +324,19 @@ impl IelResolver for AnchoredIelResolver {
         // every event in one extra page walk and walk back in-memory, so
         // each post-divergence SAID resolves its branch identity in
         // O(divergent-depth) hashmap hops with no extra HTTP cost.
-        let found = if diverged_at.is_some() {
+        let chain = if diverged_at.is_some() {
             self.collect_all_events(identity).await?
         } else {
-            self.collect_events_by_said(identity, saids).await?
+            self.collect_events_by_said(identity, &deduped).await?
         };
 
-        let mut positions: HashMap<cesr::Digest256, IelChainPosition> = HashMap::new();
-        for said in saids {
-            let event = found
-                .get(said)
-                .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
+        let mut found: Vec<IelChainPosition> = Vec::new();
+        let mut missing: Vec<cesr::Digest256> = Vec::new();
+        for said in &deduped {
+            let Some(event) = chain.get(said) else {
+                missing.push(*said);
+                continue;
+            };
 
             // #147 follow-up: walk back from each post-divergence
             // SAID to its branch's first-divergent ancestor. The ancestor's
@@ -310,23 +346,20 @@ impl IelResolver for AnchoredIelResolver {
             // `IelDivergent`). Pre-divergence events keep `None`.
             let branch_marker = match diverged_at {
                 Some(threshold) if event.version >= threshold => Some(
-                    walk_back_to_branch_identity(&found, *said, threshold, identity)?,
+                    walk_back_to_branch_identity(&chain, *said, threshold, identity)?,
                 ),
                 _ => None,
             };
 
-            positions.insert(
-                *said,
-                IelChainPosition {
-                    version: event.version,
-                    kind: event.kind,
-                    said: event.said,
-                    branch_marker,
-                },
-            );
+            found.push(IelChainPosition {
+                version: event.version,
+                kind: event.kind,
+                said: event.said,
+                branch_marker,
+            });
         }
 
-        Ok(positions)
+        Ok(crate::IelChainPositionBatch { found, missing })
     }
 
     async fn resolve_identity_for_event(
@@ -502,12 +535,15 @@ mod tests {
 
     #[async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<crate::types::AnchorEvaluation, KelsError> {
+            Ok(crate::types::AnchorEvaluation {
+                satisfied: true,
+                missing_anchors: Vec::new(),
+            })
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)

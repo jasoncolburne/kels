@@ -439,12 +439,15 @@ impl IelVerifier {
             }
 
             // Soft anchor check — Icp self-authorization. Failure leaves the
-            // chain in `policy_satisfied=false` but does not abort.
-            let icp_anchored = self
+            // chain in `policy_satisfied=false` but does not abort. Gap 2
+            // consumes only `evaluation.satisfied` for behavior-equivalence;
+            // Gap 3's collect-mode walk will route
+            // `evaluation.missing_anchors` into the deferrable accumulator.
+            let icp_evaluation = self
                 .checker
-                .is_anchored(&event.said, &event.auth_policy)
+                .evaluate(&event.said, &event.auth_policy)
                 .await?;
-            if !icp_anchored {
+            if !icp_evaluation.satisfied {
                 self.policy_satisfied = false;
             }
 
@@ -463,7 +466,7 @@ impl IelVerifier {
             // Satisfied-saids tracking. Icp at v=0 is structurally
             // pre-divergence (divergence is detected at v>=1 when a
             // generation has 2+ events).
-            if icp_anchored && self.queried_saids.contains(&event.said) {
+            if icp_evaluation.satisfied && self.queried_saids.contains(&event.said) {
                 self.satisfied_saids.insert(event.said);
             }
 
@@ -523,10 +526,11 @@ impl IelVerifier {
             // and bouncing the verification would lose pre-divergence reads).
             // Structural integrity rules (immunity, content preservation) stay
             // hard regardless of position — Cnt doesn't change well-formedness.
-            let governance_satisfied = self
+            let governance_evaluation = self
                 .checker
-                .is_anchored(&event.said, &branch.tracked_governance_policy)
+                .evaluate(&event.said, &branch.tracked_governance_policy)
                 .await?;
+            let governance_satisfied = governance_evaluation.satisfied;
             let post_divergence = self.diverged_at_version.is_some_and(|d| event.version >= d);
 
             match event.kind {
@@ -738,6 +742,7 @@ impl IelVerifier {
 #[allow(clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::types::AnchorEvaluation;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
@@ -745,17 +750,31 @@ mod tests {
 
     const TEST_TOPIC: &str = "kels/iel/v1/identity/test";
 
+    fn pass() -> AnchorEvaluation {
+        AnchorEvaluation {
+            satisfied: true,
+            missing_anchors: Vec::new(),
+        }
+    }
+
+    fn fail() -> AnchorEvaluation {
+        AnchorEvaluation {
+            satisfied: false,
+            missing_anchors: Vec::new(),
+        }
+    }
+
     /// Test fake: every (said, policy) anchor passes; every policy is immune.
     struct AlwaysPassChecker;
 
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(pass())
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
@@ -768,12 +787,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PolicyChecker for AnchorRejectChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(false)
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(fail())
         }
         async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
@@ -788,12 +807,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PolicyChecker for ImmuneOnlyForChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(pass())
         }
         async fn is_immune(&self, policy: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(*policy == self.immune)
@@ -808,12 +827,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PolicyChecker for ImmuneSetChecker {
-        async fn is_anchored(
+        async fn evaluate(
             &self,
             _: &cesr::Digest256,
             _: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(true)
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(pass())
         }
         async fn is_immune(&self, policy: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(self.immune.contains(policy))
@@ -1363,12 +1382,15 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl PolicyChecker for RejectSpecific {
-            async fn is_anchored(
+            async fn evaluate(
                 &self,
                 said: &cesr::Digest256,
                 _: &cesr::Digest256,
-            ) -> Result<bool, KelsError> {
-                Ok(said != &self.reject)
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Ok(AnchorEvaluation {
+                    satisfied: said != &self.reject,
+                    missing_anchors: Vec::new(),
+                })
             }
             async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
                 Ok(true)
