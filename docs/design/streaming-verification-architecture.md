@@ -95,6 +95,35 @@ Comparing state to decide whether to sync. A wrong answer triggers an unnecessar
 
 Examples: `effective_tail_said` endpoint, anti-entropy comparison, `should_add_rot_with_recover()`
 
+## Effective SAID Synthetic Comparison
+
+The effective SAID is the canonical chain-tip representation across KEL, IEL, and SEL primitives. It serves two roles: identifying the chain's current state, and enabling cross-node recognition of that state without any chain-data exchange.
+
+**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID. Decommissioned IEL chains (via Dec) carry the Dec event's real SAID. Two states have synthetic representations:
+
+- `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some version.
+- `hash_effective_said("contested:{prefix}")` — chain has reached a Cnt event and is permanently frozen.
+
+The synthetic depends only on `(state, prefix)` — no chain history, no fork point, no version. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
+
+**Cross-node coordination primitive.** Effective SAIDs travel on the wire — gossip announcements, sadstore 422 responses, `/effective-said` endpoints. Two nodes whose chain `P` is divergent (perhaps at different fork points) compute and exchange the same `hash_effective_said("divergent:P")`. This is what lets nodes recognize each other's chain state without exchanging the chains themselves. Encoding fork-point or version into the synthetic would break this — node A and node B couldn't recognize each other's "divergent for P" state if their representations differed.
+
+**State-detection algorithm.** Given an observed effective SAID for prefix `P`, a node tests:
+
+1. `observed == hash_effective_said("divergent:{P}")` → chain is divergent.
+2. `observed == hash_effective_said("contested:{P}")` → chain is contested (Cnt'd, terminal).
+3. Otherwise → chain has a real tip event SAID; for IEL this may be a Dec event tip (use the chain's per-event lookup to disambiguate if needed); for KEL this is always a normal tip.
+
+States are mutually exclusive at any instant — at most one synthetic-match holds. Cnt is terminal, so a contested chain cannot also be divergent at the same point in time; divergence is by definition pre-Cnt.
+
+A node observing an effective SAID for a prefix it has no local state for can still compute the synthetics: the function is `(state, prefix) → SAID` with no chain-history input. This is what lets a peer recognize "your chain P is contested" purely from the observed SAID, even on first contact.
+
+The canonical helper is `hash_effective_said(input: &str)` in `lib/kels/src/types/sync.rs`. Inputs follow the `"<state>:{prefix-qb64}"` shape.
+
+This is the canonical "is this chain in state X" question. Use cases include gossip drain dispatch (see issue #156's deferred-deps mechanism), local fail-fast checks before chain-data exchange, and verifier-output classification.
+
+**Why divergence resolution doesn't need fork-point detail.** Differently-divergent chains across nodes are resolved through local `Cnt` (chain becomes contested, terminal) or local `Rec` (revealing event that locks the KEL alongside resolving). Cross-node sync of differently-divergent chains is intentionally not attempted — chains that can't be replayed deterministically must be resolved locally. The synthetic abstraction's prefix-only shape aligns with this design choice: a node receiving a divergent-effective-SAID from a peer learns "peer's chain is divergent" but cannot (and should not try to) reconcile against its own divergent state.
+
 ## Inline Anchor Checking
 
 Register SAIDs to check with `verifier.check_anchors(saids)` before starting the walk. As the verifier processes events, it checks each event's `anchor` field against the queried SAIDs. Anchors must be valid CESR digests (Blake3-256, 44-char base64url). Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
