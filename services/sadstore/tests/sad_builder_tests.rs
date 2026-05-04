@@ -2281,6 +2281,56 @@ async fn custody_write_unanchored_sad_rejected() {
 
 #[tokio::test]
 #[serial]
+async fn custody_write_unknown_iel_event_rejected() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let setup = setup_kel_iel_policy(harness, "custody-write-unknown").await;
+
+    // custody.write references a SAID that doesn't exist in any IEL on
+    // this server → resolve_identity_for_event surfaces BadIdentityBinding
+    // → 400.
+    let bogus = cesr::Digest256::blake3_256(b"not-in-any-iel");
+    let value = build_write_gated_sad(&bogus, "unknown-iel-event");
+
+    let result = setup.sad_client.post_sad_object(&value).await;
+    assert_err_contains(
+        result,
+        "not locally known",
+        "custody.write referencing unknown IEL event must be rejected",
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn custody_read_only_anonymous_post_accepted() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let setup = setup_kel_iel_policy(harness, "custody-read-only").await;
+
+    // Anonymous drop-box pattern (#167 four-combinations table, row 3):
+    // custody.read = Some(prefix), custody.write = None. Write-enforcement
+    // path is bypassed (no `write` field); read enforcement applies on
+    // fetch only. POST should land at 201.
+    let mut value = serde_json::json!({
+        "said": "",
+        "custody": { "read": setup.iel_prefix.to_string() },
+        "payload": "drop-box",
+    });
+    value.derive_said().expect("derive canonical SAID");
+    let canonical_said = value.get_said();
+
+    let posted = setup
+        .sad_client
+        .post_sad_object(&value)
+        .await
+        .expect("anonymous drop-box (custody.read only) accepted at POST");
+    assert_eq!(posted, canonical_said);
+}
+
+#[tokio::test]
+#[serial]
 async fn custody_read_unauthenticated_fetch_rejected() {
     let Some(harness) = get_harness().await else {
         return;

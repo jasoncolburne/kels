@@ -48,6 +48,31 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ## Open
 
+### [Issue #167 → Issue #82] Read-enforcement positive-path + IEL-state-mapping test cells deferred
+
+#167's test plan calls for read-enforcement cells covering:
+
+- Authenticated fetch with valid IEL identity → 200 (positive case).
+- Read against IEL not locally known → 403.
+- Read against divergent IEL → 503.
+- Read against contested IEL → 403.
+- Read against decommissioned IEL → 403.
+- Identity-current behavior: read passes after KEL rotation under the same IEL.
+
+Shipped: `custody_read_unauthenticated_fetch_rejected` (the no-SignedRequest 403 path; `services/sadstore/tests/sad_builder_tests.rs`). The remaining cells are deferred.
+
+**Why deferred.** All five remaining cells require the request to be authenticated, which requires:
+
+1. A `PeerSigner` over the KEL owner's `SoftwareKeyProvider` (the existing harness moves the provider into `KeyEventBuilder`, so the test would need a parallel keyed signer).
+2. The shared sadstore harness modified to pass `redis_url` to `kels_sadstore::run` (currently `None` at `services/sadstore/tests/sad_builder_tests.rs:227` — `state.redis_conn` is `None`, and `authenticate_peer_request` early-returns 403 with "Peer verification unavailable in standalone mode").
+3. Direct injection of `kels:verified-peer:{prefix}` Redis entries (the harness has empty `registry_urls`, so the registry-fetch peer-cache refresh path is a no-op).
+
+That's a ~150–250-line test-infrastructure expansion across a harness used by 30+ existing tests, with non-trivial regression risk on the unrelated SE-builder coverage. The federation-peer-auth surface is being reworked under #82 (service access control via `AuthorizedPayload<T>`); the test infrastructure built now would be replaced.
+
+**Code paths ARE in place.** `verify_custody_read` (`services/sadstore/src/handlers.rs`) and `custody_read_resolver_error` map `KelsError::NotFound`/`IelDivergent`/`ContestedIel`/`IelDecommissioned` to the right HTTP status codes (403/503/403/403). Code review confirms the contract; only execution-time pinning is missing.
+
+**Resolution.** When #82 lands the credential-gated request infrastructure, retrofit the read-side cells against that. If a regression in this code path is observed before #82, the deployment-test sweep (`clients/test/scripts/test-sadstore.sh`) is the catch-all.
+
 ### [Round-12 review fix → pre-production / #152] `is_satisfied` per-call IEL re-verification
 
 `AnchoredIelResolver::is_satisfied` and `RepositoryIelResolver::is_satisfied` each rebuild the full `IelVerification` token on every call (now via the shared `verify_identity_events_with_queried` helper). For an SE chain with N v1+ events, that's N IEL walks per SE verification — bounded by `max_pages × page_size = 4096` events per walk at default config.
