@@ -464,18 +464,27 @@ impl SelVerifier {
                 .await
             {
                 Ok(_) => {}
-                Err(KelsError::MissingIelEvent(dep)) if self.collecting => {
-                    self.deferred_failures
-                        .push(DeferredFailure::missing_iel_event(
-                            dep.iel_prefix,
-                            dep.event_said,
-                        ));
+                Err(KelsError::MissingIelEvent(_)) if auth_soft_eligible => {
+                    // Soft-eligible (terminal or post-SE-divergence):
+                    // chain still lands; missing IEL event isn't accumulated
+                    // — soft-fail is the intentional behavior.
                     self.policy_satisfied = false;
                     if is_terminal {
                         self.record_terminal_landing(event, &mut new_branches, branch, false);
                     } else {
                         Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
                     }
+                    continue;
+                }
+                Err(KelsError::MissingIelEvent(dep)) if self.collecting => {
+                    // HARD-mode collect path: accumulate + soft-fail-style.
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_iel_event(
+                            dep.iel_prefix,
+                            dep.event_said,
+                        ));
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -552,9 +561,10 @@ impl SelVerifier {
                     iel_prefix,
                     event_said,
                 } => {
-                    if self.collecting {
-                        self.deferred_failures
-                            .push(DeferredFailure::missing_iel_event(iel_prefix, event_said));
+                    // Soft-eligible takes precedence: terminals /
+                    // post-SE-divergence land soft regardless of
+                    // bound IEL event state.
+                    if auth_soft_eligible {
                         self.policy_satisfied = false;
                         if is_terminal {
                             self.record_terminal_landing(event, &mut new_branches, branch, false);
@@ -565,6 +575,13 @@ impl SelVerifier {
                                 branch,
                             );
                         }
+                        continue;
+                    }
+                    if self.collecting {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_iel_event(iel_prefix, event_said));
+                        self.policy_satisfied = false;
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
                         continue;
                     }
                     return Err(KelsError::missing_iel_event(iel_prefix, event_said));
@@ -582,17 +599,13 @@ impl SelVerifier {
             let evaluation = self.checker.evaluate(&event.said, &resolved_policy).await?;
 
             if !evaluation.satisfied {
-                // Collect-mode (#156): if the policy could be satisfied by
-                // a missing anchor's commitment, accumulate each as a
-                // deferrable failure and soft-fail-style continue. The
-                // empty-`missing_anchors` case (policy permanently
-                // unsatisfiable) falls through to the legacy soft-eligible
-                // / hard path below.
-                if self.collecting && !evaluation.missing_anchors.is_empty() {
-                    for kel_prefix in &evaluation.missing_anchors {
-                        self.deferred_failures
-                            .push(DeferredFailure::missing_kel_anchor(*kel_prefix, event.said));
-                    }
+                // Soft-eligible path (terminals + post-SE-divergence)
+                // takes precedence over collect-mode accumulation.
+                // Terminals are intentionally soft-fail — the chain
+                // still lands as terminal regardless of anchor state;
+                // accumulating their anchors as deferrable would prevent
+                // the expected terminal landing.
+                if auth_soft_eligible {
                     self.policy_satisfied = false;
                     if is_terminal {
                         self.record_terminal_landing(event, &mut new_branches, branch, false);
@@ -601,13 +614,19 @@ impl SelVerifier {
                     }
                     continue;
                 }
-                if auth_soft_eligible {
-                    self.policy_satisfied = false;
-                    if is_terminal {
-                        self.record_terminal_landing(event, &mut new_branches, branch, false);
-                    } else {
-                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                // Collect-mode (#156) for the otherwise-HARD path: if the
+                // policy could be satisfied by a missing anchor's
+                // commitment, accumulate each as a deferrable failure and
+                // soft-fail-style continue. Empty `missing_anchors`
+                // (policy permanently unsatisfiable) falls through to
+                // hard-fail.
+                if self.collecting && !evaluation.missing_anchors.is_empty() {
+                    for kel_prefix in &evaluation.missing_anchors {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_kel_anchor(*kel_prefix, event.said));
                     }
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
                     continue;
                 }
                 return Err(KelsError::VerificationFailed(format!(

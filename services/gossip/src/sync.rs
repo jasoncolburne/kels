@@ -488,23 +488,29 @@ impl SyncHandler {
 
         // Mark as recently stored BEFORE storing to prevent Redis feedback loop.
         // The POST will publish to Redis `sad_updates`, which the subscriber checks
-        // against this cache key.
-        {
-            let cache_key = format!("sad-object:{}", said);
-            self.recently_stored
-                .write()
-                .await
-                .insert(cache_key, Instant::now());
-        }
+        // against this cache key. #156: the mark must be cleared on
+        // non-2xx local POST so subsequent peer announcements for the
+        // same SAID aren't filtered while the dep is still missing
+        // (alternate-peer recovery path stays open during the deferred
+        // window). Mirrors the existing clear-on-Err pattern in
+        // `handle_sel_announcement` (~line 636) and
+        // `handle_iel_announcement` (~line 765).
+        let cache_key = format!("sad-object:{}", said);
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
 
         // Fetch from remote and store locally
         match remote_client.get_sad_object(said).await {
             Ok(object) => {
                 if let Err(e) = local_client.post_sad_object(&object).await {
+                    self.recently_stored.write().await.remove(&cache_key);
                     warn!("Failed to store SAD object {} locally: {}", said, e);
                 }
             }
             Err(e) => {
+                self.recently_stored.write().await.remove(&cache_key);
                 warn!("Failed to fetch SAD object {} from {}: {}", said, origin, e);
             }
         }

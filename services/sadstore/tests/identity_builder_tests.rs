@@ -865,13 +865,17 @@ async fn submit_rejects_icp_not_anchored_under_declared_auth_policy() {
         setup_kel_and_immune_policy(harness, "icp-anchor-gate").await;
 
     // Submit Icp WITHOUT calling kel_builder.interact — the auth_policy
-    // requires `endorse(KEL_PREFIX)` to anchor the Icp.said in this KEL, and
-    // we deliberately skip that step. Handler returns "IEL anchoring not
-    // satisfied — Icp must be anchored under its declared auth_policy".
+    // requires `endorse(KEL_PREFIX)` to anchor the Icp.said in this KEL,
+    // and we deliberately skip that step. Per #156 collect-mode, the
+    // missing anchor surfaces as a deferrable `kel_anchor` dep on a
+    // typed 422 `DeferredDepsResponse` (the gossip park layer would
+    // wait for the anchor to arrive). The response body carries the
+    // `kel_anchor` shape — assert against it rather than the legacy
+    // permanent-403 message.
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
     let resp = sad_client.submit_identity_events(&[v0]).await;
-    assert_err_contains(&resp, "anchoring not satisfied");
-    assert_err_contains(&resp, "auth_policy");
+    assert_err_contains(&resp, "kel_anchor");
+    assert_err_contains(&resp, "anchorSaid");
 }
 
 #[tokio::test]

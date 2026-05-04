@@ -593,13 +593,17 @@ enum GossipPolicy {
 /// #167 `custody.write` enforcement. Resolves the named IEL event's
 /// `auth_policy` and confirms the SAD's canonical SAID is anchored under it.
 ///
-/// Errors map to HTTP responses:
-/// - Missing IEL event (`MissingIelEvent` / `IdentityBindingViolation`) →
-///   400 with stable shape; #156 (Gap 4) retrofits this to a typed 422
-///   with `iel_event` dep type via the deferred-deps protocol.
-/// - Divergent / contested / decommissioned IEL → 400 (the chain can't
-///   authoritatively prove auth_policy was satisfied at the named event).
-/// - Anchor not satisfied → 403.
+/// Errors map to HTTP responses (#156 §Status-code intersection):
+/// - Missing IEL event (`MissingIelEvent`) → 400 (custody.write
+///   resolver-side surface; full typed-422 retrofit deferred — see
+///   `docs/deviations` for the iel_prefix-context gap on the
+///   `resolve_identity_for_event` SAID-only call).
+/// - `IdentityBindingViolation` (cross-IEL contamination, walk-back
+///   failure, SAID-not-found-in-any-IEL) → 400 (permanent).
+/// - Divergent / contested / decommissioned IEL → 403 (permanent;
+///   spec status: chain can't authoritatively prove auth_policy was
+///   satisfied at the named event).
+/// - Anchor not satisfied → 403 (permanent).
 /// - Storage / resolver failure → 500.
 #[allow(clippy::result_large_err)]
 async fn verify_custody_write(
@@ -683,12 +687,17 @@ fn custody_write_resolver_error(err: kels_core::KelsError) -> axum::response::Re
         )
             .into_response(),
         KelsError::IelDivergent(msg) => (
-            StatusCode::BAD_REQUEST,
+            // #156 spec: transient_chain_state → 422. Full typed-422
+            // retrofit (with `chain_eff_said` lookup + DeferredDepsResponse
+            // body) deferred — current shape preserves caller substring
+            // matching while the gossip park layer (Gap 5/6) is wired.
+            StatusCode::UNPROCESSABLE_ENTITY,
             format!("custody.write IEL event sits past divergence: {}", msg),
         )
             .into_response(),
         KelsError::ContestedIel(msg) | KelsError::IelDecommissioned(msg) => (
-            StatusCode::BAD_REQUEST,
+            // #156 spec: terminal IEL → 403 (permanent). Updated from 400.
+            StatusCode::FORBIDDEN,
             format!("custody.write IEL is terminal: {}", msg),
         )
             .into_response(),
@@ -1233,6 +1242,153 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
     Ok(())
 }
 
+/// #156: build a typed 422 response from accumulated deferrable failures.
+///
+/// Converts each `DeferredFailure` into a wire-format `MissingDependency`,
+/// resolving the chain's current effective SAID at the per-dep level. KEL
+/// effective SAID comes from the kels-client; IEL effective SAID comes
+/// from the local IEL repository. When the local lookup misses (chain
+/// truly unknown locally), falls back to the divergent synthetic — gossip
+/// drain's chain-update branch can still wake the parked entry on the
+/// chain's next state advance.
+///
+/// Deduplicates at the wire-format level (same `(type, prefix, said)`
+/// only emitted once per response); the verifier-side accumulator may
+/// contain duplicates from multiple gates within the walk.
+async fn build_deferred_deps_response(
+    state: &AppState,
+    failures: &[kels_core::DeferredFailure],
+) -> axum::response::Response {
+    let mut missing = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for failure in failures {
+        match failure {
+            kels_core::DeferredFailure::MissingIelEvent(dep) => {
+                let key = format!("iel:{}:{}", dep.iel_prefix, dep.event_said);
+                if !seen.insert(key) {
+                    continue;
+                }
+                let chain_eff_said =
+                    match state.repo.iel_events.effective_said(&dep.iel_prefix).await {
+                        Ok(Some((said, _is_synthetic))) => said,
+                        _ => {
+                            kels_core::hash_effective_said(&format!("divergent:{}", dep.iel_prefix))
+                        }
+                    };
+                missing.push(kels_core::MissingDependency::IelEvent {
+                    iel_prefix: dep.iel_prefix,
+                    event_said: dep.event_said,
+                    chain_eff_said,
+                });
+            }
+            kels_core::DeferredFailure::MissingKelAnchor(dep) => {
+                let key = format!("kel:{}:{}", dep.kel_prefix, dep.anchor_said);
+                if !seen.insert(key) {
+                    continue;
+                }
+                let chain_eff_said = match state
+                    .kels_client
+                    .fetch_effective_said(&dep.kel_prefix)
+                    .await
+                {
+                    Ok(Some((said, _))) => said,
+                    _ => kels_core::hash_effective_said(&format!("divergent:{}", dep.kel_prefix)),
+                };
+                missing.push(kels_core::MissingDependency::KelAnchor {
+                    kel_prefix: dep.kel_prefix,
+                    anchor_said: dep.anchor_said,
+                    chain_eff_said,
+                });
+            }
+        }
+    }
+
+    let body = kels_core::DeferredDepsResponse::new(missing, Vec::new());
+    let json = match serde_json::to_string(&body) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to serialize DeferredDepsResponse: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "serialization failure").into_response();
+        }
+    };
+
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        json,
+    )
+        .into_response()
+}
+
+/// #156 helper: drive an `SelVerifier` in collect-mode through
+/// `verify_page_collecting` + `finish_collecting`, mapping outcomes to:
+///
+/// - `Ok(verification)` — chain verified cleanly, no deferrable deps.
+/// - `Err(response: 422)` — deferrable deps accumulated; typed
+///   [`DeferredDepsResponse`] with chain effective SAIDs resolved.
+/// - `Err(response: 4xx)` — permanent failure (legacy 4xx shape).
+///
+/// Caller is responsible for `tx.rollback()` before returning the response.
+async fn verify_sel_chain_collecting(
+    state: &AppState,
+    verifier: kels_core::SelVerifier,
+    new_events: &[kels_core::SadEvent],
+) -> Result<kels_core::SelVerification, axum::response::Response> {
+    let mut verifier = verifier;
+    if let Err(e) = verifier.verify_page_collecting(new_events).await {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("SAD event verification failed: {}", e),
+        )
+            .into_response());
+    }
+    let (verification, deferred) = match verifier.finish_collecting().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Chain verification failed: {}", e),
+            )
+                .into_response());
+        }
+    };
+    if !deferred.is_empty() {
+        return Err(build_deferred_deps_response(state, &deferred).await);
+    }
+    Ok(verification)
+}
+
+/// #156 helper: drive an `IelVerifier` in collect-mode. Mirrors
+/// [`verify_sel_chain_collecting`].
+async fn verify_iel_chain_collecting(
+    state: &AppState,
+    verifier: kels_core::IelVerifier,
+    new_events: &[kels_core::IdentityEvent],
+) -> Result<kels_core::IelVerification, axum::response::Response> {
+    let mut verifier = verifier;
+    if let Err(e) = verifier.verify_page_collecting(new_events).await {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("IEL event verification failed: {}", e),
+        )
+            .into_response());
+    }
+    let (verification, deferred) = match verifier.finish_collecting().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("IEL chain verification failed: {}", e),
+            )
+                .into_response());
+        }
+    };
+    if !deferred.is_empty() {
+        return Err(build_deferred_deps_response(state, &deferred).await);
+    }
+    Ok(verification)
+}
+
 /// Submit SAD events — unified endpoint for clients, gossip sync, and repair.
 ///
 /// Accepts `Vec<SadEvent>`. Validates structure (SAID, prefix consistency)
@@ -1687,21 +1843,10 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return response;
             }
-            if let Err(e) = verifier.verify_page(&new_events).await {
+            if let Err(response) = verify_sel_chain_collecting(&state, verifier, &new_events).await
+            {
                 let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("SAD event verification failed: {}", e),
-                )
-                    .into_response();
-            }
-            if let Err(e) = verifier.finish().await {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Chain verification failed: {}", e),
-                )
-                    .into_response();
+                return response;
             }
 
             // Insert each Cnt with `insert_event` (mirrors IEL Cnt path):
@@ -1767,21 +1912,10 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return response;
             }
-            if let Err(e) = verifier.verify_page(&new_events).await {
+            if let Err(response) = verify_sel_chain_collecting(&state, verifier, &new_events).await
+            {
                 let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("SAD event verification failed: {}", e),
-                )
-                    .into_response();
-            }
-            if let Err(e) = verifier.finish().await {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Chain verification failed: {}", e),
-                )
-                    .into_response();
+                return response;
             }
 
             // Same shape as the SE Cnt insert above — failure post-dedup-
@@ -1848,25 +1982,14 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return response;
             }
-            if let Err(e) = verifier.verify_page(&new_events).await {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("SAD event verification failed: {}", e),
-                )
-                    .into_response();
-            }
-            let verification = match verifier.finish().await {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        format!("Chain verification failed: {}", e),
-                    )
-                        .into_response();
-                }
-            };
+            let verification =
+                match verify_sel_chain_collecting(&state, verifier, &new_events).await {
+                    Ok(v) => v,
+                    Err(response) => {
+                        let _ = tx.rollback().await;
+                        return response;
+                    }
+                };
 
             if !verification.policy_satisfied() {
                 let _ = tx.rollback().await;
@@ -2441,23 +2564,11 @@ pub async fn submit_identity_events(
             let _ = tx.rollback().await;
             return response;
         }
-        if let Err(e) = verifier.verify_page(&new_events).await {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("IEL event verification failed: {}", e),
-            )
-                .into_response();
-        }
-        let verification = match verifier.finish().await {
+        let verification = match verify_iel_chain_collecting(&state, verifier, &new_events).await {
             Ok(v) => v,
-            Err(e) => {
+            Err(response) => {
                 let _ = tx.rollback().await;
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("IEL chain verification failed: {}", e),
-                )
-                    .into_response();
+                return response;
             }
         };
 

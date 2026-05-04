@@ -1,6 +1,7 @@
 //! KELS types for API requests and responses
 
 mod auth;
+mod deferred_deps;
 mod error;
 mod federation;
 mod gossip;
@@ -12,6 +13,7 @@ mod sad;
 mod sync;
 
 pub use auth::*;
+pub use deferred_deps::*;
 pub use error::*;
 pub use federation::*;
 pub use gossip::*;

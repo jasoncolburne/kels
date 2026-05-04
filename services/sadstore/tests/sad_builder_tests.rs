@@ -826,10 +826,16 @@ async fn update_rejects_when_anchor_not_anchored_under_iel_resolved_auth_policy(
         .expect("anchor icp");
 
     let result = builder.flush().await;
+    // Post-#156 collect-mode: an unanchored Upd at non-terminal
+    // pre-divergence position is deferrable (the missing anchor *could*
+    // commit later), so the server returns a typed 422 with a
+    // `kel_anchor` dep instead of the legacy permanent-403 "not anchored"
+    // message. The chain does not advance; the gossip park layer would
+    // wait for the anchor to arrive.
     assert_err_contains(
         result,
-        "not anchored",
-        "govfailed Upd must HARD-fail (chain does not advance)",
+        "kel_anchor",
+        "govfailed Upd surfaces as deferrable kel_anchor dep (chain does not advance)",
     );
 }
 
@@ -1320,10 +1326,14 @@ async fn update_rejects_when_identity_event_unknown_in_iel() {
     setup.kel_builder.interact(&upd.said).await.unwrap();
 
     let result = setup.sad_client.submit_sel_events(&[upd]).await;
+    // Post-#156 collect-mode: an unknown IEL event for a non-terminal
+    // pre-divergence Upd is deferrable, so the server returns a typed
+    // 422 with an `iel_event` dep (gossip park layer would wait for the
+    // bound IEL event to arrive locally).
     assert_err_contains(
         result,
-        "Missing IEL event",
-        "unknown identity_event must surface MissingIelEvent",
+        "iel_event",
+        "unknown identity_event surfaces as deferrable iel_event dep",
     );
 }
 
