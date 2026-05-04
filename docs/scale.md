@@ -56,7 +56,7 @@ This pattern parallels how BitTorrent and IPFS scale past 10M peers: partition t
 - **#153** — SAD object discovery at scale (CascadingSadStore) lets per-peer SEL discovery work without an O(N) snapshot fetch. Lives under #160.
 - **#156** — cross-chain dependency race + deferred-deps mechanism. Receiver-side resilience under gossip race; without it, per-node verification destabilizes under load before the network-scale ceilings even surface. Lives under #159.
 - **#162** — client-side dep-graph caching strategy. Reduces per-node verification cost by amortizing repeated dep-walks within a client session.
-- **#159** (tracker) — operational scaling within one deployment (Postgres pool, multi-replica HA, object store, bench tooling). Independent of network-scale concerns; lives one layer down.
+- **#159** (tracker) — operational scaling within one deployment (Postgres pool, multi-replica HA, object store, bench tooling, multi-pod gossip horizontal scaling). Independent of network-scale concerns; lives one layer down.
 
 ## Open questions
 
