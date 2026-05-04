@@ -547,10 +547,29 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         });
     }
 
+    // #156: build the deferred-deps drain executor and the pending map
+    // used by the inbound park flow. Both share the same PendingMap so
+    // park (sync handler) and drain (subscribers) coordinate via Redis.
+    // Both are `None` when Redis is unavailable — graceful degradation
+    // (park flow logs and drops 422; subscribers skip drain dispatch).
+    let pending_map: Option<pending::PendingMap> =
+        redis_conn_manager.clone().map(pending::PendingMap::new);
+    let drain_executor: Option<sync::DrainExecutor> = match pending_map.clone() {
+        Some(pm) => match sync::DrainExecutor::new(&config.sadstore_url(), allowlist.clone(), pm) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                error!("Failed to build DrainExecutor: {}", e);
+                None
+            }
+        },
+        None => None,
+    };
+
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
     let redis_local_kel_prefix = local_kel_prefix;
+    let redis_drain = drain_executor.clone();
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
@@ -558,6 +577,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 redis_local_kel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
+                redis_drain.clone(),
             )
             .await
             {
@@ -574,6 +594,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
     let sad_redis_local_kel_prefix = local_kel_prefix;
+    let sad_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
@@ -581,6 +602,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 sad_redis_local_kel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
+                sad_redis_drain.clone(),
             )
             .await
             {
@@ -597,6 +619,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let iel_redis_url = config.redis_url.clone();
     let iel_redis_recently_stored = recently_stored.clone();
     let iel_redis_local_kel_prefix = local_kel_prefix;
+    let iel_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_iel_redis_subscriber(
@@ -604,6 +627,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 iel_redis_local_kel_prefix,
                 iel_redis_command_tx.clone(),
                 iel_redis_recently_stored.clone(),
+                iel_redis_drain.clone(),
             )
             .await
             {
@@ -714,8 +738,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
     let sync_signer = registry_signer.clone();
-    let sync_pending: Option<pending::PendingMap> =
-        sync_redis.clone().map(pending::PendingMap::new);
+    let sync_pending = pending_map.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,

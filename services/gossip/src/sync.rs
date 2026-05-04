@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use cesr::Matter;
-use futures::{StreamExt, future::join_all};
+use futures::{StreamExt, future::join_all, stream};
 use kels_core::{
     DeferredDepsResponse, ErrorCode, KelsClient, KelsError, MissingDependency, PeerSigner,
     TransientChainState, hash_effective_said,
@@ -61,6 +61,7 @@ pub async fn run_redis_subscriber(
     local_kel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
+    drain: Option<DrainExecutor>,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -80,6 +81,26 @@ pub async fn run_redis_subscriber(
 
         debug!("Received Redis pub/sub message: {}", payload);
 
+        // #156: synthetic-SAID dispatch for drain. Always parse the
+        // announcement (cheaper than skipping; same path used for
+        // broadcast). Compare effective SAID against divergent synthetic
+        // — equal → no-op (parks waiting on this chain stay parked);
+        // otherwise (contested-synthetic, normal-tip, Dec'd-tip)
+        // re-evaluate every park enrolled on this prefix.
+        // Spec line 184 — re-eval, not drop-on-contested.
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+        if let (Some(ann), Some(drain)) = (parsed.as_ref(), drain.as_ref()) {
+            let divergent_synthetic = hash_effective_said(&format!("divergent:{}", ann.prefix));
+            if ann.said != divergent_synthetic {
+                drain.spawn_drain_by_chain(ann.prefix);
+            } else {
+                debug!(
+                    prefix = %ann.prefix,
+                    "kel_updates: divergent-synthetic, skipping drain"
+                );
+            }
+        }
+
         // Check if this was recently stored via gossip (feedback loop prevention).
         // The KELS service publishes {prefix}:{effective_said}, which matches the
         // cache key inserted by handle_announcement before forwarding.
@@ -95,7 +116,7 @@ pub async fn run_redis_subscriber(
             }
         }
 
-        if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
+        if let Some(ann) = parsed {
             debug!("Broadcasting: prefix={}, said={}", ann.prefix, ann.said);
             if command_tx.send(GossipCommand::Kel(ann)).await.is_err() {
                 error!("Failed to send announce command - channel closed");
@@ -121,6 +142,7 @@ pub async fn run_sad_redis_subscriber(
     local_kel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
+    drain: Option<DrainExecutor>,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -148,6 +170,57 @@ pub async fn run_sad_redis_subscriber(
 
         debug!(channel = %channel, payload = %payload, "SAD Redis message received");
 
+        let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
+            // Object update: payload is just the SAID
+            let said_digest = match cesr::Digest256::from_qb64(&payload) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!("Invalid SAID CESR in SAD Redis message: {}", e);
+                    continue;
+                }
+            };
+            // #156: dispatch drain by SAD object SAID — runs independently
+            // of the recently_stored feedback-loop suppression below
+            // (parks waiting on this SAID need to drain whether or not
+            // we just stored it ourselves; drain is inbound-only).
+            if let Some(drain) = drain.as_ref() {
+                drain.spawn_drain_by_sad(said_digest);
+            }
+            SadAnnouncement::Object {
+                said: said_digest,
+                origin: local_kel_prefix,
+            }
+        } else if channel == SEL_PUBSUB_CHANNEL {
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
+                // #156: synthetic-SAID dispatch — divergent → no-op,
+                // everything else (contested-synthetic, normal-tip,
+                // Dec'd-tip) → re-eval every park (spec line 184).
+                if let Some(drain) = drain.as_ref() {
+                    let divergent_synthetic =
+                        hash_effective_said(&format!("divergent:{}", ann.prefix));
+                    if ann.said != divergent_synthetic {
+                        drain.spawn_drain_by_chain(ann.prefix);
+                    } else {
+                        debug!(
+                            prefix = %ann.prefix,
+                            "sel_updates: divergent-synthetic, skipping drain"
+                        );
+                    }
+                }
+                SadAnnouncement::Event {
+                    prefix: ann.prefix,
+                    said: ann.said,
+                    origin: local_kel_prefix,
+                }
+            } else {
+                warn!(channel = %channel, payload = %payload, "Failed to parse SAD Event Log update");
+                continue;
+            }
+        } else {
+            warn!(channel = %channel, "Unexpected SAD Redis channel");
+            continue;
+        };
+
         // Feedback loop prevention — key format must match what the gossip
         // handlers insert before storing locally.
         {
@@ -163,35 +236,6 @@ pub async fn run_sad_redis_subscriber(
                 continue;
             }
         }
-
-        let gossip_message = if channel == SAD_PUBSUB_CHANNEL {
-            // Object update: payload is just the SAID
-            let said_digest = match cesr::Digest256::from_qb64(&payload) {
-                Ok(d) => d,
-                Err(e) => {
-                    warn!("Invalid SAID CESR in SAD Redis message: {}", e);
-                    continue;
-                }
-            };
-            SadAnnouncement::Object {
-                said: said_digest,
-                origin: local_kel_prefix,
-            }
-        } else if channel == SEL_PUBSUB_CHANNEL {
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
-                SadAnnouncement::Event {
-                    prefix: ann.prefix,
-                    said: ann.said,
-                    origin: local_kel_prefix,
-                }
-            } else {
-                warn!(channel = %channel, payload = %payload, "Failed to parse SAD Event Log update");
-                continue;
-            }
-        } else {
-            warn!(channel = %channel, "Unexpected SAD Redis channel");
-            continue;
-        };
 
         debug!("Broadcasting SAD announcement via gossip");
         if command_tx
@@ -219,6 +263,7 @@ pub async fn run_iel_redis_subscriber(
     local_kel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
+    drain: Option<DrainExecutor>,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -238,6 +283,23 @@ pub async fn run_iel_redis_subscriber(
 
         debug!(payload = %payload, "IEL Redis message received");
 
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+
+        // #156: synthetic-SAID dispatch — divergent → no-op, everything
+        // else (contested-synthetic, normal-tip, Dec event SAID) →
+        // re-eval every park enrolled on this prefix (spec line 184).
+        if let (Some(ann), Some(drain)) = (parsed.as_ref(), drain.as_ref()) {
+            let divergent_synthetic = hash_effective_said(&format!("divergent:{}", ann.prefix));
+            if ann.said != divergent_synthetic {
+                drain.spawn_drain_by_chain(ann.prefix);
+            } else {
+                debug!(
+                    prefix = %ann.prefix,
+                    "iel_updates: divergent-synthetic, skipping drain"
+                );
+            }
+        }
+
         // Feedback-loop prevention: same `iel:{prefix}:{said}` key the inbound
         // handler inserts before forwarding events locally.
         {
@@ -250,7 +312,7 @@ pub async fn run_iel_redis_subscriber(
             }
         }
 
-        let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) else {
+        let Some(ann) = parsed else {
             warn!(payload = %payload, "Failed to parse IEL update payload");
             continue;
         };
@@ -340,6 +402,15 @@ pub async fn run_mail_redis_subscriber(
 
 fn max_fetches_per_peer_per_minute() -> u32 {
     kels_core::env_usize("GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE", 1024) as u32
+}
+
+/// #156: cap concurrent in-flight SAD AE repair tasks per loop iteration.
+/// Default 16. Bounds peak concurrency to prevent the pool storm seen
+/// before deferred-deps drain landed; tunable post-#158 bench data.
+/// KEL AE is left unbounded — KEL events are not the source of the
+/// cross-chain race (spec §AE relationship line 316).
+fn sad_ae_task_concurrency() -> usize {
+    kels_core::env_usize("KELS_SAD_AE_TASK_CONCURRENCY", 16)
 }
 
 /// Redis hash key for anti-entropy stale prefix tracking.
@@ -445,6 +516,235 @@ fn deferred_deps_to_park_inputs(
     }
 
     (deps, chain_eff)
+}
+
+/// #156: drain coordinator for parked deferred-deps records.
+///
+/// Driven by the redis subscribers (`run_redis_subscriber` /
+/// `run_iel_redis_subscriber` / `run_sad_redis_subscriber`) — when a dep
+/// commits, the subscriber calls `spawn_drain_by_sad` /
+/// `spawn_drain_by_chain`, which fans tokio tasks out to drain each
+/// matching parked record in parallel. The semaphore caps total
+/// concurrent re-POSTs to local sadstore (env: `KELS_DEFERRED_DRAIN_PERMITS`,
+/// default 8 — spec §Drain rate-limit).
+///
+/// Cloneable: each subscriber holds its own clone; the underlying
+/// semaphore (Arc) is shared pod-wide.
+#[derive(Clone)]
+pub struct DrainExecutor {
+    sadstore_client: kels_core::SadStoreClient,
+    allowlist: SharedAllowlist,
+    pending: PendingMap,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl DrainExecutor {
+    pub fn new(
+        sadstore_url: &str,
+        allowlist: SharedAllowlist,
+        pending: PendingMap,
+    ) -> Result<Self, KelsError> {
+        let n = kels_core::env_usize("KELS_DEFERRED_DRAIN_PERMITS", 8);
+        Ok(Self {
+            sadstore_client: kels_core::SadStoreClient::new(sadstore_url)?,
+            allowlist,
+            pending,
+            permits: Arc::new(tokio::sync::Semaphore::new(n)),
+        })
+    }
+
+    /// Spawn drain tasks for every park waiting on this SAD object SAID.
+    /// One task per parked record; each task acquires a permit before its
+    /// network call. Spawn-rate is unbounded; backlog is bounded by park
+    /// TTL eviction (spec line 281).
+    pub fn spawn_drain_by_sad(&self, sad_said: cesr::Digest256) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let saids = match me.pending.parks_by_sad(&sad_said).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(sad_said = %sad_said, "parks_by_sad failed: {}", e);
+                    return;
+                }
+            };
+            for s in saids {
+                let me2 = me.clone();
+                tokio::spawn(async move {
+                    me2.drain_one(s).await;
+                });
+            }
+        });
+    }
+
+    /// Spawn drain tasks for every park enrolled on this chain prefix.
+    /// Caller (the chain-update subscriber) is responsible for the
+    /// synthetic-SAID dispatch — divergent-synthetic match → no-op,
+    /// everything else → call this. Per spec line 184 we re-evaluate
+    /// every park rather than dropping on contested-synthetic, so
+    /// threshold-multi-chain parks get refreshed deps via 422-on-replay.
+    pub fn spawn_drain_by_chain(&self, prefix: cesr::Digest256) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let pairs = match me.pending.parks_by_chain(&prefix).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(prefix = %prefix, "parks_by_chain failed: {}", e);
+                    return;
+                }
+            };
+            for (s, _eff_at_park) in pairs {
+                let me2 = me.clone();
+                tokio::spawn(async move {
+                    me2.drain_one(s).await;
+                });
+            }
+        });
+    }
+
+    async fn peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
+        let guard = self.allowlist.read().await;
+        let peer = guard.get(peer_kel_prefix)?;
+        Some(format!("http://sadstore.{}", peer.base_domain))
+    }
+
+    /// Drain a single parked record: read → look up origin URL → acquire
+    /// permit → replay → classify outcome.
+    async fn drain_one(self, record_said: cesr::Digest256) {
+        let record = match self.pending.read_record(&record_said).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return, // already cleaned up by another drain or TTL
+            Err(e) => {
+                warn!(record_said = %record_said, "read_record failed during drain: {}", e);
+                return;
+            }
+        };
+
+        let Some(sadstore_url) = self.peer_sadstore_url(&record.origin).await else {
+            // Origin not in allowlist (yet) — AE backstop applies; record
+            // TTLs out at 5 min if origin doesn't reappear.
+            debug!(
+                record_said = %record.said,
+                origin = %record.origin,
+                "drain: no allowlist entry for origin, falling through to AE backstop"
+            );
+            return;
+        };
+        let remote = match kels_core::SadStoreClient::new(&sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(record_said = %record.said, "drain: failed to build remote client: {}", e);
+                return;
+            }
+        };
+
+        let permit = match self.permits.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return, // semaphore closed
+        };
+        let result = self.replay(&record, &remote).await;
+        drop(permit);
+
+        self.handle_drain_outcome(&record, result).await;
+    }
+
+    /// Replay routes per `ParkSubject`. Per spec line 277, no drain-specific
+    /// HTTP timeout override — `SadStoreClient::new` defaults (5s connect,
+    /// 30s request) apply.
+    async fn replay(
+        &self,
+        record: &ParkRecord,
+        remote: &kels_core::SadStoreClient,
+    ) -> Result<(), KelsError> {
+        match &record.subject {
+            ParkSubject::SadObject { said } => {
+                let object = remote.get_sad_object(said).await?;
+                self.sadstore_client
+                    .post_sad_object(&object)
+                    .await
+                    .map(|_| ())
+            }
+            ParkSubject::SelChain { prefix, .. } => {
+                let source = remote.as_sel_source()?;
+                let sink = self.sadstore_client.as_sel_sink()?;
+                kels_core::forward_sel_events(
+                    prefix,
+                    &source,
+                    &sink,
+                    kels_core::page_size(),
+                    kels_core::max_pages(),
+                    None,
+                )
+                .await
+            }
+            ParkSubject::IelChain { prefix, .. } => {
+                let source = remote.as_iel_source()?;
+                let sink = self.sadstore_client.as_iel_sink()?;
+                kels_core::forward_identity_events(
+                    prefix,
+                    &source,
+                    &sink,
+                    kels_core::page_size(),
+                    kels_core::max_pages(),
+                    None,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn handle_drain_outcome(&self, record: &ParkRecord, result: Result<(), KelsError>) {
+        match result {
+            Ok(()) => {
+                if let Err(e) = self.pending.cleanup_record(&record.said).await {
+                    warn!(
+                        record_said = %record.said,
+                        "cleanup_record after drain success failed: {}", e
+                    );
+                }
+            }
+            Err(e) => {
+                if let Some(response) = try_parse_deferred_deps(&e) {
+                    let (new_deps, chain_eff) = deferred_deps_to_park_inputs(&response);
+                    match self
+                        .pending
+                        .refresh(record, new_deps, |p| chain_eff.get(p).copied())
+                        .await
+                    {
+                        Ok(new_record) => {
+                            debug!(
+                                old_said = %record.said,
+                                new_said = %new_record.said,
+                                "drain refreshed park after 422-on-replay"
+                            );
+                        }
+                        Err(re) => {
+                            warn!(
+                                record_said = %record.said,
+                                "drain refresh after 422-on-replay failed: {}", re
+                            );
+                        }
+                    }
+                } else if matches!(&e, KelsError::HttpError(_) | KelsError::Timeout(_)) {
+                    // Network / origin-down — fall through to AE backstop.
+                    debug!(
+                        record_said = %record.said,
+                        "drain transient error: {} (AE backstop)", e
+                    );
+                } else {
+                    if let Err(ce) = self.pending.cleanup_record(&record.said).await {
+                        warn!(
+                            record_said = %record.said,
+                            "cleanup_record after permanent drain failure failed: {}", ce
+                        );
+                    }
+                    warn!(
+                        record_said = %record.said,
+                        "drain returned permanent error: {}", e
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Handles gossip events and coordinates with KELS
@@ -2203,7 +2503,11 @@ pub async fn run_sad_anti_entropy_loop(
                 });
             }
 
-            for (sel_prefix, source_node_prefix, retries, result) in join_all(tasks).await {
+            let concurrency = sad_ae_task_concurrency();
+            let mut buffered = stream::iter(tasks).buffer_unordered(concurrency);
+            while let Some((sel_prefix, source_node_prefix, retries, result)) =
+                buffered.next().await
+            {
                 match result {
                     RepairResult::Repaired => {
                         info!("SAD anti-entropy: repaired chain {}", sel_prefix);
@@ -2423,7 +2727,9 @@ pub async fn run_sad_anti_entropy_loop(
             }
         }
 
-        for (prefix, peer, direction, result) in join_all(sync_tasks).await {
+        let concurrency = sad_ae_task_concurrency();
+        let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
+        while let Some((prefix, peer, direction, result)) = buffered.next().await {
             match result {
                 Ok(()) => {
                     info!("SAD anti-entropy: {} {} from/to remote", direction, prefix);

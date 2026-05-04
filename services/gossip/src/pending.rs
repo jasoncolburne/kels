@@ -385,6 +385,35 @@ impl PendingMap {
         Ok(out)
     }
 
+    /// #156 drain: refresh a parked record with new deps after a 422-on-replay.
+    ///
+    /// The replay returned a new typed-422 with refreshed dep set (some old
+    /// deps may now be satisfied; new deps may have surfaced from the
+    /// re-walked verifier). The new record carries a different SAID
+    /// because the deps changed. Cleanup the old record (prunes
+    /// secondaries + DELs primary), then park the new one (re-enrolls
+    /// secondaries + SETs primary with refreshed TTL).
+    ///
+    /// Returns the new `ParkRecord` so the caller can keep replaying
+    /// against the same identity for further drain attempts.
+    pub async fn refresh(
+        &self,
+        old_record: &ParkRecord,
+        new_deps: BTreeSet<DepRef>,
+        chain_eff_said_for: impl Fn(&cesr::Digest256) -> Option<cesr::Digest256>,
+    ) -> Result<ParkRecord, PendingError> {
+        let new_record =
+            ParkRecord::create(old_record.subject.clone(), old_record.origin, new_deps)
+                .map_err(|e| PendingError::Operational(e.to_string()))?;
+        // Idempotent: if the new SAID equals the old, the cleanup+park
+        // sequence still produces a correct park (cleanup removes, park
+        // re-adds). Same-SAID typically means deps-unchanged — caller
+        // ought to filter that case but we don't enforce here.
+        self.cleanup_record(&old_record.said).await?;
+        self.park(&new_record, chain_eff_said_for).await?;
+        Ok(new_record)
+    }
+
     /// Lookup parks enrolled on a chain prefix. Drained on
     /// `kel_updates(K, _)` / `iel_updates(P, _)` arrival.
     /// Returns `(record.said, eff_said_at_park)` pairs.
