@@ -93,8 +93,9 @@ impl IelChainPosition {
 ///
 /// Implementations must scope every operation to a specific IEL prefix
 /// (`identity`) — they reject any SAID whose stored event prefix doesn't
-/// match. Mismatch surfaces as [`KelsError::BadIdentityBinding`] (added
-/// per #147).
+/// match. Mismatch surfaces as [`KelsError::IdentityBindingViolation`]
+/// (added per #147; split per #156 — the "missing event by SAID"
+/// case became deferrable [`KelsError::MissingIelEvent`]).
 ///
 /// The trait deliberately omits any SE-chain awareness: a resolver knows
 /// only how to look up an IEL event by SAID and how to map that SAID to the
@@ -103,10 +104,11 @@ impl IelChainPosition {
 pub trait IelResolver: Send + Sync {
     /// Fetch a single IEL event by SAID, scoped to `identity`.
     ///
-    /// Returns [`KelsError::BadIdentityBinding`] (added per #147) when the
-    /// SAID isn't present in the named IEL or when the stored event's
-    /// `prefix` doesn't equal `identity`. Other errors propagate as-is from
-    /// the storage layer.
+    /// Returns [`KelsError::MissingIelEvent`] (deferrable) when the SAID
+    /// isn't present in the named IEL, or
+    /// [`KelsError::IdentityBindingViolation`] (permanent) when the stored
+    /// event's `prefix` doesn't equal `identity` (cross-IEL contamination).
+    /// Other errors propagate as-is from the storage layer.
     async fn fetch_iel_event(
         &self,
         identity: &cesr::Digest256,
@@ -143,9 +145,11 @@ pub trait IelResolver: Send + Sync {
     /// current `last_identity_event` and calls this once; subsequent
     /// `try_cmp` calls on the returned positions are O(1) hashmap lookups.
     ///
-    /// **Errors:** returns [`KelsError::BadIdentityBinding`] when any SAID
-    /// in `saids` doesn't resolve in the named IEL or has a prefix
-    /// mismatch — the entire call fails (chain-integrity breach).
+    /// **Errors:** returns [`KelsError::MissingIelEvent`] when any SAID
+    /// in `saids` doesn't resolve in the named IEL, or
+    /// [`KelsError::IdentityBindingViolation`] on prefix mismatch
+    /// (cross-IEL contamination) — the entire call fails (chain-integrity
+    /// breach). Gap 2 will replace this with partial-results enumeration.
     async fn iel_chain_positions(
         &self,
         identity: &cesr::Digest256,
@@ -163,16 +167,16 @@ pub trait IelResolver: Send + Sync {
     /// non-terminals, HARD for pre-SE-divergence non-terminals.
     ///
     /// Implementations must scope SAID resolution to `identity` (cross-IEL
-    /// contamination surfaces as `BadIdentityBinding`) and must register
-    /// the SAID via `IelVerifier::check_satisfied` before walking the IEL
-    /// — production impls do this internally from a caller-supplied
+    /// contamination surfaces as `IdentityBindingViolation`) and must
+    /// register the SAID via `IelVerifier::check_satisfied` before walking
+    /// the IEL — production impls do this internally from a caller-supplied
     /// `queried_saids` set fixed at construction.
     ///
     /// Returns `false` (not Err) when the SAID is in the IEL's chain but
     /// either (a) failed its auth check, or (b) lives at-or-after the IEL's
-    /// `first_divergent_version`. Returns `Err(BadIdentityBinding)` when
-    /// the SAID doesn't resolve in the named IEL at all (chain-integrity
-    /// breach — caller treats as HARD regardless of position).
+    /// `first_divergent_version`. Returns `Err(MissingIelEvent)` when the
+    /// SAID doesn't resolve in the named IEL at all (deferrable — the
+    /// event may commit later via gossip propagation).
     async fn is_satisfied(
         &self,
         identity: &cesr::Digest256,
@@ -185,10 +189,13 @@ pub trait IelResolver: Send + Sync {
     /// so subsequent calls (`resolve_auth_policy_at`, `is_satisfied`) can
     /// proceed with the standard identity-scoped surface.
     ///
-    /// Returns [`KelsError::BadIdentityBinding`] when the SAID isn't
-    /// present in any locally-known IEL. No divergence gate — the caller
-    /// applies the existing `resolve_*_at` divergence checks once it has
-    /// the identity.
+    /// Returns [`KelsError::IdentityBindingViolation`] when the SAID
+    /// isn't present in any locally-known IEL. (We don't have an
+    /// `iel_prefix` at this layer to populate `MissingIelEvent`; the
+    /// sadstore handler at the deferred-deps boundary may re-classify
+    /// when it has additional context — see #156 Gap 4.) No divergence
+    /// gate — the caller applies the existing `resolve_*_at` divergence
+    /// checks once it has the identity.
     async fn resolve_identity_for_event(
         &self,
         iel_event_said: &cesr::Digest256,

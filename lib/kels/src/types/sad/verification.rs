@@ -22,7 +22,7 @@
 //! - **Cnt** / **Dec** governance check is **SOFT** — terminal forensic
 //!   preservation; flags are content-based; auth status conveyed via
 //!   `policy_satisfied`.
-//! - `BadIdentityBinding` (binding doesn't resolve / prefix mismatch) is
+//! - `MissingIelEvent` / `IdentityBindingViolation` (binding doesn't resolve / prefix mismatch) is
 //!   **HARD** for all v1+ kinds — chain integrity beats forensic preservation.
 //! - `IelDivergent` (binding lives on an unstable IEL branch) is **HARD**
 //!   for `Upd` / `Sea` / `Rpr`, **SOFT** for `Cnt` / `Dec`.
@@ -381,7 +381,7 @@ impl SelVerifier {
             //     reads. Mirrors `docs/design/sel/verification.md
             //     §Post-divergence soft-fail propagation`.
             //
-            // Structural integrity rules (BadIdentityBinding, monotonic
+            // Structural integrity rules (`MissingIelEvent`/`IdentityBindingViolation`, monotonic
             // ratchet, content preservation) stay HARD regardless of either
             // rule — Cnt doesn't change well-formedness.
             let terminal_soft = is_terminal;
@@ -404,7 +404,7 @@ impl SelVerifier {
             // also detect. Both gates remain wired to keep the soundness
             // surface explicit at each point of failure.
 
-            // Step 1 — fetch IEL event. BadIdentityBinding is HARD for all v1+ kinds.
+            // Step 1 — fetch IEL event. Missing-IEL-event / identity-binding-violation is HARD for all v1+ kinds.
             // The IelResolver impl returns errors for SAID-not-found / prefix-mismatch;
             // surface them directly. Chain-integrity rule, not auth — stays HARD
             // even post-divergence.
@@ -521,7 +521,7 @@ impl SelVerifier {
                     use std::cmp::Ordering;
                     match new_position.try_cmp(prior_position) {
                         Ok(Ordering::Less) => {
-                            return Err(KelsError::BadIdentityBinding(format!(
+                            return Err(KelsError::identity_binding_violation(format!(
                                 "SE event {} identity_event {} regresses prior ratchet {} \
                                  in IEL chain order (monotonic)",
                                 event.said, identity_event_said, prior_said,
@@ -537,9 +537,9 @@ impl SelVerifier {
                             // If we get here, chain integrity has been breached;
                             // hard-fail uniformly with the same monotonic
                             // surface as Less (the trait contract specifies
-                            // BadIdentityBinding for the chain-integrity
-                            // umbrella).
-                            return Err(KelsError::BadIdentityBinding(format!(
+                            // `IdentityBindingViolation` for the
+                            // chain-integrity umbrella per #156).
+                            return Err(KelsError::identity_binding_violation(format!(
                                 "SE event {} identity_event {} compares as IelDivergent \
                                  against prior ratchet {} (monotonic — chain integrity breach)",
                                 event.said, identity_event_said, prior_said,
@@ -840,17 +840,15 @@ mod tests {
             said: &cesr::Digest256,
         ) -> Result<IdentityEvent, KelsError> {
             if identity != &self.identity {
-                return Err(KelsError::BadIdentityBinding(format!(
+                return Err(KelsError::identity_binding_violation(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
             }
-            let entry = self.events.get(said).ok_or_else(|| {
-                KelsError::BadIdentityBinding(format!(
-                    "FakeIelResolver: no event for SAID {}",
-                    said
-                ))
-            })?;
+            let entry = self
+                .events
+                .get(said)
+                .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
             // Build a synthetic IEL event with the recorded fields. SAID/prefix
             // wired up to be self-consistent for the verifier's checks (we
             // don't go through `IdentityEvent::icp` since that derives prefix
@@ -906,8 +904,9 @@ mod tests {
             identity: &cesr::Digest256,
             said: &cesr::Digest256,
         ) -> Result<bool, KelsError> {
-            // Test fake: chain-integrity check via fetch (BadIdentityBinding
-            // on miss / prefix mismatch). For the satisfied-predicate, mirror
+            // Test fake: chain-integrity check via fetch (`MissingIelEvent`
+            // on miss; `IdentityBindingViolation` on prefix mismatch). For
+            // the satisfied-predicate, mirror
             // the production rule: pre-divergence (or chain non-divergent)
             // AND would-have-passed-its-auth. The fake's `events` map doesn't
             // record auth-pass-status, so default to "auth-passed" — tests
@@ -927,19 +926,17 @@ mod tests {
             saids: &[cesr::Digest256],
         ) -> Result<HashMap<cesr::Digest256, IelChainPosition>, KelsError> {
             if identity != &self.identity {
-                return Err(KelsError::BadIdentityBinding(format!(
+                return Err(KelsError::identity_binding_violation(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
             }
             let mut out = HashMap::new();
             for said in saids {
-                let entry = self.events.get(said).ok_or_else(|| {
-                    KelsError::BadIdentityBinding(format!(
-                        "FakeIelResolver: no event for SAID {}",
-                        said
-                    ))
-                })?;
+                let entry = self
+                    .events
+                    .get(said)
+                    .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
                 let branch_marker = match self.first_divergent_version {
                     Some(d) if entry.version >= d => Some(*said),
                     _ => None,
@@ -964,7 +961,10 @@ mod tests {
             if self.events.contains_key(said) {
                 Ok(self.identity)
             } else {
-                Err(KelsError::BadIdentityBinding(format!(
+                // SAID-only fetch — no `iel_prefix` to populate
+                // `MissingIelEvent`; return permanent. Mirrors the
+                // production resolvers' classification at this site.
+                Err(KelsError::identity_binding_violation(format!(
                     "FakeIelResolver: no event for SAID {}",
                     said
                 )))
@@ -976,7 +976,7 @@ mod tests {
             identity: &cesr::Digest256,
         ) -> Result<cesr::Digest256, KelsError> {
             if identity != &self.identity {
-                return Err(KelsError::BadIdentityBinding(format!(
+                return Err(KelsError::identity_binding_violation(format!(
                     "FakeIelResolver: identity mismatch (got {}, expected {})",
                     identity, self.identity
                 )));
@@ -1097,9 +1097,8 @@ mod tests {
         assert_eq!(v.branches()[0].last_identity_event, Some(iel_evl));
     }
 
-    /// `event.identity_event` referencing an unknown SAID → `BadIdentityBinding`-class
-    /// error from the resolver. Currently surfaced as `InvalidIel` (per Gap 0
-    /// deviation; Gap 6 introduces the variant).
+    /// `event.identity_event` referencing an unknown SAID → `MissingIelEvent`
+    /// (deferrable, post-#156 split) from the resolver.
     ///
     /// Errors fire at `finish()` because the verifier buffers per-generation
     /// (see `SelVerifier::flush_generation`) — `verify_page` only flushes
@@ -1124,8 +1123,8 @@ mod tests {
         verifier.verify_page(&[v0, v1]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            matches!(err, KelsError::BadIdentityBinding(_)),
-            "expected BadIdentityBinding, got {err:?}"
+            matches!(err, KelsError::MissingIelEvent(_)),
+            "expected MissingIelEvent, got {err:?}"
         );
     }
 
@@ -1157,9 +1156,9 @@ mod tests {
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            matches!(err, KelsError::BadIdentityBinding(_))
+            matches!(err, KelsError::IdentityBindingViolation(_))
                 && err.to_string().contains("regresses prior ratchet"),
-            "expected BadIdentityBinding(monotonic), got {err:?}"
+            "expected IdentityBindingViolation(monotonic), got {err:?}"
         );
     }
 
@@ -1984,14 +1983,14 @@ mod tests {
     // verifier path; the SE-side severity wiring is exercised by the
     // anchor-fail and IelDivergent cells above (same code path).
 
-    /// Post-SE-divergence BadIdentityBinding stays HARD (chain integrity).
+    /// Post-SE-divergence missing-IEL-event stays HARD (chain integrity).
     #[tokio::test]
     async fn upd_post_divergence_bad_identity_binding_stays_hard() {
         let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
         let unknown = d(b"unknown-iel-event");
 
         // The fake resolver only knows iel_icp; binding to an unknown
-        // SAID surfaces BadIdentityBinding from fetch_iel_event.
+        // SAID surfaces MissingIelEvent from fetch_iel_event.
         let resolver = Arc::new(fake_resolver_for_chain(
             identity,
             &[(iel_icp, 0, IdentityEventKind::Icp)],
@@ -2007,10 +2006,10 @@ mod tests {
         let err = v
             .finish()
             .await
-            .expect_err("BadIdentityBinding stays HARD post-SE-divergence");
+            .expect_err("MissingIelEvent stays HARD post-SE-divergence");
         assert!(
-            matches!(err, KelsError::BadIdentityBinding(_)),
-            "expected BadIdentityBinding, got {err:?}"
+            matches!(err, KelsError::MissingIelEvent(_)),
+            "expected MissingIelEvent, got {err:?}"
         );
     }
 

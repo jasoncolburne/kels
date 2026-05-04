@@ -1301,9 +1301,9 @@ fn compute_sad_event_prefix_uses_identity_and_topic() {
 }
 
 /// `Upd` whose `identity_event` doesn't exist in the IEL → server
-/// rejects with `BadIdentityBinding`-class error. The CESR digest of an
-/// unrelated label can't be in any IEL's `policy_history`, so the
-/// resolver returns `BadIdentityBinding` (not found).
+/// rejects with `MissingIelEvent`-class error (deferrable per #156). The
+/// CESR digest of an unrelated label can't be in any IEL's
+/// `policy_history`, so the resolver returns `MissingIelEvent` (not found).
 #[tokio::test]
 #[serial]
 async fn update_rejects_when_identity_event_unknown_in_iel() {
@@ -1322,14 +1322,14 @@ async fn update_rejects_when_identity_event_unknown_in_iel() {
     let result = setup.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
-        "Bad identity binding",
-        "unknown identity_event must surface BadIdentityBinding",
+        "Missing IEL event",
+        "unknown identity_event must surface MissingIelEvent",
     );
 }
 
 /// `Upd` whose `identity_event` exists but lives in a DIFFERENT IEL
-/// (prefix mismatch) → `BadIdentityBinding`. Defense-in-depth against
-/// cross-IEL contamination.
+/// (prefix mismatch) → `IdentityBindingViolation`. Defense-in-depth
+/// against cross-IEL contamination.
 #[tokio::test]
 #[serial]
 async fn update_rejects_when_identity_event_prefix_mismatches_branch_identity() {
@@ -1353,14 +1353,15 @@ async fn update_rejects_when_identity_event_prefix_mismatches_branch_identity() 
     let result = setup_a.sad_client.submit_sel_events(&[upd]).await;
     assert_err_contains(
         result,
-        "Bad identity binding",
-        "cross-IEL identity_event must surface BadIdentityBinding",
+        "cross-IEL contamination",
+        "cross-IEL identity_event must surface IdentityBindingViolation",
     );
 }
 
 /// `Upd` whose `identity_event` regresses the chain's monotonic ratchet
-/// in IEL chain order → `BadIdentityBinding(monotonic)`. Sequence: bind
-/// v1 to a later IEL Evl, then bind v2 to the earlier IEL Icp (regression).
+/// in IEL chain order → `IdentityBindingViolation(monotonic)`. Sequence:
+/// bind v1 to a later IEL Evl, then bind v2 to the earlier IEL Icp
+/// (regression).
 #[tokio::test]
 #[serial]
 async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
@@ -1396,7 +1397,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
     assert_err_contains(
         result,
         "regresses prior ratchet",
-        "ratchet regression must surface BadIdentityBinding(monotonic)",
+        "ratchet regression must surface IdentityBindingViolation(monotonic)",
     );
 }
 
@@ -2288,8 +2289,10 @@ async fn custody_write_unknown_iel_event_rejected() {
     let setup = setup_kel_iel_policy(harness, "custody-write-unknown").await;
 
     // custody.write references a SAID that doesn't exist in any IEL on
-    // this server → resolve_identity_for_event surfaces BadIdentityBinding
-    // → 400.
+    // this server → resolve_identity_for_event surfaces
+    // IdentityBindingViolation (no iel_prefix to populate MissingIelEvent
+    // when looking up by SAID alone) → 400. #156 Gap 4 retrofits this
+    // boundary into a typed 422 with a deferred-deps wire shape.
     let bogus = cesr::Digest256::blake3_256(b"not-in-any-iel");
     let value = build_write_gated_sad(&bogus, "unknown-iel-event");
 

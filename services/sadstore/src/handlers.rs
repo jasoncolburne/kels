@@ -472,8 +472,10 @@ pub async fn post_sad_object(
 
     // #167 write enforcement: if `custody.write` is set, the named IEL event's
     // `auth_policy` must be satisfied (the canonical SAD's SAID anchored under
-    // it). Missing IEL event surfaces as `BadIdentityBinding` — stable error
-    // shape that #156 retrofits to a typed 422 in the deferred-deps protocol.
+    // it). Missing IEL event surfaces as `MissingIelEvent` (deferrable) or
+    // `IdentityBindingViolation` (permanent) — both currently map to 400;
+    // #156 Gap 4 retrofits the deferrable case to typed 422 with `iel_event`
+    // dep type in the deferred-deps protocol.
     if let Some(write_iel_said) = custody.as_ref().and_then(|c| c.write)
         && let Err(response) = verify_custody_write(&state, &canonical_said, &write_iel_said).await
     {
@@ -592,8 +594,9 @@ enum GossipPolicy {
 /// `auth_policy` and confirms the SAD's canonical SAID is anchored under it.
 ///
 /// Errors map to HTTP responses:
-/// - Missing IEL event (`BadIdentityBinding`) → 400 with stable shape; #156
-///   will retrofit this to a typed 422 with `iel_event` dep type.
+/// - Missing IEL event (`MissingIelEvent` / `IdentityBindingViolation`) →
+///   400 with stable shape; #156 (Gap 4) retrofits this to a typed 422
+///   with `iel_event` dep type via the deferred-deps protocol.
 /// - Divergent / contested / decommissioned IEL → 400 (the chain can't
 ///   authoritatively prove auth_policy was satisfied at the named event).
 /// - Anchor not satisfied → 403.
@@ -662,9 +665,17 @@ async fn verify_custody_write(
 fn custody_write_resolver_error(err: kels_core::KelsError) -> axum::response::Response {
     use kels_core::KelsError;
     match err {
-        KelsError::BadIdentityBinding(msg) => (
+        KelsError::MissingIelEvent(dep) => (
             StatusCode::BAD_REQUEST,
-            format!("custody.write IEL event not locally known: {}", msg),
+            format!(
+                "custody.write IEL event not locally known: {} (in IEL {})",
+                dep.event_said, dep.iel_prefix
+            ),
+        )
+            .into_response(),
+        KelsError::IdentityBindingViolation(violation) => (
+            StatusCode::BAD_REQUEST,
+            format!("custody.write identity binding violation: {}", violation),
         )
             .into_response(),
         KelsError::IelDivergent(msg) => (

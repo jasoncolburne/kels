@@ -119,7 +119,7 @@ impl AnchoredIelResolver {
             }
             for event in &events {
                 if &event.prefix != identity {
-                    return Err(KelsError::BadIdentityBinding(format!(
+                    return Err(KelsError::identity_binding_violation(format!(
                         "IEL event {} has prefix {} but expected identity {} \
                          (cross-IEL contamination)",
                         event.said, event.prefix, identity,
@@ -168,7 +168,7 @@ impl AnchoredIelResolver {
             for event in &events {
                 if wanted.iter().any(|w| w == &event.said) && !found.contains_key(&event.said) {
                     if &event.prefix != identity {
-                        return Err(KelsError::BadIdentityBinding(format!(
+                        return Err(KelsError::identity_binding_violation(format!(
                             "IEL event {} has prefix {} but expected identity {} \
                              (cross-IEL contamination)",
                             event.said, event.prefix, identity,
@@ -200,12 +200,9 @@ impl IelResolver for AnchoredIelResolver {
         let mut found = self
             .collect_events_by_said(identity, std::slice::from_ref(iel_event_said))
             .await?;
-        found.remove(iel_event_said).ok_or_else(|| {
-            KelsError::BadIdentityBinding(format!(
-                "IEL event {} not found in IEL {}",
-                iel_event_said, identity
-            ))
-        })
+        found
+            .remove(iel_event_said)
+            .ok_or_else(|| KelsError::missing_iel_event(*identity, *iel_event_said))
     }
 
     async fn resolve_auth_policy_at(
@@ -224,7 +221,7 @@ impl IelResolver for AnchoredIelResolver {
             )));
         }
         verification.auth_policy_at(iel_event_said).ok_or_else(|| {
-            KelsError::BadIdentityBinding(format!(
+            KelsError::identity_binding_violation(format!(
                 "auth_policy not found for IEL event {} in IEL {} \
                  (event not in policy_history — chain integrity breach)",
                 iel_event_said, identity,
@@ -250,7 +247,7 @@ impl IelResolver for AnchoredIelResolver {
         verification
             .governance_policy_at(iel_event_said)
             .ok_or_else(|| {
-                KelsError::BadIdentityBinding(format!(
+                KelsError::identity_binding_violation(format!(
                     "governance_policy not found for IEL event {} in IEL {} \
                      (event not in policy_history — chain integrity breach)",
                     iel_event_said, identity,
@@ -266,8 +263,10 @@ impl IelResolver for AnchoredIelResolver {
         // The verifier walks the IEL with `queried_saids` registered (set
         // at construction). After the walk, `is_said_satisfied` is the
         // direct answer. The fetch step doubles as the chain-integrity
-        // check: BadIdentityBinding propagates from the trait's existing
-        // `fetch_iel_event` if the SAID isn't in the named IEL.
+        // check: `MissingIelEvent` (deferrable) or `IdentityBindingViolation`
+        // (permanent) propagates from the trait's existing
+        // `fetch_iel_event` if the SAID isn't in the named IEL or has a
+        // prefix mismatch.
         let _ = self.fetch_iel_event(identity, said).await?;
         let verification = self.verification_for(identity).await?;
         Ok(verification.is_said_satisfied(said))
@@ -299,12 +298,9 @@ impl IelResolver for AnchoredIelResolver {
 
         let mut positions: HashMap<cesr::Digest256, IelChainPosition> = HashMap::new();
         for said in saids {
-            let event = found.get(said).ok_or_else(|| {
-                KelsError::BadIdentityBinding(format!(
-                    "IEL event {} not found in IEL {} (requested for monotonic ratchet)",
-                    said, identity,
-                ))
-            })?;
+            let event = found
+                .get(said)
+                .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
 
             // #147 follow-up: walk back from each post-divergence
             // SAID to its branch's first-divergent ancestor. The ancestor's
@@ -345,8 +341,17 @@ impl IelResolver for AnchoredIelResolver {
             .fetch_page_by_event_said(iel_event_said, None, 1)
             .await?;
         events.into_iter().next().map(|e| e.prefix).ok_or_else(|| {
-            KelsError::BadIdentityBinding(format!(
-                "IEL event {} not found in any IEL on the source",
+            // No locally-known IEL contains this event SAID. We don't have
+            // an `iel_prefix` to populate `MissingIelEvent` — the caller
+            // (e.g., `verify_custody_write`) is the one with that context
+            // (or, in the SAD-object custody.write case, has only the SAID
+            // itself). Mark as permanent here; the deferred-deps layer at
+            // the handler can re-classify on its own when it knows the
+            // context. Tracked: this is the SAID-only-cannot-defer corner
+            // of #156 / #167 which custody.write ultimately resolves at the
+            // sadstore handler layer.
+            KelsError::identity_binding_violation(format!(
+                "IEL event {} not found in any locally-known IEL",
                 iel_event_said,
             ))
         })
@@ -396,9 +401,9 @@ impl IelResolver for AnchoredIelResolver {
 /// post-divergence event tracing back through it. Bounded by `chain.len()`
 /// to detect cycles or unbounded loops.
 ///
-/// Returns `BadIdentityBinding` on any chain-integrity breach mid-walk:
-/// missing event, walked past `divergence_version`, `previous=None` on a
-/// non-Icp event, or step-bound exceeded.
+/// Returns `KelsError::IdentityBindingViolation` on any chain-integrity
+/// breach mid-walk: missing event, walked past `divergence_version`,
+/// `previous=None` on a non-Icp event, or step-bound exceeded.
 ///
 /// #147 follow-up: shared walker used by both
 /// [`AnchoredIelResolver::iel_chain_positions`] and the in-process
@@ -414,7 +419,7 @@ pub fn walk_back_to_branch_identity(
     let bound = chain.len() + 1;
     for _ in 0..bound {
         let event = chain.get(&current).ok_or_else(|| {
-            KelsError::BadIdentityBinding(format!(
+            KelsError::identity_binding_violation(format!(
                 "IEL walk-back: event {} not found in IEL {} (chain integrity breach)",
                 current, identity,
             ))
@@ -423,21 +428,21 @@ pub fn walk_back_to_branch_identity(
             return Ok(event.said);
         }
         if event.version < divergence_version {
-            return Err(KelsError::BadIdentityBinding(format!(
+            return Err(KelsError::identity_binding_violation(format!(
                 "IEL walk-back: event {} at version {} walked past divergence \
                  at version {} (chain integrity breach)",
                 current, event.version, divergence_version,
             )));
         }
         current = event.previous.ok_or_else(|| {
-            KelsError::BadIdentityBinding(format!(
+            KelsError::identity_binding_violation(format!(
                 "IEL walk-back: event {} at version {} has no previous \
                  (chain integrity breach)",
                 current, event.version,
             ))
         })?;
     }
-    Err(KelsError::BadIdentityBinding(format!(
+    Err(KelsError::identity_binding_violation(format!(
         "IEL walk-back: exceeded chain length bound for IEL {} \
          (cycle or chain too long)",
         identity,

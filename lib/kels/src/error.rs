@@ -1,8 +1,68 @@
 //! KELS Error Types
 
+use std::fmt;
+
 use thiserror::Error;
 
 use crate::ErrorCode;
+
+/// #156: deferrable dep payload — IEL event missing locally.
+///
+/// Used as the carrier for [`KelsError::MissingIelEvent`] and as a verifier
+/// product (alongside [`MissingKelAnchor`]) the deferred-deps layer maps to
+/// a 422 + `iel_event` dep. Boxed in the error variant to keep the
+/// `KelsError` enum small (clippy::result_large_err).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingIelEvent {
+    pub iel_prefix: cesr::Digest256,
+    pub event_said: cesr::Digest256,
+}
+
+/// #156: permanent counterpart to [`MissingIelEvent`].
+///
+/// Carries the cross-IEL contamination, IEL chain-order regression, and
+/// chain-integrity-breach cases the prior `BadIdentityBinding(String)`
+/// merged together. Held by both [`KelsError::IdentityBindingViolation`]
+/// and the corresponding `IelSatisfaction::PermanentFailure` (Gap 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityBindingViolation {
+    pub reason: String,
+}
+
+impl IdentityBindingViolation {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for IdentityBindingViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+/// #156: deferrable dep payload — KEL anchor missing locally.
+///
+/// Used as the carrier for [`KelsError::MissingKelAnchor`]. The
+/// deferred-deps layer maps to a 422 + `kel_anchor` dep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingKelAnchor {
+    pub kel_prefix: cesr::Digest256,
+    pub anchor_said: cesr::Digest256,
+}
+
+/// #156: permanent counterpart to [`MissingKelAnchor`].
+///
+/// Anchor present but invalid (bad sig, wrong key per policy) or anchor's
+/// KEL in a structurally-failed state. The `reason` describes which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorPermanentFailure {
+    pub kel_prefix: cesr::Digest256,
+    pub anchor_said: cesr::Digest256,
+    pub reason: String,
+}
 
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
@@ -149,8 +209,17 @@ pub enum KelsError {
     #[error("Invalid version: {0}")]
     InvalidVersion(String),
 
-    #[error("Anchor verification failed: {0}")]
-    AnchorVerificationFailed(String),
+    /// #156: deferrable — verifier walked the bound KEL and could not find
+    /// the anchor SAID; the anchor may commit later. Caller can defer on
+    /// `(kel_prefix, anchor_said)` and replay when the KEL advances.
+    #[error("Missing KEL anchor {} in KEL {}", .0.anchor_said, .0.kel_prefix)]
+    MissingKelAnchor(Box<MissingKelAnchor>),
+
+    /// #156: permanent — anchor present but invalid (bad signature, wrong
+    /// key per policy) or anchor's KEL is in a structurally-failed state.
+    /// Cleanup at the deferred-deps layer; surface 4xx-permanent.
+    #[error("Anchor permanent failure for {} in KEL {}: {}", .0.anchor_said, .0.kel_prefix, .0.reason)]
+    AnchorPermanentFailure(Box<AnchorPermanentFailure>),
 
     #[error("Hardware error: {0}")]
     HardwareError(String),
@@ -204,19 +273,26 @@ pub enum KelsError {
     #[error("Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1")]
     IncompleteInception(String),
 
-    /// #147: an SE event's `identity_event` binding is structurally
-    /// invalid. Covers three cases (the `String` payload describes which):
-    /// 1. The named SAID doesn't exist in the bound IEL.
-    /// 2. The named SAID's IEL prefix doesn't match the SE chain's
-    ///    `identity` (cross-IEL contamination).
-    /// 3. The named SAID regresses the SE branch's monotonic
-    ///    `last_identity_event` ratchet in IEL chain order.
+    /// #156 (split from prior `BadIdentityBinding`): deferrable — the
+    /// named IEL event SAID isn't present in the bound IEL chain locally.
+    /// The event may commit later via gossip propagation; caller can
+    /// defer on `(iel_prefix, event_said)` and replay on chain advance.
+    #[error("Missing IEL event {} in IEL {}", .0.event_said, .0.iel_prefix)]
+    MissingIelEvent(Box<MissingIelEvent>),
+
+    /// #156 (split from prior `BadIdentityBinding`): permanent — the
+    /// SE event's `identity_event` binding is structurally invalid.
+    /// Covers cross-IEL contamination (named SAID's IEL prefix doesn't
+    /// match the SE chain's `identity`), IEL chain-order regression
+    /// (named SAID regresses the SE branch's monotonic ratchet), and
+    /// chain-integrity breaches (event referenced not in policy_history,
+    /// walk-back failures). The `reason` describes which.
     ///
     /// HARD for ALL SE kinds (`Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`) —
     /// a chain with no valid IEL binding cannot be recorded; chain
     /// integrity beats forensic preservation.
-    #[error("Bad identity binding: {0}")]
-    BadIdentityBinding(String),
+    #[error("Identity binding violation: {0}")]
+    IdentityBindingViolation(IdentityBindingViolation),
 
     /// #147: `SadEventBuilder::decommission()` pre-flight refused
     /// because the SE chain is divergent. Generic — does not distinguish
@@ -258,6 +334,40 @@ impl KelsError {
         Self::ContestRequired {
             reason: reason.into(),
         }
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingIelEvent`].
+    pub fn missing_iel_event(iel_prefix: cesr::Digest256, event_said: cesr::Digest256) -> Self {
+        Self::MissingIelEvent(Box::new(MissingIelEvent {
+            iel_prefix,
+            event_said,
+        }))
+    }
+
+    /// #156: construct a permanent [`KelsError::IdentityBindingViolation`].
+    pub fn identity_binding_violation(reason: impl Into<String>) -> Self {
+        Self::IdentityBindingViolation(IdentityBindingViolation::new(reason))
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingKelAnchor`].
+    pub fn missing_kel_anchor(kel_prefix: cesr::Digest256, anchor_said: cesr::Digest256) -> Self {
+        Self::MissingKelAnchor(Box::new(MissingKelAnchor {
+            kel_prefix,
+            anchor_said,
+        }))
+    }
+
+    /// #156: construct a permanent [`KelsError::AnchorPermanentFailure`].
+    pub fn anchor_permanent_failure(
+        kel_prefix: cesr::Digest256,
+        anchor_said: cesr::Digest256,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::AnchorPermanentFailure(Box::new(AnchorPermanentFailure {
+            kel_prefix,
+            anchor_said,
+            reason: reason.into(),
+        }))
     }
 }
 
@@ -381,7 +491,15 @@ mod tests {
             KelsError::InvalidSaid("bad said".to_string()),
             KelsError::InvalidPrefix("bad prefix".to_string()),
             KelsError::InvalidVersion("bad version".to_string()),
-            KelsError::AnchorVerificationFailed("anchor failed".to_string()),
+            KelsError::missing_kel_anchor(
+                cesr::Digest256::blake3_256(b"kel"),
+                cesr::Digest256::blake3_256(b"anchor"),
+            ),
+            KelsError::anchor_permanent_failure(
+                cesr::Digest256::blake3_256(b"kel"),
+                cesr::Digest256::blake3_256(b"anchor"),
+                "bad sig",
+            ),
             KelsError::HardwareError("hw error".to_string()),
             KelsError::NoReadyNodes,
             KelsError::RegistryFailure("all failed".to_string()),
@@ -396,7 +514,11 @@ mod tests {
                 said: cesr::Digest256::blake3_256(b"said").to_string(),
             },
             KelsError::IncompleteInception("missing v1 Upd".to_string()),
-            KelsError::BadIdentityBinding("identity_event SAID not in IEL".to_string()),
+            KelsError::missing_iel_event(
+                cesr::Digest256::blake3_256(b"iel"),
+                cesr::Digest256::blake3_256(b"identity_event"),
+            ),
+            KelsError::identity_binding_violation("cross-IEL contamination"),
             KelsError::DecommissionBlockedByDivergence("chain divergent".to_string()),
             KelsError::ChainVerificationFailed("server-side existing chain re-verify".to_string()),
         ];

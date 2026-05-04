@@ -158,14 +158,9 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         let event = self
             .fetch_event_by_said(iel_event_said)
             .await?
-            .ok_or_else(|| {
-                kels_core::KelsError::BadIdentityBinding(format!(
-                    "IEL event {} not found in IEL {}",
-                    iel_event_said, identity
-                ))
-            })?;
+            .ok_or_else(|| kels_core::KelsError::missing_iel_event(*identity, *iel_event_said))?;
         if event.prefix != *identity {
-            return Err(kels_core::KelsError::BadIdentityBinding(format!(
+            return Err(kels_core::KelsError::identity_binding_violation(format!(
                 "IEL event {} has prefix {} but expected identity {} \
                  (cross-IEL contamination)",
                 iel_event_said, event.prefix, identity
@@ -190,7 +185,7 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             )));
         }
         verification.auth_policy_at(iel_event_said).ok_or_else(|| {
-            kels_core::KelsError::BadIdentityBinding(format!(
+            kels_core::KelsError::identity_binding_violation(format!(
                 "auth_policy not found for IEL event {} in IEL {} \
                  (event not in policy_history — chain integrity breach)",
                 iel_event_said, identity,
@@ -216,7 +211,7 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         verification
             .governance_policy_at(iel_event_said)
             .ok_or_else(|| {
-                kels_core::KelsError::BadIdentityBinding(format!(
+                kels_core::KelsError::identity_binding_violation(format!(
                     "governance_policy not found for IEL event {} in IEL {} \
                      (event not in policy_history — chain integrity breach)",
                     iel_event_said, identity,
@@ -229,7 +224,8 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         identity: &cesr::Digest256,
         said: &cesr::Digest256,
     ) -> Result<bool, kels_core::KelsError> {
-        // Chain-integrity check: BadIdentityBinding propagates from
+        // Chain-integrity check: `MissingIelEvent` (deferrable) or
+        // `IdentityBindingViolation` (permanent) propagates from
         // `fetch_iel_event` if the SAID isn't in the named IEL or has a
         // prefix mismatch. After that, delegate to the shared
         // `verify_identity_events_with_queried` helper through a
@@ -263,7 +259,12 @@ impl kels_core::IelResolver for RepositoryIelResolver {
             .fetch_event_by_said(iel_event_said)
             .await?
             .ok_or_else(|| {
-                kels_core::KelsError::BadIdentityBinding(format!(
+                // No locally-known IEL contains this event SAID. We don't
+                // have an `iel_prefix` to populate `MissingIelEvent` —
+                // mark as permanent here; #156's deferred-deps layer at
+                // the handler will re-classify on its own when it knows
+                // context.
+                kels_core::KelsError::identity_binding_violation(format!(
                     "IEL event {} not found in any locally-known IEL",
                     iel_event_said,
                 ))
@@ -400,7 +401,7 @@ impl RepositoryIelResolver {
             since = events.last().map(|e| e.said.to_string());
             for event in &events {
                 if event.prefix != *identity {
-                    return Err(kels_core::KelsError::BadIdentityBinding(format!(
+                    return Err(kels_core::KelsError::identity_binding_violation(format!(
                         "IEL event {} has prefix {} but expected identity {} \
                          (cross-IEL contamination)",
                         event.said, event.prefix, identity,
