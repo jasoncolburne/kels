@@ -45,7 +45,7 @@ use verifiable_storage::{Chained, SelfAddressed};
 
 use super::event::{SadBranchTip, SadEvent, SadEventKind, SelVerification};
 use crate::{
-    KelsError,
+    DeferredFailure, KelsError,
     types::{IelResolver, PolicyChecker},
 };
 
@@ -77,6 +77,16 @@ pub struct SelVerifier {
     satisfied_saids: BTreeSet<cesr::Digest256>,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
     iel_resolver: Arc<dyn IelResolver + Send + Sync>,
+    /// #156 collect-mode: when `true`, deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate into
+    /// `deferred_failures` and the walk treats them as soft-fail-style
+    /// (continue with `policy_satisfied=false`); when `false`,
+    /// deferrables propagate as `Err(KelsError)` and halt the walk
+    /// (legacy behavior). Permanent failures always halt.
+    collecting: bool,
+    /// #156: accumulated deferrable failures. Empty in strict mode.
+    /// Caller reads after `finish_collecting` (or via `deferred_failures()`).
+    deferred_failures: Vec<DeferredFailure>,
 }
 
 impl SelVerifier {
@@ -100,7 +110,24 @@ impl SelVerifier {
             satisfied_saids: BTreeSet::new(),
             checker,
             iel_resolver,
+            collecting: false,
+            deferred_failures: Vec::new(),
         }
+    }
+
+    /// Enable #156 collect-mode for this verifier. Deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate instead of
+    /// halting the walk. Permanent failures still halt. Idempotent;
+    /// calling once is sufficient.
+    pub fn enable_collecting(&mut self) -> &mut Self {
+        self.collecting = true;
+        self
+    }
+
+    /// Read accumulated deferrable failures (after running
+    /// `verify_page_collecting`). Empty in strict mode.
+    pub fn deferred_failures(&self) -> &[DeferredFailure] {
+        &self.deferred_failures
     }
 
     /// Register SE event SAIDs the caller cares about for satisfaction
@@ -151,6 +178,8 @@ impl SelVerifier {
             satisfied_saids: verification.satisfied_saids().clone(),
             checker,
             iel_resolver,
+            collecting: false,
+            deferred_failures: Vec::new(),
         })
     }
 
@@ -307,13 +336,23 @@ impl SelVerifier {
             .iel_resolver
             .iel_chain_positions(&identity, &needed_saids)
             .await?;
-        // Gap-2 behavior preservation: any SAID the resolver couldn't
-        // resolve is currently a HARD chain-integrity failure on the SE
-        // walk. Gap 3 will reshape this to feed the deferrable accumulator
-        // instead. Surface as `MissingIelEvent` so the soon-to-land
-        // collect-mode walk catches it cleanly.
-        if let Some(missing) = position_batch.missing.first() {
-            return Err(KelsError::missing_iel_event(identity, *missing));
+        // Per-event Step 3 (`is_satisfied`) is the authoritative deferrable
+        // gate for missing IEL events; it sees each event's
+        // `identity_event` in turn and routes through `IelSatisfaction`.
+        // The position-batch's `missing` list is the same set seen from
+        // the bulk-fetch side — strict mode hard-fails on the first miss
+        // here so the chain-integrity error matches the legacy surface;
+        // collect mode accumulates every miss and lets each affected event
+        // soft-fail at Step 3.
+        if !position_batch.missing.is_empty() {
+            if self.collecting {
+                for missing in &position_batch.missing {
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_iel_event(identity, *missing));
+                }
+            } else if let Some(missing) = position_batch.missing.first() {
+                return Err(KelsError::missing_iel_event(identity, *missing));
+            }
         }
 
         let mut new_branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
@@ -412,14 +451,35 @@ impl SelVerifier {
             // also detect. Both gates remain wired to keep the soundness
             // surface explicit at each point of failure.
 
-            // Step 1 — fetch IEL event. Missing-IEL-event / identity-binding-violation is HARD for all v1+ kinds.
-            // The IelResolver impl returns errors for SAID-not-found / prefix-mismatch;
-            // surface them directly. Chain-integrity rule, not auth — stays HARD
-            // even post-divergence.
-            let _bound = self
+            // Step 1 — fetch IEL event. The IelResolver impl returns
+            // `MissingIelEvent` (deferrable, post-#156) when the SAID
+            // isn't local; `IdentityBindingViolation` (permanent) on
+            // cross-IEL contamination / prefix mismatch. Strict mode
+            // halts on either; collect-mode re-routes `MissingIelEvent`
+            // through the deferrable accumulator with soft-fail-style
+            // state advancement (`IdentityBindingViolation` always halts).
+            match self
                 .iel_resolver
                 .fetch_iel_event(&branch.identity, &identity_event_said)
-                .await?;
+                .await
+            {
+                Ok(_) => {}
+                Err(KelsError::MissingIelEvent(dep)) if self.collecting => {
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_iel_event(
+                            dep.iel_prefix,
+                            dep.event_said,
+                        ));
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
 
             // Steps 2 + 3 — pick policy + apply divergence gate.
             let policy_resolution = match event.kind {
@@ -492,6 +552,21 @@ impl SelVerifier {
                     iel_prefix,
                     event_said,
                 } => {
+                    if self.collecting {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_iel_event(iel_prefix, event_said));
+                        self.policy_satisfied = false;
+                        if is_terminal {
+                            self.record_terminal_landing(event, &mut new_branches, branch, false);
+                        } else {
+                            Self::record_non_terminal_soft_landing(
+                                event,
+                                &mut new_branches,
+                                branch,
+                            );
+                        }
+                        continue;
+                    }
                     return Err(KelsError::missing_iel_event(iel_prefix, event_said));
                 }
                 crate::IelSatisfaction::PermanentFailure(violation) => {
@@ -507,6 +582,25 @@ impl SelVerifier {
             let evaluation = self.checker.evaluate(&event.said, &resolved_policy).await?;
 
             if !evaluation.satisfied {
+                // Collect-mode (#156): if the policy could be satisfied by
+                // a missing anchor's commitment, accumulate each as a
+                // deferrable failure and soft-fail-style continue. The
+                // empty-`missing_anchors` case (policy permanently
+                // unsatisfiable) falls through to the legacy soft-eligible
+                // / hard path below.
+                if self.collecting && !evaluation.missing_anchors.is_empty() {
+                    for kel_prefix in &evaluation.missing_anchors {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_kel_anchor(*kel_prefix, event.said));
+                    }
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
                 if auth_soft_eligible {
                     self.policy_satisfied = false;
                     if is_terminal {
@@ -694,6 +788,73 @@ impl SelVerifier {
         );
     }
 
+    /// #156 collect-mode sibling of [`verify_page`]. Equivalent to
+    /// enabling collecting + calling `verify_page`. Deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate into the
+    /// verifier's internal buffer (read via [`deferred_failures`]) and
+    /// the walk soft-fails the affected events; permanent failures still
+    /// halt with `Err(KelsError)`.
+    pub async fn verify_page_collecting(&mut self, events: &[SadEvent]) -> Result<(), KelsError> {
+        self.collecting = true;
+        self.verify_page(events).await
+    }
+
+    /// #156 collect-mode sibling of [`finish`]. Returns the verification
+    /// token alongside the accumulated deferrable failures. Caller maps
+    /// non-empty `Vec<DeferredFailure>` to a 422 + dep info wire response;
+    /// empty means the chain verified cleanly.
+    pub async fn finish_collecting(
+        mut self,
+    ) -> Result<(SelVerification, Vec<DeferredFailure>), KelsError> {
+        self.collecting = true;
+        self.finish_internal().await
+    }
+
+    /// Shared finalization. `finish` discards the deferred-failures vec;
+    /// `finish_collecting` returns it alongside the verification token.
+    /// Flushing the buffered generation is the side that may push new
+    /// entries into `deferred_failures` (when `collecting=true`), so the
+    /// take-after-flush ordering matters.
+    async fn finish_internal(
+        mut self,
+    ) -> Result<(SelVerification, Vec<DeferredFailure>), KelsError> {
+        self.flush_generation().await?;
+        let deferred = std::mem::take(&mut self.deferred_failures);
+
+        if !self.saw_any_events {
+            return Err(KelsError::VerificationFailed(
+                "SelVerifier::finish: no events were verified".into(),
+            ));
+        }
+        if self.branches.is_empty() {
+            return Err(KelsError::VerificationFailed(
+                "No tip after SE verification".into(),
+            ));
+        }
+
+        let mut branches: Vec<SadBranchTip> = self.branches.into_values().collect();
+        branches.sort_by_key(|b| b.tip.said);
+
+        let last_governance_version = branches
+            .iter()
+            .filter_map(|b| b.last_governance_version)
+            .max();
+
+        Ok((
+            SelVerification::new(
+                branches,
+                self.policy_satisfied,
+                self.is_contested,
+                self.is_decommissioned,
+                last_governance_version,
+                self.diverged_at_version,
+                self.queried_saids,
+                self.satisfied_saids,
+            ),
+            deferred,
+        ))
+    }
+
     /// Verify a page of events. Events must arrive in
     /// `(version ASC, kind sort_priority ASC, said ASC)` order with complete
     /// generations within the page.
@@ -719,39 +880,12 @@ impl SelVerifier {
         Ok(())
     }
 
-    /// Finish verification and produce the proof token.
-    pub async fn finish(mut self) -> Result<SelVerification, KelsError> {
-        self.flush_generation().await?;
-
-        if !self.saw_any_events {
-            return Err(KelsError::VerificationFailed(
-                "SelVerifier::finish: no events were verified".into(),
-            ));
-        }
-        if self.branches.is_empty() {
-            return Err(KelsError::VerificationFailed(
-                "No tip after SE verification".into(),
-            ));
-        }
-
-        let mut branches: Vec<SadBranchTip> = self.branches.into_values().collect();
-        branches.sort_by_key(|b| b.tip.said);
-
-        let last_governance_version = branches
-            .iter()
-            .filter_map(|b| b.last_governance_version)
-            .max();
-
-        Ok(SelVerification::new(
-            branches,
-            self.policy_satisfied,
-            self.is_contested,
-            self.is_decommissioned,
-            last_governance_version,
-            self.diverged_at_version,
-            self.queried_saids,
-            self.satisfied_saids,
-        ))
+    /// Finish verification and produce the proof token. Strict-mode
+    /// callers ignore any deferrable accumulator (they shouldn't have
+    /// any, since strict-mode halts on the first deferrable).
+    pub async fn finish(self) -> Result<SelVerification, KelsError> {
+        let (verification, _deferred) = self.finish_internal().await?;
+        Ok(verification)
     }
 }
 
@@ -1151,6 +1285,149 @@ mod tests {
 
         assert!(v.policy_satisfied());
         assert_eq!(v.branches()[0].last_identity_event, Some(iel_evl));
+    }
+
+    /// #156 collect-mode: a batch with a single `Upd` referencing an
+    /// unknown IEL event accumulates one `DeferredFailure::MissingIelEvent`
+    /// instead of halting with `Err`. `finish_collecting` returns the
+    /// verification token alongside the collected failures; the chain
+    /// soft-failed at the missing-event gate, so `policy_satisfied=false`.
+    #[tokio::test]
+    async fn collect_mode_accumulates_missing_iel_event() {
+        let identity = d(b"identity-collect-mie");
+        let iel_icp = d(b"iel-icp-collect-mie");
+        let unknown = d(b"unknown-iel-event-collect");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-collect-mie"),
+            d(b"gov-collect-mie"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, unknown, b"c1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing IEL event");
+        let (verification, deferred) = verifier
+            .finish_collecting()
+            .await
+            .expect("finish_collecting returns token");
+
+        // The walk may emit the same `MissingIelEvent` from multiple
+        // gates (the bulk `iel_chain_positions` partial-results check and
+        // the per-event `fetch_iel_event` Step 1). The wire-format layer
+        // dedupes via `BTreeSet<DepRef>`; the verifier-level accumulator
+        // doesn't, so just assert at least one matching entry exists.
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingIelEvent(dep)
+                if dep.iel_prefix == identity && dep.event_said == unknown
+        )));
+        // Soft-fail-style state advancement: chain landed but policy not satisfied.
+        assert!(!verification.policy_satisfied());
+    }
+
+    /// #156 collect-mode: permanent failures (here: monotonic-ratchet
+    /// regression / chain-integrity breach) still halt the walk with
+    /// `Err(KelsError)`; the deferred accumulator is discarded.
+    #[tokio::test]
+    async fn collect_mode_permanent_failure_still_halts() {
+        let identity = d(b"identity-collect-perm");
+        let iel_icp = d(b"iel-icp-collect-perm");
+        let iel_evl = d(b"iel-evl-collect-perm");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-collect-perm"),
+            d(b"gov-collect-perm"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        // v1 binds to the later IEL Evl, ratcheting the branch forward.
+        let v1 = make_upd(&v0, iel_evl, b"c1");
+        // v2 binds to the earlier IEL Icp, regressing the ratchet → permanent.
+        let v2 = make_upd(&v1, iel_icp, b"c2");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1, v2])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish_collecting()
+            .await
+            .expect_err("permanent failure halts collect-mode");
+        assert!(matches!(err, KelsError::IdentityBindingViolation(_)));
+    }
+
+    /// #156 collect-mode: anchor evaluation that reports a non-empty
+    /// `missing_anchors` list (deferrable: KEL endorsers haven't anchored
+    /// yet) accumulates one `DeferredFailure::MissingKelAnchor` per
+    /// missing endorser. The walk soft-fails the affected event.
+    #[tokio::test]
+    async fn collect_mode_accumulates_missing_kel_anchor() {
+        // Custom checker returning a specific missing-anchor for any
+        // (said, policy) lookup.
+        struct MissingAnchorChecker {
+            kel_prefix: cesr::Digest256,
+        }
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingAnchorChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Ok(AnchorEvaluation {
+                    satisfied: false,
+                    missing_anchors: vec![self.kel_prefix],
+                })
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let identity = d(b"identity-collect-mka");
+        let iel_icp = d(b"iel-icp-collect-mka");
+        let kel_prefix = d(b"missing-kel-prefix");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-collect-mka"),
+            d(b"gov-collect-mka"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(MissingAnchorChecker { kel_prefix });
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-mka");
+        let v1_said = v1.said;
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing anchor");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
+
+        assert_eq!(deferred.len(), 1);
+        assert!(matches!(
+            &deferred[0],
+            DeferredFailure::MissingKelAnchor(dep)
+                if dep.kel_prefix == kel_prefix && dep.anchor_said == v1_said
+        ));
+        assert!(!verification.policy_satisfied());
     }
 
     /// `event.identity_event` referencing an unknown SAID → `MissingIelEvent`

@@ -64,6 +64,39 @@ pub struct AnchorPermanentFailure {
     pub reason: String,
 }
 
+/// #156: deferrable failure accumulated during a verifier walk in
+/// collect-mode (`SelVerifier::verify_page_collecting`,
+/// `IelVerifier::verify_page_collecting`).
+///
+/// Each entry corresponds to one wire-format dep the deferred-deps layer
+/// will surface in the 422 response. Permanent failures are NOT carried
+/// here — they halt the walk with `Err(KelsError)` and are not deferrable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredFailure {
+    /// IEL event SAID not present in the bound IEL chain locally.
+    /// Wire: `iel_event` dep.
+    MissingIelEvent(MissingIelEvent),
+    /// KEL anchor not yet committed by the named endorser.
+    /// Wire: `kel_anchor` dep.
+    MissingKelAnchor(MissingKelAnchor),
+}
+
+impl DeferredFailure {
+    pub fn missing_iel_event(iel_prefix: cesr::Digest256, event_said: cesr::Digest256) -> Self {
+        Self::MissingIelEvent(MissingIelEvent {
+            iel_prefix,
+            event_said,
+        })
+    }
+
+    pub fn missing_kel_anchor(kel_prefix: cesr::Digest256, anchor_said: cesr::Digest256) -> Self {
+        Self::MissingKelAnchor(MissingKelAnchor {
+            kel_prefix,
+            anchor_said,
+        })
+    }
+}
+
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
     #[error("Not found: {0}")]

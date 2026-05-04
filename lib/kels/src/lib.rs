@@ -79,7 +79,10 @@ pub use crypto::{
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
 pub use disclosure::{PathToken, parse_disclosure};
-pub use error::KelsError;
+pub use error::{
+    AnchorPermanentFailure, DeferredFailure, IdentityBindingViolation, KelsError, MissingIelEvent,
+    MissingKelAnchor,
+};
 pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
 pub use iel_resolver::{AnchoredIelResolver, walk_back_to_branch_identity};
 pub use merge::{MergeOutcome, MergeTransaction};

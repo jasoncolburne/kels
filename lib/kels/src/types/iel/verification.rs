@@ -277,6 +277,14 @@ pub struct IelVerifier {
     queried_saids: BTreeSet<cesr::Digest256>,
     satisfied_saids: BTreeSet<cesr::Digest256>,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
+    /// #156 collect-mode: when `true`, deferrable failures
+    /// (`MissingKelAnchor`) accumulate into `deferred_failures` and the
+    /// walk treats them as soft-fail-style; when `false`, deferrables
+    /// propagate as `Err(KelsError)` and halt the walk (legacy behavior).
+    /// Permanent failures always halt.
+    collecting: bool,
+    /// #156: accumulated deferrable failures. Empty in strict mode.
+    deferred_failures: Vec<crate::DeferredFailure>,
 }
 
 impl IelVerifier {
@@ -299,7 +307,23 @@ impl IelVerifier {
             queried_saids: BTreeSet::new(),
             satisfied_saids: BTreeSet::new(),
             checker,
+            collecting: false,
+            deferred_failures: Vec::new(),
         }
+    }
+
+    /// Enable #156 collect-mode for this verifier. Deferrable failures
+    /// (`MissingKelAnchor`) accumulate instead of halting the walk.
+    /// Permanent failures still halt. Idempotent.
+    pub fn enable_collecting(&mut self) -> &mut Self {
+        self.collecting = true;
+        self
+    }
+
+    /// Read accumulated deferrable failures (after running
+    /// `verify_page_collecting`). Empty in strict mode.
+    pub fn deferred_failures(&self) -> &[crate::DeferredFailure] {
+        &self.deferred_failures
     }
 
     /// Register IEL event SAIDs the caller cares about for satisfaction
@@ -356,6 +380,8 @@ impl IelVerifier {
             queried_saids: verification.queried_saids.clone(),
             satisfied_saids: verification.satisfied_saids.clone(),
             checker,
+            collecting: false,
+            deferred_failures: Vec::new(),
         })
     }
 
@@ -439,16 +465,24 @@ impl IelVerifier {
             }
 
             // Soft anchor check — Icp self-authorization. Failure leaves the
-            // chain in `policy_satisfied=false` but does not abort. Gap 2
-            // consumes only `evaluation.satisfied` for behavior-equivalence;
-            // Gap 3's collect-mode walk will route
-            // `evaluation.missing_anchors` into the deferrable accumulator.
+            // chain in `policy_satisfied=false` but does not abort.
+            // Collect-mode (#156): accumulate any `missing_anchors` as
+            // deferrable failures. The event still lands either way.
             let icp_evaluation = self
                 .checker
                 .evaluate(&event.said, &event.auth_policy)
                 .await?;
             if !icp_evaluation.satisfied {
                 self.policy_satisfied = false;
+                if self.collecting {
+                    for kel_prefix in &icp_evaluation.missing_anchors {
+                        self.deferred_failures
+                            .push(crate::DeferredFailure::missing_kel_anchor(
+                                *kel_prefix,
+                                event.said,
+                            ));
+                    }
+                }
             }
 
             self.branches.insert(
@@ -542,12 +576,30 @@ impl IelVerifier {
                 }
                 IdentityEventKind::Evl => {
                     if !governance_satisfied && !post_divergence {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "IEL Evl {} not anchored under tracked governance_policy {}",
-                            event.said, branch.tracked_governance_policy
-                        )));
-                    }
-                    if !governance_satisfied {
+                        // Collect-mode (#156): if the policy could be
+                        // satisfied by a missing anchor's commitment,
+                        // accumulate each as deferrable and soft-fail-style
+                        // continue (treat as post-divergence-soft would —
+                        // event lands, prior tracked state preserved). The
+                        // empty-`missing_anchors` case (permanently
+                        // unsatisfiable) falls through to the hard path.
+                        if self.collecting && !governance_evaluation.missing_anchors.is_empty() {
+                            for kel_prefix in &governance_evaluation.missing_anchors {
+                                self.deferred_failures.push(
+                                    crate::DeferredFailure::missing_kel_anchor(
+                                        *kel_prefix,
+                                        event.said,
+                                    ),
+                                );
+                            }
+                            self.policy_satisfied = false;
+                        } else {
+                            return Err(KelsError::VerificationFailed(format!(
+                                "IEL Evl {} not anchored under tracked governance_policy {}",
+                                event.said, branch.tracked_governance_policy
+                            )));
+                        }
+                    } else if !governance_satisfied {
                         // Post-divergence soft path: chain-wide flag flipped;
                         // event still lands but its evolved policies are NOT
                         // adopted (the auth chain that would have authorized
@@ -634,6 +686,16 @@ impl IelVerifier {
                     }
                     if !governance_satisfied {
                         self.policy_satisfied = false;
+                        if self.collecting {
+                            for kel_prefix in &governance_evaluation.missing_anchors {
+                                self.deferred_failures.push(
+                                    crate::DeferredFailure::missing_kel_anchor(
+                                        *kel_prefix,
+                                        event.said,
+                                    ),
+                                );
+                            }
+                        }
                     }
 
                     new_branches.insert(
@@ -676,6 +738,71 @@ impl IelVerifier {
         Ok(())
     }
 
+    /// #156 collect-mode sibling of [`verify_page`]. Equivalent to
+    /// enabling collecting + calling `verify_page`. Deferrable failures
+    /// (`MissingKelAnchor`) accumulate into the verifier's internal
+    /// buffer (read via [`deferred_failures`]) and the walk soft-fails
+    /// the affected events; permanent failures still halt with
+    /// `Err(KelsError)`.
+    pub async fn verify_page_collecting(
+        &mut self,
+        events: &[IdentityEvent],
+    ) -> Result<(), KelsError> {
+        self.collecting = true;
+        self.verify_page(events).await
+    }
+
+    /// #156 collect-mode sibling of [`finish`]. Returns the verification
+    /// token alongside the accumulated deferrable failures.
+    pub async fn finish_collecting(
+        mut self,
+    ) -> Result<(IelVerification, Vec<crate::DeferredFailure>), KelsError> {
+        self.collecting = true;
+        self.finish_internal().await
+    }
+
+    /// Shared finalization. See `SelVerifier::finish_internal` for the
+    /// ordering rationale (flush before take so any deferred failures
+    /// pushed during the final flush land in the returned vec).
+    async fn finish_internal(
+        mut self,
+    ) -> Result<(IelVerification, Vec<crate::DeferredFailure>), KelsError> {
+        self.flush_generation().await?;
+        let deferred = std::mem::take(&mut self.deferred_failures);
+
+        if !self.saw_any_events {
+            return Err(KelsError::VerificationFailed("Empty IEL".into()));
+        }
+        if self.branches.is_empty() {
+            return Err(KelsError::VerificationFailed(
+                "No tip after IEL verification".into(),
+            ));
+        }
+
+        let mut branches: Vec<IdentityBranchTip> = self.branches.into_values().collect();
+        branches.sort_by_key(|b| b.tip.said);
+
+        let last_governance_version = branches
+            .iter()
+            .filter_map(|b| b.last_governance_version)
+            .max();
+
+        Ok((
+            IelVerification::new(
+                branches,
+                self.policy_history,
+                self.policy_satisfied,
+                self.diverged_at_version,
+                self.is_contested,
+                self.is_decommissioned,
+                last_governance_version,
+                self.queried_saids,
+                self.satisfied_saids,
+            ),
+            deferred,
+        ))
+    }
+
     /// Verify a page of events. Events must arrive in
     /// `(version ASC, kind sort_priority ASC, said ASC)` order with complete
     /// generations within the page.
@@ -701,38 +828,12 @@ impl IelVerifier {
         Ok(())
     }
 
-    /// Finish verification and produce the proof token.
-    pub async fn finish(mut self) -> Result<IelVerification, KelsError> {
-        self.flush_generation().await?;
-
-        if !self.saw_any_events {
-            return Err(KelsError::VerificationFailed("Empty IEL".into()));
-        }
-        if self.branches.is_empty() {
-            return Err(KelsError::VerificationFailed(
-                "No tip after IEL verification".into(),
-            ));
-        }
-
-        let mut branches: Vec<IdentityBranchTip> = self.branches.into_values().collect();
-        branches.sort_by_key(|b| b.tip.said);
-
-        let last_governance_version = branches
-            .iter()
-            .filter_map(|b| b.last_governance_version)
-            .max();
-
-        Ok(IelVerification::new(
-            branches,
-            self.policy_history,
-            self.policy_satisfied,
-            self.diverged_at_version,
-            self.is_contested,
-            self.is_decommissioned,
-            last_governance_version,
-            self.queried_saids,
-            self.satisfied_saids,
-        ))
+    /// Finish verification and produce the proof token. Strict-mode
+    /// callers ignore any deferrable accumulator (they shouldn't have
+    /// any, since strict-mode halts on the first deferrable).
+    pub async fn finish(self) -> Result<IelVerification, KelsError> {
+        let (verification, _deferred) = self.finish_internal().await?;
+        Ok(verification)
     }
 }
 
@@ -853,6 +954,64 @@ mod tests {
     ) -> Result<IelVerification, KelsError> {
         verifier.verify_page(events).await?;
         verifier.finish().await
+    }
+
+    // ---------- #156 collect-mode ----------
+
+    /// Collect-mode: an Evl whose anchor evaluation reports a non-empty
+    /// `missing_anchors` list accumulates one `DeferredFailure::MissingKelAnchor`
+    /// per missing endorser instead of halting at the hard governance gate.
+    /// The chain advances soft-fail-style (event lands; prior tracked
+    /// policies preserved; chain-wide `policy_satisfied=false`).
+    #[tokio::test]
+    async fn collect_mode_evl_accumulates_missing_kel_anchor() {
+        use crate::DeferredFailure;
+
+        struct MissingAnchorChecker {
+            kel_prefix: cesr::Digest256,
+        }
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingAnchorChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Ok(AnchorEvaluation {
+                    satisfied: false,
+                    missing_anchors: vec![self.kel_prefix],
+                })
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let auth = test_digest(b"auth-collect-iel");
+        let gov = test_digest(b"gov-collect-iel");
+        let kel_prefix = test_digest(b"missing-kel-prefix-iel");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1_said = v1.said;
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(MissingAnchorChecker { kel_prefix });
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing anchor");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
+
+        // Two entries: Icp self-anchor missing (soft already in strict mode)
+        // + Evl governance missing (would have been hard in strict mode).
+        assert_eq!(deferred.len(), 2);
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingKelAnchor(dep)
+                if dep.kel_prefix == kel_prefix && dep.anchor_said == v1_said
+        )));
+        assert!(!verification.policy_satisfied());
     }
 
     // ---------- Linear chain ----------
