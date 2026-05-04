@@ -7,7 +7,7 @@
 //! - Delta-based sync (fetch only events after local state) with full-fetch fallback
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -16,12 +16,16 @@ use tracing::{debug, error, info, warn};
 
 use cesr::Matter;
 use futures::{StreamExt, future::join_all};
-use kels_core::{KelsClient, KelsError, PeerSigner};
+use kels_core::{
+    DeferredDepsResponse, ErrorCode, KelsClient, KelsError, MissingDependency, PeerSigner,
+    TransientChainState, hash_effective_said,
+};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::{
     allowlist::SharedAllowlist,
+    pending::{DepRef, ParkRecord, ParkSubject, PendingMap},
     types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement},
 };
 
@@ -342,6 +346,107 @@ fn max_fetches_per_peer_per_minute() -> u32 {
 /// Maps kel_prefix → source_node_prefix.
 const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 
+/// #156: parse a `KelsError` for a deferred-deps 422 body.
+///
+/// Sinks (`HttpSelSink`, `HttpIelSink`) and the `SadStoreClient::post_sad_object`
+/// helper wrap any non-2xx-non-409 response into
+/// `KelsError::ServerError(text, ErrorCode::InternalError)` — the body text is
+/// then JSON-decoded as `DeferredDepsResponse`. Returns `Some(_)` only when
+/// the body parses as the typed-422 shape *and* carries non-empty deps;
+/// returns `None` for any other error (genuine 5xx, conflict, network).
+fn try_parse_deferred_deps(err: &KelsError) -> Option<DeferredDepsResponse> {
+    let KelsError::ServerError(body, ErrorCode::InternalError) = err else {
+        return None;
+    };
+    let parsed: DeferredDepsResponse = serde_json::from_str(body).ok()?;
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(parsed)
+}
+
+/// #156: convert a typed-422 deferred-deps response into the inputs the
+/// `PendingMap::park` call needs.
+///
+/// Returns `(deps, chain_eff_said)` where:
+/// - `deps` is a `BTreeSet<DepRef>` keyed identically to the response's
+///   per-dep variants (canonical-ordered for `ParkRecord` SAID determinism).
+/// - `chain_eff_said` maps every chain prefix referenced in `deps` to the
+///   `eff_said_at_park` to enrol on `pending:chain:{prefix}`. The
+///   `chain_eff_said_for` closure passed to `park` does a `.get(prefix)`
+///   on this map.
+///
+/// `MissingDependency::IelPrefix` carries no chain_eff_said in the wire
+/// format (the chain is unknown locally); we substitute the divergent
+/// synthetic so drain still wakes the park on chain-state advance.
+fn deferred_deps_to_park_inputs(
+    response: &DeferredDepsResponse,
+) -> (BTreeSet<DepRef>, HashMap<cesr::Digest256, cesr::Digest256>) {
+    let DeferredDepsResponse::Rejected {
+        missing_dependencies,
+        transient_chain_state,
+    } = response;
+
+    let mut deps: BTreeSet<DepRef> = BTreeSet::new();
+    let mut chain_eff: HashMap<cesr::Digest256, cesr::Digest256> = HashMap::new();
+
+    for md in missing_dependencies {
+        match md {
+            MissingDependency::KelAnchor {
+                kel_prefix,
+                anchor_said,
+                chain_eff_said,
+            } => {
+                deps.insert(DepRef::KelAnchor {
+                    kel_prefix: *kel_prefix,
+                    anchor_said: *anchor_said,
+                });
+                chain_eff.insert(*kel_prefix, *chain_eff_said);
+            }
+            MissingDependency::IelEvent {
+                iel_prefix,
+                event_said,
+                chain_eff_said,
+            } => {
+                deps.insert(DepRef::IelEvent {
+                    iel_prefix: *iel_prefix,
+                    event_said: *event_said,
+                });
+                chain_eff.insert(*iel_prefix, *chain_eff_said);
+            }
+            MissingDependency::IelPrefix { iel_prefix } => {
+                // No local chain to point at — TransientChain is the
+                // wake-on-chain-advance semantic match. Synthetic eff_said
+                // matches the sadstore-side fallback in
+                // `build_deferred_deps_response` for unknown chains.
+                let eff = hash_effective_said(&format!("divergent:{}", iel_prefix));
+                deps.insert(DepRef::TransientChain {
+                    prefix: *iel_prefix,
+                    eff_said_at_park: eff,
+                });
+                chain_eff.entry(*iel_prefix).or_insert(eff);
+            }
+            MissingDependency::SadObject { said } => {
+                deps.insert(DepRef::SadObject { said: *said });
+            }
+        }
+    }
+
+    for tcs in transient_chain_state {
+        let TransientChainState {
+            prefix,
+            effective_said,
+        } = tcs;
+        deps.insert(DepRef::TransientChain {
+            prefix: *prefix,
+            eff_said_at_park: *effective_said,
+        });
+        chain_eff.insert(*prefix, *effective_said);
+    }
+
+    (deps, chain_eff)
+}
+
 /// Handles gossip events and coordinates with KELS
 pub struct SyncHandler {
     kels_client: KelsClient,
@@ -358,9 +463,13 @@ pub struct SyncHandler {
     peer_fetch_counts: HashMap<cesr::Digest256, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
+    /// #156 deferred-deps park map. `None` when Redis is unavailable; the
+    /// inbound park flow degrades to "log and drop the 422" in that case.
+    pending: Option<PendingMap>,
 }
 
 impl SyncHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         kels_url: &str,
         sadstore_url: &str,
@@ -369,6 +478,7 @@ impl SyncHandler {
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
         signer: Arc<dyn kels_core::PeerSigner>,
+        pending: Option<PendingMap>,
     ) -> Result<Self, kels_core::KelsError> {
         let mail_client = kels_exchange::MailClient::new(mail_url)
             .map_err(|e| kels_core::KelsError::HttpError(e.to_string()))?;
@@ -382,6 +492,7 @@ impl SyncHandler {
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             redis,
+            pending,
         })
     }
 
@@ -389,6 +500,77 @@ impl SyncHandler {
     async fn record_stale(&self, prefix: &cesr::Digest256, source_node_prefix: &cesr::Digest256) {
         if let Some(ref redis) = self.redis {
             record_stale_prefix(redis.as_ref(), prefix, source_node_prefix).await;
+        }
+    }
+
+    /// #156: park an inbound gossip POST when the local sadstore returns
+    /// a typed-422 deferred-deps response. Returns `Some(record)` when the
+    /// park succeeded; the caller then performs the insert-then-retry-once
+    /// step. Returns `None` for non-deferrable errors (genuine 5xx, network)
+    /// and when the pending map is unavailable (Redis down) — both cases
+    /// fall through to the caller's existing error path.
+    async fn try_park_on_deferred(
+        &self,
+        err: &KelsError,
+        subject: ParkSubject,
+        origin: cesr::Digest256,
+    ) -> Option<ParkRecord> {
+        let response = try_parse_deferred_deps(err)?;
+        let pending = self.pending.as_ref()?;
+        let (deps, chain_eff) = deferred_deps_to_park_inputs(&response);
+        let record = match ParkRecord::create(subject, origin, deps) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("ParkRecord::create failed: {}", e);
+                return None;
+            }
+        };
+        if let Err(e) = pending.park(&record, |p| chain_eff.get(p).copied()).await {
+            warn!(record_said = %record.said, "PendingMap::park failed: {}", e);
+            return None;
+        }
+        debug!(
+            record_said = %record.said,
+            origin = %origin,
+            "parked deferred-deps record"
+        );
+        Some(record)
+    }
+
+    /// #156: classify the retry-once result against a freshly-parked record.
+    /// Success → cleanup; another 422 → leave parked for drain (Gap 6b);
+    /// permanent error → cleanup and log.
+    async fn handle_retry_outcome(&self, record: &ParkRecord, retry: Result<(), KelsError>) {
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        match retry {
+            Ok(()) => {
+                if let Err(e) = pending.cleanup_record(&record.said).await {
+                    warn!(
+                        record_said = %record.said,
+                        "cleanup_record after retry success failed: {}", e
+                    );
+                }
+            }
+            Err(e) if try_parse_deferred_deps(&e).is_some() => {
+                debug!(
+                    record_said = %record.said,
+                    "park retry returned 422; leaving parked for drain"
+                );
+            }
+            Err(e) => {
+                if let Err(ce) = pending.cleanup_record(&record.said).await {
+                    warn!(
+                        record_said = %record.said,
+                        "cleanup_record after retry permanent failure failed: {}", ce
+                    );
+                }
+                warn!(
+                    record_said = %record.said,
+                    "park retry returned permanent error: {}", e
+                );
+            }
         }
     }
 
@@ -502,18 +684,38 @@ impl SyncHandler {
             .insert(cache_key.clone(), Instant::now());
 
         // Fetch from remote and store locally
-        match remote_client.get_sad_object(said).await {
-            Ok(object) => {
-                if let Err(e) = local_client.post_sad_object(&object).await {
-                    self.recently_stored.write().await.remove(&cache_key);
-                    warn!("Failed to store SAD object {} locally: {}", said, e);
-                }
-            }
+        let object = match remote_client.get_sad_object(said).await {
+            Ok(object) => object,
             Err(e) => {
                 self.recently_stored.write().await.remove(&cache_key);
                 warn!("Failed to fetch SAD object {} from {}: {}", said, origin, e);
+                return;
             }
+        };
+
+        let post_err = match local_client.post_sad_object(&object).await {
+            Ok(_) => return,
+            Err(e) => {
+                self.recently_stored.write().await.remove(&cache_key);
+                e
+            }
+        };
+
+        // #156: typed-422 deferred-deps → park, then insert-then-retry-once.
+        let subject = ParkSubject::SadObject { said: *said };
+        let Some(record) = self.try_park_on_deferred(&post_err, subject, *origin).await else {
+            warn!("Failed to store SAD object {} locally: {}", said, post_err);
+            return;
+        };
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
+        let retry = local_client.post_sad_object(&object).await.map(|_| ());
+        if retry.is_err() {
+            self.recently_stored.write().await.remove(&cache_key);
         }
+        self.handle_retry_outcome(&record, retry).await;
     }
 
     /// Handle a SAD Event Log announcement — fetch the chain if our tip differs.
@@ -622,7 +824,7 @@ impl SyncHandler {
             "Fetching SAD Event Log from peer"
         );
 
-        match kels_core::forward_sel_events(
+        let forward_err = match kels_core::forward_sel_events(
             sel_prefix,
             &source,
             &sink,
@@ -637,15 +839,46 @@ impl SyncHandler {
                     sel_prefix = %sel_prefix,
                     "SAD Event Log replicated successfully"
                 );
+                return;
             }
             Err(e) => {
                 self.recently_stored.write().await.remove(&cache_key);
-                warn!(
-                    "Failed to replicate SAD Event Log {} from {}: {}",
-                    sel_prefix, origin, e
-                );
+                e
             }
+        };
+
+        // #156: typed-422 deferred-deps → park, then insert-then-retry-once.
+        let subject = ParkSubject::SelChain {
+            prefix: *sel_prefix,
+            remote_eff_said: *remote_said,
+        };
+        let Some(record) = self
+            .try_park_on_deferred(&forward_err, subject, *origin)
+            .await
+        else {
+            warn!(
+                "Failed to replicate SAD Event Log {} from {}: {}",
+                sel_prefix, origin, forward_err
+            );
+            return;
+        };
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
+        let retry = kels_core::forward_sel_events(
+            sel_prefix,
+            &source,
+            &sink,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            since_digest.as_ref(),
+        )
+        .await;
+        if retry.is_err() {
+            self.recently_stored.write().await.remove(&cache_key);
         }
+        self.handle_retry_outcome(&record, retry).await;
     }
 
     /// Handle an IEL gossip announcement — fetch the chain if our local
@@ -754,7 +987,7 @@ impl SyncHandler {
             "Fetching IEL from peer"
         );
 
-        match kels_core::forward_identity_events(
+        let forward_err = match kels_core::forward_identity_events(
             &iel_prefix,
             &source,
             &sink,
@@ -766,15 +999,46 @@ impl SyncHandler {
         {
             Ok(()) => {
                 debug!(iel_prefix = %iel_prefix, "IEL replicated successfully");
+                return;
             }
             Err(e) => {
                 self.recently_stored.write().await.remove(&cache_key);
-                warn!(
-                    "Failed to replicate IEL {} from {}: {}",
-                    iel_prefix, origin, e
-                );
+                e
             }
+        };
+
+        // #156: typed-422 deferred-deps → park, then insert-then-retry-once.
+        let subject = ParkSubject::IelChain {
+            prefix: iel_prefix,
+            remote_eff_said: remote_said,
+        };
+        let Some(record) = self
+            .try_park_on_deferred(&forward_err, subject, origin)
+            .await
+        else {
+            warn!(
+                "Failed to replicate IEL {} from {}: {}",
+                iel_prefix, origin, forward_err
+            );
+            return;
+        };
+        self.recently_stored
+            .write()
+            .await
+            .insert(cache_key.clone(), Instant::now());
+        let retry = kels_core::forward_identity_events(
+            &iel_prefix,
+            &source,
+            &sink,
+            kels_core::page_size(),
+            kels_core::max_pages(),
+            since_digest.as_ref(),
+        )
+        .await;
+        if retry.is_err() {
+            self.recently_stored.write().await.remove(&cache_key);
         }
+        self.handle_retry_outcome(&record, retry).await;
     }
 
     /// Handle a mail gossip announcement — replicate metadata or process removal.
@@ -1044,6 +1308,7 @@ pub async fn run_sync_handler(
     recently_stored: RecentlyStoredFromGossip,
     redis: OptionalRedis,
     signer: Arc<dyn kels_core::PeerSigner>,
+    pending: Option<PendingMap>,
     mut peer_connected_tx: Option<oneshot::Sender<()>>,
 ) -> Result<(), SyncError> {
     let mut handler = SyncHandler::new(
@@ -1054,6 +1319,7 @@ pub async fn run_sync_handler(
         recently_stored,
         redis,
         signer,
+        pending,
     )?;
     let mut reap_interval = tokio::time::interval(Duration::from_secs(300));
     reap_interval.tick().await; // consume initial tick
@@ -2262,6 +2528,7 @@ mod tests {
             recently_stored,
             None,
             signer,
+            None,
         )
         .unwrap()
     }
@@ -2347,6 +2614,7 @@ mod tests {
             recently_stored,
             None,
             signer,
+            None,
             None,
         )
         .await;

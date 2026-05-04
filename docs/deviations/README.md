@@ -48,6 +48,45 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ## Open
 
+### [Issue #156 → standalone] `verify_custody_write` typed-422 body retrofit deferred
+
+#156's status-code intersection table calls for `verify_custody_write` (services/sadstore/src/handlers.rs:602) to emit a typed `DeferredDepsResponse` body for the deferrable cases:
+
+- `MissingIelEvent` → 422 + `iel_event` dep on `resolve_identity_for_event` SAID-only failure.
+- `IelDivergent` → 422 + `transient_chain_state` body.
+- `MissingKelAnchor`-could-flip → 422 + `kel_anchor` dep on the anchor evaluation step.
+
+Gap 4 only retrofitted **status codes** at this surface (services/sadstore/src/handlers.rs:665 — `custody_write_resolver_error`):
+
+- `IelDivergent` → 422 (was 400) with the legacy text body, no `DeferredDepsResponse` shape.
+- `ContestedIel` / `IelDecommissioned` → 403 (was 400). Spec-aligned permanent.
+- `MissingIelEvent` (rare here, only fires from `resolve_auth_policy_at` post Gap 1's classification) → 400 with text body.
+- `IdentityBindingViolation` (the SAID-not-found-in-any-IEL case from `resolve_identity_for_event`) → 400 with text body.
+
+**Why deferred.** The `resolve_identity_for_event` call (kels_core::IelResolver::resolve_identity_for_event) takes only an event SAID and returns an identity prefix on success, or `IdentityBindingViolation` when the SAID isn't in any locally-known IEL. At that surface we don't have an `iel_prefix` to populate the `MissingDependency::IelEvent` wire shape (which requires both `iel_prefix` and `event_said`). Constructing a full DeferredDepsResponse body here means inventing a placeholder `iel_prefix` (semantically wrong — gossip drain would enrol in the wrong `pending:chain:` index) or surfacing a non-spec-shaped fallback dep type.
+
+The high-traffic SAD-event path (submit_sad_events) is fully retrofitted; custody.write is a lower-traffic write-side custody check that the heisenbug doesn't gate on. Status codes are spec-aligned, which is the externally-observable contract.
+
+**Resolution.** Either:
+- Custody.write's wire format gets reshaped to carry `iel_prefix` alongside `iel_event_said` (pushes the gap upstream into the SAD object's `custody.write` field shape — design change).
+- The deferred-deps protocol gets extended with a `MissingIelEventBySaid { event_said }` dep type that gossip drains via a SAID-only secondary index. Materially more design work.
+- Accept the AE-backstop latency cost on custody.write deferrable cases and document as permanent. Lowest-cost path; consider for #82's read-side cleanup pass.
+
+Tracked here for follow-up; not blocking the heisenbug fix or deployment validation.
+
+### [Issue #156 → polish pass] `build_deferred_deps_response` chain_eff_said fallback to divergent synthetic
+
+Gap 4's `build_deferred_deps_response` helper (services/sadstore/src/handlers.rs) populates `chain_eff_said` on each `MissingDependency::KelAnchor` / `MissingDependency::IelEvent` by querying:
+
+- `state.repo.iel_events.effective_said(&iel_prefix)` for IEL deps.
+- `state.kels_client.fetch_effective_said(&kel_prefix)` for KEL deps.
+
+When either lookup returns `None` (chain truly unknown locally — zero events from that prefix), the helper falls back to `kels_core::hash_effective_said(&format!("divergent:{prefix}"))` as the chain_eff_said.
+
+**Why this is a soft compromise.** The wire-format value is honest about the fact that we don't know the chain's state, but it's not the *actual* effective SAID the chain will eventually reach. Gossip drain's chain-update branch (Gap 6b) compares observed effective SAIDs against parked `eff_said_at_park`; if the parked value is the divergent synthetic but the chain's first-ever event committed naturally (no divergence), the drain trigger would still fire (chain advanced from divergent-synthetic to a real tip → re-eval). So the fallback is functionally correct — the parked record drains on first chain advance — but it's semantically a lie.
+
+**Resolution.** The fix is to leave the chain_eff_said field nullable (Optional) on the wire and have gossip drain handle absent values as "drain on any chain advance for this prefix." That's a minor wire-format change. Defer to a polish pass; not blocking heisenbug.
+
 ### [Issue #167 → Issue #82] Read-enforcement positive-path + IEL-state-mapping test cells deferred
 
 #167's test plan calls for read-enforcement cells covering:

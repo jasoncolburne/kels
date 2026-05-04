@@ -714,6 +714,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
     let sync_signer = registry_signer.clone();
+    let sync_pending: Option<pending::PendingMap> =
+        sync_redis.clone().map(pending::PendingMap::new);
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
@@ -725,6 +727,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             recently_stored,
             sync_redis,
             sync_signer,
+            sync_pending,
             if has_ready_peers {
                 Some(peer_connected_tx)
             } else {
