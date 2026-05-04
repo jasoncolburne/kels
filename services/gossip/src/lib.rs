@@ -34,6 +34,7 @@ mod allowlist;
 mod bootstrap;
 mod gossip_layer;
 mod hsm_signer;
+pub mod pending;
 mod repository;
 mod server;
 mod sync;
