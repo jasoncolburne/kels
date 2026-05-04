@@ -6,10 +6,51 @@ use cesr::Matter;
 use kels_core::{IdentityEvent, IdentityEventKind, SadEvent, SadEventRepair, SelRepairEvent};
 use kels_policy::Policy;
 use verifiable_storage::{
-    ChainedRepository, ColumnQuery, QueryExecutor, StorageError, TransactionExecutor,
-    UnchainedRepository, Value,
+    ChainedRepository, ColumnQuery, QueryExecutor, ScalarSubquery, StorageError,
+    TransactionExecutor, UnchainedRepository, Value,
 };
 use verifiable_storage_postgres::{Filter, PgPool, Stored};
+
+/// How to identify the IEL chain when fetching events.
+///
+/// Per #167's said-form fetch comment: the existing query rewrites to use a
+/// scalar subquery when the caller has only an IEL event SAID (no prefix).
+/// Single change at the query layer; pagination, ordering, and response
+/// shape are unchanged.
+#[derive(Debug, Clone, Copy)]
+pub enum IelChainSelector<'a> {
+    /// Direct lookup by IEL prefix.
+    Prefix(&'a str),
+    /// Lookup by the SAID of any event on the IEL — server resolves the
+    /// prefix via subquery: `prefix IN (SELECT prefix FROM iel_events WHERE said = ?)`.
+    EventSaid(&'a str),
+}
+
+impl<'a> IelChainSelector<'a> {
+    /// The WHERE-clause filter that pins the chain. Used by both the
+    /// transactional and pool fetch paths.
+    fn prefix_filter(&self, table: &str) -> Filter {
+        match self {
+            Self::Prefix(p) => Filter::Eq("prefix".into(), Value::String((*p).into())),
+            Self::EventSaid(s) => Filter::InSubquery(
+                "prefix".into(),
+                ScalarSubquery::new(
+                    table,
+                    "prefix",
+                    vec![Filter::Eq("said".into(), Value::String((*s).into()))],
+                ),
+            ),
+        }
+    }
+
+    /// Render the selector for inclusion in error messages.
+    fn label(&self) -> String {
+        match self {
+            Self::Prefix(p) => format!("prefix {}", p),
+            Self::EventSaid(s) => format!("event said {}", s),
+        }
+    }
+}
 
 /// Result of a `save_batch` operation on an event chain.
 #[derive(Debug)]
@@ -1164,7 +1205,7 @@ impl IdentityEventRepository {
     /// tuple (so duplicates at the cursor's version are dropped).
     pub async fn fetch_iel_page_pool(
         &self,
-        prefix: &str,
+        selector: IelChainSelector<'_>,
         since_said: Option<&str>,
         limit: Option<u64>,
     ) -> Result<Vec<IdentityEvent>, StorageError> {
@@ -1189,7 +1230,7 @@ impl IdentityEventRepository {
 
         let mut query =
             verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
-                .eq("prefix", prefix)
+                .filter(selector.prefix_filter(Self::TABLE_NAME))
                 .order_by("version", verifiable_storage_postgres::Order::Asc)
                 .order_by_case(
                     "kind",
@@ -1225,8 +1266,10 @@ impl IdentityEventRepository {
             let skipped = skipped - events.len();
             if skipped > 2 {
                 return Err(StorageError::StorageError(format!(
-                    "IEL chain integrity violation: {} events skipped at version {} for prefix {} — possible DB tampering",
-                    skipped, version, prefix
+                    "IEL chain integrity violation: {} events skipped at version {} for {} — possible DB tampering",
+                    skipped,
+                    version,
+                    selector.label()
                 )));
             }
 
@@ -1241,7 +1284,7 @@ impl IdentityEventRepository {
     pub async fn fetch_iel_page<Tx: TransactionExecutor>(
         &self,
         tx: &mut Tx,
-        prefix: &str,
+        selector: IelChainSelector<'_>,
         since_said: Option<&str>,
         limit: Option<u64>,
     ) -> Result<Vec<IdentityEvent>, StorageError> {
@@ -1263,7 +1306,7 @@ impl IdentityEventRepository {
 
         let mut query =
             verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
-                .eq("prefix", prefix)
+                .filter(selector.prefix_filter(Self::TABLE_NAME))
                 .order_by("version", verifiable_storage_postgres::Order::Asc)
                 .order_by_case(
                     "kind",
@@ -1299,8 +1342,10 @@ impl IdentityEventRepository {
             let skipped = skipped - events.len();
             if skipped > 2 {
                 return Err(StorageError::StorageError(format!(
-                    "IEL chain integrity violation: {} events skipped at version {} for prefix {} — possible DB tampering",
-                    skipped, version, prefix
+                    "IEL chain integrity violation: {} events skipped at version {} for {} — possible DB tampering",
+                    skipped,
+                    version,
+                    selector.label()
                 )));
             }
 

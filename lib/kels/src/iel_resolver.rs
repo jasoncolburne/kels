@@ -332,6 +332,63 @@ impl IelResolver for AnchoredIelResolver {
 
         Ok(positions)
     }
+
+    async fn resolve_identity_for_event(
+        &self,
+        iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        // Single-event said-form fetch via the source's said-keyed endpoint.
+        // Limit 1 — we only need any one event from the chain to read its
+        // prefix (every event on an IEL carries the same prefix).
+        let (events, _) = self
+            .source
+            .fetch_page_by_event_said(iel_event_said, None, 1)
+            .await?;
+        events.into_iter().next().map(|e| e.prefix).ok_or_else(|| {
+            KelsError::BadIdentityBinding(format!(
+                "IEL event {} not found in any IEL on the source",
+                iel_event_said,
+            ))
+        })
+    }
+
+    async fn resolve_current_auth_policy(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        let verification = self.verification_for(identity).await?;
+        if verification.is_contested() {
+            return Err(KelsError::ContestedIel(format!(
+                "IEL {} is contested",
+                identity,
+            )));
+        }
+        if verification.is_decommissioned() {
+            return Err(KelsError::IelDecommissioned(format!(
+                "IEL {} is decommissioned",
+                identity,
+            )));
+        }
+        if verification.is_divergent() {
+            return Err(KelsError::IelDivergent(format!(
+                "IEL {} is divergent — no canonical current auth_policy",
+                identity,
+            )));
+        }
+        let tip = verification.current_event().ok_or_else(|| {
+            KelsError::NotFound(format!(
+                "IEL {} has no current event — chain not locally known",
+                identity,
+            ))
+        })?;
+        verification.auth_policy_at(&tip.said).ok_or_else(|| {
+            KelsError::InvalidIel(format!(
+                "IEL {} tip event {} has no auth_policy in policy_history \
+                 (chain integrity breach)",
+                identity, tip.said,
+            ))
+        })
+    }
 }
 
 /// Walk `event.previous` from `start` until reaching the event at version

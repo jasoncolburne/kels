@@ -425,6 +425,59 @@ async fn incept_lands_chain() {
     assert_eq!(page.events[0].governance_policy, policy.said);
 }
 
+/// IEL fetch happy path: said-form lookup (#167) returns the same chain a
+/// prefix-form lookup would. Reuses the existing inception harness.
+#[tokio::test]
+#[serial]
+async fn iel_fetch_by_event_said_returns_chain() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_immune_policy(harness, "iel-fetch-by-said").await;
+    let checker = build_checker(harness, vec![policy.clone()]);
+
+    let mut builder = IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let icp_said = builder
+        .incept(policy.said, policy.said, TEST_TOPIC)
+        .expect("stage Icp");
+    kel_builder.interact(&icp_said).await.expect("anchor Icp");
+    let _ = builder.flush().await.expect("flush Icp");
+
+    let prefix = iel_prefix_for(policy.said, policy.said, TEST_TOPIC);
+    let fetch_url = format!("{}/api/v1/iel/events/fetch", harness.sad_url);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    // Prefix-form fetch (the existing path) — used as the ground truth.
+    let by_prefix = client
+        .post(&fetch_url)
+        .json(&serde_json::json!({ "prefix": prefix.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_prefix.status(), 200);
+    let by_prefix_page: kels_core::IdentityEventPage = by_prefix.json().await.unwrap();
+    assert_eq!(by_prefix_page.events.len(), 1);
+
+    // Said-form fetch — server resolves prefix via subquery and returns
+    // the same chain.
+    let by_said = client
+        .post(&fetch_url)
+        .json(&serde_json::json!({ "said": icp_said.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_said.status(), 200);
+    let by_said_page: kels_core::IdentityEventPage = by_said.json().await.unwrap();
+
+    assert_eq!(by_said_page.events.len(), by_prefix_page.events.len());
+    assert_eq!(by_said_page.events[0].said, icp_said);
+    assert_eq!(by_said_page.events[0].prefix, prefix);
+}
+
 #[tokio::test]
 #[serial]
 async fn evolve_appends_to_chain() {

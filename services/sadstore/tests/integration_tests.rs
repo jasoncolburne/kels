@@ -494,3 +494,63 @@ async fn test_list_objects_empty() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+// ==================== IEL fetch: request shape (#167 said-form) ====================
+//
+// The IEL fetch handler accepts either `prefix` OR `said` (exclusive). The
+// happy-path said-form fetch (with real IEL fixtures) is exercised by Gap 3's
+// verifier tests; here we pin the request-validation contract.
+
+#[tokio::test]
+async fn test_iel_fetch_rejects_both_prefix_and_said() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let body = serde_json::json!({
+        "prefix": test_digest("any").to_string(),
+        "said": test_digest("any").to_string(),
+    });
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_iel_fetch_rejects_neither_prefix_nor_said() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let body = serde_json::json!({});
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_iel_fetch_said_form_unknown_returns_404() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    // SAID not in any IEL — subquery returns empty → empty page → 404.
+    let body = serde_json::json!({
+        "said": test_digest("not-in-any-iel").to_string(),
+    });
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}

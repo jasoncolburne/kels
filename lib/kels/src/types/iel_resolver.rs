@@ -178,4 +178,39 @@ pub trait IelResolver: Send + Sync {
         identity: &cesr::Digest256,
         said: &cesr::Digest256,
     ) -> Result<bool, KelsError>;
+
+    /// Resolve the IEL prefix that owns the given event SAID. Used by the
+    /// `custody.write` verifier (per #167), which holds an IEL event SAID
+    /// without prior identity context — this method maps SAID → identity
+    /// so subsequent calls (`resolve_auth_policy_at`, `is_satisfied`) can
+    /// proceed with the standard identity-scoped surface.
+    ///
+    /// Returns [`KelsError::BadIdentityBinding`] when the SAID isn't
+    /// present in any locally-known IEL. No divergence gate — the caller
+    /// applies the existing `resolve_*_at` divergence checks once it has
+    /// the identity.
+    async fn resolve_identity_for_event(
+        &self,
+        iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError>;
+
+    /// Resolve the **current** `auth_policy` for the named IEL — the
+    /// policy adopted at the IEL's tip. Used by the `custody.read`
+    /// verifier (per #167), which gates user-facing reads against the
+    /// identity-current auth_policy (not a point-in-time pinned policy
+    /// like `resolve_auth_policy_at`).
+    ///
+    /// **Divergence / terminal gates:**
+    /// - [`KelsError::IelDivergent`] when the IEL is divergent (no
+    ///   canonical "current" policy on a forked chain).
+    /// - [`KelsError::ContestedIel`] / [`KelsError::IelDecommissioned`]
+    ///   when the chain has reached a terminal state. Caller maps them
+    ///   to fail-closed user-facing read responses (403 per #167's
+    ///   serve_sad spec).
+    /// - [`KelsError::NotFound`] when the IEL prefix isn't locally known
+    ///   (the caller maps this to 403 per the same spec).
+    async fn resolve_current_auth_policy(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError>;
 }

@@ -477,9 +477,10 @@ impl SadStoreClient {
     ) -> Result<crate::IdentityEventPage, KelsError> {
         let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
         let body = crate::IdentityEventPageRequest {
-            prefix: *prefix,
+            prefix: Some(*prefix),
             since: since.copied(),
             limit: None,
+            ..Default::default()
         };
         let resp = self.client.post(&url).json(&body).send().await?;
 

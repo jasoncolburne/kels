@@ -1,6 +1,6 @@
 //! Availability — per-SAD replication and lifecycle. Inline-on-parent struct.
 //!
-//! Round 13 reshape (#167): `availability` is a top-level reserved key on SAD
+//! #167: `availability` is a top-level reserved key on SAD
 //! objects whose value is an inline JSON object. Three independently optional
 //! fields:
 //!

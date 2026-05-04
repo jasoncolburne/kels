@@ -40,7 +40,11 @@ impl kels_core::PagedIelSource for RepositoryIelPageSource {
         let events = self
             .repo
             .iel_events
-            .fetch_iel_page_pool(&prefix_str, since_str.as_deref(), Some(limit as u64))
+            .fetch_iel_page_pool(
+                crate::repository::IelChainSelector::Prefix(&prefix_str),
+                since_str.as_deref(),
+                Some(limit as u64),
+            )
             .await
             .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
         // The shared helper relies on `has_more` to decide whether to
@@ -251,6 +255,60 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         Ok(verification.is_said_satisfied(said))
     }
 
+    async fn resolve_identity_for_event(
+        &self,
+        iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, kels_core::KelsError> {
+        let event = self
+            .fetch_event_by_said(iel_event_said)
+            .await?
+            .ok_or_else(|| {
+                kels_core::KelsError::BadIdentityBinding(format!(
+                    "IEL event {} not found in any locally-known IEL",
+                    iel_event_said,
+                ))
+            })?;
+        Ok(event.prefix)
+    }
+
+    async fn resolve_current_auth_policy(
+        &self,
+        identity: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, kels_core::KelsError> {
+        let verification = self.verification_for(identity).await?;
+        if verification.is_contested() {
+            return Err(kels_core::KelsError::ContestedIel(format!(
+                "IEL {} is contested",
+                identity,
+            )));
+        }
+        if verification.is_decommissioned() {
+            return Err(kels_core::KelsError::IelDecommissioned(format!(
+                "IEL {} is decommissioned",
+                identity,
+            )));
+        }
+        if verification.is_divergent() {
+            return Err(kels_core::KelsError::IelDivergent(format!(
+                "IEL {} is divergent — no canonical current auth_policy",
+                identity,
+            )));
+        }
+        let tip = verification.current_event().ok_or_else(|| {
+            kels_core::KelsError::NotFound(format!(
+                "IEL {} has no current event — chain not locally known",
+                identity,
+            ))
+        })?;
+        verification.auth_policy_at(&tip.said).ok_or_else(|| {
+            kels_core::KelsError::InvalidIel(format!(
+                "IEL {} tip event {} has no auth_policy in policy_history \
+                 (chain integrity breach)",
+                identity, tip.said,
+            ))
+        })
+    }
+
     async fn iel_chain_positions(
         &self,
         identity: &cesr::Digest256,
@@ -328,7 +386,11 @@ impl RepositoryIelResolver {
             let events = self
                 .repo
                 .iel_events
-                .fetch_iel_page_pool(&prefix_str, since.as_deref(), Some(page_size))
+                .fetch_iel_page_pool(
+                    crate::repository::IelChainSelector::Prefix(&prefix_str),
+                    since.as_deref(),
+                    Some(page_size),
+                )
                 .await
                 .map_err(|e| kels_core::KelsError::StorageError(e.to_string()))?;
             if events.is_empty() {

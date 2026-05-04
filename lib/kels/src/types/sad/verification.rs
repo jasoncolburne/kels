@@ -956,6 +956,50 @@ mod tests {
             }
             Ok(out)
         }
+
+        async fn resolve_identity_for_event(
+            &self,
+            said: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            if self.events.contains_key(said) {
+                Ok(self.identity)
+            } else {
+                Err(KelsError::BadIdentityBinding(format!(
+                    "FakeIelResolver: no event for SAID {}",
+                    said
+                )))
+            }
+        }
+
+        async fn resolve_current_auth_policy(
+            &self,
+            identity: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            if identity != &self.identity {
+                return Err(KelsError::BadIdentityBinding(format!(
+                    "FakeIelResolver: identity mismatch (got {}, expected {})",
+                    identity, self.identity
+                )));
+            }
+            // Test fake: pick the highest-version event's auth_policy as the
+            // "current" view. Tests that need terminal/divergent semantics
+            // can set `first_divergent_version` and assert IelDivergent
+            // separately; this stub just feeds back the most recently
+            // declared auth_policy.
+            if let Some(divergent) = self.first_divergent_version {
+                return Err(KelsError::IelDivergent(format!(
+                    "FakeIelResolver: IEL is divergent at {}",
+                    divergent
+                )));
+            }
+            self.events
+                .values()
+                .max_by_key(|e| e.version)
+                .map(|e| e.auth_policy)
+                .ok_or_else(|| {
+                    KelsError::NotFound(format!("FakeIelResolver: IEL {} has no events", identity,))
+                })
+        }
     }
 
     fn fake_resolver_for_chain(

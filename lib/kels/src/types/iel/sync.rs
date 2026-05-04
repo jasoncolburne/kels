@@ -35,6 +35,25 @@ pub trait PagedIelSource: Send + Sync {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<IdentityEvent>, bool), KelsError>;
+
+    /// Said-form fetch: identifies the IEL by the SAID of any event on it,
+    /// returns a page of that chain. Per #167, the verifier uses this when
+    /// it holds an IEL event SAID without prior identity context (e.g.,
+    /// resolving `custody.write`). Same ordering and pagination semantics
+    /// as `fetch_page`; the server resolves the prefix internally.
+    ///
+    /// Default impl errors with `OfflineMode` — sources that can't serve
+    /// said-form lookups (e.g., test fixtures keyed by prefix) opt out.
+    async fn fetch_page_by_event_said(
+        &self,
+        _event_said: &cesr::Digest256,
+        _since: Option<&cesr::Digest256>,
+        _limit: usize,
+    ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+        Err(KelsError::OfflineMode(
+            "PagedIelSource does not support said-form fetch".into(),
+        ))
+    }
 }
 
 /// Destination for a batch of Identity Event Log events. The HTTP impl posts
@@ -112,12 +131,37 @@ impl PagedIelSource for HttpIelSource {
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
-        let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
         let body = IdentityEventPageRequest {
-            prefix: *prefix,
+            prefix: Some(*prefix),
             since: since.copied(),
             limit: Some(limit),
+            ..Default::default()
         };
+        self.fetch_with_request(body).await
+    }
+
+    async fn fetch_page_by_event_said(
+        &self,
+        event_said: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+        let body = IdentityEventPageRequest {
+            said: Some(*event_said),
+            since: since.copied(),
+            limit: Some(limit),
+            ..Default::default()
+        };
+        self.fetch_with_request(body).await
+    }
+}
+
+impl HttpIelSource {
+    async fn fetch_with_request(
+        &self,
+        body: IdentityEventPageRequest,
+    ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+        let url = format!("{}/api/v1/iel/events/fetch", self.base_url);
         let resp = self.client.post(&url).json(&body).send().await?;
 
         if resp.status().is_success() {

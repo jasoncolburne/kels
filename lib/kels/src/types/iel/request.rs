@@ -7,10 +7,26 @@ use serde::{Deserialize, Serialize};
 use super::event::IdentityEvent;
 
 /// Request body for fetching a page of IEL events.
-#[derive(Debug, Deserialize, Serialize)]
+///
+/// The chain is identified by exactly one of `prefix` or `said`:
+/// - `prefix` — the IEL prefix (direct lookup).
+/// - `said` — the SAID of any event on the IEL; the server resolves the
+///   prefix via subquery before applying pagination. Used by `custody.write`
+///   verification (per #167), where the verifier holds an IEL event SAID
+///   without prior identity context.
+///
+/// Server returns 400 if both or neither is set. Pagination, ordering, and
+/// response shape are unchanged across the two forms.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IdentityEventPageRequest {
-    pub prefix: cesr::Digest256,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<cesr::Digest256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<cesr::Digest256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<cesr::Digest256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
 

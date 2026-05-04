@@ -1,6 +1,6 @@
 //! NodeSet — set of node prefixes for selective replication.
 //!
-//! Round 13 reshape (#167): relocated from `custody.rs`. Stays a
+//! #167: relocated from `custody.rs`. Stays a
 //! separately-addressable [`SelfAddressed`] SAD referenced by SAID from
 //! [`super::Availability::nodes`] (#167 factored `nodes` from custody to
 //! availability). Storage and dedup behavior unchanged.

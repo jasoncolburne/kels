@@ -1898,10 +1898,11 @@ async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
     let page_size = kels_core::page_size() as u64;
     let mut since: Option<cesr::Digest256> = None;
     loop {
+        let prefix_str = prefix.to_string();
         let page = repo
             .fetch_iel_page(
                 tx,
-                prefix.as_ref(),
+                crate::repository::IelChainSelector::Prefix(&prefix_str),
                 since.as_ref().map(|s| s.as_ref()),
                 Some(page_size),
             )
@@ -2408,11 +2409,14 @@ pub async fn submit_identity_events(
 
 /// Fetch a page of IEL events ordered
 /// `(version ASC, kind sort_priority ASC, said ASC)`.
+///
+/// Identifies the chain by either `request.prefix` (direct lookup) or
+/// `request.said` (event-SAID lookup; server resolves prefix via subquery,
+/// per #167). Exactly one must be set; both/neither → 400.
 pub async fn get_identity_events(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::IdentityEventPageRequest>,
 ) -> impl IntoResponse {
-    let prefix = request.prefix;
     let page_size = kels_core::page_size();
     let limit = request.limit.unwrap_or(page_size).clamp(1, page_size) as u64;
     let since_str = request.since.as_ref().map(|s| s.as_ref());
@@ -2425,10 +2429,32 @@ pub async fn get_identity_events(
         }
     };
 
+    // Build the chain selector. Exactly one of `prefix` / `said` must be set.
+    let prefix_string;
+    let said_string;
+    let selector = match (&request.prefix, &request.said) {
+        (Some(p), None) => {
+            prefix_string = p.to_string();
+            crate::repository::IelChainSelector::Prefix(&prefix_string)
+        }
+        (None, Some(s)) => {
+            said_string = s.to_string();
+            crate::repository::IelChainSelector::EventSaid(&said_string)
+        }
+        _ => {
+            let _ = tx.commit().await;
+            return (
+                StatusCode::BAD_REQUEST,
+                "exactly one of `prefix` or `said` must be set",
+            )
+                .into_response();
+        }
+    };
+
     let result = state
         .repo
         .iel_events
-        .fetch_iel_page(&mut tx, prefix.as_ref(), since_str, Some(limit + 1))
+        .fetch_iel_page(&mut tx, selector, since_str, Some(limit + 1))
         .await;
     let _ = tx.commit().await;
 
