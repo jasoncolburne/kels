@@ -227,6 +227,96 @@ impl BootstrapSync {
         Ok(())
     }
 
+    /// Preload Identity Event Logs (IELs) from Ready peers.
+    ///
+    /// Lists IEL prefixes from each Ready peer's SADStore, compares with
+    /// local state, and syncs any chains that are missing or behind. Mirrors
+    /// `preload_sad_events` for the IEL primitive (#172). Sequenced after
+    /// `preload_sad_objects` (so policy SAD objects referenced by IEL events
+    /// are present) and before `preload_sad_events` (so SE chains binding to
+    /// IEL events can resolve those bindings).
+    pub async fn preload_iels(&self) -> Result<(), BootstrapError> {
+        let ready_peers = self.get_ready_peers().await;
+
+        if ready_peers.is_empty() {
+            info!("No Ready peers found for IEL preload");
+            return Ok(());
+        }
+
+        info!(
+            "Preloading Identity Event Logs from {} Ready peer(s)...",
+            ready_peers.len()
+        );
+
+        let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
+        let mut synced_chains = 0usize;
+
+        for peer in &ready_peers {
+            let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
+            let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
+
+            let mut cursor: Option<cesr::Digest256> = None;
+            loop {
+                let page = match remote_client
+                    .fetch_iel_prefixes(
+                        self.signer.as_ref(),
+                        cursor.as_ref(),
+                        self.config.page_size,
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to fetch IEL prefixes from {}: {}", peer.node_id, e);
+                        break;
+                    }
+                };
+
+                for state in &page.prefixes {
+                    let local_said = local_client
+                        .fetch_iel_effective_said(&state.prefix)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(s, _)| s);
+
+                    if local_said.as_deref() == Some(state.said.as_ref()) {
+                        continue;
+                    }
+
+                    let since_digest = local_said
+                        .as_deref()
+                        .and_then(|s| cesr::Digest256::from_qb64(s).ok());
+                    if let Err(e) = kels_core::forward_identity_events(
+                        &state.prefix,
+                        &remote_client.as_iel_source()?,
+                        &local_client.as_iel_sink()?,
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
+                        since_digest.as_ref(),
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to sync IEL {} from {} during bootstrap: {}",
+                            state.prefix, peer.node_id, e
+                        );
+                    } else {
+                        synced_chains += 1;
+                    }
+                }
+
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+
+        info!("IEL preload complete: {} chains synced", synced_chains);
+        Ok(())
+    }
+
     /// Preload SAD events from Ready peers.
     ///
     /// Lists SEL prefixes from each Ready peer's SADStore, compares with local

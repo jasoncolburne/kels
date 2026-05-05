@@ -418,12 +418,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     local_kel_prefix, local_kel_prefix, config.node_id
                 );
 
-                // Preload KELs, SAD objects, and SAD events from Ready peers
+                // Preload KELs, SAD objects, IELs, and SAD events from Ready peers
                 if let Err(e) = bootstrap.preload_kels().await {
                     warn!("KEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_objects().await {
                     warn!("SAD object preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_iels().await {
+                    warn!("IEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_events().await {
                     warn!("SEL preload failed: {}", e);
@@ -768,12 +771,17 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Waiting for first peer connection...");
         match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
             Ok(Ok(())) => {
-                info!("First peer connected — preloading KELs, SAD objects, and SAD events...");
+                info!(
+                    "First peer connected — preloading KELs, SAD objects, IELs, and SAD events..."
+                );
                 if let Err(e) = bootstrap.preload_kels().await {
                     error!("KEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_objects().await {
                     error!("SAD object preload failed: {}", e);
+                }
+                if let Err(e) = bootstrap.preload_iels().await {
+                    error!("IEL preload failed: {}", e);
                 }
                 if let Err(e) = bootstrap.preload_sad_events().await {
                     error!("SEL preload failed: {}", e);
@@ -836,6 +844,25 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 sad_ae_signer,
                 sad_ae_sadstore_url,
                 sad_ae_interval,
+            )
+            .await;
+        });
+
+        // IEL anti-entropy loop (#172): closes the structural gap where
+        // SE→IEL deferred-deps parks could TTL out without the IEL chain
+        // ever propagating to the parking peer.
+        let iel_ae_redis = redis.clone();
+        let iel_ae_allowlist = allowlist.clone();
+        let iel_ae_signer = registry_signer.clone();
+        let iel_ae_sadstore_url = config.sadstore_url().clone();
+        let iel_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
+        tokio::spawn(async move {
+            sync::run_iel_anti_entropy_loop(
+                iel_ae_redis,
+                iel_ae_allowlist,
+                iel_ae_signer,
+                iel_ae_sadstore_url,
+                iel_ae_interval,
             )
             .await;
         });

@@ -2801,6 +2801,518 @@ pub async fn run_sad_anti_entropy_loop(
     }
 }
 
+// ==================== IEL Anti-Entropy ====================
+
+/// Redis hash key for Identity Event Log anti-entropy stale prefix tracking.
+const IEL_STALE_PREFIX_KEY: &str = "kels:anti_entropy:iel_stale";
+
+/// Record an IEL prefix as stale for anti-entropy repair (first occurrence).
+pub async fn record_iel_stale_prefix(
+    redis: &redis::aio::ConnectionManager,
+    iel_prefix: &cesr::Digest256,
+    source_node_prefix: &cesr::Digest256,
+) {
+    record_stale_entry(
+        redis,
+        IEL_STALE_PREFIX_KEY,
+        iel_prefix,
+        source_node_prefix,
+        0,
+    )
+    .await;
+}
+
+/// Periodically runs anti-entropy repair for Identity Event Log data.
+///
+/// Two phases per cycle, mirroring `run_sad_anti_entropy_loop`:
+/// - **Phase 1 (targeted):** Process known-stale IEL prefixes from Redis hash.
+/// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a
+///   random peer.
+///
+/// IEL has no `Rpr` (only `Cnt` resolves divergence), so the repair-vs-delta
+/// branching collapses to: full-fetch when remote-divergent-and-we're-not
+/// (so the receiver's submit handler routes the Cnt branch correctly via
+/// `send_divergent_iel_events`); delta otherwise.
+///
+/// IEL referenced SAD objects (`auth_policy`, `governance_policy`) are
+/// handled by `run_sad_anti_entropy_loop`'s Phase 3 object pass, so this
+/// loop is two phases only.
+///
+/// Concurrency posture mirrors SAD AE (`KELS_SAD_AE_TASK_CONCURRENCY`,
+/// default 16) per #156's load-shedding cut. Closes the structural gap
+/// where SE→IEL deferred-deps parks could TTL out without ever resolving
+/// because IELs lacked an AE phase to converge them (#172).
+pub async fn run_iel_anti_entropy_loop(
+    redis: Arc<redis::aio::ConnectionManager>,
+    allowlist: SharedAllowlist,
+    signer: Arc<dyn kels_core::PeerSigner>,
+    sadstore_url: String,
+    interval: Duration,
+) {
+    let local_client = match kels_core::SadStoreClient::new(&sadstore_url) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("IEL anti-entropy: failed to build local client: {}", e);
+            return;
+        }
+    };
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let peers: Vec<(cesr::Digest256, String)> = {
+            let guard = allowlist.read().await;
+            guard
+                .values()
+                .map(|p| (p.kel_prefix, format!("http://sadstore.{}", p.base_domain)))
+                .collect()
+        };
+
+        if peers.is_empty() {
+            continue;
+        }
+
+        // Phase 1: Process known-stale IEL prefixes
+        let stale_entries =
+            match drain_due_stale_entries(redis.as_ref(), IEL_STALE_PREFIX_KEY).await {
+                Some(map) => map,
+                None => {
+                    warn!("IEL anti-entropy: failed to read stale prefixes");
+                    continue;
+                }
+            };
+
+        if !stale_entries.is_empty() {
+            info!(
+                "IEL anti-entropy: processing {} stale IEL prefixes",
+                stale_entries.len()
+            );
+
+            let mut tasks = Vec::new();
+            for (iel_prefix, entry) in &stale_entries {
+                let mut ordered_peers: Vec<(cesr::Digest256, String)> = Vec::new();
+                if let Some(source) = peers.iter().find(|(pp, _)| *pp == entry.source) {
+                    ordered_peers.push(source.clone());
+                }
+                for peer in &peers {
+                    if peer.0 != entry.source {
+                        ordered_peers.push(peer.clone());
+                    }
+                }
+                if ordered_peers.is_empty() {
+                    continue;
+                }
+
+                let local = local_client.clone();
+                let prefix = iel_prefix;
+                let source = entry.source;
+                let retries = entry.retries;
+                tasks.push(async move {
+                    let (local_said, local_divergent) =
+                        match local.fetch_iel_effective_said(prefix).await {
+                            Ok(Some((said, div))) => (Some(said), div),
+                            _ => (None, false),
+                        };
+
+                    let mut any_peer_differs = false;
+
+                    for (_, sadstore_url) in &ordered_peers {
+                        let remote = match kels_core::SadStoreClient::new(sadstore_url) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        let (remote_said, remote_divergent) =
+                            match remote.fetch_iel_effective_said(prefix).await {
+                                Ok(Some((said, div))) => (Some(said), div),
+                                _ => (None, false),
+                            };
+
+                        if remote_said == local_said {
+                            continue;
+                        }
+                        any_peer_differs = true;
+
+                        // Determine sync direction: check if the remote's SAID
+                        // exists in our local chain. If yes, we're ahead → push.
+                        // If no, remote is ahead → pull.
+                        let remote_said_digest = match &remote_said {
+                            Some(s) => match cesr::Digest256::from_qb64(s) {
+                                Ok(d) => d,
+                                Err(_) => continue,
+                            },
+                            None => continue,
+                        };
+                        let we_have_remote = local
+                            .identity_event_exists(&remote_said_digest)
+                            .await
+                            .unwrap_or(false);
+
+                        if we_have_remote {
+                            // We're ahead — push to remote.
+                            let use_repair = remote_divergent && !local_divergent;
+                            let Ok(local_source) = local.as_iel_source() else {
+                                continue;
+                            };
+                            let Ok(remote_sink) = remote.as_iel_sink() else {
+                                continue;
+                            };
+                            let since_digest = if use_repair || local_divergent {
+                                None
+                            } else {
+                                remote_said.as_deref().and_then(
+                                    |s| match cesr::Digest256::from_qb64(s) {
+                                        Ok(d) => Some(d),
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to parse SAID for delta sync: {}: {}",
+                                                s, e
+                                            );
+                                            None
+                                        }
+                                    },
+                                )
+                            };
+                            // PUSH success criterion: HTTP-2xx from
+                            // `forward_identity_events`. The remote's submit
+                            // handler runs the verifier inside the request/
+                            // response cycle, so verifier rejection surfaces
+                            // as a 4xx and `HttpIelSink::store_page` converts
+                            // it into `Err`. A successful PUSH therefore
+                            // genuinely means the remote accepted and
+                            // advanced.
+                            match kels_core::forward_identity_events(
+                                prefix,
+                                &local_source,
+                                &remote_sink,
+                                kels_core::page_size(),
+                                kels_core::max_pages(),
+                                since_digest.as_ref(),
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    return (prefix, source, retries, RepairResult::Repaired);
+                                }
+                                Err(e) => {
+                                    debug!(
+                                        iel_prefix = %prefix,
+                                        peer_sadstore_url = %sadstore_url,
+                                        "IEL anti-entropy: push to peer failed: {}", e
+                                    );
+                                }
+                            }
+                        } else {
+                            // Remote is ahead — pull from remote.
+                            let use_repair = local_divergent && !remote_divergent;
+                            let Ok(remote_source) = remote.as_iel_source() else {
+                                continue;
+                            };
+                            let Ok(local_sink) = local.as_iel_sink() else {
+                                continue;
+                            };
+                            let since_digest = if use_repair {
+                                None
+                            } else {
+                                local_said.as_deref().and_then(
+                                    |s| match cesr::Digest256::from_qb64(s) {
+                                        Ok(d) => Some(d),
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to parse SAID for delta sync: {}: {}",
+                                                s, e
+                                            );
+                                            None
+                                        }
+                                    },
+                                )
+                            };
+                            // PULL success criterion: HTTP-2xx is not
+                            // sufficient — the local sink's submit handler
+                            // runs the verifier *after* the HTTP layer
+                            // returns 2xx, so verifier rejection leaves the
+                            // chain unchanged silently. Re-fetch local
+                            // effective SAID and declare `Repaired` only on
+                            // actual advancement; otherwise continue.
+                            if let Err(e) = kels_core::forward_identity_events(
+                                prefix,
+                                &remote_source,
+                                &local_sink,
+                                kels_core::page_size(),
+                                kels_core::max_pages(),
+                                since_digest.as_ref(),
+                            )
+                            .await
+                            {
+                                debug!(
+                                    iel_prefix = %prefix,
+                                    peer_sadstore_url = %sadstore_url,
+                                    "IEL anti-entropy: pull from peer failed: {}", e
+                                );
+                                continue;
+                            }
+                            let new_said = local
+                                .fetch_iel_effective_said(prefix)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|(s, _)| s);
+                            if new_said != local_said {
+                                return (prefix, source, retries, RepairResult::Repaired);
+                            }
+                        }
+                    }
+
+                    if any_peer_differs {
+                        (prefix, source, retries, RepairResult::Failed)
+                    } else {
+                        (prefix, source, retries, RepairResult::NoOp)
+                    }
+                });
+            }
+
+            let concurrency = sad_ae_task_concurrency();
+            let mut buffered = stream::iter(tasks).buffer_unordered(concurrency);
+            while let Some((iel_prefix, source_node_prefix, retries, result)) =
+                buffered.next().await
+            {
+                match result {
+                    RepairResult::Repaired => {
+                        info!("IEL anti-entropy: repaired chain {}", iel_prefix);
+                    }
+                    RepairResult::Contested => {
+                        // forward_identity_events doesn't translate
+                        // ContestedIel into a typed signal today; reserved
+                        // for future symmetry with KEL.
+                        warn!("IEL anti-entropy: IEL contested for {}", iel_prefix);
+                    }
+                    RepairResult::Failed => {
+                        warn!(
+                            "IEL anti-entropy: re-queuing stale chain {} (retry {})",
+                            iel_prefix,
+                            retries + 1
+                        );
+                        requeue_stale_entry(
+                            redis.as_ref(),
+                            IEL_STALE_PREFIX_KEY,
+                            iel_prefix,
+                            &source_node_prefix,
+                            retries,
+                        )
+                        .await;
+                    }
+                    RepairResult::NoOp => {
+                        debug!(
+                            "IEL anti-entropy: all peers agree on state for {} (cleared)",
+                            iel_prefix
+                        );
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Random sampling — compare IEL effective SAIDs with a random peer
+        let (peer_kel_prefix, peer_sadstore_url) = {
+            match peers.choose(&mut rand::rngs::OsRng) {
+                Some(p) => p.clone(),
+                None => continue,
+            }
+        };
+
+        let remote_client = match kels_core::SadStoreClient::new(&peer_sadstore_url) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "IEL anti-entropy: failed to build remote client for {}: {}",
+                    peer_sadstore_url, e
+                );
+                continue;
+            }
+        };
+
+        let random_cursor = cesr::Digest256::blake3_256(&cesr::Nonce256::generate().to_bytes());
+        let local_page = local_client
+            .fetch_iel_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+        let remote_page = remote_client
+            .fetch_iel_prefixes(signer.as_ref(), Some(&random_cursor), 100)
+            .await;
+
+        let (Ok(local_page), Ok(remote_page)) = (local_page, remote_page) else {
+            debug!("IEL anti-entropy: failed to fetch prefix pages for comparison");
+            continue;
+        };
+
+        let local_map: HashMap<&str, &str> = local_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
+            .collect();
+        let remote_map: HashMap<&str, &str> = remote_page
+            .prefixes
+            .iter()
+            .map(|s| (s.prefix.as_ref(), s.said.as_ref()))
+            .collect();
+
+        if local_map == remote_map {
+            debug!("IEL anti-entropy: random sample matched");
+            continue;
+        }
+
+        info!("IEL anti-entropy: random sample mismatch detected, reconciling");
+
+        let all_prefixes: std::collections::HashSet<&str> = remote_page
+            .prefixes
+            .iter()
+            .chain(local_page.prefixes.iter())
+            .map(|s| s.prefix.as_ref())
+            .collect();
+
+        type IelSyncFuture = std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = (
+                            cesr::Digest256,
+                            cesr::Digest256,
+                            &'static str,
+                            Result<(), kels_core::KelsError>,
+                        ),
+                    > + Send,
+            >,
+        >;
+        let mut sync_tasks: Vec<IelSyncFuture> = Vec::new();
+        for prefix in all_prefixes {
+            let local_said_str = local_map.get(prefix).copied();
+            let remote_said_str = remote_map.get(prefix).copied();
+
+            if local_said_str == remote_said_str {
+                continue;
+            }
+
+            let prefix_digest = match cesr::Digest256::from_qb64(prefix) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            // Determine direction: check if remote's SAID exists locally
+            let we_have_remote = if let Some(said) = remote_said_str
+                && let Ok(digest) = cesr::Digest256::from_qb64(said)
+            {
+                local_client
+                    .identity_event_exists(&digest)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                // Remote doesn't have it at all — we're ahead
+                true
+            };
+
+            let (local_said, local_divergent) =
+                match local_client.fetch_iel_effective_said(&prefix_digest).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
+            let (remote_said, remote_divergent) =
+                match remote_client.fetch_iel_effective_said(&prefix_digest).await {
+                    Ok(Some((said, div))) => (Some(said), div),
+                    _ => (None, false),
+                };
+
+            if we_have_remote {
+                // We're ahead — push to remote
+                let use_repair = remote_divergent && !local_divergent;
+                let Ok(local_source) = local_client.as_iel_source() else {
+                    continue;
+                };
+                let Ok(remote_sink) = remote_client.as_iel_sink() else {
+                    continue;
+                };
+                let since = if use_repair {
+                    None
+                } else {
+                    remote_said
+                        .as_deref()
+                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                None
+                            }
+                        })
+                };
+                let prefix_d = prefix_digest;
+                let peer = peer_kel_prefix;
+                sync_tasks.push(Box::pin(async move {
+                    let result = kels_core::forward_identity_events(
+                        &prefix_d,
+                        &local_source,
+                        &remote_sink,
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
+                        since.as_ref(),
+                    )
+                    .await;
+                    (prefix_d, peer, "pushed", result)
+                }));
+            } else {
+                // Remote is ahead — pull from remote
+                let use_repair = local_divergent && !remote_divergent;
+                let Ok(remote_source) = remote_client.as_iel_source() else {
+                    continue;
+                };
+                let Ok(local_sink) = local_client.as_iel_sink() else {
+                    continue;
+                };
+                let since = if use_repair {
+                    None
+                } else {
+                    local_said
+                        .as_deref()
+                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
+                            Ok(d) => Some(d),
+                            Err(e) => {
+                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                None
+                            }
+                        })
+                };
+                let prefix_d = prefix_digest;
+                let peer = peer_kel_prefix;
+                sync_tasks.push(Box::pin(async move {
+                    let result = kels_core::forward_identity_events(
+                        &prefix_d,
+                        &remote_source,
+                        &local_sink,
+                        kels_core::page_size(),
+                        kels_core::max_pages(),
+                        since.as_ref(),
+                    )
+                    .await;
+                    (prefix_d, peer, "pulled", result)
+                }));
+            }
+        }
+
+        let concurrency = sad_ae_task_concurrency();
+        let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
+        while let Some((prefix, peer, direction, result)) = buffered.next().await {
+            match result {
+                Ok(()) => {
+                    info!("IEL anti-entropy: {} {} from/to remote", direction, prefix);
+                }
+                Err(_) if direction == "pulled" => {
+                    record_iel_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                }
+                Err(_) => {
+                    debug!(
+                        "IEL anti-entropy: push failed for {}, gossip will deliver",
+                        prefix
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use cesr::test_digest;

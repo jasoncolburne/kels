@@ -522,6 +522,35 @@ impl SadStoreClient {
         Ok(resp.status().is_success())
     }
 
+    /// List IEL prefixes (paginated, authenticated). Used for bootstrap and
+    /// anti-entropy. Mirrors `fetch_sel_prefixes`.
+    pub async fn fetch_iel_prefixes(
+        &self,
+        signer: &dyn crate::PeerSigner,
+        cursor: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<crate::PrefixListResponse, KelsError> {
+        let request = crate::PaginatedSelfAddressedRequest::create(
+            crate::generate_nonce(),
+            cursor.cloned(),
+            Some(limit),
+        )?;
+        let signed = crate::sign_request(signer, &request).await?;
+        let resp = self
+            .client
+            .post(format!("{}/api/v1/iel/events/prefixes", self.base_url))
+            .json(&signed)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
+
     /// Verify an IEL by paging through this server. Returns the verification
     /// token. Mirrors `verify_sel_events` for IEL.
     pub async fn verify_identity_events(

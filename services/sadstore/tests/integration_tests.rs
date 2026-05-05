@@ -470,6 +470,35 @@ async fn test_list_prefixes_empty() {
 }
 
 #[tokio::test]
+async fn test_list_iel_prefixes_empty() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let body = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            None,
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("test"), test_signature("test"))]),
+    };
+
+    let resp = harness
+        .client()
+        .post(harness.url("/api/test/iel/events/prefixes"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: kels_core::PrefixListResponse = resp.json().await.unwrap();
+    assert!(body.prefixes.len() <= 100);
+}
+
+#[tokio::test]
 async fn test_list_objects_empty() {
     let Some(harness) = get_harness().await else {
         return;

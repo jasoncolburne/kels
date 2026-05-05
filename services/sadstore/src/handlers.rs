@@ -2919,6 +2919,25 @@ async fn query_sad_prefixes(
     }
 }
 
+/// Shared query logic for listing IEL prefixes.
+async fn query_iel_prefixes(
+    state: &AppState,
+    cursor: Option<&cesr::Digest256>,
+    limit: Option<usize>,
+) -> impl IntoResponse {
+    let limit = limit
+        .unwrap_or(MAX_PREFIX_PAGE_SIZE)
+        .min(MAX_PREFIX_PAGE_SIZE);
+
+    match state.repo.iel_events.list_prefixes(cursor, limit).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            warn!("Failed to list IEL prefixes: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
+        }
+    }
+}
+
 /// Authenticated SAD object listing. Federation peers only.
 pub async fn list_sad_objects(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -2971,6 +2990,36 @@ pub async fn list_sel_prefixes(
     }
 
     query_sad_prefixes(
+        &state,
+        signed_request.payload.cursor.as_ref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
+}
+
+/// Authenticated IEL prefix listing. Federation peers only.
+pub async fn list_iel_prefixes(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    if let Err((status, msg)) = authenticate_peer_request(
+        &state,
+        &signed_request,
+        &signed_request.payload.created_at,
+        &signed_request.payload.nonce,
+    )
+    .await
+    {
+        return (status, msg).into_response();
+    }
+
+    query_iel_prefixes(
         &state,
         signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,
@@ -3065,6 +3114,26 @@ pub async fn test_list_sel_prefixes(
     }
 
     query_sad_prefixes(
+        &state,
+        signed_request.payload.cursor.as_ref(),
+        signed_request.payload.limit,
+    )
+    .await
+    .into_response()
+}
+
+/// Unauthenticated test endpoint for listing IEL prefixes.
+/// Only available when `KELS_TEST_ENDPOINTS=true`.
+pub async fn test_list_iel_prefixes(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
+) -> impl IntoResponse {
+    if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    query_iel_prefixes(
         &state,
         signed_request.payload.cursor.as_ref(),
         signed_request.payload.limit,

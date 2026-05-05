@@ -1397,6 +1397,131 @@ impl IdentityEventRepository {
         let latest = self.get_latest(prefix).await?;
         Ok(latest.map(|e| (e.said, false)))
     }
+
+    /// List IEL prefixes with their effective SAIDs, paginated.
+    ///
+    /// Mirrors `SadEventRepository::list_prefixes`: `distinct_on(prefix)`
+    /// over the chain table to grab one row per prefix at the highest
+    /// version, then a three-pass terminal-state-aware effective-SAID
+    /// resolution (Dec → contested → divergent → linear tip). Used by
+    /// gossip bootstrap and anti-entropy IEL phases (#172).
+    pub async fn list_prefixes(
+        &self,
+        cursor: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<kels_core::PrefixListResponse, StorageError> {
+        use verifiable_storage_postgres::QueryExecutor;
+
+        let mut query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .distinct_on("prefix")
+                .order_by("prefix", verifiable_storage_postgres::Order::Asc)
+                .order_by("version", verifiable_storage_postgres::Order::Desc)
+                .limit(limit as u64 + 1);
+
+        if let Some(cursor) = cursor {
+            query = query.gt("prefix", cursor.as_ref());
+        }
+
+        let events: Vec<IdentityEvent> = self.pool.fetch(query).await?;
+
+        let mut prefix_states: Vec<kels_core::PrefixState> = events
+            .into_iter()
+            .map(|e| kels_core::PrefixState {
+                prefix: e.prefix,
+                said: e.said,
+            })
+            .collect();
+
+        let next_cursor = if prefix_states.len() > limit {
+            prefix_states.pop();
+            prefix_states.last().map(|s| s.prefix)
+        } else if let Some(cursor) = cursor {
+            let remaining = limit - prefix_states.len();
+            if remaining > 0 {
+                let wrap_query = verifiable_storage_postgres::Query::<IdentityEvent>::for_table(
+                    Self::TABLE_NAME,
+                )
+                .distinct_on("prefix")
+                .order_by("prefix", verifiable_storage_postgres::Order::Asc)
+                .order_by("version", verifiable_storage_postgres::Order::Desc)
+                .lte("prefix", cursor.as_ref())
+                .limit(remaining as u64);
+                let wrap_events: Vec<IdentityEvent> = self.pool.fetch(wrap_query).await?;
+                prefix_states.extend(wrap_events.into_iter().map(|e| kels_core::PrefixState {
+                    prefix: e.prefix,
+                    said: e.said,
+                }));
+            }
+            None
+        } else {
+            None
+        };
+
+        // Terminal-state-aware effective-SAID resolution. Apply
+        // precedence per prefix in three batch passes (matches the
+        // `effective_said` order):
+        //   1. Decommissioned: replace SAID with the prefix's `Dec` SAID.
+        //   2. Contested (and not already decommissioned): synthetic
+        //      `contested:{prefix}` hash.
+        //   3. Divergent (and neither of the above): synthetic
+        //      `divergent:{prefix}` hash.
+        // The default (linear) tip SAID is already populated from the
+        // distinct_on query above.
+        let page_prefixes: Vec<String> =
+            prefix_states.iter().map(|s| s.prefix.to_string()).collect();
+
+        // Pass 1 — Dec SAIDs per prefix (latest Dec wins).
+        let dec_query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .r#in("prefix", page_prefixes.clone())
+                .eq("kind", IdentityEventKind::Dec.as_str())
+                .order_by("version", verifiable_storage::Order::Desc);
+        let dec_events: Vec<IdentityEvent> = self.pool.fetch(dec_query).await?;
+        let mut dec_by_prefix: std::collections::HashMap<cesr::Digest256, cesr::Digest256> =
+            std::collections::HashMap::new();
+        for ev in dec_events {
+            dec_by_prefix.entry(ev.prefix).or_insert(ev.said);
+        }
+
+        // Pass 2 — set of prefixes with at least one Cnt event.
+        let cnt_query =
+            verifiable_storage_postgres::Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+                .r#in("prefix", page_prefixes.clone())
+                .eq("kind", IdentityEventKind::Cnt.as_str());
+        let cnt_events: Vec<IdentityEvent> = self.pool.fetch(cnt_query).await?;
+        let contested_prefixes: HashSet<cesr::Digest256> =
+            cnt_events.into_iter().map(|e| e.prefix).collect();
+
+        // Pass 3 — divergent prefixes (any version with >1 row).
+        let divergent_query = ColumnQuery::new(Self::TABLE_NAME, "prefix")
+            .distinct()
+            .r#in("prefix", page_prefixes)
+            .group_by("prefix")
+            .group_by("version")
+            .having_count_gt(1);
+        let divergent_prefixes: HashSet<String> = self
+            .pool
+            .fetch_column(divergent_query)
+            .await?
+            .into_iter()
+            .collect();
+
+        for state in &mut prefix_states {
+            if let Some(dec_said) = dec_by_prefix.get(&state.prefix) {
+                state.said = *dec_said;
+            } else if contested_prefixes.contains(&state.prefix) {
+                state.said = kels_core::hash_effective_said(&format!("contested:{}", state.prefix));
+            } else if divergent_prefixes.contains(state.prefix.as_ref()) {
+                state.said = kels_core::hash_effective_said(&format!("divergent:{}", state.prefix));
+            }
+        }
+
+        Ok(kels_core::PrefixListResponse {
+            prefixes: prefix_states,
+            next_cursor,
+        })
+    }
 }
 
 #[derive(Stored)]

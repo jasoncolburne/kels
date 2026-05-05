@@ -142,6 +142,34 @@ wait_for_chain_propagation() {
     return 1
 }
 
+get_iel_effective_said() {
+    local url="$1"
+    local prefix="$2"
+    curl -sf -X POST -H 'Content-Type: application/json' -d "{\"prefix\":\"${prefix}\"}" "${url}/api/v1/iel/events/effective-said" | jq -r '.said // empty'
+}
+
+# Wait for an IEL chain to converge to the same effective SAID on `url` as
+# its source. Used to assert IEL bootstrap and AE coverage (#172) — without
+# the IEL phases, this would only succeed when the IEL announcement reached
+# the receiver via PlumTree eager-push.
+wait_for_iel_propagation() {
+    local prefix="$1"
+    local expected_said="$2"
+    local timeout="$3"
+    local url="$4"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local said
+        said=$(get_iel_effective_said "$url" "$prefix")
+        if [ "$said" = "$expected_said" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout waiting for IEL $prefix effective SAID $expected_said on $url"
+    return 1
+}
+
 wait_for_sad_event_divergence_convergence() {
     local prefix="$1"
     local timeout="$2"
@@ -234,11 +262,17 @@ OBJECT_LISTING_BODY="{\"payload\":{\"said\":\"${MOCK_SAID}\",\"createdAt\":\"${M
 run_test "List SEL prefixes" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
 
+run_test "List IEL prefixes" \
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/iel/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY}' | jq -e '.prefixes != null'"
+
 run_test "List SAD objects" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/saids' -H 'Content-Type: application/json' -d '${OBJECT_LISTING_BODY}' | jq -e '.saids != null'"
 
 run_test "List with pagination limit" \
     bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/sad/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
+
+run_test "List IEL prefixes with pagination limit" \
+    bash -c "curl -sf -X POST '${NODE_A_SAD_URL}/api/test/iel/events/prefixes' -H 'Content-Type: application/json' -d '${PREFIX_LISTING_BODY_LIMIT}' | jq -e '.prefixes | length <= 5'"
 
 echo ""
 
@@ -304,6 +338,15 @@ else
     if [ "$FEDERATED" = "true" ]; then
         run_test "Chain propagated to node-b" \
             wait_for_chain_propagation "$SEL_PREFIX" "$UPD_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
+
+        # IEL bootstrap+AE coverage (#172): the bound IEL chain must also
+        # propagate to node-b. Without this, SE chains binding to IEL events
+        # on the parking peer can't resolve and #156's deferred-deps parks
+        # TTL out indefinitely.
+        IEL_TIP_SAID_A=$(get_iel_effective_said "$NODE_A_SAD_URL" "$IEL_PREFIX")
+        run_test "IEL effective SAID resolved on node-a" [ -n "$IEL_TIP_SAID_A" ]
+        run_test "IEL chain propagated to node-b" \
+            wait_for_iel_propagation "$IEL_PREFIX" "$IEL_TIP_SAID_A" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
     fi
 fi
 

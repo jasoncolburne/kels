@@ -77,6 +77,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/iel/events/effective-said",
             post(handlers::get_iel_effective_said),
+        )
+        .route(
+            "/api/v1/iel/events/prefixes",
+            post(handlers::list_iel_prefixes),
         );
 
     if *TEST_ENDPOINTS_ENABLED {
@@ -86,6 +90,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             .route(
                 "/api/test/sad/events/prefixes",
                 post(handlers::test_list_sel_prefixes),
+            )
+            .route(
+                "/api/test/iel/events/prefixes",
+                post(handlers::test_list_iel_prefixes),
             );
     }
 
