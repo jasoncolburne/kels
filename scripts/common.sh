@@ -52,7 +52,7 @@ restart_gossip() {
 wait_for_gossip() {
     local timeout="$1"; shift
     local nodes=("$@")
-    echo "Waiting for gossip nodes to be ready (timeout: ${timeout}s)..."
+    echo "Waiting for gossip nodes [${nodes[@]}] to be ready (timeout: ${timeout}s)..."
 
     local elapsed=0
     while [ "$elapsed" -lt "$timeout" ]; do

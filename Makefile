@@ -205,10 +205,12 @@ restart-gossip-services:
 
 restart-gossip-services-staggered:
 	@for node in a b c d e f; do \
+		accumulator="$${accumulator:+$$accumulator }node-$$node"; \
 		echo "Restarting gossip on node-$$node..."; \
 		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
 		kubectl rollout status deployment/gossip -n kels-node-$$node; \
-		sleep 10; \
+		echo "accumulator: $$accumulator"; \
+		scripts/wait-for-gossip.sh 30 $$accumulator; \
 	done
 	scripts/dump-gossip-logs.sh
 	! grep -R ERROR logs
@@ -234,7 +236,7 @@ seed-sads:
 	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 10
 
 wait-for-gossip:
-	scripts/wait-for-gossip.sh 300 node-a node-b node-c node-d node-e node-f
+	scripts/wait-for-gossip.sh 180 node-a node-b node-c node-d node-e node-f
 
 test-rotation:
 	# Run scheduled-rotate 4 times on registry-a identity
