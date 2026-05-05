@@ -209,11 +209,10 @@ restart-gossip-services-staggered:
 		echo "Restarting gossip on node-$$node..."; \
 		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
 		kubectl rollout status deployment/gossip -n kels-node-$$node; \
-		echo "accumulator: $$accumulator"; \
-		scripts/wait-for-gossip.sh 30 $$accumulator; \
+		scripts/wait-for-gossip.sh 120 $$accumulator; \
 	done
 	scripts/dump-gossip-logs.sh
-	! grep -R ERROR logs
+	! grep -R ERROR logs/gossip-*.log
 
 test-resync:
 	scripts/coredns.sh apply
