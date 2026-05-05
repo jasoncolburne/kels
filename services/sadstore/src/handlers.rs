@@ -144,19 +144,23 @@ pub fn max_sad_object_size() -> usize {
     kels_core::env_usize("SADSTORE_MAX_OBJECT_SIZE", 1024 * 1024)
 }
 
-/// Per-prefix daily rate limit. Checks whether adding `event_count` units
-/// of budget would exceed `max_events` over a 24h window. Caller supplies
+/// Per-prefix daily rate limit. Checks whether adding `event_count` new
+/// events would exceed `max_events` over a 24h window. Caller supplies
 /// the limit so SEL and IEL submit paths can enforce different ceilings
 /// (see `max_sel_events_per_prefix_per_day` and
-/// `max_iel_events_per_prefix_per_day`). When `accrue` is `true`, also
-/// charges the budget on success — used by the request gate above the
-/// dedup branch so duplicate-submit campaigns still consume budget.
+/// `max_iel_events_per_prefix_per_day`).
+///
+/// Does NOT update the counter — call [`accrue_prefix_rate_limit`] after
+/// the merge completes with the actual newly-inserted count. Mirrors the
+/// kels-service two-step pattern (`services/kels/src/handlers.rs`).
+/// Charging-up-front would consume budget proportional to retry count
+/// rather than committed writes; idempotent gossip / AE / deferred-deps
+/// drain replays would exhaust the budget while making zero progress.
 fn check_prefix_rate_limit(
     limits: &DashMap<cesr::Digest256, (u32, Instant)>,
     prefix: &cesr::Digest256,
     event_count: u32,
     max_events: u32,
-    accrue: bool,
 ) -> Result<(), String> {
     let now = Instant::now();
     let mut entry = limits.entry(*prefix).or_insert((0, now));
@@ -170,11 +174,30 @@ fn check_prefix_rate_limit(
         return Err("Too many events for this prefix".to_string());
     }
 
-    if accrue {
-        entry.0 += event_count;
-    }
-
     Ok(())
+}
+
+/// Accrue the actual number of new events after merge completes. Caller
+/// passes `new_event_count` (post-dedup count from `SaveBatchResult` /
+/// equivalent IEL outcome). No-op when the count is zero so idempotent
+/// resubmits cost nothing.
+///
+/// Mirrors `services/kels/src/handlers.rs::accrue_prefix_rate_limit`.
+fn accrue_prefix_rate_limit(
+    limits: &DashMap<cesr::Digest256, (u32, Instant)>,
+    prefix: &cesr::Digest256,
+    new_event_count: u32,
+) {
+    if new_event_count == 0 {
+        return;
+    }
+    let now = Instant::now();
+    let mut entry = limits.entry(*prefix).or_insert((0, now));
+    if now.duration_since(entry.1) >= Duration::from_secs(SECS_PER_DAY) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    entry.0 += new_event_count;
 }
 
 /// Per-IP token bucket rate limit. Returns error string on rejection.
@@ -1463,18 +1486,16 @@ pub async fn submit_sad_events(
     // `Vec<SadEvent>` deserialize already rejects them; the upcoming
     // `deny_unknown_fields` hardening (Gap 1 polish) tightens this further.
 
-    // Per-SEL-prefix request gate. Runs BEFORE the transaction setup and
-    // dedup query so duplicate-submit campaigns consume budget proportional
-    // to the request's claimed event count, regardless of whether anything
-    // commits server-side. Charges `events.len()` to the per-prefix budget;
-    // a failed request over-charges relative to its commits, which is the
-    // conservative shape we want for an unauthenticated entry point.
+    // Per-SEL-prefix request gate. Two-step (mirrors kels-service):
+    // checks-only here; `accrue_prefix_rate_limit` charges actual
+    // newly-inserted count after `tx.commit()` succeeds. Idempotent
+    // resubmits (gossip forwards, AE pulls, deferred-deps drain replays)
+    // dedup to 0 new events server-side and therefore cost 0 budget.
     if let Err(msg) = check_prefix_rate_limit(
         &state.prefix_rate_limits,
         sel_prefix,
         events.len() as u32,
         max_sel_events_per_prefix_per_day(),
-        true,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
@@ -2085,9 +2106,10 @@ pub async fn submit_sad_events(
         }
     }
 
-    // Per-prefix budget was charged pre-flight by `check_prefix_rate_limit`
-    // above — duplicate submits and rejected requests both consume budget at
-    // the rate of their claimed event count, so no post-commit accrual here.
+    // Charge the per-prefix budget with the actual newly-inserted count
+    // (post-dedup). Idempotent resubmits accrue zero budget — same shape
+    // as kels-service.
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
 
     // #167: SE events broadcast unconditionally. Replication
     // gating is a SAD-object concern (via `availability.nodes`); chains
@@ -2389,12 +2411,14 @@ pub async fn submit_identity_events(
             .into_response();
     }
 
+    // Per-IEL-prefix request gate. Two-step (mirrors kels-service):
+    // checks-only here; `accrue_prefix_rate_limit` charges actual
+    // newly-inserted count after `tx.commit()` succeeds.
     if let Err(msg) = check_prefix_rate_limit(
         &state.prefix_rate_limits,
         iel_prefix,
         events.len() as u32,
         max_iel_events_per_prefix_per_day(),
-        true,
     ) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
@@ -2708,6 +2732,10 @@ pub async fn submit_identity_events(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
         }
     }
+
+    // Charge the per-prefix budget with the actual newly-inserted count
+    // (post-dedup). Idempotent resubmits accrue zero budget.
+    accrue_prefix_rate_limit(&state.prefix_rate_limits, iel_prefix, new_event_count);
 
     if should_publish {
         let effective_said = match state.repo.iel_events.effective_said(iel_prefix).await {
