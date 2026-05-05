@@ -26,7 +26,9 @@ data:
     user mail on #${var.redis.mailPasswordHash} &mail_updates +publish +ping
 
     # ACL: Gossip service
-    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* &kel_updates &sad_updates &sel_updates &iel_updates &mail_updates +get +set +del +subscribe +hset +hgetall +ping
+    # `pending:*` keys + their command set (SETEX/SADD/SREM/RPUSH/LREM/LRANGE/SMEMBERS/EXPIRE)
+    # are #156's deferred-deps park map (services/gossip/src/pending.rs).
+    user gossip on #${var.redis.gossipPasswordHash} ~kels:gossip:* ~kels:anti_entropy:* ~pending:* &kel_updates &sad_updates &sel_updates &iel_updates &mail_updates +get +set +setex +del +subscribe +hset +hgetall +rpush +sadd +srem +lrem +lrange +smembers +expire +ping
 
     # Disable default user
     user default off

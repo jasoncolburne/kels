@@ -1586,6 +1586,40 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     assert!(v.policy_satisfied());
 }
 
+/// #156 Gap-8: Rpr submitted while its KEL anchor hasn't propagated
+/// locally → typed-422 with `kel_anchor` dep, not a hard 4xx. Mirrors
+/// the existing `kel_anchor` deferred-deps cells for Upd / Cnt / Dec.
+/// Pre-fix the repair path used `verifier.finish()` (strict mode) and
+/// hard-failed; post-fix it uses `enable_collecting()` + `finish_collecting`
+/// so a missing-anchor case lands as deferrable. Recovery in production:
+/// gossip park flow waits for `kel_updates` arrival, drains via replay.
+#[tokio::test]
+#[serial]
+async fn repair_with_unanchored_rpr_surfaces_kel_anchor_deferral() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "repair-defer-anchor").await;
+    let v1 = establish_se_chain(&mut setup, "repair-defer-anchor").await;
+    let (_v_a, _v_b) = create_se_divergence(&mut setup, &v1, "repair-defer-anchor").await;
+
+    // Build Rpr at v2 with previous = v1.said but DO NOT anchor its SAID
+    // in the KEL. The server's repair path truncates the divergent v2
+    // forks then re-verifies; the post-truncation chain's Rpr fails the
+    // anchor check, which collect-mode now classifies as deferrable.
+    let rpr = SadEvent::rpr(&v1, setup.iel_icp_said).unwrap();
+
+    let result = setup
+        .sad_client
+        .submit_sel_events(std::slice::from_ref(&rpr))
+        .await;
+    assert_err_contains(
+        result,
+        "kel_anchor",
+        "unanchored Rpr surfaces as deferrable kel_anchor dep instead of hard fail",
+    );
+}
+
 /// Repair after divergence: chain has [Icp, Upd], two competing v2
 /// events create divergence, owner Rpr at v2 with `previous = v1.said`
 /// resolves it. Server's `truncate_and_replace` archives both v2 forks

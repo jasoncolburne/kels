@@ -50,18 +50,20 @@ impl PolicyChecker for AnchoredPolicyChecker {
             .resolver
             .resolve_policy(policy)
             .await
-            .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
+            .map_err(map_policy_error)?;
         let verification =
             evaluate_anchored_policy(&policy, said, &*self.kel_source, &*self.resolver)
                 .await
-                .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
+                .map_err(map_policy_error)?;
         // #156 contract: `missing_anchors` enumerates KEL prefixes whose
-        // commitment could flip the policy outcome — i.e., endorsers
-        // currently in `NotEndorsed` status (chain live, hasn't anchored
-        // yet). Endorsers in `KelError` (chain unknown / inaccessible)
-        // also count as deferrable for now; Gap 4 (handler retrofit) can
-        // refine the chain-state inspection to omit contested/Dec'd
-        // anchors per the AnchorEvaluation contract.
+        // commitment could flip the policy outcome — i.e., chains where
+        // an Ixn anchoring `said` could still land. `NotEndorsed`
+        // (chain live, anchor pending) and `KelError` (chain not yet
+        // locally known / transient access errors) qualify; `KelPermanentFail`
+        // (contested / decommissioned chains, anchor cannot land) is
+        // omitted per the AnchorEvaluation contract — including it would
+        // cause threshold-multi-chain parks to re-park indefinitely on a
+        // contesting chain (the I-N1 failure mode).
         let missing_anchors = if verification.is_satisfied {
             Vec::new()
         } else {
@@ -72,7 +74,9 @@ impl PolicyChecker for AnchoredPolicyChecker {
                     EndorsementStatus::NotEndorsed | EndorsementStatus::KelError(_) => {
                         Some(*prefix)
                     }
-                    EndorsementStatus::Endorsed | EndorsementStatus::Poisoned => None,
+                    EndorsementStatus::Endorsed
+                    | EndorsementStatus::Poisoned
+                    | EndorsementStatus::KelPermanentFail(_) => None,
                 })
                 .collect()
         };
@@ -87,7 +91,19 @@ impl PolicyChecker for AnchoredPolicyChecker {
             .resolver
             .resolve_policy(policy)
             .await
-            .map_err(|e| KelsError::VerificationFailed(e.to_string()))?;
+            .map_err(map_policy_error)?;
         Ok(resolved.is_immune())
+    }
+}
+
+/// #156: lift a [`crate::PolicyError`] to a [`KelsError`] preserving the
+/// deferrable [`PolicyError::PolicyNotFound`] case as a structured
+/// [`KelsError::MissingSadObject`] (so verifier collect-mode can
+/// accumulate as `DeferredFailure::MissingSadObject` instead of halting
+/// with a stringified `VerificationFailed`).
+fn map_policy_error(e: crate::PolicyError) -> KelsError {
+    match e {
+        crate::PolicyError::PolicyNotFound { said } => KelsError::missing_sad_object(said),
+        other => KelsError::VerificationFailed(other.to_string()),
     }
 }

@@ -1078,12 +1078,16 @@ impl kels_policy::PolicyResolver for SadStorePolicyResolver {
             return Ok(policy);
         }
 
-        // Fallback: object store
-        let data = self
-            .object_store
-            .get(said)
-            .await
-            .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
+        // Fallback: object store. Surface a structured `PolicyNotFound`
+        // for not-found so the verifier collect-mode can classify as
+        // `KelsError::MissingSadObject` (deferrable) without string
+        // parsing. Other store errors stay as `ResolutionError`.
+        let data = self.object_store.get(said).await.map_err(|e| match &e {
+            crate::object_store::ObjectStoreError::NotFound(_) => {
+                kels_policy::PolicyError::PolicyNotFound { said: *said }
+            }
+            _ => kels_policy::PolicyError::ResolutionError(e.to_string()),
+        })?;
 
         let policy: kels_policy::Policy = serde_json::from_slice(&data)
             .map_err(|e| kels_policy::PolicyError::ResolutionError(e.to_string()))?;
@@ -1299,6 +1303,13 @@ async fn build_deferred_deps_response(
                     anchor_said: dep.anchor_said,
                     chain_eff_said,
                 });
+            }
+            kels_core::DeferredFailure::MissingSadObject(dep) => {
+                let key = format!("sad:{}", dep.said);
+                if !seen.insert(key) {
+                    continue;
+                }
+                missing.push(kels_core::MissingDependency::SadObject { said: dep.said });
             }
         }
     }
@@ -1770,12 +1781,20 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            // Now verify the entire chain (post-truncation + repair events) from scratch.
+            // Now verify the entire chain (post-truncation + repair events)
+            // from scratch. Enable collect-mode so a missing KEL anchor on
+            // the Rpr (its KEL Ixn still propagating to this node) emits
+            // a typed-422 deferred-deps response instead of a hard 4xx —
+            // gossip's park flow then drains on `kel_updates` arrival.
+            // Same shape as the linear / Cnt / Dec paths, which already
+            // use `verify_sel_chain_collecting`. Pre-#156 this path
+            // hard-failed and recovery fell through to AE backstop.
             let mut verifier = kels_core::SelVerifier::new(
                 Some(sel_prefix),
                 Arc::clone(&checker),
                 Arc::clone(&iel_resolver),
             );
+            verifier.enable_collecting();
             if let Err(response) =
                 verify_existing_chain(&mut tx, &state.repo.sad_events, sel_prefix, &mut verifier)
                     .await
@@ -1784,8 +1803,8 @@ pub async fn submit_sad_events(
                 return response;
             }
 
-            let verification = match verifier.finish().await {
-                Ok(v) => v,
+            let (verification, deferred) = match verifier.finish_collecting().await {
+                Ok(pair) => pair,
                 Err(e) => {
                     let _ = tx.rollback().await;
                     return (
@@ -1795,6 +1814,10 @@ pub async fn submit_sad_events(
                         .into_response();
                 }
             };
+            if !deferred.is_empty() {
+                let _ = tx.rollback().await;
+                return build_deferred_deps_response(&state, &deferred).await;
+            }
 
             if !verification.policy_satisfied() {
                 let _ = tx.rollback().await;

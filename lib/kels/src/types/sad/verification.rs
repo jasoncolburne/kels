@@ -594,9 +594,32 @@ impl SelVerifier {
             // Step 4 — anchor check. HARD pre-divergence on non-terminals;
             // SOFT for terminals OR post-divergence. Gap 2 consumes only
             // `evaluation.satisfied` for behavior-equivalence; Gap 3's
-            // collect-mode walk will route `evaluation.missing_anchors`
-            // into the deferrable accumulator.
-            let evaluation = self.checker.evaluate(&event.said, &resolved_policy).await?;
+            // collect-mode walk routes `evaluation.missing_anchors` into
+            // the deferrable accumulator. Gap-8 (#156 follow-on): the
+            // checker can also return `KelsError::MissingSadObject` when
+            // the resolved Policy SAD itself hasn't propagated locally;
+            // route that through the same soft-eligible / collect / hard
+            // disposition as the in-band failures.
+            let evaluation = match self.checker.evaluate(&event.said, &resolved_policy).await {
+                Ok(eval) => eval,
+                Err(KelsError::MissingSadObject(_)) if auth_soft_eligible => {
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                Err(KelsError::MissingSadObject(missing)) if self.collecting => {
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_sad_object(missing.said));
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             if !evaluation.satisfied {
                 // Soft-eligible path (terminals + post-SE-divergence)
@@ -1447,6 +1470,103 @@ mod tests {
                 if dep.kel_prefix == kel_prefix && dep.anchor_said == v1_said
         ));
         assert!(!verification.policy_satisfied());
+    }
+
+    /// Collect-mode (#156 Gap-8): when the `PolicyChecker.evaluate` call
+    /// returns `KelsError::MissingSadObject` (the resolved Policy SAD
+    /// hasn't propagated locally), the SEL verifier accumulates a
+    /// `DeferredFailure::MissingSadObject` and continues the walk
+    /// soft-fail-style. Strict mode would halt; collect mode lets the
+    /// handler emit a typed-422 with `sad_object` deps so gossip can
+    /// park on `pending:said:{policy_said}` and drain when the SAD
+    /// object commits.
+    #[tokio::test]
+    async fn collect_mode_accumulates_missing_sad_object() {
+        struct MissingSadObjectChecker;
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Err(KelsError::missing_sad_object(*policy))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let identity = d(b"identity-collect-msa");
+        let iel_icp = d(b"iel-icp-collect-msa");
+        let auth = d(b"auth-collect-msa");
+        let gov = d(b"gov-collect-msa");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            auth,
+            gov,
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(MissingSadObjectChecker);
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-msa");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing SAD object");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
+
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingSadObject(dep) if dep.said == auth
+        )));
+        assert!(!verification.policy_satisfied());
+    }
+
+    /// Strict-mode counterpart: `KelsError::MissingSadObject` from the
+    /// SEL checker propagates through `verify_page` / `finish` as Err.
+    #[tokio::test]
+    async fn strict_mode_halts_on_missing_sad_object() {
+        struct MissingSadObjectChecker;
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Err(KelsError::missing_sad_object(*policy))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let identity = d(b"identity-strict-msa");
+        let iel_icp = d(b"iel-icp-strict-msa");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-strict-msa"),
+            d(b"gov-strict-msa"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(MissingSadObjectChecker);
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-strict-msa");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::MissingSadObject(_)),
+            "expected MissingSadObject, got {err:?}"
+        );
     }
 
     /// `event.identity_event` referencing an unknown SAID → `MissingIelEvent`

@@ -295,7 +295,16 @@ async fn evaluate_endorser(
                 EndorsementStatus::NotEndorsed
             }
         }
-        Err(e) => EndorsementStatus::KelError(e.to_string()),
+        // #156 I-N1: route contested / decommissioned KELs to the
+        // permanent-fail variant so `AnchoredPolicyChecker.evaluate`
+        // omits them from `missing_anchors` per the AnchorEvaluation
+        // contract. Other KEL errors stay deferrable (chain may catch up).
+        Err(e) => match &e {
+            kels_core::KelsError::ContestedKel(_) | kels_core::KelsError::KelDecommissioned => {
+                EndorsementStatus::KelPermanentFail(e.to_string())
+            }
+            _ => EndorsementStatus::KelError(e.to_string()),
+        },
     };
 
     endorsements.insert(*prefix, status.clone());

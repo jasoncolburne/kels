@@ -38,7 +38,7 @@ use std::{
 use verifiable_storage::{Chained, SelfAddressed};
 
 use super::event::{IdentityEvent, IdentityEventKind};
-use crate::{KelsError, types::PolicyChecker};
+use crate::{AnchorEvaluation, KelsError, types::PolicyChecker};
 
 // ==================== Branch State ====================
 
@@ -415,6 +415,53 @@ impl IelVerifier {
         Ok(())
     }
 
+    /// #156 Gap-8: invoke `checker.is_immune` with collect-mode awareness.
+    /// In collect mode, [`KelsError::MissingSadObject`] (the policy SAD
+    /// object hasn't propagated locally yet) accumulates as a deferrable
+    /// failure and reports phantom-immune (`true`) so the verifier walk
+    /// continues without halting; the chain commit is gated by the
+    /// handler's emptiness check on `deferred_failures`. In strict mode
+    /// the error propagates as before. Non-`MissingSadObject` errors
+    /// always propagate.
+    async fn is_immune_collecting(&mut self, policy: &cesr::Digest256) -> Result<bool, KelsError> {
+        match self.checker.is_immune(policy).await {
+            Ok(b) => Ok(b),
+            Err(KelsError::MissingSadObject(missing)) if self.collecting => {
+                self.deferred_failures
+                    .push(crate::DeferredFailure::missing_sad_object(missing.said));
+                self.policy_satisfied = false;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// #156 Gap-8: invoke `checker.evaluate` with collect-mode awareness.
+    /// On [`KelsError::MissingSadObject`] in collect mode, accumulate the
+    /// deferrable failure and synthesize a satisfied-but-flagged
+    /// `AnchorEvaluation` so the verifier walk continues. `policy_satisfied=false`
+    /// flags the chain; non-empty `deferred_failures` drives the 422
+    /// handler response.
+    async fn evaluate_collecting(
+        &mut self,
+        said: &cesr::Digest256,
+        policy: &cesr::Digest256,
+    ) -> Result<AnchorEvaluation, KelsError> {
+        match self.checker.evaluate(said, policy).await {
+            Ok(eval) => Ok(eval),
+            Err(KelsError::MissingSadObject(missing)) if self.collecting => {
+                self.deferred_failures
+                    .push(crate::DeferredFailure::missing_sad_object(missing.said));
+                self.policy_satisfied = false;
+                Ok(AnchorEvaluation {
+                    satisfied: true,
+                    missing_anchors: Vec::new(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Process all events at the current generation (same version).
     async fn flush_generation(&mut self) -> Result<(), KelsError> {
         let events = std::mem::take(&mut self.generation_buffer);
@@ -451,13 +498,18 @@ impl IelVerifier {
             event.verify_prefix()?;
 
             // Hard immunity check on both declared policies (per design).
-            if !self.checker.is_immune(&event.auth_policy).await? {
+            // #156 Gap-8: in collect mode, `KelsError::MissingSadObject`
+            // (policy SAD not yet local) accumulates as deferrable + the
+            // immunity check is treated as satisfied for verifier-walk
+            // purposes (`policy_satisfied=false` flags the chain;
+            // deferred_failures non-empty drives the handler 422).
+            if !self.is_immune_collecting(&event.auth_policy).await? {
                 return Err(KelsError::VerificationFailed(format!(
                     "IEL Icp {} declares non-immune auth_policy {}",
                     event.said, event.auth_policy
                 )));
             }
-            if !self.checker.is_immune(&event.governance_policy).await? {
+            if !self.is_immune_collecting(&event.governance_policy).await? {
                 return Err(KelsError::VerificationFailed(format!(
                     "IEL Icp {} declares non-immune governance_policy {}",
                     event.said, event.governance_policy
@@ -469,8 +521,7 @@ impl IelVerifier {
             // Collect-mode (#156): accumulate any `missing_anchors` as
             // deferrable failures. The event still lands either way.
             let icp_evaluation = self
-                .checker
-                .evaluate(&event.said, &event.auth_policy)
+                .evaluate_collecting(&event.said, &event.auth_policy)
                 .await?;
             if !icp_evaluation.satisfied {
                 self.policy_satisfied = false;
@@ -534,12 +585,21 @@ impl IelVerifier {
                 ))
             })?;
 
-            let branch = self.branches.get(previous).ok_or_else(|| {
-                KelsError::VerificationFailed(format!(
-                    "IEL event {} previous {} does not match any branch tip",
-                    event.said, previous
-                ))
-            })?;
+            // Clone branch state out before invoking `&mut self` helpers
+            // (`evaluate_collecting` / `is_immune_collecting`) — the
+            // immutable borrow of `self.branches` from `.get(previous)`
+            // would otherwise conflict with the mutable borrow inside
+            // those helpers.
+            let branch = self
+                .branches
+                .get(previous)
+                .ok_or_else(|| {
+                    KelsError::VerificationFailed(format!(
+                        "IEL event {} previous {} does not match any branch tip",
+                        event.said, previous
+                    ))
+                })?
+                .clone();
 
             let expected_version = branch.tip.version + 1;
             if event.version != expected_version {
@@ -561,8 +621,7 @@ impl IelVerifier {
             // Structural integrity rules (immunity, content preservation) stay
             // hard regardless of position — Cnt doesn't change well-formedness.
             let governance_evaluation = self
-                .checker
-                .evaluate(&event.said, &branch.tracked_governance_policy)
+                .evaluate_collecting(&event.said, &branch.tracked_governance_policy)
                 .await?;
             let governance_satisfied = governance_evaluation.satisfied;
             let post_divergence = self.diverged_at_version.is_some_and(|d| event.version >= d);
@@ -615,13 +674,13 @@ impl IelVerifier {
                     let auth_changed = event.auth_policy != branch.tracked_auth_policy;
                     let gov_changed = event.governance_policy != branch.tracked_governance_policy;
 
-                    if auth_changed && !self.checker.is_immune(&event.auth_policy).await? {
+                    if auth_changed && !self.is_immune_collecting(&event.auth_policy).await? {
                         return Err(KelsError::VerificationFailed(format!(
                             "IEL Evl {} evolves auth_policy to non-immune {}",
                             event.said, event.auth_policy
                         )));
                     }
-                    if gov_changed && !self.checker.is_immune(&event.governance_policy).await? {
+                    if gov_changed && !self.is_immune_collecting(&event.governance_policy).await? {
                         return Err(KelsError::VerificationFailed(format!(
                             "IEL Evl {} evolves governance_policy to non-immune {}",
                             event.said, event.governance_policy
@@ -1012,6 +1071,103 @@ mod tests {
                 if dep.kel_prefix == kel_prefix && dep.anchor_said == v1_said
         )));
         assert!(!verification.policy_satisfied());
+    }
+
+    /// Collect-mode (#156 Gap-8): when `checker.evaluate` or `is_immune`
+    /// returns `KelsError::MissingSadObject` (the policy SAD object
+    /// hasn't propagated locally), the IEL verifier accumulates a
+    /// `DeferredFailure::MissingSadObject` and continues the walk
+    /// soft-fail-style. Strict mode would halt; collect mode lets the
+    /// handler emit a typed-422 with `sad_object` deps.
+    #[tokio::test]
+    async fn collect_mode_evl_accumulates_missing_sad_object() {
+        use crate::DeferredFailure;
+
+        struct MissingSadObjectChecker {
+            policy: cesr::Digest256,
+        }
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                if *policy == self.policy {
+                    Err(KelsError::missing_sad_object(*policy))
+                } else {
+                    Ok(AnchorEvaluation {
+                        satisfied: true,
+                        missing_anchors: Vec::new(),
+                    })
+                }
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let auth = test_digest(b"auth-sad-collect");
+        let gov = test_digest(b"gov-sad-collect");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+
+        // Pin the auth_policy SAID as the missing one so both the Icp
+        // self-anchor evaluate (`event.auth_policy`) and the Evl
+        // governance gate (`branch.tracked_governance_policy = gov`) get
+        // exercised — Evl checks gov, which IS local, so the missing dep
+        // surfaces specifically at the Icp evaluate call.
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(MissingSadObjectChecker { policy: auth });
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing SAD object");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
+
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingSadObject(dep) if dep.said == auth
+        )));
+        assert!(!verification.policy_satisfied());
+    }
+
+    /// Strict-mode counterpart: `KelsError::MissingSadObject` from the
+    /// checker propagates as Err, halting the walk. Collect-mode
+    /// behavior must not bleed through `verify_page` (without the
+    /// `_collecting` variant). Icp processing happens in
+    /// `flush_generation`, which triggers at `finish()` for a
+    /// single-generation page.
+    #[tokio::test]
+    async fn strict_mode_halts_on_missing_sad_object() {
+        struct MissingSadObjectChecker;
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Err(KelsError::missing_sad_object(*policy))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let auth = test_digest(b"auth-sad-strict");
+        let gov = test_digest(b"gov-sad-strict");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(MissingSadObjectChecker);
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::MissingSadObject(_)),
+            "expected MissingSadObject, got {err:?}"
+        );
     }
 
     // ---------- Linear chain ----------

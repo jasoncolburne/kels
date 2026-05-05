@@ -64,6 +64,19 @@ pub struct AnchorPermanentFailure {
     pub reason: String,
 }
 
+/// #156: deferrable dep payload — SAD object not present locally.
+///
+/// Carrier for [`KelsError::MissingSadObject`]. Used by the IEL/SE
+/// verifier walks when a referenced SAD object (typically a Policy SAD
+/// referenced by an Icp's `auth_policy` / `governance_policy`) hasn't
+/// propagated to this node yet. The deferred-deps layer maps to a 422 +
+/// `sad_object` dep; gossip parks under `pending:said:{S}` and drains on
+/// `sad_updates(S)` arrival.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSadObject {
+    pub said: cesr::Digest256,
+}
+
 /// #156: deferrable failure accumulated during a verifier walk in
 /// collect-mode (`SelVerifier::verify_page_collecting`,
 /// `IelVerifier::verify_page_collecting`).
@@ -79,6 +92,10 @@ pub enum DeferredFailure {
     /// KEL anchor not yet committed by the named endorser.
     /// Wire: `kel_anchor` dep.
     MissingKelAnchor(MissingKelAnchor),
+    /// SAD object referenced by an event hasn't propagated locally
+    /// (typically a Policy SAD object referenced by an Icp/Evl event's
+    /// `auth_policy` / `governance_policy`). Wire: `sad_object` dep.
+    MissingSadObject(MissingSadObject),
 }
 
 impl DeferredFailure {
@@ -94,6 +111,10 @@ impl DeferredFailure {
             kel_prefix,
             anchor_said,
         })
+    }
+
+    pub fn missing_sad_object(said: cesr::Digest256) -> Self {
+        Self::MissingSadObject(MissingSadObject { said })
     }
 }
 
@@ -327,6 +348,16 @@ pub enum KelsError {
     #[error("Identity binding violation: {0}")]
     IdentityBindingViolation(IdentityBindingViolation),
 
+    /// #156: deferrable — a SAD object referenced by a verifying event
+    /// (typically a Policy SAD object referenced by an Icp/Evl event's
+    /// `auth_policy` / `governance_policy` field) is not present in the
+    /// local SAD object store. Object may commit later via gossip
+    /// propagation; caller can defer on `said` and replay when the SAD
+    /// object lands. Used by IEL/SE verifier collect-mode to accumulate
+    /// `DeferredFailure::MissingSadObject`.
+    #[error("Missing SAD object: {}", .0.said)]
+    MissingSadObject(Box<MissingSadObject>),
+
     /// #147: `SadEventBuilder::decommission()` pre-flight refused
     /// because the SE chain is divergent. Generic — does not distinguish
     /// sealed vs. unsealed (the routing rules differ — sealed →
@@ -388,6 +419,11 @@ impl KelsError {
             kel_prefix,
             anchor_said,
         }))
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingSadObject`].
+    pub fn missing_sad_object(said: cesr::Digest256) -> Self {
+        Self::MissingSadObject(Box::new(MissingSadObject { said }))
     }
 
     /// #156: construct a permanent [`KelsError::AnchorPermanentFailure`].

@@ -81,7 +81,7 @@ pub use crypto::{
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::{
     AnchorPermanentFailure, DeferredFailure, IdentityBindingViolation, KelsError, MissingIelEvent,
-    MissingKelAnchor,
+    MissingKelAnchor, MissingSadObject,
 };
 pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
 pub use iel_resolver::{AnchoredIelResolver, walk_back_to_branch_identity};
