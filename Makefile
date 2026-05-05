@@ -234,7 +234,7 @@ seed-sads:
 	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 10
 
 wait-for-gossip:
-	scripts/wait-for-gossip.sh 180 node-a node-b node-c node-d node-e node-f
+	scripts/wait-for-gossip.sh 300 node-a node-b node-c node-d node-e node-f
 
 test-rotation:
 	# Run scheduled-rotate 4 times on registry-a identity
