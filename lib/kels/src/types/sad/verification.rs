@@ -773,35 +773,6 @@ impl SelVerifier {
         }
 
         self.branches = new_branches;
-
-        // #171 seal-divergence cap: a chain whose divergence point lies
-        // at-or-below its highest governance evaluation is structurally
-        // invalid — the seal freezes the chain past that version, so no
-        // fork can lawfully exist behind it. Mirrors `save_batch`'s
-        // "Cannot fork at version X — sealed by evaluation at version Y"
-        // rejection. Checked post-flush (every event in this generation
-        // already accounted for in branch state) so a same-generation
-        // seal+fork is rejected too — the verifier is the trust boundary
-        // and a tampered DB serving such a chain must be caught here.
-        // Surfaced as `ContestRequired` so the submit handler can route
-        // the user to the only legitimate next move (Cnt) without
-        // re-classifying the error in a wrapping helper.
-        if let Some(div) = self.diverged_at_version {
-            let max_seal = self
-                .branches
-                .values()
-                .filter_map(|b| b.last_governance_version)
-                .max();
-            if let Some(seal) = max_seal
-                && div <= seal
-            {
-                return Err(KelsError::contest_required_sel(format!(
-                    "Cannot fork at version {} — sealed by evaluation at version {}",
-                    div, seal,
-                )));
-            }
-        }
-
         Ok(())
     }
 
@@ -1343,53 +1314,6 @@ mod tests {
         let branch = &v.branches()[0];
         assert_eq!(branch.identity, identity);
         assert_eq!(branch.last_identity_event, Some(iel_icp));
-    }
-
-    /// #171: tampered chain shape `[Icp, Upd@v1, Upd_X@v2 fork, Sea@v2]`
-    /// (a fork at the same version as a governance evaluation) is rejected
-    /// at finish — `div=2`, `max(last_gov)=2`, `2 <= 2` trips the
-    /// seal-divergence cap inside `flush_generation`. Surfaces as
-    /// `ContestRequired` so submit handlers can route the user to the
-    /// only legitimate next move (Cnt) without re-classifying the error.
-    /// Closes the hole where save_batch's pre-batch seal check would have
-    /// missed the same-flush fork+seal case.
-    #[tokio::test]
-    async fn sealed_divergent_chain_rejected_by_finish() {
-        let identity = d(b"identity-seal-div");
-        let iel_icp = d(b"iel-icp-seal-div");
-
-        let resolver = Arc::new(fake_resolver_for_chain(
-            identity,
-            &[(iel_icp, 0, IdentityEventKind::Icp)],
-            d(b"auth-seal-div"),
-            d(b"gov-seal-div"),
-        )) as Arc<dyn IelResolver + Send + Sync>;
-
-        let v0 = make_icp(identity);
-        let v1 = make_upd(&v0, iel_icp, b"c1");
-        // Fork: a competing Upd at v=2 with different content (different SAID).
-        let v2_fork = make_upd_with_content(&v1, iel_icp, b"fork-content");
-        // Seal: a Sea at v=2 on the same parent v1, content preserved.
-        let v2_seal = SadEvent::sea(&v1, iel_icp).unwrap();
-        // Canonical order: (version ASC, kind sort_priority ASC, said ASC).
-        // Upd (priority 1) sorts before Sea (priority 2) at the same version.
-        let events = vec![v0.clone(), v1, v2_fork, v2_seal];
-
-        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
-        verifier.verify_page(&events).await.unwrap();
-        let err = verifier
-            .finish()
-            .await
-            .expect_err("sealed-divergent chain must reject");
-        match err {
-            KelsError::ContestRequired { reason } => {
-                assert!(
-                    reason.contains("Cannot fork") && reason.contains("sealed by evaluation"),
-                    "expected seal-cap reason, got {reason}"
-                );
-            }
-            other => panic!("expected ContestRequired, got {other:?}"),
-        }
     }
 
     /// #171: a chain whose only event is `Icp` (branch tip is still Icp at v0)

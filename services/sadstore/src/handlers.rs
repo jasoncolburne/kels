@@ -14,7 +14,7 @@ use axum::{
     response::IntoResponse,
 };
 use dashmap::DashMap;
-use kels_core::{IelResolver, KelsError};
+use kels_core::IelResolver;
 use redis::AsyncCommands;
 use tracing::{debug, warn};
 use verifiable_storage::{Chained, QueryExecutor, SelfAddressed, TransactionExecutor};
@@ -1370,35 +1370,26 @@ async fn verify_sel_chain_collecting(
 ) -> Result<kels_core::SelVerification, axum::response::Response> {
     let mut verifier = verifier;
     if let Err(e) = verifier.verify_page_collecting(new_events).await {
-        return Err(verifier_err_to_response(e, "SAD event verification failed"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("SAD event verification failed: {}", e),
+        )
+            .into_response());
     }
     let (verification, deferred) = match verifier.finish_collecting().await {
         Ok(pair) => pair,
-        Err(e) => return Err(verifier_err_to_response(e, "Chain verification failed")),
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Chain verification failed: {}", e),
+            )
+                .into_response());
+        }
     };
     if !deferred.is_empty() {
         return Err(build_deferred_deps_response(state, &deferred).await);
     }
     Ok(verification)
-}
-
-/// Map a `KelsError` from the SE/IEL verifier into the appropriate axum
-/// response. `ContestRequired` is surfaced as 403 with the routing-shaped
-/// "Contest required: ..." body so clients can distinguish "this chain
-/// shape requires a contest" from generic verification failures (#171:
-/// the seal-divergence cap is the canonical seal-cap surface; routing
-/// matrix items 4–6 will add more).
-fn verifier_err_to_response(err: KelsError, generic_prefix: &str) -> axum::response::Response {
-    match err {
-        KelsError::ContestRequired { .. } => {
-            (StatusCode::FORBIDDEN, err.to_string()).into_response()
-        }
-        other => (
-            StatusCode::BAD_REQUEST,
-            format!("{}: {}", generic_prefix, other),
-        )
-            .into_response(),
-    }
 }
 
 /// #156 helper: drive an `IelVerifier` in collect-mode. Mirrors
@@ -1817,7 +1808,11 @@ pub async fn submit_sad_events(
                 Ok(pair) => pair,
                 Err(e) => {
                     let _ = tx.rollback().await;
-                    return verifier_err_to_response(e, "Chain verification failed");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Chain verification failed: {}", e),
+                    )
+                        .into_response();
                 }
             };
             if !deferred.is_empty() {
