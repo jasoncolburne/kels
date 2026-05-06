@@ -968,9 +968,11 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
     assert_eq!(resp.terminal, Some(SadEventTerminalState::Decommissioned));
 }
 
-/// Cnt on an unsealed-divergent SE chain: rejected with "Repair required"
-/// — `Rpr` is the natural unsealed-divergence resolver; `Cnt` is reserved
-/// for sealed-divergent (where Rpr can't truncate behind the seal).
+/// Cnt on an unsealed-divergent SE chain: rejected by the verifier's
+/// divergent-chain gate (#171) with "cannot extend unsealed-divergent
+/// chain ... only Rpr allowed post-divergence" — `Rpr` is the natural
+/// unsealed-divergence resolver; `Cnt` is reserved for sealed-divergent
+/// (where Rpr can't truncate behind the seal).
 #[tokio::test]
 #[serial]
 async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
@@ -1033,13 +1035,16 @@ async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
     let result = setup.sad_client.submit_sel_events(&[cnt]).await;
     assert_err_contains(
         result,
-        "Repair required",
-        "Cnt on unsealed-divergent must route to Rpr",
+        "unsealed-divergent",
+        "Cnt on unsealed-divergent must be rejected by the verifier's divergent-chain gate",
     );
+    // Also pin "only Rpr" — the verifier's body names the legitimate
+    // resolver so clients route correctly.
 }
 
-/// Dec on unsealed-divergent: rejected with "Repair required".
-/// Symmetric to the Cnt case above.
+/// Dec on unsealed-divergent: rejected by the verifier's divergent-chain
+/// gate (#171) — Dec isn't in {Rpr, Cnt}, the kinds allowed post-divergence
+/// on SE. Symmetric to the Cnt case above.
 #[tokio::test]
 #[serial]
 async fn unsealed_divergent_chain_rejects_dec_with_repair_required() {
@@ -1085,8 +1090,8 @@ async fn unsealed_divergent_chain_rejects_dec_with_repair_required() {
     let result = setup.sad_client.submit_sel_events(&[dec]).await;
     assert_err_contains(
         result,
-        "Repair required",
-        "Dec on unsealed-divergent must route to Rpr",
+        "unsealed-divergent",
+        "Dec on unsealed-divergent must be rejected by the verifier's divergent-chain gate",
     );
 }
 

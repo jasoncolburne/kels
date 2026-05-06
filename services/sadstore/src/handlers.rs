@@ -1670,19 +1670,6 @@ pub async fn submit_sad_events(
             return (StatusCode::OK, Json(response)).into_response();
         }
 
-        // Sealed/unsealed predicate per
-        // `docs/design/sel/reconciliation.md §Local Submissions Matrix`:
-        // a chain is *sealed-divergent* iff the divergence point is at-or-
-        // before the most recent governance evaluation
-        // (`first_divergent_version <= last_governance_version`). The seal
-        // freezes the chain past that version, so `Rpr` (which truncates)
-        // can no longer resolve the divergence — only `Cnt` can.
-        let is_divergent = pre_batch_first_divergent.is_some();
-        let is_sealed_divergent = matches!(
-            (pre_batch_first_divergent, pre_batch_seal),
-            (Some(div), Some(seal)) if seal >= div
-        );
-
         // Per-kind detection on the batch (post-dedup). For `is_repair` we
         // intentionally use post-dedup events: only genuinely new `Rpr`
         // events trigger the repair path. `is_contest` / `is_decommission`
@@ -1726,29 +1713,11 @@ pub async fn submit_sad_events(
         );
 
         if is_repair {
-            // Routing matrix step 1: `is_repair`.
-            // - Divergent-sealed → `ContestRequired` (Rpr can't truncate
-            //   at-or-behind the seal).
-            // - Linear (clean or seal-past-tip) and divergent-unsealed →
-            //   `truncate_and_replace`. The linear-seal-past-tip case
-            //   keeps the generic "Cannot repair at version X — sealed
-            //   by evaluation at version Y" error; only the
-            //   divergent-sealed case converts to `ContestRequired`.
-            if is_sealed_divergent {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "Contest required: SE {} is sealed-divergent at version {} (seal {}) \
-                         — Rpr cannot truncate behind the seal; must Cnt instead",
-                        sel_prefix,
-                        pre_batch_first_divergent.unwrap_or(0),
-                        pre_batch_seal.unwrap_or(0),
-                    ),
-                )
-                    .into_response();
-            }
-
+            // Routing matrix step 1: `is_repair`. The verifier's
+            // sealed-vs-unsealed divergent-chain gate (#171) catches
+            // Rpr-on-sealed-divergent during the post-truncation
+            // re-verification below; no handler-side pre-check needed.
+            //
             // Truncate / archive within this tx, then verify the
             // post-truncation chain (which is now linear from v0 to the
             // Rpr).
@@ -1832,24 +1801,12 @@ pub async fn submit_sad_events(
             new_event_count = new_events.len() as u32;
             should_publish = true;
         } else if is_contest {
-            // Routing matrix step 2: `is_contest`.
-            // - Linear → contest path (works always).
-            // - Divergent-unsealed → `RepairRequired` (Rpr is the natural
-            //   resolver; Cnt is reserved for sealed-divergent).
-            // - Divergent-sealed → contest path (Rpr can't truncate
-            //   behind the seal, so Cnt is the only legitimate resolver).
-            if is_divergent && !is_sealed_divergent {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "Repair required: SE {} is unsealed-divergent — must Rpr, not Cnt",
-                        sel_prefix
-                    ),
-                )
-                    .into_response();
-            }
-
+            // Routing matrix step 2: `is_contest`. The verifier's
+            // sealed-vs-unsealed divergent-chain gate (#171) catches
+            // Cnt-on-unsealed-divergent (only Rpr allowed there); the
+            // handler defers to it. Linear and sealed-divergent both
+            // accept Cnt.
+            //
             // Verify chain with new events. Cnt has SOFT governance auth —
             // a govfailed Cnt still lands; the verifier surfaces the
             // chain-content-based `is_contested=true` and propagates
@@ -1893,35 +1850,12 @@ pub async fn submit_sad_events(
             new_event_count = new_events.len() as u32;
             should_publish = true;
         } else if is_decommission {
-            // Routing matrix step 3: `is_decommission`.
-            // - Linear → decommission path.
-            // - Divergent-unsealed → `RepairRequired`.
-            // - Divergent-sealed → `ContestRequired` (Dec can't resolve a
-            //   sealed divergence; operator must Cnt instead).
-            if is_divergent && !is_sealed_divergent {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "Repair required: SE {} is unsealed-divergent — must Rpr, not Dec",
-                        sel_prefix
-                    ),
-                )
-                    .into_response();
-            }
-            if is_sealed_divergent {
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "Contest required: SE {} is sealed-divergent — Dec cannot \
-                         resolve a sealed divergence; must Cnt instead",
-                        sel_prefix
-                    ),
-                )
-                    .into_response();
-            }
-
+            // Routing matrix step 3: `is_decommission`. The verifier's
+            // divergent-chain gate (#171) catches Dec-on-divergent (Dec
+            // is in neither {Rpr} nor {Cnt} — the allowed sets for
+            // unsealed and sealed divergent respectively); the handler
+            // defers to it. Linear chains accept Dec normally.
+            //
             // Linear path: verify chain + new events (SOFT for Dec — same
             // reasoning as Cnt above), then insert.
             let mut verifier = kels_core::SelVerifier::new(
@@ -1962,36 +1896,10 @@ pub async fn submit_sad_events(
             // `Upd` and `Sea` only at this point (Icp landed alone or
             // alongside its v1 Upd is also handled here; the inception
             // batch rule already enforced the v1-Upd requirement).
+            // Upd/Sea on a divergent chain is caught by the verifier's
+            // divergent-chain gate (#171: only Rpr/Cnt allowed
+            // post-divergence); the handler defers to it.
             //
-            // Step 4 (chain divergent + non-terminal + non-Rpr):
-            //   - divergent-unsealed → RepairRequired
-            //   - divergent-sealed → ContestRequired
-            if is_divergent {
-                if is_sealed_divergent {
-                    let _ = tx.rollback().await;
-                    return (
-                        StatusCode::FORBIDDEN,
-                        format!(
-                            "Contest required: SE {} is sealed-divergent — neither Rpr \
-                             nor normal append can resolve; must Cnt instead",
-                            sel_prefix
-                        ),
-                    )
-                        .into_response();
-                } else {
-                    let _ = tx.rollback().await;
-                    return (
-                        StatusCode::FORBIDDEN,
-                        format!(
-                            "Repair required: SE {} is unsealed-divergent — \
-                             cannot extend a divergent chain; must Rpr first",
-                            sel_prefix
-                        ),
-                    )
-                        .into_response();
-                }
-            }
-
             // Linear chain. Verify existing + new; HARD for Upd/Sea so
             // policy_satisfied=false aborts.
             let mut verifier = kels_core::SelVerifier::new(
@@ -2549,15 +2457,6 @@ pub async fn submit_identity_events(
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
         };
-        let pre_batch_divergent = match state.repo.iel_events.is_divergent(iel_prefix).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to query IEL pre-batch divergence: {}", e);
-                let _ = tx.rollback().await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
-            }
-        };
-
         // Build verifier; verify the existing chain + the new batch. The
         // verifier surfaces immunity violations, Cnt/Dec policy preservation,
         // Icp self-anchoring (soft), and Evl/Cnt/Dec governance anchoring.
@@ -2594,17 +2493,12 @@ pub async fn submit_identity_events(
 
         // Routing per `docs/design/iel/merge.md §4`. Order matters: Cnt always
         // wins (works on divergent or linear chains, the only divergence
-        // resolver). Divergent-rejection comes BEFORE Dec so Dec on a divergent
-        // chain returns ContestRequired. Sealed-Evl returns ContestRequired
-        // (algorithmic). Otherwise normal append (overlap creates fork).
+        // resolver). Otherwise normal append (overlap creates fork).
+        // Evl/Dec on a divergent IEL is caught by the verifier's
+        // divergent-chain gate (#171: only Cnt allowed post-divergence on
+        // IEL); the handler defers to it.
         let is_contest = new_events.iter().any(|e| e.kind.is_contest());
         let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
-        // Use the pre-batch divergence + seal state for routing, not the
-        // post-finish view: the verifier processes existing + new events
-        // together, so a batch that *creates* a fork (overlap, valid) shows
-        // up as divergent post-finish, but the design routes it via
-        // save_batch's overlap-creates-fork path, not divergent-rejection.
-        let chain_divergent = pre_batch_divergent;
         let last_gp_version = pre_batch_seal;
 
         if is_contest {
@@ -2624,13 +2518,6 @@ pub async fn submit_identity_events(
             }
             new_event_count = new_events.len() as u32;
             should_publish = true;
-        } else if chain_divergent {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::FORBIDDEN,
-                "Contest required: IEL is divergent — only Cnt resolves a divergent IEL",
-            )
-                .into_response();
         } else if is_decommission {
             for event in &new_events {
                 if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {

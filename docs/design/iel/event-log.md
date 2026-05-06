@@ -63,10 +63,15 @@ Divergence is detected when two IEL events share the same `previous` SAID. The c
 
 v0 divergence is rejected outright (inception is fully deterministic — two distinct v0 events for the same prefix indicate protocol-level corruption, not authority conflict).
 
-The divergence invariant — combined with every IEL event after Icp being governance-authorized — guarantees:
+Two routes create divergence on an IEL chain:
+
+1. **Concurrent extensions** (race, same-batch fork): two `Evl` events with the same `previous` land at the same version. Divergence is created at the moment of submission. Post-divergence window starts empty and grows only via subsequent `Cnt` extending one branch's tip. Bounded by 1–2 events past `d`.
+2. **Retroactive `Cnt`-from-non-tip** (operator contestation of a previously-clean linear chain): the chain was clean linear `[Icp, Evl@v1, ..., Evl@vN]`; the operator submits `Cnt` whose `previous` points at any event in the chain (versions `0` through `N-1`); `Cnt`'s version `c = previous.version + 1` falls in `(0, N]`. Divergence is created retroactively at version `c`: the pre-existing chain forms one branch (the contested branch, with events at versions ≥ `c`); the Cnt-only branch is terminal at `c`. The contested branch's events stay in storage as forensic record.
+
+The divergence invariant guarantees:
 - Exactly 2 events at the divergence version `d`.
-- At most 1 event at each version `> d` (chain frozen post-divergence; only `Cnt` extending one branch's tip lands).
-- The combined post-`d` window fits in one `MINIMUM_PAGE_SIZE`-bounded page.
+- At most 1 event at each version `> d` (the contested branch's pre-existing events for retroactive `Cnt`; nothing for concurrent-extension divergence beyond an optional Cnt-tip-extension).
+- **Bounded verifier processing on Cnt arrival.** For concurrent-extension divergence the post-`d` window is bounded directly (1–2 events). For retroactive `Cnt` the post-`d` window can include the entire pre-existing contested branch, but those events were already verified during the pre-Cnt walk and are *not re-walked* on Cnt arrival. The verifier records `Cnt` as a single-event addition: parent-lookup resolves Cnt's `previous` against any known event in the chain, the divergence point is set to Cnt's version, and the chain is marked contested-terminal. Total verifier work for the Cnt-arrival step is bounded by single-event verification cost (`verify_said`, governance auth, parent-resolution) regardless of contested-branch length.
 
 ### Why no `Rpr`
 
@@ -93,7 +98,7 @@ The security dials differ by cause: against compromise, threshold height (high e
 
 `Cnt` fills that gap. Two modes:
 
-- **Cnt on a linear chain** → branches from a pre-contested ancestor (`Cnt.previous` points at an event before the contested extensions). The result is a divergent chain at the contested version, with the contested events on one branch and `Cnt` on the other. The chain becomes terminal-contested.
+- **Cnt on a linear chain** (retroactive contestation) → branches from a pre-contested ancestor (`Cnt.previous` points at any event in the linear chain at versions `0` through `N-1` where `N` is the current tip version; `Cnt.version = previous.version + 1` falls in `(0, N]`). The result is a divergent chain at Cnt's version, with the contested events (pre-existing chain from `Cnt.version` forward) on one branch and `Cnt` on the other. The chain becomes terminal-contested. **Verifier processing is bounded by single-event Cnt verification — the contested branch is not re-walked.**
 - **Cnt on an already-divergent chain** (race or compromise produced organic divergence) → extends one branch's tip and marks the chain contested-terminal. In this mode `Cnt` is governance-attested closure — note that "operator" here means "anyone with governance authority"; governance keys are shared across the operator's devices, so `Cnt` is governance attestation, not individual-operator authentication.
 
 In all cases:

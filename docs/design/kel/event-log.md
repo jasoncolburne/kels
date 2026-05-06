@@ -121,7 +121,15 @@ Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX
 
 ## Contest (Cnt)
 
-Contest is the terminal state for authority conflict — the recovery key has been revealed by an adversary, and the legitimate owner cannot recover (recovery would require revealing the same already-known key). `Cnt` is dual-signed and freezes the chain.
+Contest is the terminal state for authority conflict — the recovery key has been revealed by an adversary, the legitimate owner cannot recover (recovery would require revealing the same already-known key), OR an adversary holds BOTH the signing key and the recovery key and has extended the chain with valid signatures (Rec is unavailable because the adversary controls the recovery key too). `Cnt` is dual-signed and freezes the chain.
+
+### Two modes of `Cnt`
+
+1. **Cnt on an already-divergent chain (recovery-key-revealed escalation).** Rec produced divergence by archiving the adversary's branch but the recovery key was revealed during the conflict (either side); subsequent Rec is impossible because the recovery key is no longer secret. Cnt is the terminal escalation — extends owner's authentic tip on the already-divergent chain. `previous = owner_tip.said`, `serial = owner_tip.serial + 1`. This is the case the §Algorithmic trigger below describes.
+
+2. **Cnt-from-non-tip on a clean linear chain (full-key-compromise escalation).** Adversary holds BOTH the signing key AND the recovery key for some prior state and has extended the chain linearly with valid signatures; the chain APPEARS clean linear but the owner knows the post-fork events are illegitimate. Rec doesn't apply (adversary has the recovery key). The owner submits `Cnt` with `previous` pointing at a pre-compromise ancestor — `previous.serial` in `[0, tip.serial - 1]`; `Cnt.serial = previous.serial + 1` falls in `(0, tip.serial]`. Divergence is created retroactively at Cnt's serial: the pre-existing chain forms one branch (the contested branch, with events at serials ≥ Cnt.serial); the Cnt-only branch is terminal. The contested branch's events stay in storage as forensic record. **Verifier processing is bounded by single-event Cnt verification — the contested branch was already verified during the pre-Cnt walk and is *not re-walked* on Cnt arrival.**
+
+   Without this mode, an adversary with full-key-compromise leaves the operator with no protocol-level recourse: the chain stays "valid linear" in every consumer's view despite being entirely under adversary control after a certain point. Mode 2 is the operator's last line of defense against full-key-compromise — it converts a silently-compromised chain into a structurally-contested chain visible to all consumers.
 
 ### Algorithmic trigger — `ContestRequired`
 
@@ -130,7 +138,7 @@ The merge engine returns `ContestRequired` when:
 - At least one event in the divergent chain reveals the recovery key (`Rec` / `Ror` / `Dec` / `Cnt` from the adversary's branch, OR a `Ror`/`Dec` on owner's side that pre-revealed proactively).
 - The submitted batch is not a contest (i.e., does not contain `Cnt`).
 
-The owner's only legitimate next event is `Cnt`. Any other submission — including `Rec` — is rejected with `ContestRequired`.
+The owner's only legitimate next event is `Cnt`. Any other submission — including `Rec` — is rejected with `ContestRequired`. This trigger applies to Mode 1; Mode 2 (Cnt on a clean linear chain) does not require the chain to be already-divergent — `Cnt` arrival itself creates the divergence.
 
 This mirrors SEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key by submitting `Rec`/`Ror`/`Dec`/`Cnt`; SEL: advanced the seal by submitting `Sea`/`Rpr`), and safe normal-flow continuation is no longer possible. The trigger is structurally the same — "the privileged operation has been used, you can't safely follow with the same primitive" — instantiated against the chain's privileged primitive (recovery key for KEL, evaluation seal for SEL).
 
@@ -142,7 +150,8 @@ A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequi
 
 `KeyEventKind::Cnt`:
 - `reveals_recovery_key() = true` (same gate as `Rec`/`Ror`/`Dec`).
-- Cnt extends owner's authentic tip: `previous = owner_tip.said`, `serial = owner_tip.serial + 1`.
+- Mode 1: Cnt extends owner's authentic tip on an already-divergent chain. `previous = owner_tip.said`, `serial = owner_tip.serial + 1`.
+- Mode 2: Cnt-from-non-tip on a clean linear chain. `previous` points at any prior event in the chain (serials `0` through `tip.serial - 1`); `Cnt.serial = previous.serial + 1`. Verifier processes Cnt as a single-event addition (parent-lookup resolves Cnt's `previous` against any known event; divergence point set to Cnt.serial; chain marked contested-terminal); contested branch is not re-walked.
 - Dual-signed: signing key (preimage of prior `rotation_hash`) + recovery key (preimage of prior `recovery_hash`).
 
 `KeyEvent::create_contest(previous, public_key, recovery_key)` mirrors `create_decommission`. No future-key commitments — KEL ends.

@@ -380,24 +380,46 @@ impl SelVerifier {
                 .clone();
             let branch = &branch;
 
-            // #171 divergent-chain gate (per-event): once a chain is
-            // divergent, post-divergence events on any branch are
-            // restricted to {Rpr, Cnt} for SE — Rpr resolves unsealed
-            // divergence, Cnt is the only legitimate move on
-            // sealed-divergent. The divergence-creating events
-            // themselves (at version == diverged_at_version) bypass this
-            // check; only events at version > diverged_at_version are
-            // post-divergence. See `docs/design/sel/event-log.md §Chain
-            // States`.
+            // #171 divergent-chain gate (per-event), narrowed by
+            // sealed-vs-unsealed: once a chain is divergent, the
+            // legitimate resolver is determined by whether the
+            // governance seal has advanced past the divergence point.
+            // - **Unsealed-divergent** (`max_seal < div`): only `Rpr` —
+            //   Rpr truncates the adversary branch and resolves cleanly.
+            //   `Cnt` here is premature; the operator should `Rpr`.
+            // - **Sealed-divergent** (`max_seal >= div`): only `Cnt` —
+            //   `Rpr` cannot truncate behind the seal, so `Cnt` is the
+            //   only legitimate move.
+            // The divergence-creating events themselves (at
+            // version == diverged_at_version) bypass this check; only
+            // events at version > diverged_at_version are post-divergence.
+            // See `docs/design/sel/event-log.md §Chain States`.
             if let Some(div_at) = self.diverged_at_version
                 && event.version > div_at
-                && !matches!(event.kind, SadEventKind::Rpr | SadEventKind::Cnt)
             {
-                return Err(KelsError::VerificationFailed(format!(
-                    "SE event {} ({}) cannot extend divergent chain at version {} \
-                     (only Rpr or Cnt allowed post-divergence)",
-                    event.said, event.kind, event.version
-                )));
+                let max_seal = self
+                    .branches
+                    .values()
+                    .filter_map(|b| b.last_governance_version)
+                    .max();
+                let is_sealed_divergent = max_seal.is_some_and(|s| s >= div_at);
+                let allowed = if is_sealed_divergent {
+                    event.kind == SadEventKind::Cnt
+                } else {
+                    event.kind == SadEventKind::Rpr
+                };
+                if !allowed {
+                    let (state_label, allowed_label) = if is_sealed_divergent {
+                        ("sealed-divergent", "Cnt")
+                    } else {
+                        ("unsealed-divergent", "Rpr")
+                    };
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SE event {} ({}) cannot extend {} chain at version {} \
+                         (only {} allowed post-divergence)",
+                        event.said, event.kind, state_label, event.version, allowed_label
+                    )));
+                }
             }
 
             // #171 terminal-state gate (asymmetric):
@@ -1877,6 +1899,154 @@ mod tests {
             "Cnt-superseding-Dec must contest the chain"
         );
         assert!(v.is_decommissioned(), "Dec content flag stays set");
+    }
+
+    /// #171 SE divergent-chain gate (unsealed-divergent): on an
+    /// unsealed-divergent chain (no Sea/Rpr advanced past divergence),
+    /// only `Rpr` is allowed post-divergence — `Rpr` truncates the
+    /// adversary branch and resolves cleanly. The legitimate-resolver
+    /// rule.
+    #[tokio::test]
+    async fn rpr_on_unsealed_divergent_accepted() {
+        let identity = d(b"identity-rpr-unsealed");
+        let iel_icp = d(b"iel-icp-rpr-unsealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-rpr-unsealed"),
+            d(b"gov-rpr-unsealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2_a = make_upd_with_content(&v1, iel_icp, b"branch-a");
+        let v2_b = make_upd_with_content(&v1, iel_icp, b"branch-b");
+        let (lo, hi) = if v2_a.said.as_ref() < v2_b.said.as_ref() {
+            (v2_a, v2_b)
+        } else {
+            (v2_b, v2_a)
+        };
+        let rpr = SadEvent::rpr(&lo, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, lo, hi, rpr]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(2));
+        assert!(v.policy_satisfied());
+    }
+
+    /// #171 SE divergent-chain gate (sealed-divergent rejects Rpr): once
+    /// the seal has advanced to-or-past the divergence point, `Rpr`
+    /// cannot truncate behind the seal — only `Cnt` is the legitimate
+    /// move.
+    #[tokio::test]
+    async fn rpr_on_sealed_divergent_rejected() {
+        let identity = d(b"identity-rpr-sealed");
+        let iel_icp = d(b"iel-icp-rpr-sealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-rpr-sealed"),
+            d(b"gov-rpr-sealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        // Sealed-divergent shape: Sea-creates-divergence at v=2 (Sea and
+        // Upd both extending v=1, both at v=2). Sea's branch advances
+        // last_gov to 2; div_at=2, max_seal=2 → sealed-divergent.
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let upd_v2 = make_upd_with_content(&v1, iel_icp, b"upd-fork");
+        let sea_v2 = SadEvent::sea(&v1, iel_icp).unwrap();
+        let rpr = SadEvent::rpr(&upd_v2, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, v1, upd_v2, sea_v2, rpr])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Rpr on sealed-divergent must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sealed-divergent") && msg.contains("only Cnt"),
+            "expected sealed-divergent rejection, got {msg}"
+        );
+    }
+
+    /// #171 SE divergent-chain gate (sealed-divergent accepts Cnt): the
+    /// only legitimate resolver on a sealed-divergent chain.
+    #[tokio::test]
+    async fn cnt_on_sealed_divergent_accepted() {
+        let identity = d(b"identity-cnt-sealed");
+        let iel_icp = d(b"iel-icp-cnt-sealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-sealed"),
+            d(b"gov-cnt-sealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let upd_v2 = make_upd_with_content(&v1, iel_icp, b"upd-fork");
+        let sea_v2 = SadEvent::sea(&v1, iel_icp).unwrap();
+        let cnt = SadEvent::cnt(&upd_v2, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, v1, upd_v2, sea_v2, cnt])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(2));
+        assert!(v.is_contested());
+    }
+
+    /// #171 SE divergent-chain gate (unsealed-divergent rejects Cnt):
+    /// `Cnt` is reserved for sealed-divergent — on unsealed-divergent
+    /// the operator must `Rpr` instead.
+    #[tokio::test]
+    async fn cnt_on_unsealed_divergent_rejected() {
+        let identity = d(b"identity-cnt-unsealed");
+        let iel_icp = d(b"iel-icp-cnt-unsealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-unsealed"),
+            d(b"gov-cnt-unsealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2_a = make_upd_with_content(&v1, iel_icp, b"branch-a");
+        let v2_b = make_upd_with_content(&v1, iel_icp, b"branch-b");
+        let (lo, _hi) = if v2_a.said.as_ref() < v2_b.said.as_ref() {
+            (v2_a.clone(), v2_b.clone())
+        } else {
+            (v2_b.clone(), v2_a.clone())
+        };
+        let cnt = SadEvent::cnt(&lo, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, v1, v2_a, v2_b, cnt])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Cnt on unsealed-divergent must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsealed-divergent") && msg.contains("only Rpr"),
+            "expected unsealed-divergent rejection, got {msg}"
+        );
     }
 
     /// #171 terminal-state gate: same shape for `Dec` — a non-terminal event

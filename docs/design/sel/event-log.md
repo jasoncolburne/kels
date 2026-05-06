@@ -73,10 +73,15 @@ Divergence is detected when two events share the same `previous` SAID. The chain
 
 v0 divergence is rejected outright (inception is fully deterministic — two distinct v0 events for the same prefix indicate protocol-level corruption, not authority conflict).
 
-The divergence invariant — combined with the proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) — guarantees:
+Two routes create divergence on a SE chain:
+
+1. **Concurrent extensions** (race, same-batch fork): two events with the same `previous` land at the same version. Divergence is created at the moment of submission. The proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) bounds the post-`d` window to one page.
+2. **Retroactive `Cnt`-from-non-tip** (operator contestation of a previously-clean linear chain): the chain was clean linear; the operator submits `Cnt` whose `previous` points at any event in the chain (versions `0` through `N-1`); `Cnt`'s version `c = previous.version + 1` falls in `(0, N]`. Divergence is created retroactively at version `c`: the pre-existing chain forms one branch (the contested branch, with events at versions ≥ `c`); the Cnt-only branch is terminal at `c`. The contested branch's events stay in storage as forensic record. **Verifier processing is bounded by single-event Cnt verification — the contested branch was already verified during the pre-Cnt walk and is *not re-walked* on Cnt arrival.**
+
+The divergence invariant guarantees:
 - Exactly 2 events at the divergence version `d`.
-- At most 1 event at each version `> d` (chain frozen post-divergence; only one branch can extend by way of pre-divergence pending that races in).
-- The combined post-`d` window fits in one `MINIMUM_PAGE_SIZE`-bounded page.
+- At most 1 event at each version `> d` (the contested branch's pre-existing events for retroactive `Cnt`; nothing for concurrent-extension divergence beyond pre-divergence pending or optional Cnt-tip-extension).
+- **Bounded verifier processing.** For concurrent-extension divergence the post-`d` window is bounded by the proactive evaluation rule (one page). For retroactive `Cnt` the post-`d` window can include the entire pre-existing contested branch, but those events were already verified pre-Cnt; `Cnt` arrival is processed as a single-event addition (parent-lookup resolves Cnt's `previous` against any known event in the chain, divergence point set to Cnt's version, chain marked contested-terminal). Verifier work for the Cnt-arrival step is bounded by single-event verification cost regardless of contested-branch length.
 
 ### Why SE has Rpr (and IEL doesn't)
 
