@@ -601,6 +601,51 @@ impl IelVerifier {
                 })?
                 .clone();
 
+            // #171 divergent-chain gate (per-event): once an IEL is
+            // divergent, post-divergence events are restricted to {Cnt}
+            // — IEL has no Rpr; divergence = compromise; Cnt is the
+            // owner's testimony "this IEL is no longer authoritative."
+            // The divergence-creating events themselves (at version ==
+            // diverged_at_version) bypass this check; only events at
+            // version > diverged_at_version are post-divergence. See
+            // `docs/design/iel/event-log.md §Compromise Posture and
+            // Trust Layer`.
+            if let Some(div_at) = self.diverged_at_version
+                && event.version > div_at
+                && event.kind != IdentityEventKind::Cnt
+            {
+                return Err(KelsError::VerificationFailed(format!(
+                    "IEL event {} ({}) cannot extend divergent chain at version {} \
+                     (only Cnt allowed post-divergence)",
+                    event.said, event.kind, event.version
+                )));
+            }
+
+            // #171 terminal-state gate (asymmetric):
+            // - `Cnt` is the unconditional tombstone — extending a `Cnt`
+            //   tip is structurally invalid for any kind.
+            // - `Dec` is the operator's clean-retirement signal but
+            //   `Cnt` may supersede it if compromise is detected post-Dec
+            //   (forced Dec, post-Dec key compromise). Extending a `Dec`
+            //   tip is invalid for every kind EXCEPT `Cnt`.
+            // Per-branch (not chain-wide). See `docs/design/iel/event-log.md
+            // §Chain States` for the asymmetry rationale.
+            match branch.tip.kind {
+                IdentityEventKind::Cnt => {
+                    return Err(KelsError::VerificationFailed(format!(
+                        "IEL event {} cannot extend Cnt {} (Cnt is unconditional tombstone)",
+                        event.said, branch.tip.said
+                    )));
+                }
+                IdentityEventKind::Dec if event.kind != IdentityEventKind::Cnt => {
+                    return Err(KelsError::VerificationFailed(format!(
+                        "IEL event {} cannot extend Dec {} (only Cnt may supersede Dec)",
+                        event.said, branch.tip.said
+                    )));
+                }
+                _ => {}
+            }
+
             let expected_version = branch.tip.version + 1;
             if event.version != expected_version {
                 return Err(KelsError::VerificationFailed(format!(
@@ -1261,6 +1306,73 @@ mod tests {
         assert!(!v.is_contested());
     }
 
+    /// #171 terminal-state gate: a non-terminal `Evl` extending a `Cnt`
+    /// tip is structurally invalid. Tampered chain shape that the
+    /// verifier rejects on read so consumers can't be tricked into
+    /// honoring post-terminal extensions.
+    #[tokio::test]
+    async fn evl_extending_cnt_tip_rejected_as_post_terminal() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let cnt = IdentityEvent::cnt(&v0).unwrap();
+        let post = IdentityEvent::evl(&cnt, None, None).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.verify_page(&[v0, cnt, post]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("post-terminal extension must reject");
+        assert!(
+            err.to_string().contains("cannot extend Cnt"),
+            "expected Cnt-tombstone rejection, got {err}"
+        );
+    }
+
+    /// #171 terminal-state gate: `Cnt` may supersede `Dec` (compromise
+    /// detected post-Dec — forced Dec, post-Dec key compromise). Cnt
+    /// extending a Dec tip is structurally valid; the chain becomes
+    /// contested. Pins the asymmetry that makes Dec recoverable while
+    /// Cnt stays unconditional tombstone.
+    #[tokio::test]
+    async fn cnt_extending_dec_tip_supersedes_dec() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let dec = IdentityEvent::dec(&v0).unwrap();
+        let cnt = IdentityEvent::cnt(&dec).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.verify_page(&[v0, dec, cnt]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(
+            v.is_contested(),
+            "Cnt-superseding-Dec must contest the chain"
+        );
+        assert!(v.is_decommissioned(), "Dec content flag stays set");
+    }
+
+    /// #171 terminal-state gate: same shape for `Dec` — a non-terminal
+    /// `Evl` extending a `Dec` tip is structurally invalid.
+    #[tokio::test]
+    async fn evl_extending_dec_tip_rejected_as_post_terminal() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let dec = IdentityEvent::dec(&v0).unwrap();
+        let post = IdentityEvent::evl(&dec, None, None).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier.verify_page(&[v0, dec, post]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("post-terminal extension must reject");
+        assert!(err.to_string().contains("cannot extend Dec"));
+    }
+
     #[tokio::test]
     async fn governance_failed_cnt_marks_terminal_but_unsatisfied() {
         let auth = test_digest(b"auth-policy");
@@ -1672,63 +1784,6 @@ mod tests {
         assert_eq!(v.diverged_at_version(), None);
         assert!(v.is_decommissioned());
         assert!(v.is_said_satisfied(&dec.said));
-    }
-
-    #[tokio::test]
-    async fn evl_post_divergence_with_anchor_fail_soft_lands_no_err() {
-        // Build [Icp, Evl-on-A@1, Cnt@1]; the Cnt creates divergence at v=1.
-        // Then add an Evl-extending-cnt at v=2 (post-divergence). With an
-        // anchor-rejecting checker, the post-divergence Evl's auth check
-        // soft-fails (sets policy_satisfied=false) but the verifier doesn't
-        // return Err — the event lands. Pre-divergence events keep passing
-        // their checks (we use AlwaysPassChecker for Icp soft-anchor).
-        //
-        // Use a checker that rejects only the post-divergence Evl's SAID.
-        let auth = test_digest(b"auth-policy");
-        let gov = test_digest(b"gov-policy");
-        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let evl_a = IdentityEvent::evl(&v0, None, None).unwrap();
-        let cnt = IdentityEvent::cnt(&v0).unwrap();
-        // Post-divergence Evl extending Cnt at v=2.
-        let evl_postdiv = IdentityEvent::evl(&cnt, None, None).unwrap();
-
-        struct RejectSpecific {
-            reject: cesr::Digest256,
-        }
-        #[async_trait::async_trait]
-        impl PolicyChecker for RejectSpecific {
-            async fn evaluate(
-                &self,
-                said: &cesr::Digest256,
-                _: &cesr::Digest256,
-            ) -> Result<AnchorEvaluation, KelsError> {
-                Ok(AnchorEvaluation {
-                    satisfied: said != &self.reject,
-                    missing_anchors: Vec::new(),
-                })
-            }
-            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
-                Ok(true)
-            }
-        }
-        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectSpecific {
-            reject: evl_postdiv.said,
-        });
-
-        let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
-        // Verify: walk in canonical order. v=0: Icp. v=1: Evl (kind=1) + Cnt
-        // (kind=2). v=2: post-divergence Evl extending the Cnt branch.
-        verifier
-            .verify_page(&[v0, evl_a, cnt, evl_postdiv.clone()])
-            .await
-            .expect("post-divergence auth-fail should not return Err");
-        let v = verifier.finish().await.unwrap();
-
-        assert_eq!(v.diverged_at_version(), Some(1));
-        assert!(
-            !v.policy_satisfied(),
-            "post-divergence anchor-fail flips chain-wide policy_satisfied"
-        );
     }
 
     #[tokio::test]

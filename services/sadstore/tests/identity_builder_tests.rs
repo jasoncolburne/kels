@@ -664,14 +664,15 @@ async fn divergent_chain_rejects_non_cnt_with_contest_required() {
         .expect("submit divergent batch");
     assert_eq!(resp_first.diverged_at, Some(1));
 
-    // Subsequent Evl extending v1_a — the chain is divergent so this must
-    // be rejected. The server returns "Contest required: IEL is divergent —
-    // only Cnt resolves a divergent IEL".
+    // Subsequent Evl extending v1_a — the chain is divergent so the
+    // verifier's divergent-chain gate (#171) hard-rejects: "cannot extend
+    // divergent chain ... only Cnt allowed post-divergence". IEL has no
+    // Rpr; Cnt is the only legitimate post-divergence event.
     let v2 = IdentityEvent::evl(&v1_a, None, None).unwrap();
     kel_builder.interact(&v2.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v2]).await;
-    assert_err_contains(&resp, "Contest required");
-    assert_err_contains(&resp, "divergent");
+    assert_err_contains(&resp, "cannot extend divergent");
+    assert_err_contains(&resp, "only Cnt");
 }
 
 #[tokio::test]
@@ -697,14 +698,14 @@ async fn divergent_chain_rejects_dec_with_contest_required() {
         .expect("submit divergent batch");
 
     // Dec on a divergent chain must be rejected — only Cnt resolves
-    // divergence. The X-1 routing rule ensures the divergent-rejection branch
-    // fires before is_decommission, so we get "Contest required: ... divergent"
-    // rather than acceptance or a generic 4xx.
+    // divergence on IEL (no Rpr exists). The verifier's divergent-chain
+    // gate (#171) hard-rejects with "cannot extend divergent chain ...
+    // only Cnt allowed post-divergence".
     let dec = IdentityEvent::dec(&v1_a).unwrap();
     kel_builder.interact(&dec.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[dec]).await;
-    assert_err_contains(&resp, "Contest required");
-    assert_err_contains(&resp, "divergent");
+    assert_err_contains(&resp, "cannot extend divergent");
+    assert_err_contains(&resp, "only Cnt");
 }
 
 #[tokio::test]

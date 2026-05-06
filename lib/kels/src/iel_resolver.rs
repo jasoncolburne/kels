@@ -576,10 +576,12 @@ mod tests {
         } else {
             (evl_b.clone(), evl_a.clone())
         };
-        // Post-divergence Evl extending the lower-SAID branch tip.
-        let evl_lo_v2 = IdentityEvent::evl(&lo, None, None).unwrap();
-        let chain = vec![icp.clone(), lo.clone(), hi.clone(), evl_lo_v2.clone()];
-        (chain, lo, hi, evl_lo_v2)
+        // Post-divergence event extending the lower-SAID branch tip. Only
+        // `Cnt` is allowed on a divergent IEL (#171: divergence = compromise;
+        // Cnt is the owner's testimony "this IEL is no longer authoritative").
+        let cnt_lo_v2 = IdentityEvent::cnt(&lo).unwrap();
+        let chain = vec![icp.clone(), lo.clone(), hi.clone(), cnt_lo_v2.clone()];
+        (chain, lo, hi, cnt_lo_v2)
     }
 
     fn resolver(events: Vec<IdentityEvent>) -> AnchoredIelResolver {

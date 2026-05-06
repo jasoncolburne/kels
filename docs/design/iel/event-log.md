@@ -12,8 +12,8 @@ IEL is the authorization root for SE chains. Every SAD Event Log binds to a spec
 |---|---|---|
 | **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Evl`, `Cnt`, `Dec` (per `governance_policy`). |
 | **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. | Only `Cnt` (governance authorized; terminates the chain). All other submissions return `ContestRequired`. |
-| **Contested** | Chain has terminated due to authority conflict (or divergence) — at least one `Cnt` event in the chain. | None. All submissions rejected. |
-| **Decommissioned** | Chain has terminated cleanly by owner action — at least one `Dec` event in the chain. | None. All submissions rejected. |
+| **Contested** | Chain has terminated due to authority conflict (or divergence) — at least one `Cnt` event in the chain. `Cnt` is the unconditional terminal: once contested, no further events land. | None. All submissions rejected. |
+| **Decommissioned** | Chain has terminated cleanly by owner action — at least one `Dec` event in the chain, no `Cnt`. Decommission is the operator's clean-retirement signal but is **not** unconditional: it can be superseded by a subsequent `Cnt` if compromise is detected post-Dec (forced Dec, post-Dec key compromise, etc.). | Only `Cnt` (governance-authorized supersedure; chain becomes Contested). All other submissions rejected. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `IelVerification` token surfaces:
 - `diverged_at_version: Option<u64>`
@@ -254,7 +254,8 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Any non-terminal | `Cnt` | Insert, mark contested. |
 | Any non-terminal | `Dec` | Insert, mark decommissioned. |
 | Contested | any | Rejected with `ContestedIel`. |
-| Decommissioned | any | Rejected with `IelDecommissioned`. |
+| Decommissioned | non-`Cnt` | Rejected with `IelDecommissioned`. |
+| Decommissioned | `Cnt` | Insert, mark contested (Dec is superseded). |
 
 ## Implementation Map
 

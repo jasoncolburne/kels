@@ -12,8 +12,8 @@ See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event
 |---|---|---|
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` (per IEL-resolved authorization). |
 | **Divergent** | Two events at some version `d`. Chain is frozen until repaired. | Only `Rpr` (governance-authorized via IEL). Bundled owner-pending events permitted in the same batch. |
-| **Contested** | Chain has terminated due to authority conflict — at least one `Cnt` event in the chain. Forensic preservation. | None. All submissions rejected. |
-| **Decommissioned** | Chain has terminated cleanly by owner action — at least one `Dec` event in the chain. | None. All submissions rejected. |
+| **Contested** | Chain has terminated due to authority conflict — at least one `Cnt` event in the chain. Forensic preservation. `Cnt` is the unconditional terminal: once contested, no further events land. | None. All submissions rejected. |
+| **Decommissioned** | Chain has terminated cleanly by owner action — at least one `Dec` event in the chain, no `Cnt`. Decommission is the operator's clean-retirement signal but is **not** unconditional: it can be superseded by a subsequent `Cnt` if compromise is detected post-Dec (forced Dec, post-Dec key compromise, etc.). | Only `Cnt` (IEL-authorized supersedure; chain becomes Contested). All other submissions rejected. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `SelVerification` token surfaces:
 - `diverged_at_version: Option<u64>` — first version with multiple events, or `None` if linear.
@@ -162,7 +162,7 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 
 - Verify `Dec`'s structure, governance authorization.
 - Insert `Dec`. No archival.
-- Any `Dec` in the chain → `is_decommissioned = true`. All future submissions rejected with `DecommissionedSel`.
+- Any `Dec` in the chain → `is_decommissioned = true`. Future non-`Cnt` submissions rejected with `DecommissionedSel`. A subsequent `Cnt` is accepted as supersedure (chain becomes contested).
 
 ### Builder
 
@@ -188,7 +188,8 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (sealed) | `Cnt` | Insert (extends lower-SAID branch tip), mark contested. (Only legitimate resolver — `Rpr` cannot truncate behind the seal.) |
 | Divergent (sealed) | `Upd`/`Sea`/`Rpr`/`Dec` | `ContestRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | any | Rejected with `DecommissionedSel`. |
+| Decommissioned | non-`Cnt` | Rejected with `DecommissionedSel`. |
+| Decommissioned | `Cnt` | Insert, mark contested (Dec is superseded). |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Upd`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).
