@@ -19,6 +19,8 @@ Events are linked by their `previous` SAID. Version is the position in the chain
 
 Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `auth_policy` and `governance_policy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
+The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, soft-fail propagation, and `satisfied_saids` (see [event-log.md §Divergence, Contestation, and the Trust Layer](event-log.md#divergence-contestation-and-the-trust-layer)). The verifier accepts divergent and `Cnt`'d chains as structurally valid regardless of whether the divergence arose from federation race, threshold compromise, or operator-initiated `Cnt` contestation; the trust layer applies the consumer-side semantics on top of the authenticated data.
+
 ## Verification Algorithm
 
 `IelVerifier` (`lib/kels/src/types/iel/verification.rs`) processes events in a single forward pass, verifying structure and policy satisfaction simultaneously. Events must arrive in `version ASC, kind sort_priority ASC, said ASC` order.

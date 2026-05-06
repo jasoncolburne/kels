@@ -76,6 +76,54 @@ The divergence invariant — combined with every IEL event after Icp being gover
 
 On IEL, both branches require governance to exist at all. There's no asymmetry for `Rpr` to exploit. If two governance-authorized events conflict, we don't have grounds to declare one of them the "real" branch and archive the other — both are equally legitimate by the chain's own rules. The honest answer is `Cnt` (admit the conflict, terminate, re-incept).
 
+## Divergence, Contestation, and the Trust Layer
+
+A divergent IEL chain — two governance-authorized events at the same version — can arise from two real failure modes the protocol surfaces in-data:
+
+1. **Federation race.** Two parties with valid governance authority submit `Evl` events near-concurrently to different nodes. Both land legitimately; gossip propagates; both nodes eventually see both events at the same version. The chain shape records the race in the data.
+2. **Threshold compromise.** An adversary controls enough governance-authorized devices to forge a competing event. The chain shape records the compromise in the data, either by the forged event landing concurrently with a legitimate one (organic divergence) or by the operator submitting `Cnt` to contest a forged linear extension after the fact.
+
+The verifier accepts the divergent chain shape as structurally valid in either case — the events landed under valid auth checks at the time they were processed. **The trust layer (not the verifier) decides the consumer response.**
+
+The security dials differ by cause: against compromise, threshold height (high enough that controlling the threshold is hard-to-impossible) is the operator's mechanism. Against race, gossip latency and coordination on submission timing bound the window. The protocol-level response is the same regardless of cause: divergence in the data → consumer trust suspended on post-divergence events.
+
+### Cnt: Operator Contestation Primitive
+
+`Cnt` is the operator's protocol-level mechanism to contest a chain. Without `Cnt`, an operator who detects compromise on a linear chain (say, a forged `Evl` that landed and gossip-propagated) would have no protocol-level response — they could only silently abandon the chain.
+
+`Cnt` fills that gap. Two modes:
+
+- **Cnt on a linear chain** → branches from a pre-contested ancestor (`Cnt.previous` points at an event before the contested extensions). The result is a divergent chain at the contested version, with the contested events on one branch and `Cnt` on the other. The chain becomes terminal-contested.
+- **Cnt on an already-divergent chain** (race or compromise produced organic divergence) → extends one branch's tip and marks the chain contested-terminal. In this mode `Cnt` is governance-attested closure — note that "operator" here means "anyone with governance authority"; governance keys are shared across the operator's devices, so `Cnt` is governance attestation, not individual-operator authentication.
+
+In all cases:
+
+- `Cnt` makes divergence permanent.
+- `Cnt` does NOT pick a winning branch — both branches stay in storage as forensic record.
+- The chain becomes terminal-contested; no further events can land.
+- IEL has no `Rpr` — divergence is structurally terminal regardless of whether `Cnt` lands.
+
+### Chain Validity vs Consumer Trust
+
+The IEL verifier and downstream consumers operate on different questions:
+
+- **Chain validity** (the verifier's job). "Is this chain shape structurally authentic?" — events exist, cryptography is correct, chain linkages are correct, immunity rule satisfied, structural integrity intact. The verifier accepts a divergent chain as valid because the divergent shape IS what the chain authentically experienced. Both branches verify independently. `Cnt`-extended divergent chains stay structurally valid; pre-divergence events on the chain remain readable.
+- **Consumer trust** (the auth/policy layer's job). "Should I trust authorization claims from this chain?" — handled via `policy_satisfied`, post-divergence soft-fail propagation, and per-event `satisfied_saids` (see [verification.md §Caller-bounded SAID querying](verification.md#caller-bounded-said-querying)). A divergent IEL fails consumer trust for any post-divergence event regardless of cause; pre-divergence events stay trusted; `Cnt`'d chains stay forensically readable but new authorizations bound to them are not honoured.
+
+The verifier's job is to make chain authenticity unambiguous; the consumer's job is to apply the trust layer on top of that verified-authentic data. The cutoff for trust is `first_divergent_version`, which applies uniformly whether the divergence was race, compromise, or operator-initiated `Cnt`.
+
+### Effect on Bound SE Chains
+
+A SE chain bound to an IEL event is honoured as long as:
+
+- The IEL chain is structurally valid (verifier accepts).
+- The bound IEL event is at `version < first_divergent_version` (pre-divergence portion).
+- The IEL event's auth/governance policy was satisfied at the time it landed.
+
+When the IEL diverges (race, compromise, or `Cnt`), SE chains bound to pre-divergence IEL events keep verifying cleanly — those bindings predate the divergence point. SE chains bound to post-divergence IEL events fail consumer trust (auth-fail propagates per the soft-fail model). SE chains bound to a `Cnt`'d IEL behave the same way: pre-divergence IEL events stay authoritative, post-divergence (and the `Cnt` itself) are not.
+
+This is the operator's recovery surface: when an IEL fails for any reason, the operator re-incepts under a new IEL prefix and rotates dependent SE chains forward to the new identity. Pre-failure history stays honoured.
+
 ## Cross-Chain Anchor Stability
 
 IEL is the cornerstone of cross-chain consistency for the federation. Every SE event at v1+ binds to a specific IEL event by SAID via `identity_event`. The immunity rule on IEL is what makes this binding stable across time.
