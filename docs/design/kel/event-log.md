@@ -131,6 +131,8 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
    Without this mode, an adversary with full-key-compromise leaves the operator with no protocol-level recourse: the chain stays "valid linear" in every consumer's view despite being entirely under adversary control after a certain point. Mode 2 is the operator's last line of defense against full-key-compromise — it converts a silently-compromised chain into a structurally-contested chain visible to all consumers.
 
+   **Note**: Mode 2 requires non-tip parent-lookup support in the verifier, which lands in [#174](https://github.com/jasoncolburne/kels/issues/174). Until then current implementation rejects Cnt whose `previous` is a non-tip event; operator's recourse for full-key-compromise is abandon-and-re-incept under a new prefix.
+
 ### Algorithmic trigger — `ContestRequired`
 
 The merge engine returns `ContestRequired` when:

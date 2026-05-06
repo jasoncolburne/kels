@@ -48,6 +48,57 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ## Open
 
+### [Issue #171 → Issue #174] Cnt-supersedes-Dec + Cnt-from-non-tip family deferred
+
+The full Cnt operator-contestation surface across all three log primitives (KEL, IEL, SE) requires verifier-side non-tip parent-lookup so `Cnt.previous` can resolve to any event in the chain (not just current branch tips). Two compromise-recourse modes depend on this primitive:
+
+- **Cnt-supersedes-Dec** — the operator's recourse against forced/coerced `Dec` or post-`Dec` key compromise. `Cnt` forks from a pre-`Dec` ancestor, creating divergence at `Cnt.version` with `Dec` and `Cnt` as competing branches; chain becomes contested-terminal. The naive "Cnt extends Dec tip" linear shape (`[..., Dec@N, Cnt@N+1]`) is structurally invalid: Cnt always creates divergence, so a linear-and-contested chain shape can't exist (per `memory/project_kels_terminal_semantics.md`). Correct shape requires non-tip parent-lookup.
+
+- **Cnt-from-non-tip on a clean linear chain** — retroactive contestation of a previously-clean chain after compromise. Operator submits `Cnt` whose `previous` points at any event in the chain at versions `0` through `N-1`; result is a divergent chain at `Cnt.version` with the contested events on one branch. KEL Mode 2 (full-key-compromise recourse where `Rec` is unavailable because the adversary controls the recovery key too) is the same primitive applied to KEL.
+
+Both modes are structurally inseparable from #174's unified-walk primitive; the verifier needs a SAID-keyed map of chain events (or its bounded equivalent) to resolve non-tip `previous` targets in O(1) without re-walking. Until #174 lands the current implementation rejects:
+
+- All post-`Dec` submissions including `Cnt` (extending `Dec` tip linearly is structurally invalid, and the legitimate Cnt-from-pre-Dec-ancestor shape can't be expressed).
+- All `Cnt` whose `previous` is a non-tip event (parent-lookup fails on current branch tips).
+
+Operator's recourse for forced/coerced `Dec` or full-key-compromise of a previously-clean chain is **abandon-and-re-incept** under a new prefix until #174 lands. Documented at `docs/design/iel/event-log.md §Decommissioned`, `sel/event-log.md §Decommissioned`, `kel/event-log.md §Cnt §Mode 2`.
+
+### [Issue #171 → standalone] `insert_event` privileged-write bypass cleanup deferred
+
+Item 6 of #171's tracker called for cleaning up the `insert_event` privileged-write path that bypasses `save_batch`'s divergent-rejection so `Cnt` / `Dec` can land on (sealed-)divergent chains. After items 4 and 5 (terminal-state gate + divergent-chain gate) lifted the chain-validity rules into the verifier, `save_batch` was supposed to accept terminals on the right divergent states cleanly, removing the privileged path.
+
+Cleanup is still pending. `insert_event` remains called at:
+
+- `services/sadstore/src/handlers.rs:1840` (SE Cnt path).
+- `services/sadstore/src/handlers.rs:1882` (SE Dec path).
+- `services/sadstore/src/handlers.rs:2509` (IEL Cnt path).
+- `services/sadstore/src/handlers.rs:2523` (IEL Dec path).
+
+The cleanup is blocked on the unified-walk primitive replacing the merge-engine routing matrix; defer to #174 or follow-up PR. Code-quality cleanup, not structural correctness — current implementation is functionally correct.
+
+### [Issue #171 → standalone] Phase 2B duplicate-handler-check sweep deferred
+
+Phase 2B of #171 enumerated six handler-side duplicate checks for deletion (each duplicates a check the verifier already performs):
+
+- All-events-same-prefix (SE `services/sadstore/src/handlers.rs:1455`, IEL counterpart).
+- Per-event `verify_said` + `validate_structure` (SE `:1462`, IEL `:2258`, `:2265`).
+- `Icp` `verify_prefix` (SE `:1473`, IEL `:2276`).
+- `policy_satisfied` gate post-verifier (SE `:1792`, `:1926`, IEL `:2484`) — these are post-verifier handler reads, may be intentional defense-in-depth rather than duplicate; needs review.
+- KEL `signatures.is_empty()` check (`services/kels/src/handlers.rs:402`).
+- KEL dual-signature on recovery events (`services/kels/src/handlers.rs:406`).
+
+None deleted in #171. Code-quality cleanup, not structural correctness — submit handlers reduce one step further toward `parse → verifier → persist → respond` after sweep; defer to follow-up PR.
+
+### [Issue #171 → standalone] E2E deployment-test scenarios for #171 rules deferred
+
+#171's revised test plan called for deployment-test scenarios in `clients/test/scripts/`:
+
+- Federation race producing divergence (multi-node).
+- Tampered-DB rejection (pre-populate violating shape — e.g., `[Icp]` alone, post-terminal event — consumer rejects).
+- Cross-primitive consequence: SE bound to pre-divergence vs post-divergence IEL events.
+
+Verifier-side rule lifts (items 1, 4, 5) are exercised at unit level + the existing heisenbug long-loop. The federation/tampered/cross-primitive scenarios add coverage for cross-node and cross-primitive trust-layer interactions that aren't reachable from a single-node harness. Defer to follow-up PR alongside the next `test-sadstore.sh` expansion pass; pair with the Gap 10b multi-node cases owed in the entry below.
+
 ### [Issue #156 → standalone] `verify_custody_write` typed-422 body retrofit deferred
 
 #156's status-code intersection table calls for `verify_custody_write` (services/sadstore/src/handlers.rs:602) to emit a typed `DeferredDepsResponse` body for the deferrable cases:

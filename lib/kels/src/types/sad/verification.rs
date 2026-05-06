@@ -422,33 +422,21 @@ impl SelVerifier {
                 }
             }
 
-            // #171 terminal-state gate (asymmetric):
-            // - `Cnt` is the unconditional tombstone — extending a `Cnt`
-            //   tip is structurally invalid for any kind.
-            // - `Dec` is the operator's clean-retirement signal but
-            //   `Cnt` may supersede it if compromise is detected post-Dec
-            //   (forced Dec, post-Dec key compromise). Extending a `Dec`
-            //   tip is invalid for every kind EXCEPT `Cnt`, which marks
-            //   the chain contested (Cnt creates divergence as usual).
-            // Per-branch (not chain-wide): a divergent chain with a
-            // terminal on one branch doesn't invalidate independent
-            // extensions on another branch — those extensions resolve
-            // `event.previous` to a non-terminal tip and pass.
-            // See `docs/design/sel/event-log.md §Chain States`.
-            match branch.tip.kind {
-                SadEventKind::Cnt => {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "SE event {} cannot extend Cnt {} (Cnt is unconditional tombstone)",
-                        event.said, branch.tip.said
-                    )));
-                }
-                SadEventKind::Dec if event.kind != SadEventKind::Cnt => {
-                    return Err(KelsError::VerificationFailed(format!(
-                        "SE event {} cannot extend Dec {} (only Cnt may supersede Dec)",
-                        event.said, branch.tip.said
-                    )));
-                }
-                _ => {}
+            // #171 terminal-state gate: `Cnt` and `Dec` are tombstones —
+            // extending either tip is structurally invalid. Cnt-supersedes-
+            // Dec (Cnt forking from a pre-Dec ancestor to invalidate a
+            // forced/coerced Dec) requires non-tip parent-lookup and is
+            // deferred to #174; until then post-Dec rejects all
+            // submissions including Cnt. Per-branch (not chain-wide): a
+            // divergent chain with a terminal on one branch doesn't
+            // invalidate independent extensions on another branch — those
+            // extensions resolve `event.previous` to a non-terminal tip
+            // and pass. See `docs/design/sel/event-log.md §Chain States`.
+            if branch.tip.kind.is_terminal() {
+                return Err(KelsError::VerificationFailed(format!(
+                    "SE event {} cannot extend terminal {} {}",
+                    event.said, branch.tip.kind, branch.tip.said
+                )));
             }
 
             let expected_version = branch.tip.version + 1;
@@ -1863,42 +1851,9 @@ mod tests {
             .expect_err("post-terminal extension must reject");
         let msg = err.to_string();
         assert!(
-            msg.contains("cannot extend Cnt"),
+            msg.contains("cannot extend terminal"),
             "expected Cnt-tombstone rejection, got {msg}"
         );
-    }
-
-    /// #171 terminal-state gate: `Cnt` may supersede `Dec` (compromise
-    /// detected post-Dec — forced Dec, post-Dec key compromise). Cnt
-    /// extending a Dec tip is structurally valid; the chain becomes
-    /// contested. Pins the asymmetry that makes Dec recoverable while
-    /// Cnt stays unconditional tombstone.
-    #[tokio::test]
-    async fn cnt_extending_dec_tip_supersedes_dec() {
-        let identity = d(b"identity-cnt-supersedes-dec");
-        let iel_icp = d(b"iel-icp-cnt-supersedes-dec");
-
-        let resolver = Arc::new(fake_resolver_for_chain(
-            identity,
-            &[(iel_icp, 0, IdentityEventKind::Icp)],
-            d(b"auth-cnt-supersedes-dec"),
-            d(b"gov-cnt-supersedes-dec"),
-        )) as Arc<dyn IelResolver + Send + Sync>;
-
-        let v0 = make_icp(identity);
-        let v1 = make_upd(&v0, iel_icp, b"c1");
-        let dec = SadEvent::dec(&v1, iel_icp).unwrap();
-        let cnt = SadEvent::cnt(&dec, iel_icp).unwrap();
-
-        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
-        verifier.verify_page(&[v0, v1, dec, cnt]).await.unwrap();
-        let v = verifier.finish().await.unwrap();
-
-        assert!(
-            v.is_contested(),
-            "Cnt-superseding-Dec must contest the chain"
-        );
-        assert!(v.is_decommissioned(), "Dec content flag stays set");
     }
 
     /// #171 SE divergent-chain gate (unsealed-divergent): on an
@@ -2074,7 +2029,40 @@ mod tests {
             .finish()
             .await
             .expect_err("post-terminal extension must reject");
-        assert!(err.to_string().contains("cannot extend Dec"));
+        assert!(err.to_string().contains("cannot extend terminal"));
+    }
+
+    /// #171 terminal-state gate: `Cnt` extending a `Dec` tip is rejected
+    /// uniformly with all other terminal-extensions. The legitimate
+    /// Cnt-supersedes-Dec shape forks from a pre-Dec ancestor (creating
+    /// divergence) — that requires non-tip parent-lookup and is deferred
+    /// to #174. Until then `[..., Dec@N, Cnt@N+1]` (linear-and-contested)
+    /// is structurally invalid; pin the rejection so the deferral surface
+    /// is held by tests.
+    #[tokio::test]
+    async fn cnt_extending_dec_tip_rejected_as_post_terminal() {
+        let identity = d(b"identity-cnt-extends-dec");
+        let iel_icp = d(b"iel-icp-cnt-extends-dec");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-extends-dec"),
+            d(b"gov-cnt-extends-dec"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_icp).unwrap();
+        let cnt = SadEvent::cnt(&dec, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, dec, cnt]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Cnt extending Dec tip must reject (Cnt-supersedes-Dec deferred to #174)");
+        assert!(err.to_string().contains("cannot extend terminal"));
     }
 
     /// Dec without governance auth: same content-based-terminal-flag rule.
