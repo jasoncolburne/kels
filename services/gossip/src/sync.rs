@@ -1859,7 +1859,10 @@ pub(crate) async fn sync_prefix(
         Ok(()) => RepairResult::Repaired,
         Err(KelsError::NotFound(_)) => RepairResult::NoOp,
         Err(KelsError::ContestedKel(_)) => RepairResult::Contested,
-        Err(_) => RepairResult::Failed,
+        Err(e) => {
+            warn!(prefix = %prefix, error = %e, "KEL forward_with_fallback failed");
+            RepairResult::Failed
+        }
     }
 }
 
