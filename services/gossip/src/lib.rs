@@ -32,12 +32,14 @@
 
 mod allowlist;
 mod bootstrap;
+mod bootstrap_merge;
 mod gossip_layer;
 mod hsm_signer;
 pub mod pending;
 mod repository;
 mod server;
 mod sync;
+mod telemetry;
 pub(crate) mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
@@ -432,10 +434,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     warn!("SEL preload failed: {}", e);
                 }
 
-                // Wait 5 minutes before checking again
-                info!("Sleeping 5 minutes before rechecking allowlist...");
+                // Wait 15 minutes before checking again. The longer cadence
+                // avoids cross-pressure with bootstrap-fetch on later-vote
+                // nodes coming online while earlier nodes are still bootstrapping
+                // (an AE+gossip storm against an under-tuned object store
+                // saturates RustFS+Postgres concurrency; see #157 for the
+                // structural fix).
+                info!("Sleeping 15 minutes before rechecking allowlist...");
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+                    _ = tokio::time::sleep(Duration::from_secs(900)) => {}
                     _ = kels_core::shutdown_signal() => {
                         info!("Shutdown signal received during allowlist wait");
                         std::process::exit(0);

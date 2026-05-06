@@ -23,24 +23,27 @@
 //! preload KELs via HTTP. But events occurring between the last preload and
 //! joining the gossip network would be missed. The resync catches these events.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
-use cesr::Matter;
-use futures::stream::{self, StreamExt};
-use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner, PrefixState};
+use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner};
 use thiserror::Error;
 
 /// Concurrency cap for bootstrap preload tasks (KEL / SAD object / IEL /
 /// SE). Mirrors `KELS_SAD_AE_TASK_CONCURRENCY`'s posture: bootstrap fires
 /// the whole world at once on cold-start, so an unbounded `join_all`
 /// saturates the source peer (observed: 282 of 579 KELs failed to sync at
-/// scale). 16 is conservative; tune via env on deployments with bigger
-/// data sets or beefier source peers.
+/// scale). Default 4 — bootstrap correctness matters more than speed, and
+/// staggered-rollout federation events around vote time create a resource
+/// storm at ~5 min post-vote when later nodes come online while earlier
+/// nodes are still bootstrapping (8 caused IEL submit failures on
+/// cross-pressure between bootstrap-fetch and AE+gossip submits). RustFS
+/// has known concurrency-scaling issues (upstream #1016); the structural
+/// fix for the tx-holds-RustFS-read pattern is #157. Tune via env on
+/// deployments with different capacity profiles.
 fn bootstrap_task_concurrency() -> usize {
-    kels_core::env_usize("KELS_BOOTSTRAP_CONCURRENCY", 16)
+    kels_core::env_usize("KELS_BOOTSTRAP_CONCURRENCY", 4)
 }
 
 #[derive(Error, Debug)]
@@ -159,11 +162,15 @@ impl BootstrapSync {
         Ok(())
     }
 
-    /// Preload SAD objects from Ready peers.
+    /// Preload SAD objects from Ready peers via sort-merge against local
+    /// listing.
     ///
-    /// Paginates through the remote object listing, checks local existence, and
-    /// fetches any missing objects. Runs before SAD event sync so that
-    /// content objects are available when chains reference them.
+    /// Both sides return SAIDs in `sad_said ASC`; the merge driver
+    /// (`bootstrap_merge`) walks them pairwise, enqueues remote-only SAIDs,
+    /// and drains via bounded-concurrency fetch+post. Eliminates the
+    /// per-object existence-check storm: a federation-symmetric peer's
+    /// merge against a caught-up local degenerates to two paginated
+    /// listings with zero sync work.
     pub async fn preload_sad_objects(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
 
@@ -178,86 +185,126 @@ impl BootstrapSync {
         );
 
         let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
-        let mut total_synced = 0u64;
         let concurrency = bootstrap_task_concurrency();
+        let page_size = self.config.page_size;
+        let inflight = crate::telemetry::LocalInflight::new("bootstrap-sad-objects");
+        let mut total_synced: usize = 0;
+        let mut total_failed: usize = 0;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
-            let mut cursor: Option<cesr::Digest256> = None;
-            loop {
-                let page = match remote_client
-                    .fetch_sad_objects(self.signer.as_ref(), cursor.as_ref(), self.config.page_size)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to fetch SAD objects from {}: {}", peer.node_id, e);
-                        break;
+            let remote_for_fetch = remote_client.clone();
+            let signer = self.signer.clone();
+            let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = remote_for_fetch.clone();
+                    let signer = signer.clone();
+                    async move {
+                        let resp = client
+                            .fetch_sad_objects(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys: resp.saids,
+                            next_cursor: resp.next_cursor,
+                        })
                     }
-                };
+                },
+            );
 
-                // Bound per-page concurrency. Each task does
-                // existence-check → fetch → post. At 1060 objects
-                // sequential took 3:05; bounded parallel keeps the local
-                // sadstore from being saturated by an unbounded fan-out.
-                let saids = page.saids.clone();
-                let synced: u64 = stream::iter(saids)
-                    .map(|said| {
-                        let local = local_client.clone();
-                        let remote = remote_client.clone();
-                        async move {
-                            match local.sad_object_exists(&said).await {
-                                Ok(true) => return 0u64,
-                                Ok(false) => {}
-                                Err(e) => {
-                                    debug!("Failed to check SAD object {} existence: {}", said, e);
-                                    return 0;
+            let local_for_fetch = local_client.clone();
+            let signer = self.signer.clone();
+            let inflight_fetch = inflight.clone();
+            let local_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = local_for_fetch.clone();
+                    let signer = signer.clone();
+                    let inflight = inflight_fetch.clone();
+                    async move {
+                        let _g = inflight.enter("fetch_sad_objects");
+                        let resp = client
+                            .fetch_sad_objects(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys: resp.saids,
+                            next_cursor: resp.next_cursor,
+                        })
+                    }
+                },
+            );
+
+            let local_for_sync = local_client.clone();
+            let remote_for_sync = remote_client.clone();
+            let peer_node_id = peer.node_id.clone();
+            let inflight_sync = inflight.clone();
+            let stats = match crate::bootstrap_merge::merge_sync(
+                remote_stream,
+                local_stream,
+                page_size,
+                concurrency,
+                move |said: cesr::Digest256| {
+                    let local = local_for_sync.clone();
+                    let remote = remote_for_sync.clone();
+                    let peer_node_id = peer_node_id.clone();
+                    let inflight = inflight_sync.clone();
+                    async move {
+                        match remote.get_sad_object(&said).await {
+                            Ok(object) => {
+                                let _g = inflight.enter("post_sad_object");
+                                match local.post_sad_object(&object).await {
+                                    Ok(_) => true,
+                                    Err(e) => {
+                                        debug!(
+                                            "Failed to store SAD object {} from {}: {}",
+                                            said, peer_node_id, e
+                                        );
+                                        false
+                                    }
                                 }
                             }
-                            match remote.get_sad_object(&said).await {
-                                Ok(object) => match local.post_sad_object(&object).await {
-                                    Ok(_) => 1,
-                                    Err(e) => {
-                                        debug!("Failed to store SAD object {}: {}", said, e);
-                                        0
-                                    }
-                                },
-                                Err(e) => {
-                                    debug!("Failed to fetch SAD object {} from peer: {}", said, e);
-                                    0
-                                }
+                            Err(e) => {
+                                debug!(
+                                    "Failed to fetch SAD object {} from {}: {}",
+                                    said, peer_node_id, e
+                                );
+                                false
                             }
                         }
-                    })
-                    .buffer_unordered(concurrency)
-                    .fold(0u64, |acc, n| async move { acc + n })
-                    .await;
-                total_synced += synced;
-
-                cursor = page.next_cursor;
-                if cursor.is_none() {
-                    break;
+                    }
+                },
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "SAD object merge-sync against {} failed: {}",
+                        peer.node_id, e
+                    );
+                    continue;
                 }
-            }
+            };
+            total_synced += stats.synced;
+            total_failed += stats.failed;
         }
 
         info!(
-            "SAD object preload complete: {} objects synced",
-            total_synced
+            "SAD object preload complete: {} objects synced, {} failed",
+            total_synced, total_failed
         );
         Ok(())
     }
 
-    /// Preload Identity Event Logs (IELs) from Ready peers.
+    /// Preload Identity Event Logs (IELs) from Ready peers via sort-merge
+    /// against local listing.
     ///
-    /// Lists IEL prefixes from each Ready peer's SADStore, compares with
-    /// local state, and syncs any chains that are missing or behind. Mirrors
-    /// `preload_sad_events` for the IEL primitive (#172). Sequenced after
-    /// `preload_sad_objects` (so policy SAD objects referenced by IEL events
-    /// are present) and before `preload_sad_events` (so SE chains binding to
-    /// IEL events can resolve those bindings).
+    /// Both sides return prefixes in `prefix ASC`; the merge enqueues
+    /// remote-only prefixes and drains by full-chain `forward_identity_events`
+    /// (no `since` — bootstrap only ensures the prefix is present locally;
+    /// AE catches event-level deltas after the join). Sequenced after
+    /// `preload_sad_objects` (policy SAD objects referenced by IEL events)
+    /// and before `preload_sad_events` (SE chains binding to IEL events).
     pub async fn preload_iels(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
 
@@ -272,113 +319,134 @@ impl BootstrapSync {
         );
 
         let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
-        let mut synced_chains = 0usize;
         let concurrency = bootstrap_task_concurrency();
+        let page_size = self.config.page_size;
+        let inflight = crate::telemetry::LocalInflight::new("bootstrap-iel");
+        let mut total_synced: usize = 0;
+        let mut total_failed: usize = 0;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
-            let peer_node_id = peer.node_id.clone();
 
-            let mut cursor: Option<cesr::Digest256> = None;
-            loop {
-                let page = match remote_client
-                    .fetch_iel_prefixes(
-                        self.signer.as_ref(),
-                        cursor.as_ref(),
-                        self.config.page_size,
-                    )
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to fetch IEL prefixes from {}: {}", peer.node_id, e);
-                        break;
+            let remote_for_fetch = remote_client.clone();
+            let signer = self.signer.clone();
+            let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = remote_for_fetch.clone();
+                    let signer = signer.clone();
+                    async move {
+                        let resp = client
+                            .fetch_iel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
                     }
-                };
+                },
+            );
 
-                // Bound per-page concurrency. Each task does
-                // effective-SAID compare → forward_identity_events.
-                // Sequential at scale stalled SE preload behind this
-                // (~3:32 for 34 chains observed); bounded parallel keeps
-                // the local sadstore submit pipeline saturated without
-                // overwhelming it.
-                let prefixes = page.prefixes.clone();
-                let synced: usize = stream::iter(prefixes)
-                    .map(|state| {
-                        let local = local_client.clone();
-                        let remote = remote_client.clone();
-                        let peer_node_id = peer_node_id.clone();
-                        async move {
-                            let local_said = local
-                                .fetch_iel_effective_said(&state.prefix)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|(s, _)| s);
+            let local_for_fetch = local_client.clone();
+            let signer = self.signer.clone();
+            let inflight_fetch = inflight.clone();
+            let local_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = local_for_fetch.clone();
+                    let signer = signer.clone();
+                    let inflight = inflight_fetch.clone();
+                    async move {
+                        let _g = inflight.enter("fetch_iel_prefixes");
+                        let resp = client
+                            .fetch_iel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
+                    }
+                },
+            );
 
-                            if local_said.as_deref() == Some(state.said.as_ref()) {
-                                return 0usize;
+            let local_for_sync = local_client.clone();
+            let remote_for_sync = remote_client.clone();
+            let peer_node_id = peer.node_id.clone();
+            let inflight_sync = inflight.clone();
+            let stats = match crate::bootstrap_merge::merge_sync(
+                remote_stream,
+                local_stream,
+                page_size,
+                concurrency,
+                move |prefix: cesr::Digest256| {
+                    let local = local_for_sync.clone();
+                    let remote = remote_for_sync.clone();
+                    let peer_node_id = peer_node_id.clone();
+                    let inflight = inflight_sync.clone();
+                    async move {
+                        let source = match remote.as_iel_source() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to build IEL source for {}: {}", prefix, e);
+                                return false;
                             }
-
-                            let since_digest = local_said
-                                .as_deref()
-                                .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                            let source = match remote.as_iel_source() {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    warn!("Failed to build IEL source for {}: {}", state.prefix, e);
-                                    return 0;
-                                }
-                            };
-                            let sink = match local.as_iel_sink() {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    warn!("Failed to build IEL sink for {}: {}", state.prefix, e);
-                                    return 0;
-                                }
-                            };
-                            match kels_core::forward_identity_events(
-                                &state.prefix,
-                                &source,
-                                &sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(()) => 1,
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to sync IEL {} from {} during bootstrap: {}",
-                                        state.prefix, peer_node_id, e
-                                    );
-                                    0
-                                }
+                        };
+                        let sink = match local.as_iel_sink() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to build IEL sink for {}: {}", prefix, e);
+                                return false;
+                            }
+                        };
+                        let _g = inflight.enter("forward_identity_events");
+                        match kels_core::forward_identity_events(
+                            &prefix,
+                            &source,
+                            &sink,
+                            kels_core::page_size(),
+                            kels_core::max_pages(),
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!(
+                                    "Failed to sync IEL {} from {} during bootstrap: {}",
+                                    prefix, peer_node_id, e
+                                );
+                                false
                             }
                         }
-                    })
-                    .buffer_unordered(concurrency)
-                    .fold(0usize, |acc, n| async move { acc + n })
-                    .await;
-                synced_chains += synced;
-
-                cursor = page.next_cursor;
-                if cursor.is_none() {
-                    break;
+                    }
+                },
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("IEL merge-sync against {} failed: {}", peer.node_id, e);
+                    continue;
                 }
-            }
+            };
+            total_synced += stats.synced;
+            total_failed += stats.failed;
         }
 
-        info!("IEL preload complete: {} chains synced", synced_chains);
+        info!(
+            "IEL preload complete: {} chains synced, {} failed",
+            total_synced, total_failed
+        );
         Ok(())
     }
 
     /// Preload SAD events from Ready peers.
     ///
-    /// Lists SEL prefixes from each Ready peer's SADStore, compares with local
-    /// state, and syncs any chains that are missing or behind.
+    /// Lists SEL prefixes from each Ready peer's SADStore via sort-merge
+    /// against local listing; syncs missing prefixes by full-chain
+    /// `forward_sel_events` (no `since` — bootstrap only ensures the prefix
+    /// is present; AE catches event-level deltas after the join).
     pub async fn preload_sad_events(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
 
@@ -393,107 +461,127 @@ impl BootstrapSync {
         );
 
         let local_client = kels_core::SadStoreClient::new(&self.config.sadstore_url)?;
-        let mut synced_chains = 0usize;
         let concurrency = bootstrap_task_concurrency();
+        let page_size = self.config.page_size;
+        let inflight = crate::telemetry::LocalInflight::new("bootstrap-sel");
+        let mut total_synced: usize = 0;
+        let mut total_failed: usize = 0;
 
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
-            let peer_node_id = peer.node_id.clone();
 
-            let mut cursor: Option<cesr::Digest256> = None;
-            loop {
-                let page = match remote_client
-                    .fetch_sel_prefixes(
-                        self.signer.as_ref(),
-                        cursor.as_ref(),
-                        self.config.page_size,
-                    )
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to fetch SAD prefixes from {}: {}", peer.node_id, e);
-                        break;
+            let remote_for_fetch = remote_client.clone();
+            let signer = self.signer.clone();
+            let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = remote_for_fetch.clone();
+                    let signer = signer.clone();
+                    async move {
+                        let resp = client
+                            .fetch_sel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
                     }
-                };
+                },
+            );
 
-                // Bound per-page concurrency. Same posture as IEL preload
-                // above: each task does effective-SAID compare → forward.
-                let prefixes = page.prefixes.clone();
-                let synced: usize = stream::iter(prefixes)
-                    .map(|state| {
-                        let local = local_client.clone();
-                        let remote = remote_client.clone();
-                        let peer_node_id = peer_node_id.clone();
-                        async move {
-                            let local_said = local
-                                .fetch_sel_effective_said(&state.prefix)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|(s, _)| s);
+            let local_for_fetch = local_client.clone();
+            let signer = self.signer.clone();
+            let inflight_fetch = inflight.clone();
+            let local_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = local_for_fetch.clone();
+                    let signer = signer.clone();
+                    let inflight = inflight_fetch.clone();
+                    async move {
+                        let _g = inflight.enter("fetch_sel_prefixes");
+                        let resp = client
+                            .fetch_sel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
+                    }
+                },
+            );
 
-                            if local_said.as_deref() == Some(state.said.as_ref()) {
-                                return 0usize;
+            let local_for_sync = local_client.clone();
+            let remote_for_sync = remote_client.clone();
+            let peer_node_id = peer.node_id.clone();
+            let inflight_sync = inflight.clone();
+            let stats = match crate::bootstrap_merge::merge_sync(
+                remote_stream,
+                local_stream,
+                page_size,
+                concurrency,
+                move |prefix: cesr::Digest256| {
+                    let local = local_for_sync.clone();
+                    let remote = remote_for_sync.clone();
+                    let peer_node_id = peer_node_id.clone();
+                    let inflight = inflight_sync.clone();
+                    async move {
+                        let source = match remote.as_sel_source() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to build SEL source for {}: {}", prefix, e);
+                                return false;
                             }
-
-                            let since_digest = local_said
-                                .as_deref()
-                                .and_then(|s| cesr::Digest256::from_qb64(s).ok());
-                            let source = match remote.as_sel_source() {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to build SEL source for {}: {}",
-                                        state.prefix, e
-                                    );
-                                    return 0;
-                                }
-                            };
-                            let sink = match local.as_sel_sink() {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    warn!("Failed to build SEL sink for {}: {}", state.prefix, e);
-                                    return 0;
-                                }
-                            };
-                            match kels_core::forward_sel_events(
-                                &state.prefix,
-                                &source,
-                                &sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(()) => 1,
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
-                                        state.prefix, peer_node_id, e
-                                    );
-                                    0
-                                }
+                        };
+                        let sink = match local.as_sel_sink() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("Failed to build SEL sink for {}: {}", prefix, e);
+                                return false;
+                            }
+                        };
+                        let _g = inflight.enter("forward_sel_events");
+                        match kels_core::forward_sel_events(
+                            &prefix,
+                            &source,
+                            &sink,
+                            kels_core::page_size(),
+                            kels_core::max_pages(),
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!(
+                                    "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
+                                    prefix, peer_node_id, e
+                                );
+                                false
                             }
                         }
-                    })
-                    .buffer_unordered(concurrency)
-                    .fold(0usize, |acc, n| async move { acc + n })
-                    .await;
-                synced_chains += synced;
-
-                cursor = page.next_cursor;
-                if cursor.is_none() {
-                    break;
+                    }
+                },
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "SAD Event Log merge-sync against {} failed: {}",
+                        peer.node_id, e
+                    );
+                    continue;
                 }
-            }
+            };
+            total_synced += stats.synced;
+            total_failed += stats.failed;
         }
 
         info!(
-            "SAD Event Log preload complete: {} chains synced",
-            synced_chains
+            "SAD Event Log preload complete: {} chains synced, {} failed",
+            total_synced, total_failed
         );
         Ok(())
     }
@@ -571,159 +659,119 @@ impl BootstrapSync {
         format!("http://kels.{}", peer.base_domain)
     }
 
-    /// Sync KELs from bootstrap peers.
+    /// Sync KELs from bootstrap peers via sort-merge against local listing.
     ///
-    /// This collects all unique prefixes from all peers, assigns each prefix to
-    /// its source peer (the peer that reported it), then batch-fetches KELs
-    /// (50 at a time) from each peer.
+    /// Per peer, walks remote and local KEL prefix listings in lockstep and
+    /// enqueues remote-only prefixes for full-chain sync (`sync_prefix` with
+    /// `since=None`). Mirrors the SAD-objects/IEL/SE preload shape: bootstrap
+    /// only ensures the prefix is present locally; AE catches event-level
+    /// deltas after the join. Eliminates the per-prefix
+    /// `fetch_effective_said` storm (observed at 579 prefixes × N peers,
+    /// 282 of 579 syncs failed under saturation).
     async fn sync_from_peers(&self, peers: &[kels_core::Peer]) -> Result<(), BootstrapError> {
         if peers.is_empty() {
             return Ok(());
         }
 
         let local_client = KelsClient::new(&self.config.kels_url)?;
-
-        // Step 1: Collect all unique prefixes from all peers that need syncing.
-        // Track (since_said, source_kels_url, source_peer_kel_prefix) per kel prefix.
-        info!("Collecting prefixes from {} peer(s)...", peers.len());
-        let mut all_prefixes: HashMap<
-            cesr::Digest256,
-            (Option<cesr::Digest256>, String, cesr::Digest256),
-        > = HashMap::new();
+        let concurrency = bootstrap_task_concurrency();
+        let page_size = self.config.page_size;
+        let mut total_synced: usize = 0;
+        let mut total_failed: usize = 0;
 
         for peer in peers {
             let peer_url = Self::get_sync_url(peer);
-            let peer_client = KelsClient::new(&peer_url)?;
-            let mut cursor: Option<cesr::Digest256> = None;
+            let remote_client = KelsClient::new(&peer_url)?;
 
-            loop {
-                match peer_client
-                    .fetch_prefixes(self.signer.as_ref(), cursor.as_ref(), self.config.page_size)
-                    .await
-                {
-                    Ok(page) => {
-                        for state in &page.prefixes {
-                            if let Some(since) = self.sync_check(state, &local_client).await {
-                                all_prefixes.entry(state.prefix).or_insert((
-                                    since,
-                                    peer_url.to_string(),
-                                    peer.kel_prefix,
-                                ));
+            let remote_for_fetch = remote_client.clone();
+            let signer = self.signer.clone();
+            let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = remote_for_fetch.clone();
+                    let signer = signer.clone();
+                    async move {
+                        let resp = client
+                            .fetch_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
+                    }
+                },
+            );
+
+            let local_for_fetch = local_client.clone();
+            let signer = self.signer.clone();
+            let local_stream = crate::bootstrap_merge::SortedKeyStream::new(
+                move |cursor: Option<cesr::Digest256>| {
+                    let client = local_for_fetch.clone();
+                    let signer = signer.clone();
+                    async move {
+                        let resp = client
+                            .fetch_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
+                            .await?;
+                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
+                            keys,
+                            next_cursor: resp.next_cursor,
+                        })
+                    }
+                },
+            );
+
+            let local_for_sync = local_client.clone();
+            let remote_for_sync = remote_client.clone();
+            let peer_node_id = peer.node_id.clone();
+            let stats = match crate::bootstrap_merge::merge_sync(
+                remote_stream,
+                local_stream,
+                page_size,
+                concurrency,
+                move |prefix: cesr::Digest256| {
+                    let local = local_for_sync.clone();
+                    let remote = remote_for_sync.clone();
+                    let peer_node_id = peer_node_id.clone();
+                    async move {
+                        match crate::sync::sync_prefix(&remote, &local, &prefix, None).await {
+                            crate::sync::RepairResult::Repaired
+                            | crate::sync::RepairResult::NoOp => true,
+                            crate::sync::RepairResult::Contested => {
+                                debug!(
+                                    "KEL {} from {} contested during bootstrap (gossip handles)",
+                                    prefix, peer_node_id
+                                );
+                                false
+                            }
+                            crate::sync::RepairResult::Failed => {
+                                warn!(
+                                    "Failed to sync KEL {} from {} during bootstrap",
+                                    prefix, peer_node_id
+                                );
+                                false
                             }
                         }
-                        cursor = page.next_cursor;
-                        if cursor.is_none() {
-                            break;
-                        }
                     }
-                    Err(e) => {
-                        warn!("Failed to fetch prefixes from {}: {}", peer.node_id, e);
-                        break;
-                    }
+                },
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("KEL merge-sync against {} failed: {}", peer.node_id, e);
+                    continue;
                 }
-            }
-        }
-
-        let prefix_count = all_prefixes.len();
-        if prefix_count == 0 {
-            info!("No prefixes need syncing");
-            return Ok(());
-        }
-
-        info!("Found {} unique prefixes needing sync", prefix_count);
-
-        // Step 2: Sync prefixes with bounded concurrency. Unbounded
-        // `join_all` saturates the source peer at scale (observed at 579
-        // prefixes / 1 source: 282 of 579 syncs failed). Mirror SAD AE's
-        // posture via `bootstrap_task_concurrency()`.
-        let tasks = all_prefixes.into_iter().map(
-            |(prefix, (since, source_url, source_peer_kel_prefix))| {
-                let local = local_client.clone();
-                async move {
-                    let remote = match KelsClient::new(&source_url) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            warn!(prefix = %prefix, error = %e, "Failed to build HTTP client for KEL sync");
-                            return (prefix, source_peer_kel_prefix, crate::sync::RepairResult::Failed);
-                        }
-                    };
-                    let result =
-                        crate::sync::sync_prefix(&remote, &local, &prefix, since.as_ref()).await;
-                    (prefix, source_peer_kel_prefix, result)
-                }
-            },
-        );
-
-        let concurrency = bootstrap_task_concurrency();
-        let results: Vec<_> = stream::iter(tasks)
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
-
-        let mut total_synced = 0;
-        let mut total_errors = 0;
-
-        for (prefix, source_peer_kel_prefix, result) in results {
-            match result {
-                crate::sync::RepairResult::Repaired => {
-                    debug!("Synced KEL for {}", prefix);
-                    total_synced += 1;
-                }
-                crate::sync::RepairResult::NoOp => {}
-                crate::sync::RepairResult::Contested => {
-                    warn!("KEL contested for {}", prefix);
-                }
-                crate::sync::RepairResult::Failed => {
-                    warn!("Failed to sync prefix {}", prefix);
-                    total_errors += 1;
-                    if let Some(ref redis) = self.redis {
-                        crate::sync::record_stale_prefix(
-                            redis.as_ref(),
-                            &prefix,
-                            &source_peer_kel_prefix,
-                        )
-                        .await;
-                    }
-                }
-            }
+            };
+            total_synced += stats.synced;
+            total_failed += stats.failed;
         }
 
         info!(
-            "Bootstrap sync complete: {} KELs synced, {} errors",
-            total_synced, total_errors
+            "KEL preload complete: {} prefixes synced, {} failed",
+            total_synced, total_failed
         );
-
         Ok(())
-    }
-
-    /// Check if a prefix needs syncing by comparing with local state.
-    ///
-    /// Returns:
-    /// - `None` = up to date, skip
-    /// - `Some(None)` = no local KEL, full fetch
-    /// - `Some(Some(said))` = has partial KEL, delta from effective tail SAID
-    ///
-    /// Resolving: compare local effective SAID with remote to decide if sync needed.
-    /// A wrong answer triggers an unnecessary sync (which itself verifies).
-    async fn sync_check(
-        &self,
-        remote_state: &PrefixState,
-        local_client: &KelsClient,
-    ) -> Option<Option<cesr::Digest256>> {
-        match local_client
-            .fetch_effective_said(&remote_state.prefix)
-            .await
-        {
-            Ok(Some((local_effective, _))) => {
-                if local_effective.as_ref() == remote_state.said.as_ref() {
-                    None // In sync
-                } else {
-                    Some(Some(local_effective)) // Delta fetch from this SAID
-                }
-            }
-            Ok(None) => Some(None), // No local KEL, full fetch
-            Err(_) => Some(None),   // Error, try full fetch
-        }
     }
 }
 

@@ -766,6 +766,10 @@ pub struct SyncHandler {
     /// #156 deferred-deps park map. `None` when Redis is unavailable; the
     /// inbound park flow degrades to "log and drop the 422" in that case.
     pending: Option<PendingMap>,
+    /// In-flight counter for HTTP calls from this handler to the LOCAL
+    /// sadstore. Logged at each call boundary; pair with bootstrap-side
+    /// counter and sadstore pool-depth trace to attribute saturation.
+    local_inflight: crate::telemetry::LocalInflight,
 }
 
 impl SyncHandler {
@@ -793,6 +797,7 @@ impl SyncHandler {
             peer_fetch_counts: HashMap::new(),
             redis,
             pending,
+            local_inflight: crate::telemetry::LocalInflight::new("gossip"),
         })
     }
 
@@ -993,7 +998,11 @@ impl SyncHandler {
             }
         };
 
-        let post_err = match local_client.post_sad_object(&object).await {
+        let post_result = {
+            let _g = self.local_inflight.enter("post_sad_object");
+            local_client.post_sad_object(&object).await
+        };
+        let post_err = match post_result {
             Ok(_) => return,
             Err(e) => {
                 self.recently_stored.write().await.remove(&cache_key);
@@ -1011,7 +1020,11 @@ impl SyncHandler {
             .write()
             .await
             .insert(cache_key.clone(), Instant::now());
-        let retry = local_client.post_sad_object(&object).await.map(|_| ());
+        let retry = {
+            let _g = self.local_inflight.enter("post_sad_object_retry");
+            local_client.post_sad_object(&object).await
+        }
+        .map(|_| ());
         if retry.is_err() {
             self.recently_stored.write().await.remove(&cache_key);
         }
@@ -1124,16 +1137,19 @@ impl SyncHandler {
             "Fetching SAD Event Log from peer"
         );
 
-        let forward_err = match kels_core::forward_sel_events(
-            sel_prefix,
-            &source,
-            &sink,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            since_digest.as_ref(),
-        )
-        .await
-        {
+        let forward_result = {
+            let _g = self.local_inflight.enter("forward_sel_events");
+            kels_core::forward_sel_events(
+                sel_prefix,
+                &source,
+                &sink,
+                kels_core::page_size(),
+                kels_core::max_pages(),
+                since_digest.as_ref(),
+            )
+            .await
+        };
+        let forward_err = match forward_result {
             Ok(()) => {
                 debug!(
                     sel_prefix = %sel_prefix,
@@ -1166,15 +1182,18 @@ impl SyncHandler {
             .write()
             .await
             .insert(cache_key.clone(), Instant::now());
-        let retry = kels_core::forward_sel_events(
-            sel_prefix,
-            &source,
-            &sink,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            since_digest.as_ref(),
-        )
-        .await;
+        let retry = {
+            let _g = self.local_inflight.enter("forward_sel_events_retry");
+            kels_core::forward_sel_events(
+                sel_prefix,
+                &source,
+                &sink,
+                kels_core::page_size(),
+                kels_core::max_pages(),
+                since_digest.as_ref(),
+            )
+            .await
+        };
         if retry.is_err() {
             self.recently_stored.write().await.remove(&cache_key);
         }
@@ -1287,16 +1306,19 @@ impl SyncHandler {
             "Fetching IEL from peer"
         );
 
-        let forward_err = match kels_core::forward_identity_events(
-            &iel_prefix,
-            &source,
-            &sink,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            since_digest.as_ref(),
-        )
-        .await
-        {
+        let forward_result = {
+            let _g = self.local_inflight.enter("forward_identity_events");
+            kels_core::forward_identity_events(
+                &iel_prefix,
+                &source,
+                &sink,
+                kels_core::page_size(),
+                kels_core::max_pages(),
+                since_digest.as_ref(),
+            )
+            .await
+        };
+        let forward_err = match forward_result {
             Ok(()) => {
                 debug!(iel_prefix = %iel_prefix, "IEL replicated successfully");
                 return;
@@ -1326,15 +1348,18 @@ impl SyncHandler {
             .write()
             .await
             .insert(cache_key.clone(), Instant::now());
-        let retry = kels_core::forward_identity_events(
-            &iel_prefix,
-            &source,
-            &sink,
-            kels_core::page_size(),
-            kels_core::max_pages(),
-            since_digest.as_ref(),
-        )
-        .await;
+        let retry = {
+            let _g = self.local_inflight.enter("forward_identity_events_retry");
+            kels_core::forward_identity_events(
+                &iel_prefix,
+                &source,
+                &sink,
+                kels_core::page_size(),
+                kels_core::max_pages(),
+                since_digest.as_ref(),
+            )
+            .await
+        };
         if retry.is_err() {
             self.recently_stored.write().await.remove(&cache_key);
         }
@@ -2216,26 +2241,6 @@ pub async fn run_anti_entropy_loop(
                 }
             }
         }
-
-        // Push to remote where remote is missing or different
-        for state in &local_page.prefixes {
-            if remote_map.get(state.prefix.as_ref()) == Some(&state.said.as_ref()) {
-                continue;
-            }
-            // Resolving: get remote effective SAID for delta push
-            let since = remote_client
-                .fetch_effective_said(&state.prefix)
-                .await
-                .ok()
-                .flatten()
-                .map(|(said, _)| said);
-
-            if let RepairResult::Repaired =
-                sync_prefix(&local_client, &remote_client, &state.prefix, since.as_ref()).await
-            {
-                info!("Anti-entropy: pushed {} to remote", state.prefix);
-            }
-        }
     }
 }
 
@@ -2337,12 +2342,9 @@ pub async fn run_sad_anti_entropy_loop(
                             _ => (None, false),
                         };
 
-                    // SEL lifecycle parity with KEL Phase 1:
-                    // track whether any peer's effective SAID differs from
-                    // local. If none do → `NoOp` (clear stale entry; no
-                    // retry). The success signal differs by sync direction
-                    // (see PUSH/PULL branches below); KEL Phase 1 is
-                    // PULL-only and so was the original mirror.
+                    // SEL Phase 1 is PULL-only — track whether any peer's
+                    // effective SAID differs from local. If none do → `NoOp`
+                    // (clear stale entry; no retry).
                     let mut any_peer_differs = false;
 
                     for (_, sadstore_url) in &ordered_peers {
@@ -2361,140 +2363,61 @@ pub async fn run_sad_anti_entropy_loop(
                         }
                         any_peer_differs = true;
 
-                        // Determine sync direction: check if the remote's SAID
-                        // exists in our local chain. If yes, we're ahead → push.
-                        // If no, remote is ahead → pull.
-                        let remote_said_digest = match &remote_said {
-                            Some(s) => match cesr::Digest256::from_qb64(s) {
-                                Ok(d) => d,
-                                Err(_) => continue,
-                            },
-                            None => continue,
+                        // Pull from remote (PUSH path removed — peers behind
+                        // this one will pull on their own AE cycle or via
+                        // gossip-driven announcements).
+                        let use_repair = local_divergent && !remote_divergent;
+                        let Ok(remote_source) = remote.as_sel_source() else {
+                            continue;
                         };
-                        let we_have_remote = local
-                            .sel_event_exists(&remote_said_digest)
-                            .await
-                            .unwrap_or(false);
-
-                        if we_have_remote {
-                            // We're ahead — push to remote.
-                            let use_repair = remote_divergent && !local_divergent;
-                            let Ok(local_source) = local.as_sel_source() else {
-                                continue;
-                            };
-                            let Ok(remote_sink) = remote.as_sel_sink() else {
-                                continue;
-                            };
-                            // Full fetch when repairing or when local is divergent
-                            // (delta from remote's SAID may miss branches that sort
-                            // before the cursor in a divergent chain).
-                            let since_digest = if use_repair || local_divergent {
-                                None
-                            } else {
-                                remote_said.as_deref().and_then(
-                                    |s| match cesr::Digest256::from_qb64(s) {
-                                        Ok(d) => Some(d),
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to parse SAID for delta sync: {}: {}",
-                                                s, e
-                                            );
-                                            None
-                                        }
-                                    },
-                                )
-                            };
-                            // PUSH success criterion: HTTP-2xx from
-                            // `forward_sel_events`. The remote's submit
-                            // handler runs the verifier inside the request/
-                            // response cycle, so verifier rejection surfaces
-                            // as a 4xx and `HttpSelSink::store_page`
-                            // converts it into `Err`. A successful PUSH
-                            // therefore genuinely means the remote accepted
-                            // and advanced, even though our local SAID
-                            // didn't change. Don't re-fetch local SAID
-                            // here — that's the PULL-shaped check and on
-                            // PUSH it would always return false.
-                            match kels_core::forward_sel_events(
-                                prefix,
-                                &local_source,
-                                &remote_sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    return (prefix, source, retries, RepairResult::Repaired);
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        sel_prefix = %prefix,
-                                        peer_sadstore_url = %sadstore_url,
-                                        "SAD anti-entropy: push to peer failed: {}", e
-                                    );
-                                }
-                            }
+                        let Ok(local_sink) = local.as_sel_sink() else {
+                            continue;
+                        };
+                        let since_digest = if use_repair {
+                            None
                         } else {
-                            // Remote is ahead — pull from remote.
-                            let use_repair = local_divergent && !remote_divergent;
-                            let Ok(remote_source) = remote.as_sel_source() else {
-                                continue;
-                            };
-                            let Ok(local_sink) = local.as_sel_sink() else {
-                                continue;
-                            };
-                            let since_digest = if use_repair {
-                                None
-                            } else {
-                                local_said.as_deref().and_then(
-                                    |s| match cesr::Digest256::from_qb64(s) {
-                                        Ok(d) => Some(d),
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to parse SAID for delta sync: {}: {}",
-                                                s, e
-                                            );
-                                            None
-                                        }
-                                    },
-                                )
-                            };
-                            // PULL success criterion: HTTP-2xx is not
-                            // sufficient. The local sink's submit handler
-                            // runs the verifier *after* the HTTP layer
-                            // returns 2xx, so verifier rejection leaves the
-                            // chain unchanged silently. Re-fetch local
-                            // effective SAID and declare `Repaired` only
-                            // on actual advancement; otherwise continue to
-                            // the next peer.
-                            if let Err(e) = kels_core::forward_sel_events(
-                                prefix,
-                                &remote_source,
-                                &local_sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
+                            local_said.as_deref().and_then(|s| {
+                                match cesr::Digest256::from_qb64(s) {
+                                    Ok(d) => Some(d),
+                                    Err(e) => {
+                                        warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                        None
+                                    }
+                                }
+                            })
+                        };
+                        // PULL success criterion: HTTP-2xx is not sufficient.
+                        // The local sink's submit handler runs the verifier
+                        // *after* the HTTP layer returns 2xx, so verifier
+                        // rejection leaves the chain unchanged silently.
+                        // Re-fetch local effective SAID and declare
+                        // `Repaired` only on actual advancement; otherwise
+                        // continue to the next peer.
+                        if let Err(e) = kels_core::forward_sel_events(
+                            prefix,
+                            &remote_source,
+                            &local_sink,
+                            kels_core::page_size(),
+                            kels_core::max_pages(),
+                            since_digest.as_ref(),
+                        )
+                        .await
+                        {
+                            debug!(
+                                sel_prefix = %prefix,
+                                peer_sadstore_url = %sadstore_url,
+                                "SAD anti-entropy: pull from peer failed: {}", e
+                            );
+                            continue;
+                        }
+                        let new_said = local
+                            .fetch_sel_effective_said(prefix)
                             .await
-                            {
-                                debug!(
-                                    sel_prefix = %prefix,
-                                    peer_sadstore_url = %sadstore_url,
-                                    "SAD anti-entropy: pull from peer failed: {}", e
-                                );
-                                continue;
-                            }
-                            let new_said = local
-                                .fetch_sel_effective_said(prefix)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|(s, _)| s);
-                            if new_said != local_said {
-                                return (prefix, source, retries, RepairResult::Repaired);
-                            }
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+                        if new_said != local_said {
+                            return (prefix, source, retries, RepairResult::Repaired);
                         }
                     }
 
@@ -2611,7 +2534,6 @@ pub async fn run_sad_anti_entropy_loop(
                         Output = (
                             cesr::Digest256,
                             cesr::Digest256,
-                            &'static str,
                             Result<(), kels_core::KelsError>,
                         ),
                     > + Send,
@@ -2631,7 +2553,12 @@ pub async fn run_sad_anti_entropy_loop(
                 Err(_) => continue,
             };
 
-            // Determine direction: check if remote's SAID exists locally
+            // Pull-only: when remote has something we don't (or differs),
+            // pull from remote. When we're ahead, skip — peers behind us
+            // will pull on their own AE cycle or via gossip announcements.
+            // Skipping the "we're ahead" prefixes here avoids bombarding a
+            // bootstrapping/lagging peer with parallel pushes from every
+            // up-to-date neighbor.
             let we_have_remote = if let Some(said) = remote_said_str
                 && let Ok(digest) = cesr::Digest256::from_qb64(said)
             {
@@ -2640,113 +2567,68 @@ pub async fn run_sad_anti_entropy_loop(
                     .await
                     .unwrap_or(false)
             } else {
-                // Remote doesn't have it at all — we're ahead
                 true
             };
+            if we_have_remote {
+                continue;
+            }
 
             let (local_said, local_divergent) =
                 match local_client.fetch_sel_effective_said(&prefix_digest).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
-            let (remote_said, remote_divergent) =
+            let (_, remote_divergent) =
                 match remote_client.fetch_sel_effective_said(&prefix_digest).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
 
-            if we_have_remote {
-                // We're ahead — push to remote
-                let use_repair = remote_divergent && !local_divergent;
-                let Ok(local_source) = local_client.as_sel_source() else {
-                    continue;
-                };
-                let Ok(remote_sink) = remote_client.as_sel_sink() else {
-                    continue;
-                };
-                let since = if use_repair {
-                    None
-                } else {
-                    remote_said
-                        .as_deref()
-                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
-                            Ok(d) => Some(d),
-                            Err(e) => {
-                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
-                                None
-                            }
-                        })
-                };
-                let prefix_d = prefix_digest;
-                let peer = peer_kel_prefix;
-                sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sel_events(
-                        &prefix_d,
-                        &local_source,
-                        &remote_sink,
-                        kels_core::page_size(),
-                        kels_core::max_pages(),
-                        since.as_ref(),
-                    )
-                    .await;
-                    (prefix_d, peer, "pushed", result)
-                }));
+            let use_repair = local_divergent && !remote_divergent;
+            let Ok(remote_source) = remote_client.as_sel_source() else {
+                continue;
+            };
+            let Ok(local_sink) = local_client.as_sel_sink() else {
+                continue;
+            };
+            let since = if use_repair {
+                None
             } else {
-                // Remote is ahead — pull from remote
-                let use_repair = local_divergent && !remote_divergent;
-                let Ok(remote_source) = remote_client.as_sel_source() else {
-                    continue;
-                };
-                let Ok(local_sink) = local_client.as_sel_sink() else {
-                    continue;
-                };
-                let since = if use_repair {
-                    None
-                } else {
-                    local_said
-                        .as_deref()
-                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
-                            Ok(d) => Some(d),
-                            Err(e) => {
-                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
-                                None
-                            }
-                        })
-                };
-                let prefix_d = prefix_digest;
-                let peer = peer_kel_prefix;
-                sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_sel_events(
-                        &prefix_d,
-                        &remote_source,
-                        &local_sink,
-                        kels_core::page_size(),
-                        kels_core::max_pages(),
-                        since.as_ref(),
-                    )
-                    .await;
-                    (prefix_d, peer, "pulled", result)
-                }));
-            }
+                local_said
+                    .as_deref()
+                    .and_then(|s| match cesr::Digest256::from_qb64(s) {
+                        Ok(d) => Some(d),
+                        Err(e) => {
+                            warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                            None
+                        }
+                    })
+            };
+            let prefix_d = prefix_digest;
+            let peer = peer_kel_prefix;
+            sync_tasks.push(Box::pin(async move {
+                let result = kels_core::forward_sel_events(
+                    &prefix_d,
+                    &remote_source,
+                    &local_sink,
+                    kels_core::page_size(),
+                    kels_core::max_pages(),
+                    since.as_ref(),
+                )
+                .await;
+                (prefix_d, peer, result)
+            }));
         }
 
         let concurrency = sad_ae_task_concurrency();
         let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
-        while let Some((prefix, peer, direction, result)) = buffered.next().await {
+        while let Some((prefix, peer, result)) = buffered.next().await {
             match result {
                 Ok(()) => {
-                    info!("SAD anti-entropy: {} {} from/to remote", direction, prefix);
-                }
-                Err(_) if direction == "pulled" => {
-                    // Only record stale when we failed to pull (we're behind).
-                    // Failed pushes don't need retrying — gossip will deliver.
-                    record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                    info!("SAD anti-entropy: pulled {} from remote", prefix);
                 }
                 Err(_) => {
-                    debug!(
-                        "SAD anti-entropy: push failed for {}, gossip will deliver",
-                        prefix
-                    );
+                    record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
                 }
             }
         }
@@ -2775,7 +2657,8 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         }
 
-        // Pull: objects on remote but not local
+        // Pull: objects on remote but not local. Push removed — peers behind
+        // will pull on their own AE cycle.
         let mut obj_pulled = 0u64;
         for said in remote_obj_set.difference(&local_obj_set) {
             if let Ok(object) = remote_client.get_sad_object(said).await
@@ -2785,21 +2668,8 @@ pub async fn run_sad_anti_entropy_loop(
             }
         }
 
-        // Push: objects on local but not remote
-        let mut obj_pushed = 0u64;
-        for said in local_obj_set.difference(&remote_obj_set) {
-            if let Ok(object) = local_client.get_sad_object(said).await
-                && remote_client.post_sad_object(&object).await.is_ok()
-            {
-                obj_pushed += 1;
-            }
-        }
-
-        if obj_pulled > 0 || obj_pushed > 0 {
-            info!(
-                "SAD anti-entropy: objects — pulled {}, pushed {}",
-                obj_pulled, obj_pushed
-            );
+        if obj_pulled > 0 {
+            info!("SAD anti-entropy: objects — pulled {}", obj_pulled);
         }
     }
 }
@@ -2935,133 +2805,61 @@ pub async fn run_iel_anti_entropy_loop(
                         }
                         any_peer_differs = true;
 
-                        // Determine sync direction: check if the remote's SAID
-                        // exists in our local chain. If yes, we're ahead → push.
-                        // If no, remote is ahead → pull.
-                        let remote_said_digest = match &remote_said {
-                            Some(s) => match cesr::Digest256::from_qb64(s) {
-                                Ok(d) => d,
-                                Err(_) => continue,
-                            },
-                            None => continue,
+                        // Pull from remote (PUSH path removed — peers behind
+                        // this one will pull on their own AE cycle or via
+                        // gossip-driven announcements).
+                        let use_repair = local_divergent && !remote_divergent;
+                        let Ok(remote_source) = remote.as_iel_source() else {
+                            continue;
                         };
-                        let we_have_remote = local
-                            .identity_event_exists(&remote_said_digest)
-                            .await
-                            .unwrap_or(false);
-
-                        if we_have_remote {
-                            // We're ahead — push to remote.
-                            let use_repair = remote_divergent && !local_divergent;
-                            let Ok(local_source) = local.as_iel_source() else {
-                                continue;
-                            };
-                            let Ok(remote_sink) = remote.as_iel_sink() else {
-                                continue;
-                            };
-                            let since_digest = if use_repair || local_divergent {
-                                None
-                            } else {
-                                remote_said.as_deref().and_then(
-                                    |s| match cesr::Digest256::from_qb64(s) {
-                                        Ok(d) => Some(d),
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to parse SAID for delta sync: {}: {}",
-                                                s, e
-                                            );
-                                            None
-                                        }
-                                    },
-                                )
-                            };
-                            // PUSH success criterion: HTTP-2xx from
-                            // `forward_identity_events`. The remote's submit
-                            // handler runs the verifier inside the request/
-                            // response cycle, so verifier rejection surfaces
-                            // as a 4xx and `HttpIelSink::store_page` converts
-                            // it into `Err`. A successful PUSH therefore
-                            // genuinely means the remote accepted and
-                            // advanced.
-                            match kels_core::forward_identity_events(
-                                prefix,
-                                &local_source,
-                                &remote_sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    return (prefix, source, retries, RepairResult::Repaired);
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        iel_prefix = %prefix,
-                                        peer_sadstore_url = %sadstore_url,
-                                        "IEL anti-entropy: push to peer failed: {}", e
-                                    );
-                                }
-                            }
+                        let Ok(local_sink) = local.as_iel_sink() else {
+                            continue;
+                        };
+                        let since_digest = if use_repair {
+                            None
                         } else {
-                            // Remote is ahead — pull from remote.
-                            let use_repair = local_divergent && !remote_divergent;
-                            let Ok(remote_source) = remote.as_iel_source() else {
-                                continue;
-                            };
-                            let Ok(local_sink) = local.as_iel_sink() else {
-                                continue;
-                            };
-                            let since_digest = if use_repair {
-                                None
-                            } else {
-                                local_said.as_deref().and_then(
-                                    |s| match cesr::Digest256::from_qb64(s) {
-                                        Ok(d) => Some(d),
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to parse SAID for delta sync: {}: {}",
-                                                s, e
-                                            );
-                                            None
-                                        }
-                                    },
-                                )
-                            };
-                            // PULL success criterion: HTTP-2xx is not
-                            // sufficient — the local sink's submit handler
-                            // runs the verifier *after* the HTTP layer
-                            // returns 2xx, so verifier rejection leaves the
-                            // chain unchanged silently. Re-fetch local
-                            // effective SAID and declare `Repaired` only on
-                            // actual advancement; otherwise continue.
-                            if let Err(e) = kels_core::forward_identity_events(
-                                prefix,
-                                &remote_source,
-                                &local_sink,
-                                kels_core::page_size(),
-                                kels_core::max_pages(),
-                                since_digest.as_ref(),
-                            )
+                            local_said.as_deref().and_then(|s| {
+                                match cesr::Digest256::from_qb64(s) {
+                                    Ok(d) => Some(d),
+                                    Err(e) => {
+                                        warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                                        None
+                                    }
+                                }
+                            })
+                        };
+                        // PULL success criterion: HTTP-2xx is not sufficient
+                        // — the local sink's submit handler runs the verifier
+                        // *after* the HTTP layer returns 2xx, so verifier
+                        // rejection leaves the chain unchanged silently.
+                        // Re-fetch local effective SAID and declare
+                        // `Repaired` only on actual advancement; otherwise
+                        // continue.
+                        if let Err(e) = kels_core::forward_identity_events(
+                            prefix,
+                            &remote_source,
+                            &local_sink,
+                            kels_core::page_size(),
+                            kels_core::max_pages(),
+                            since_digest.as_ref(),
+                        )
+                        .await
+                        {
+                            debug!(
+                                iel_prefix = %prefix,
+                                peer_sadstore_url = %sadstore_url,
+                                "IEL anti-entropy: pull from peer failed: {}", e
+                            );
+                            continue;
+                        }
+                        let new_said = local
+                            .fetch_iel_effective_said(prefix)
                             .await
-                            {
-                                debug!(
-                                    iel_prefix = %prefix,
-                                    peer_sadstore_url = %sadstore_url,
-                                    "IEL anti-entropy: pull from peer failed: {}", e
-                                );
-                                continue;
-                            }
-                            let new_said = local
-                                .fetch_iel_effective_said(prefix)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|(s, _)| s);
-                            if new_said != local_said {
-                                return (prefix, source, retries, RepairResult::Repaired);
-                            }
+                            .ok()
+                            .flatten()
+                            .map(|(s, _)| s);
+                        if new_said != local_said {
+                            return (prefix, source, retries, RepairResult::Repaired);
                         }
                     }
 
@@ -3176,7 +2974,6 @@ pub async fn run_iel_anti_entropy_loop(
                         Output = (
                             cesr::Digest256,
                             cesr::Digest256,
-                            &'static str,
                             Result<(), kels_core::KelsError>,
                         ),
                     > + Send,
@@ -3196,7 +2993,9 @@ pub async fn run_iel_anti_entropy_loop(
                 Err(_) => continue,
             };
 
-            // Determine direction: check if remote's SAID exists locally
+            // Pull-only: when remote has something we don't (or differs),
+            // pull from remote. When we're ahead, skip — peers behind us
+            // will pull on their own AE cycle or via gossip announcements.
             let we_have_remote = if let Some(said) = remote_said_str
                 && let Ok(digest) = cesr::Digest256::from_qb64(said)
             {
@@ -3205,111 +3004,68 @@ pub async fn run_iel_anti_entropy_loop(
                     .await
                     .unwrap_or(false)
             } else {
-                // Remote doesn't have it at all — we're ahead
                 true
             };
+            if we_have_remote {
+                continue;
+            }
 
             let (local_said, local_divergent) =
                 match local_client.fetch_iel_effective_said(&prefix_digest).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
-            let (remote_said, remote_divergent) =
+            let (_, remote_divergent) =
                 match remote_client.fetch_iel_effective_said(&prefix_digest).await {
                     Ok(Some((said, div))) => (Some(said), div),
                     _ => (None, false),
                 };
 
-            if we_have_remote {
-                // We're ahead — push to remote
-                let use_repair = remote_divergent && !local_divergent;
-                let Ok(local_source) = local_client.as_iel_source() else {
-                    continue;
-                };
-                let Ok(remote_sink) = remote_client.as_iel_sink() else {
-                    continue;
-                };
-                let since = if use_repair {
-                    None
-                } else {
-                    remote_said
-                        .as_deref()
-                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
-                            Ok(d) => Some(d),
-                            Err(e) => {
-                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
-                                None
-                            }
-                        })
-                };
-                let prefix_d = prefix_digest;
-                let peer = peer_kel_prefix;
-                sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_identity_events(
-                        &prefix_d,
-                        &local_source,
-                        &remote_sink,
-                        kels_core::page_size(),
-                        kels_core::max_pages(),
-                        since.as_ref(),
-                    )
-                    .await;
-                    (prefix_d, peer, "pushed", result)
-                }));
+            let use_repair = local_divergent && !remote_divergent;
+            let Ok(remote_source) = remote_client.as_iel_source() else {
+                continue;
+            };
+            let Ok(local_sink) = local_client.as_iel_sink() else {
+                continue;
+            };
+            let since = if use_repair {
+                None
             } else {
-                // Remote is ahead — pull from remote
-                let use_repair = local_divergent && !remote_divergent;
-                let Ok(remote_source) = remote_client.as_iel_source() else {
-                    continue;
-                };
-                let Ok(local_sink) = local_client.as_iel_sink() else {
-                    continue;
-                };
-                let since = if use_repair {
-                    None
-                } else {
-                    local_said
-                        .as_deref()
-                        .and_then(|s| match cesr::Digest256::from_qb64(s) {
-                            Ok(d) => Some(d),
-                            Err(e) => {
-                                warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
-                                None
-                            }
-                        })
-                };
-                let prefix_d = prefix_digest;
-                let peer = peer_kel_prefix;
-                sync_tasks.push(Box::pin(async move {
-                    let result = kels_core::forward_identity_events(
-                        &prefix_d,
-                        &remote_source,
-                        &local_sink,
-                        kels_core::page_size(),
-                        kels_core::max_pages(),
-                        since.as_ref(),
-                    )
-                    .await;
-                    (prefix_d, peer, "pulled", result)
-                }));
-            }
+                local_said
+                    .as_deref()
+                    .and_then(|s| match cesr::Digest256::from_qb64(s) {
+                        Ok(d) => Some(d),
+                        Err(e) => {
+                            warn!("Failed to parse SAID for delta sync: {}: {}", s, e);
+                            None
+                        }
+                    })
+            };
+            let prefix_d = prefix_digest;
+            let peer = peer_kel_prefix;
+            sync_tasks.push(Box::pin(async move {
+                let result = kels_core::forward_identity_events(
+                    &prefix_d,
+                    &remote_source,
+                    &local_sink,
+                    kels_core::page_size(),
+                    kels_core::max_pages(),
+                    since.as_ref(),
+                )
+                .await;
+                (prefix_d, peer, result)
+            }));
         }
 
         let concurrency = sad_ae_task_concurrency();
         let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
-        while let Some((prefix, peer, direction, result)) = buffered.next().await {
+        while let Some((prefix, peer, result)) = buffered.next().await {
             match result {
                 Ok(()) => {
-                    info!("IEL anti-entropy: {} {} from/to remote", direction, prefix);
-                }
-                Err(_) if direction == "pulled" => {
-                    record_iel_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                    info!("IEL anti-entropy: pulled {} from remote", prefix);
                 }
                 Err(_) => {
-                    debug!(
-                        "IEL anti-entropy: push failed for {}, gossip will deliver",
-                        prefix
-                    );
+                    record_iel_stale_prefix(redis.as_ref(), &prefix, &peer).await;
                 }
             }
         }

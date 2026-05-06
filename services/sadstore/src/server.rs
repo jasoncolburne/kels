@@ -174,6 +174,7 @@ pub async fn run(
 
     handlers::spawn_rate_limit_reaper(Arc::clone(&state));
     handlers::spawn_ttl_reaper(Arc::clone(&state));
+    handlers::spawn_pool_depth_logger(Arc::clone(&state));
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 

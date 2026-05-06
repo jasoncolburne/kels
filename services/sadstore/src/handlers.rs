@@ -29,8 +29,58 @@ use crate::iel_resolver::RepositoryIelResolver;
 const SECS_PER_DAY: u64 = 86_400;
 const RATE_LIMIT_REAP_INTERVAL: Duration = Duration::from_secs(300);
 
+/// RAII handler timer — logs `handler={name} elapsed_ms={ms}` on drop.
+/// Used at the top of hot handlers to attribute pool-pressure correlation.
+struct HandlerTimer {
+    handler: &'static str,
+    start: Instant,
+}
+
+impl HandlerTimer {
+    fn new(handler: &'static str) -> Self {
+        Self {
+            handler,
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for HandlerTimer {
+    fn drop(&mut self) {
+        let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        debug!(
+            target: "kels_sadstore::handlers",
+            handler = self.handler,
+            elapsed_ms,
+            "handler done",
+        );
+    }
+}
+
 fn nonce_window_secs() -> u64 {
     kels_core::env_usize("KELS_NONCE_WINDOW_SECS", 60) as u64
+}
+
+/// Spawn a background task that periodically logs the sadstore PG pool
+/// depth (`size` = total connections, `idle` = currently free). Pair with
+/// the `kels_gossip::inflight` traces to attribute pool pressure to a
+/// source. Default tick: 1s; gated by `kels_sadstore::pool` debug level.
+pub fn spawn_pool_depth_logger(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let pool = state.repo.pool().inner();
+            let size = pool.size();
+            let idle = pool.num_idle();
+            debug!(
+                target: "kels_sadstore::pool",
+                pool_size = size,
+                pool_idle = idle,
+                "pool depth"
+            );
+        }
+    });
 }
 
 /// Spawn a background task that periodically removes expired entries from
@@ -415,6 +465,7 @@ pub async fn post_sad_object(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("post_sad_object");
     // Per-IP rate limit
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
@@ -1438,6 +1489,7 @@ pub async fn submit_sad_events(
     State(state): State<Arc<AppState>>,
     Json(events): Json<Vec<kels_core::SadEvent>>,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("submit_sad_events");
     if events.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
     }
@@ -2236,6 +2288,7 @@ pub async fn submit_identity_events(
     State(state): State<Arc<AppState>>,
     Json(events): Json<Vec<kels_core::IdentityEvent>>,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("submit_identity_events");
     if events.is_empty() {
         return (StatusCode::BAD_REQUEST, "Empty batch").into_response();
     }
@@ -2784,6 +2837,7 @@ pub async fn list_sad_objects(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("list_sad_objects");
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
@@ -2814,6 +2868,7 @@ pub async fn list_sel_prefixes(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("list_sel_prefixes");
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
@@ -2844,6 +2899,7 @@ pub async fn list_iel_prefixes(
     State(state): State<Arc<AppState>>,
     Json(signed_request): Json<kels_core::SignedRequest<kels_core::PaginatedSelfAddressedRequest>>,
 ) -> impl IntoResponse {
+    let _t = HandlerTimer::new("list_iel_prefixes");
     if let Err(msg) = check_ip_rate_limit(&state.ip_rate_limits, addr.ip()) {
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
