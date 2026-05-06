@@ -189,17 +189,17 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (sealed) | `Upd`/`Sea`/`Rpr`/`Dec` | `ContestRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
 | Decommissioned | any | Rejected with `DecommissionedSel`. |
-| Inception batch missing Upd at v1 | `[Icp]` alone, or `[Icp, Sea/Cnt/Dec]` | Rejected — inception batch rule (see events.md). |
+| Chain ends at Icp | `[Icp]` alone (no v1 `Upd`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).
 
 ## Implementation Map
 
 **Code:**
-- `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. Inception batch rule enforced at submit handler, not in `validate_structure` (which is per-event, not per-batch).
-- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds `last_identity_event` (ratchet); authorization policies are not tracked per branch (they resolve through IEL on demand).
+- `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
+- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds `last_identity_event` (ratchet); authorization policies are not tracked per branch (they resolve through IEL on demand). `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
-- `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger, inception-batch-rule enforcement.
+- `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
 
 **Notable changes from the dual-policy era:**

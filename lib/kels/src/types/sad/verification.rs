@@ -874,6 +874,22 @@ impl SelVerifier {
             ));
         }
 
+        // #147 / #171 inception batch rule: a chain whose tip is still the
+        // Icp never received its paired v1 Upd. Icp is structurally pinned
+        // to v=0 (rejected at any other version in `flush_generation`), so
+        // an Icp tip is sufficient to identify the lone-`[Icp]` chain.
+        // This is a chain-validity rule — every consumer's verifier walk
+        // rejects the same shape.
+        if self
+            .branches
+            .values()
+            .any(|b| b.tip.kind == SadEventKind::Icp)
+        {
+            return Err(KelsError::IncompleteInception(
+                "chain ends at Icp without an Upd at v1".into(),
+            ));
+        }
+
         let mut branches: Vec<SadBranchTip> = self.branches.into_values().collect();
         branches.sort_by_key(|b| b.tip.said);
 
@@ -1298,6 +1314,33 @@ mod tests {
         let branch = &v.branches()[0];
         assert_eq!(branch.identity, identity);
         assert_eq!(branch.last_identity_event, Some(iel_icp));
+    }
+
+    /// #171: a chain whose only event is `Icp` (branch tip is still Icp at v0)
+    /// is rejected with `IncompleteInception`. The rule lives in the verifier
+    /// so every consumer's walk applies it — a tampered DB serving lone `[Icp]`
+    /// fails end-verification.
+    #[tokio::test]
+    async fn lone_icp_rejected_with_incomplete_inception() {
+        let identity = d(b"identity-lone-icp");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[],
+            d(b"auth-lone"),
+            d(b"gov-lone"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let err = verifier.finish().await.expect_err("lone Icp must reject");
+        assert!(
+            matches!(err, KelsError::IncompleteInception(_)),
+            "expected IncompleteInception, got {:?}",
+            err
+        );
     }
 
     /// Upd binding to a later IEL Evl after IEL evolution: ratchet advances.

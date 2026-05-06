@@ -1500,26 +1500,6 @@ pub async fn submit_sad_events(
         return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
     }
 
-    // #147 inception batch rule: a batch that contains an `Icp` MUST
-    // also contain an `Upd` at v1. Enforced here at the submit handler
-    // (per-batch rule, not per-event — `validate_structure` can't see this).
-    // The Icp itself stays dedup-idempotent across submitters; only fresh
-    // inceptions without their paired v1 Upd are rejected.
-    //
-    // The HTTP response body matches `KelsError::IncompleteInception`'s
-    // Display prefix ("Incomplete inception: …") so client-side code that
-    // maps server errors back to KelsError can match on the prefix.
-    let has_icp = events.iter().any(|e| e.kind.is_inception());
-    let has_v1_upd = events
-        .iter()
-        .any(|e| e.version == 1 && e.kind == kels_core::SadEventKind::Upd);
-    if has_icp && !has_v1_upd {
-        let err = kels_core::KelsError::IncompleteInception(
-            "a batch containing Icp must also contain an Upd at v1".to_string(),
-        );
-        return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
-    }
-
     // Transactional verify-then-extend: advisory lock + verification + write in one transaction.
     // Follows the KEL merge engine pattern (merge.rs). Rollback on any failure.
     let new_event_count;

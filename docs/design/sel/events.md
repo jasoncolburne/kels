@@ -50,6 +50,8 @@ A submission containing an `Icp` event MUST also contain an `Upd` event at v1 in
 
 Rationale: SE Icp is permissionless — by itself, it would land an "exists but unused" chain with no policy enforcement, no binding to IEL, and no content. Forcing an Upd in the same batch ensures the chain is born with all three: a policy-enforced event, an `identity_event` binding, and content. This eliminates a liminal state the security analysis would otherwise have to reason about.
 
+The rule is enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still an `Icp`) so every consumer's verifier walk applies it — a tampered DB serving `[Icp]` alone is rejected at end-verification, not just at submit. Submit handlers do not duplicate the rule.
+
 The Icp itself is still permissionless and still dedup-idempotent across submitters — the rule only governs whether the batch as a whole lands. If `[Icp, Upd_A]` and `[Icp, Upd_B]` race, the first batch lands; the second batch's Icp dedups, its Upd extends as v2 (subject to monotonic and authorization rules).
 
 This rule is SE-specific. IEL has no analogous rule — IEL Icp is itself policy-enforced (anchored under its declared `auth_policy`), so an IEL Icp alone is already a meaningful, authorized chain birth.

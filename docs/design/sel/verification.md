@@ -147,9 +147,9 @@ The chain-wide `policy_satisfied: bool` answers "is the chain currently authorit
 
 The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SE verifier collects identity_event SAIDs from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
 
-### Inception Batch Rule (verifier-level note)
+### Inception Batch Rule
 
-The inception batch rule `[Icp, Upd]` minimum is enforced at the **submit handler**, not in the verifier per se. The verifier walks events as they exist; if the chain has only an `Icp` with no v1, that's "incomplete" rather than "invalid." The submit handler is what prevents an Icp-alone batch from landing in storage in the first place. See [merge.md](merge.md).
+The inception batch rule `[Icp, Upd]` minimum is a chain-validity rule enforced inside the verifier (#171): `SelVerifier::finish_internal` rejects with `IncompleteInception` whenever any branch tip is still an `Icp` (Icp is structurally pinned to v=0, so an Icp tip identifies the lone-`[Icp]` chain). Every consumer's verifier walk applies the same rule — a tampered DB serving `[Icp]` alone is rejected at end-verification. See [merge.md](merge.md) for the per-batch routing context.
 
 ### Branch State
 

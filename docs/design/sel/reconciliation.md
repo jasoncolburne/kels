@@ -10,7 +10,7 @@ All cases below depend on these invariants:
 
 1. **Identity-rooted authorization**: every v1+ SE event carries `identity_event` referencing a specific IEL event. Authorization for `Upd` resolves to the IEL's tracked `auth_policy` at that event; for `Sea`/`Rpr`/`Cnt`/`Dec`, to the IEL's tracked `governance_policy`. The IEL primitive's immunity rule guarantees those policies' contents are stable across time.
 
-2. **Inception is permissionless but bounded by batch rule**: SE Icp prefix derives deterministically from `(identity, topic)`. Anyone can submit `[Icp]` content-wise, but the merge handler rejects inception batches lacking an `Upd` at v1 (`IncompleteInception`). Every chain is born with both content and a binding.
+2. **Inception is permissionless but bounded by batch rule**: SE Icp prefix derives deterministically from `(identity, topic)`. Anyone can submit `[Icp]` content-wise, but the verifier rejects any chain whose tip is still `Icp` (`IncompleteInception` from `SelVerifier::finish_internal`). Every chain is born with both content and a binding.
 
 3. **Proactive-evaluation compliance**: Every SEL has an evaluation event (`Sea` / `Rpr` / `Cnt` / `Dec`) at least every `MAX_NON_EVALUATION_EVENTS = 63` non-evaluation events. Surfaced by `SelVerifier` and enforced by the submit handler; the builder auto-inserts `Sea` when the bound is about to be crossed.
 
@@ -29,7 +29,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | State | Description |
 |-------|-------------|
 | **Empty** | No events for this prefix. |
-| **Incepted, no v1** | Reachable transient state: someone submitted just `[Icp]`. **The merge handler rejects this**, so this state should never persist in storage; included here for completeness. |
+| **Incepted, no v1** | Reachable transient state: someone submitted just `[Icp]`. **The verifier rejects this** (`SelVerifier::finish_internal` → `IncompleteInception` whenever any branch tip is `Icp`), so this state should never persist in storage; included here for completeness. |
 | **Active** | Linear, non-divergent, no terminal event. |
 | **Divergent** | Fork detected, no `Rpr`/`Cnt`/`Dec` yet. |
 | **Repaired** | Clean chain after `Rpr` archived adversary events. |

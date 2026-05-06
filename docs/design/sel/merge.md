@@ -34,7 +34,7 @@ Server errors map to:
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
-| `IncompleteInception` | Submission contains `Icp` but not `Upd` at v1 | unchanged (rejected) |
+| `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Upd`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails monotonic ratchet | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
 
@@ -51,7 +51,7 @@ for each event:
     verify each batch event shares the same prefix
 
 for v0 (Icp): no authorization gate (permissionless, deterministic prefix derivation)
-              BUT: batch must contain an Upd at v1 (inception batch rule)
+              BUT: chain may not end at Icp (inception batch rule, enforced inside the verifier)
 
 for v1+: cross-chain authorization resolution:
     fetch IEL event by event.identity_event
@@ -73,13 +73,7 @@ The `identity_event` resolution may walk back through the IEL chain if the named
 
 ### 2. Inception Batch Rule
 
-```
-if batch contains Icp:
-    if batch does NOT contain Upd at version 1 (in same submission):
-        reject IncompleteInception
-```
-
-SE Icp is permissionless and deterministic, so anyone can submit `[Icp]` alone — but doing so produces a chain with no content and no authorized event. The rule forces inception batches to include at least one Upd (which carries `identity_event` and is policy-enforced), so every chain is born with both content and a binding. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+The rule lives inside the verifier (`SelVerifier::finish_internal`): if any branch tip is still an `Icp`, finalization returns `IncompleteInception`. Icp is structurally pinned to v=0, so an Icp tip is precisely the "lone-`[Icp]` chain" shape. SE Icp is permissionless and deterministic — anyone can submit `[Icp]` alone — but the resulting chain has no content and no authorized event, so the verifier rejects it at end-verification. Every consumer's verifier walk applies the same rule; submit handlers do not duplicate it. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ### 3. Terminal-State Gate
 
