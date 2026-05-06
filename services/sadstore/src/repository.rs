@@ -92,6 +92,24 @@ impl SadEventRepository {
 
         let prefix = events[0].prefix;
 
+        // #171 effective seal = pre-batch seal U max version of any
+        // seal-advancing event in this batch. The verifier guarantees
+        // every such event in `events` would HARD-pass governance (else
+        // the batch would have been rejected upstream), so each contributes
+        // to the running seal here. Closes the same-batch fork+seal hole
+        // the pre-#171 check missed: a batch like [Sea@v2, Upd_X@v2]
+        // would otherwise land as a sealed-divergent chain that fails
+        // verification on read.
+        let effective_seal: Option<u64> = last_governance_version
+            .into_iter()
+            .chain(
+                events
+                    .iter()
+                    .filter(|e| e.kind.advances_seal())
+                    .map(|e| e.version),
+            )
+            .max();
+
         // Quick divergence check — reject appends to frozen chains
         let divergence_query = ColumnQuery::new(Self::TABLE_NAME, "*")
             .filter(Filter::Eq(
@@ -146,8 +164,11 @@ impl SadEventRepository {
 
             // Version collision creates divergence — insert this forking event then freeze
             if occupied_versions.contains(&event.version) {
-                // Reject fork at or before the last evaluation — sealed by governance_policy
-                if let Some(gp_version) = last_governance_version
+                // Reject fork at or before the last evaluation — sealed by
+                // governance_policy. Uses `effective_seal` (pre-batch seal
+                // U max in-batch Sea/Rpr) so a same-batch fork+seal is
+                // caught: see the comment at `effective_seal`'s definition.
+                if let Some(gp_version) = effective_seal
                     && event.version <= gp_version
                 {
                     return Err(StorageError::StorageError(format!(

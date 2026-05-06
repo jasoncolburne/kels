@@ -108,6 +108,14 @@ impl SadEventKind {
         matches!(self, Self::Cnt | Self::Dec)
     }
 
+    /// True for kinds that advance the chain's governance seal
+    /// (`last_governance_version`) when they HARD-pass governance.
+    /// `Sea` / `Rpr` advance; `Cnt` / `Dec` are terminal and preserve the
+    /// existing seal; `Upd` evaluates auth_policy, not governance.
+    pub fn advances_seal(&self) -> bool {
+        matches!(self, Self::Sea | Self::Rpr)
+    }
+
     /// Sort priority within the same version (lower = earlier). Mirrors
     /// IEL's `Icp=0, Evl=1, Cnt=2, Dec=3` shape with terminal kinds last.
     /// Differs from KEL (which sorts Cnt last only).
