@@ -53,16 +53,18 @@ spec:
               value: "${var.objects.accessKey}"
             - name: RUSTFS_SECRET_KEY
               value: "${var.objects.secretKey}"
+            - name: RUSTFS_BUFFER_PROFILE
+              value: "WebWorkload"
           volumeMounts:
             - name: objects-storage
               mountPath: /data
           resources:
             requests:
-              cpu: 25m
-              memory: 128Mi
+              cpu: 250m
+              memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 2000m
+              memory: 1Gi
           livenessProbe:
             httpGet:
               path: /health
