@@ -204,7 +204,7 @@ restart-gossip-services:
 	scripts/restart-gossip.sh
 
 restart-gossip-services-staggered:
-	@for node in a b c d e f; do \
+	@set -e; for node in a b c d e f; do \
 		accumulator="$${accumulator:+$$accumulator }node-$$node"; \
 		echo "Restarting gossip on node-$$node..."; \
 		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
