@@ -2024,34 +2024,17 @@ pub async fn submit_sad_events(
                     .into_response();
             }
 
-            // Step 5 (algorithmic ContestRequired): non-terminal AND
-            // non-Rpr AND `event.version <= last_governance_version` AND
-            // kind-relevant authorization passed (verifier returned
-            // policy_satisfied=true above) AND not divergent.
-            // This catches the linear-sealed-past-version case
-            // — the divergent-sealed case is already caught above.
-            if let Some(seal) = pre_batch_seal {
-                for event in &new_events {
-                    if !event.kind.is_terminal() && !event.kind.is_repair() && event.version <= seal
-                    {
-                        let _ = tx.rollback().await;
-                        return (
-                            StatusCode::FORBIDDEN,
-                            format!(
-                                "Contest required: SE {} event at version {} lands at-or-before \
-                                 governance seal {} — must Cnt instead",
-                                event.kind, event.version, seal
-                            ),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-
             // Step 6 / 7: save_batch. `save_batch` handles the
             // overlap-creates-fork case (a single forking event lands and
             // the chain freezes); on a clean linear chain it's a
-            // straight append.
+            // straight append. The non-terminal-at-or-below-seal case is
+            // caught here too via save_batch's pre-existing seal-cap
+            // ("Cannot fork at version X — sealed by evaluation at
+            // version Y") — the chain-validity-vs-consumer-trust split
+            // (#171: docs/design/iel/event-log.md §Compromise Posture
+            // and Trust Layer) puts seal-cap enforcement on the storage
+            // layer; the handler-side algorithmic-ContestRequired
+            // duplicate is gone.
             match state
                 .repo
                 .sad_events
@@ -2663,24 +2646,14 @@ pub async fn submit_identity_events(
             new_event_count = new_events.len() as u32;
             should_publish = true;
         } else {
-            // Algorithmic ContestRequired: Evl at version <= seal AND chain not divergent.
-            if let Some(seal) = last_gp_version {
-                for event in &new_events {
-                    if !event.kind.is_terminal() && event.version <= seal {
-                        let _ = tx.rollback().await;
-                        return (
-                            StatusCode::FORBIDDEN,
-                            format!(
-                                "Contest required: IEL Evl at version {} lands at or before evaluation seal {}",
-                                event.version, seal
-                            ),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-
-            // Normal append. `save_batch` handles overlap-creates-fork.
+            // Normal append. `save_batch` handles overlap-creates-fork
+            // and the Evl-at-or-below-seal case via its pre-existing
+            // seal-cap ("Cannot fork at version X — sealed by governance
+            // evaluation at version Y") — the chain-validity-vs-consumer-
+            // trust split (#171: docs/design/iel/event-log.md §Compromise
+            // Posture and Trust Layer) puts seal-cap enforcement on the
+            // storage layer; the handler-side algorithmic-ContestRequired
+            // duplicate is gone.
             match state
                 .repo
                 .iel_events

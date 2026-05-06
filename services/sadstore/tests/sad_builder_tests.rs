@@ -1826,20 +1826,17 @@ async fn sealed_divergent_chain_rejects_rpr_with_contest_required() {
     );
 }
 
-/// Algorithmic ContestRequired: linear-sealed chain, Upd authored at
+/// Storage seal-cap: linear-sealed chain, Upd authored at
 /// `version <= last_governance_version` (= the seal). The verifier
-/// passes the auth check (Upd is anchored), but the routing matrix's
-/// step-5 algorithmic trigger fires → 403 with "Contest required".
-///
-/// Setup: extend the chain past the seal so we have something to land,
-/// but also re-author at-or-below the seal. Easiest construction:
-/// build the chain to v3 (Icp, Upd, Sea, Upd) cleanly, then submit a
-/// SECOND Upd at v3 — same version as the latest event, would create a
-/// fork at v3 EXCEPT the matrix routes pre-batch divergence through
-/// algorithmic trigger before save_batch sees it.
+/// passes the auth check (Upd is anchored); the new Upd would create
+/// a fork at the same version as the existing Sea, which `save_batch`'s
+/// pre-existing seal-cap rejects with "Cannot fork at version X —
+/// sealed by evaluation at version Y" (#171: handler-side
+/// algorithmic-ContestRequired duplicate removed; storage layer is the
+/// authoritative seal-cap surface).
 ///
 /// Pre-batch: chain is linear with seal at v2 (Sea). Authoring an Upd
-/// at v2 (= seal version) triggers the algorithmic check.
+/// at v2 (= seal version) trips the storage seal-cap.
 #[tokio::test]
 #[serial]
 async fn contest_after_seal_via_algorithmic_trigger() {
@@ -1854,17 +1851,16 @@ async fn contest_after_seal_via_algorithmic_trigger() {
     assert_eq!(sea.version, 2);
 
     // Author an Upd extending v1 → version = 2, same as sea. The chain
-    // is linear (sea is the only event at v2), so the algorithmic
-    // step-5 trigger fires (kind-relevant auth_policy passes — Upd is
-    // anchored — but version <= seal).
+    // is linear (sea is the only event at v2); save_batch's seal-cap
+    // rejects the fork at-or-below the seal.
     let content = upload_content(&setup.sad_client, "algorithmic-contest").await;
     let upd_at_seal = SadEvent::upd(&v1, setup.iel_icp_said, content).unwrap();
     setup.kel_builder.interact(&upd_at_seal.said).await.unwrap();
     let result = setup.sad_client.submit_sel_events(&[upd_at_seal]).await;
     assert_err_contains(
         result,
-        "Contest required",
-        "Upd at version <= seal on linear chain must algorithmically ContestRequired",
+        "Cannot fork",
+        "Upd at version <= seal on linear chain must be rejected by save_batch's seal-cap",
     );
 }
 

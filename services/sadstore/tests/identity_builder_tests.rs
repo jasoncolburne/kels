@@ -898,17 +898,17 @@ async fn submit_evl_at_sealed_version_returns_contest_required() {
         .unwrap();
 
     // Build a *different* Evl also at v1 (different SAID) — this would land at
-    // version 1 which equals the seal. The submit handler's algorithmic
-    // ContestRequired trigger fires.
+    // version 1 which equals the seal. save_batch's pre-existing seal-cap
+    // rejects: "Cannot fork at version 1 — sealed by governance evaluation
+    // at version 1". (#171: handler-side algorithmic-ContestRequired
+    // duplicate removed; storage layer is the authoritative seal-cap surface.)
     let policy_b =
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evl-sealed-b").await;
     let v1_alt = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     kel_builder.interact(&v1_alt.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v1_alt]).await;
-    // Algorithmic ContestRequired: handler returns "Contest required: IEL Evl
-    // at version <v> lands at or before evaluation seal <s>".
-    assert_err_contains(&resp, "Contest required");
-    assert_err_contains(&resp, "seal");
+    assert_err_contains(&resp, "Cannot fork");
+    assert_err_contains(&resp, "sealed");
 }
 
 /// Pin that re-submitting the same Icp is an idempotent no-op (server dedups
