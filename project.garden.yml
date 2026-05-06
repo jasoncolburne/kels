@@ -67,7 +67,7 @@ providers:
     buildMode: local-docker
 
 variables:
-  rustLogLevel: info #,kels_gossip::sync=debug,kels_sadstore=debug
+  rustLogLevel: info #,sqlx=info,kels_gossip::sync=debug,kels_gossip::bootstrap=debug,kels_gossip::inflight=debug,kels_sadstore::handlers=debug,kels_sadstore::pool=debug
   postgres:
     user: kels_admin
     password: use_something_better_in_production
