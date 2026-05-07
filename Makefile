@@ -43,21 +43,17 @@ clean:
 	make -C clients/ios clean
 
 clean-registries:
-	garden cleanup namespace --env=registry-a
-	garden cleanup namespace --env=registry-b
-	garden cleanup namespace --env=registry-c
-	garden cleanup namespace --env=registry-d
+	@for node in a b c d; do \
+		kubectl delete namespace kels-registry-$$node || true; \
+	done
 
 clean-nodes:
-	garden cleanup namespace --env=node-a
-	garden cleanup namespace --env=node-b
-	garden cleanup namespace --env=node-c
-	garden cleanup namespace --env=node-d
-	garden cleanup namespace --env=node-e
-	garden cleanup namespace --env=node-f
+	@for node in a b c d e f; do \
+		kubectl delete namespace kels-node-$$node || true; \
+	done
 
 clean-standalone:
-	garden cleanup namespace --env=standalone
+	kubectl delete namespace kels-standalone || true
 
 clean-garden: clean-standalone clean-nodes clean-registries
 
@@ -298,7 +294,7 @@ deploy-fresh-node:
 
 deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes vote-nodes restart-gossip-services
 
-test-node: clean-standalone deploy-fresh-node
+test-node: deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-sadstore.sh
