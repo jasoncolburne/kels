@@ -510,10 +510,19 @@ pub async fn post_sad_object(
 
     let canonical_said = value.get_said();
 
-    // HEAD check — short-circuit if already exists (before any object store writes)
-    match state.object_store.exists(&canonical_said).await {
+    // HEAD check — short-circuit if already tracked (before any object store
+    // writes). PG is the source of truth post-§5.1: a transient object-store
+    // orphan must not block the parent's INSERT (otherwise the
+    // RustFS-orphan stays sticky), and a PG-tracked SAID is durable on
+    // a successful prior store.
+    match state
+        .repo
+        .sad_objects
+        .is_tracked(canonical_said.as_ref())
+        .await
+    {
         Ok(true) => {
-            debug!("SAD object already exists: {}", canonical_said);
+            debug!("SAD object already tracked in index: {}", canonical_said);
             return (
                 StatusCode::OK,
                 Json(kels_core::PostSadObjectResponse {
@@ -524,7 +533,7 @@ pub async fn post_sad_object(
         }
         Ok(false) => {}
         Err(e) => {
-            warn!("Failed to check SAD object existence: {}", e);
+            warn!("Failed to check SAD object tracking: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response();
         }
     }
@@ -1181,11 +1190,19 @@ pub async fn sad_object_exists(
     State(state): State<Arc<AppState>>,
     Json(request): Json<kels_core::SadFetchRequest>,
 ) -> impl IntoResponse {
-    match state.object_store.exists(&request.said).await {
+    // PG is the source of truth for "we have this object" post-§5.1; the
+    // object store may carry transient orphans during in-flight writes that
+    // the next-write step heals. Mirrors the HEAD check in `post_sad_object`.
+    match state
+        .repo
+        .sad_objects
+        .is_tracked(request.said.as_ref())
+        .await
+    {
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
-            warn!("Failed to check SAD object existence: {}", e);
+            warn!("Failed to check SAD object tracking: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

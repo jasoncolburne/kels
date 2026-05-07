@@ -63,6 +63,7 @@ async fn retry_get_port_generic(
 
 struct SharedHarness {
     base_url: String,
+    objects_endpoint: String,
     _postgres: ContainerAsync<Postgres>,
     _objects: ContainerAsync<GenericImage>,
 }
@@ -178,6 +179,7 @@ impl SharedHarness {
                 eprintln!("Shared test server ready at {}", base_url);
                 return Some(Self {
                     base_url,
+                    objects_endpoint,
                     _postgres: postgres,
                     _objects: objects,
                 });
@@ -197,6 +199,20 @@ impl SharedHarness {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap()
+    }
+
+    /// Build an `ObjectStore` client pointing at the harness's RustFS
+    /// container. Used by tests that need to manipulate the object store
+    /// directly (e.g. simulating an object-store-only orphan to verify
+    /// recovery via §5.1's RustFS-first ordered idempotent store).
+    fn object_store_client(&self) -> kels_sadstore::ObjectStore {
+        kels_sadstore::ObjectStore::new(
+            &self.objects_endpoint,
+            "us-east-1",
+            "kels-sad-test",
+            "rustfsadmin",
+            "rustfsadmin",
+        )
     }
 }
 
@@ -347,6 +363,179 @@ async fn test_post_sad_object_invalid_json_rejected() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+// ==================== §5.1 Atomicity Tests ====================
+// `SadObjectIndex::store` writes object store first then PG (auto-commit);
+// HEAD-checks consult PG, not object store. The asymmetric behaviors below
+// only become observable post-§5.1 — under the prior shape, a transient
+// object-store orphan would short-circuit subsequent POSTs (sticky), and
+// tests crashing between PUT and COMMIT would leave PG-orphans.
+
+#[tokio::test]
+async fn test_object_store_orphan_heals_on_repost() {
+    // Simulate an object-store-only orphan (e.g. process crashed between
+    // PUT and PG INSERT under the new ordering). A subsequent POST of the
+    // same SAD must heal the orphan: idempotent PUT on RustFS, then PG
+    // INSERT records the entry. Pre-§5.1 the HEAD check on object store
+    // returned true and short-circuited without writing PG, leaving the
+    // orphan sticky.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "object-store-orphan-heal-test",
+    });
+    object.derive_said().unwrap();
+    let said = object.get_said();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    // Pre-condition: place bytes in object store directly, bypassing PG.
+    harness
+        .object_store_client()
+        .put(&said, &bytes)
+        .await
+        .expect("direct object-store put failed");
+
+    // Existence check should report `not tracked` (PG is the source of truth).
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad/exists"))
+        .json(&serde_json::json!({ "said": said.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "PG-side existence check should miss before heal POST"
+    );
+
+    // POST the SAD — must succeed (201) and heal the orphan by inserting PG.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "POST should heal object-store orphan and create PG entry"
+    );
+
+    // Post-condition: PG now tracks the object; existence reports OK.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad/exists"))
+        .json(&serde_json::json!({ "said": said.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "PG-side existence check should hit after heal POST"
+    );
+}
+
+#[tokio::test]
+async fn test_head_check_consults_pg_not_object_store() {
+    // After a successful POST, PG holds the entry. If object-store bytes
+    // are independently deleted (external loss / TTL race / operator
+    // intervention), the next POST of the same SAD must still short-
+    // circuit to 200 because PG remains the source of truth post-§5.1.
+    // Pre-§5.1 the HEAD check on object store would have missed and the
+    // handler would have proceeded into `SadObjectIndex::store`, which
+    // hit the DuplicateRecord shortcut and returned without rewriting
+    // bytes — same observable outcome but for the wrong reason.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "head-check-pg-source-of-truth",
+    });
+    object.derive_said().unwrap();
+    let said = object.get_said();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    // Initial POST populates both stores.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Independently delete object-store bytes.
+    harness
+        .object_store_client()
+        .delete(&said)
+        .await
+        .expect("direct object-store delete failed");
+
+    // Re-POST: HEAD-check via PG sees the entry → 200 short-circuit.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "PG HEAD check should short-circuit even after object-store byte loss"
+    );
+}
+
+#[tokio::test]
+async fn test_repost_is_idempotent_under_pg_head_check() {
+    // Plain idempotency under §5.1: repeat POSTs of identical bytes
+    // produce 201 then 200 (HEAD via PG). Mirrors
+    // `test_put_sad_object_idempotent` but pinned to the post-§5.1
+    // contract: the second response is driven by PG presence, not
+    // object-store presence.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "duplicate-record-idempotence",
+    });
+    object.derive_said().unwrap();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    let r1 = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), 201);
+
+    let r2 = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), 200);
 }
 
 // ==================== Prefix Computation Tests ====================

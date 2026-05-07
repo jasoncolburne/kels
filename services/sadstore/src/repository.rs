@@ -780,7 +780,17 @@ pub struct SadObjectIndex {
 }
 
 impl SadObjectIndex {
-    /// Store a SAD object in object store and track it in the index atomically.
+    /// Store a SAD object in object store and track it in the index.
+    ///
+    /// **Ordering: object store first, then PG insert (auto-commit).** Object
+    /// store PUT is idempotent under content-addressing (same SAID = same
+    /// content), so a crash between PUT and INSERT leaves a transient
+    /// object-store-only orphan that the retry's INSERT step heals. The prior
+    /// shape (PG INSERT inside an open transaction wrapped around the PUT) was
+    /// non-atomic against PUT-ack-then-COMMIT-fail, producing sticky
+    /// PG-orphans under object-store concurrency pressure (#157). PG is now
+    /// the source of truth for "we have this object"; the HEAD-check sites
+    /// in `handlers.rs` consult PG, not the object store.
     ///
     /// #167: the pre-reshape `custody` SAID parameter is replaced
     /// by denormalized lifecycle fields sourced from the parent SAD's inline
@@ -806,24 +816,23 @@ impl SadObjectIndex {
             availability_once,
         )?;
 
-        let mut tx = self.pool.begin_transaction().await?;
-
-        match self.insert_in(&mut tx, entry).await {
-            Ok(_) => {}
-            Err(StorageError::DuplicateRecord(_)) => {
-                tx.commit().await?;
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        }
-
+        // Object store first: idempotent under content-addressing. PUT failure
+        // returns Err with no PG row created — caller retries with consistent
+        // missing state on both sides.
         object_store
             .put(sad_said, data)
             .await
             .map_err(|e| StorageError::StorageError(e.to_string()))?;
 
-        tx.commit().await?;
-        Ok(())
+        // PG INSERT (auto-commit). DuplicateRecord on the entry SAID or the
+        // `sad_said` UNIQUE index is idempotent success — the index already
+        // tracks this SAID and the prior PUT confirmed object-store bytes
+        // match by content-addressing.
+        match self.insert(entry).await {
+            Ok(_) => Ok(()),
+            Err(StorageError::DuplicateRecord(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Fetch a SAD object index entry by its object store SAID.
