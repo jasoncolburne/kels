@@ -56,6 +56,8 @@ clean-standalone:
 	kubectl delete namespace kels-standalone || true
 
 clean-garden: clean-standalone clean-nodes clean-registries
+	rm -rf .garden
+	sleep 10
 
 clean-docker:
 	@echo "Cleaning docker caches..."
