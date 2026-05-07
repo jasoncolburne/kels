@@ -31,3 +31,4 @@ lib/ffi/include/libkels.h
 
 # claude
 .claude/scheduled_tasks.lock
+.working/
