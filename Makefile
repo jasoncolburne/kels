@@ -57,7 +57,6 @@ clean-standalone:
 
 clean-garden: clean-standalone clean-nodes clean-registries
 	rm -rf .garden
-	sleep 10
 
 clean-docker:
 	@echo "Cleaning docker caches..."
@@ -308,4 +307,4 @@ test-federation: configure-dns reset-federation-json deploy-registry-identities 
 
 test-all-deployments: clean-garden test-node clean-garden test-federation
 
-test-staggered-mesh-formation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes seed-kels seed-sads vote-nodes restart-gossip-services-staggered
+test-staggered-mesh-formation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes seed-kels seed-sads vote-nodes restart-gossip-services-staggered test-sad-consistency

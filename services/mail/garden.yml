@@ -31,6 +31,7 @@ dependencies:
   - deploy.objects
   - deploy.kels
   - deploy.identity
+  - deploy.sadstore
 
 variables:
   mailDatabaseUrl: ${var.postgres.url}/mail

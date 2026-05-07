@@ -38,7 +38,6 @@ disabled: ${var.envType == "registry" || var.envType == "standalone"}
 dependencies:
   - run.federation-read-urls
   - build.gossip
-  - deploy.postgres
   - deploy.kels
   - deploy.redis
   - deploy.identity

@@ -12,7 +12,7 @@ echo
 "$SCRIPTS_DIR/federation-deactivate.sh" registry-b .
 
 # Tear down registry-b
-garden cleanup namespace --env=registry-b
+kubectl delete namespace kels-registry-b
 
 # Recompile and redeploy remaining active registries (a, c, d)
 garden deploy --env=registry-a
