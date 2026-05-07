@@ -397,6 +397,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
+        // Wire the deferred-deps pending map into bootstrap so IEL/SE
+        // preload failures parking on `MissingKelEvent` / `MissingSadObject`
+        // / `MissingIelEvent` get replayed by the live `kel_updates`/`iel_updates`/
+        // `sad_updates` drain subscribers when the awaited dep lands. The
+        // map is shared with the inline POST flow built later in this file
+        // (`pending_map` at the DrainExecutor construction site) — same
+        // Redis backend, same TTL, identical drain mechanism.
+        bootstrap = bootstrap.with_pending(pending::PendingMap::new(redis.clone()));
     }
 
     // Step 2-3: Check allowlist and wait if not authorized
@@ -421,17 +429,41 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 );
 
                 // Preload KELs, SAD objects, IELs, and SAD events from Ready peers
-                if let Err(e) = bootstrap.preload_kels().await {
-                    warn!("KEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_objects().await {
-                    warn!("SAD object preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_iels().await {
-                    warn!("IEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_events().await {
-                    warn!("SEL preload failed: {}", e);
+                let mut do_loop = true;
+
+                while do_loop {
+                    do_loop = false;
+
+                    match bootstrap.preload_kels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("KEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_objects().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("SAD preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_iels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("IEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_events().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("SEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+
+                    if do_loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                            _ = kels_core::shutdown_signal() => {
+                                info!("Shutdown signal received during preload");
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                 }
 
                 // Wait 15 minutes before checking again. The longer cadence
@@ -781,17 +813,52 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 info!(
                     "First peer connected — preloading KELs, SAD objects, IELs, and SAD events..."
                 );
-                if let Err(e) = bootstrap.preload_kels().await {
-                    error!("KEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_objects().await {
-                    error!("SAD object preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_iels().await {
-                    error!("IEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_events().await {
-                    error!("SEL preload failed: {}", e);
+
+                // Retry the four preloads as a unit until none of them
+                // surface a `BootstrapError::Sync` failure. Sync failures
+                // include both genuine per-prefix sync errors and chains
+                // parked into the deferred-deps map (drain handles parks
+                // when deps arrive, but bootstrap retry is the poll-based
+                // backstop for the case where drain misses a wake — it's
+                // load-bearing for "we can't start until we're in sync").
+                // Other error variants (Kels / Failed) log and break out
+                // of the inner attempt; the outer match arm continues to
+                // mark-ready below per the original semantics.
+                let mut do_loop = true;
+
+                while do_loop {
+                    do_loop = false;
+
+                    match bootstrap.preload_kels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("KEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_objects().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("SAD object preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_iels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("IEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_events().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("SEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+
+                    if do_loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                            _ = kels_core::shutdown_signal() => {
+                                info!("Shutdown signal received during preload");
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                 }
             }
             Ok(Err(_)) => {

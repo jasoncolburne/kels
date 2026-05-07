@@ -23,12 +23,17 @@
 //! preload KELs via HTTP. But events occurring between the last preload and
 //! joining the gossip network would be missed. The resync catches these events.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner};
 use thiserror::Error;
+
+use crate::pending::{ParkRecord, ParkSubject, PendingMap};
+use crate::sync::{deferred_deps_to_park_inputs, try_parse_deferred_deps};
 
 /// Concurrency cap for bootstrap preload tasks (KEL / SAD object / IEL /
 /// SE). Mirrors `KELS_SAD_AE_TASK_CONCURRENCY`'s posture: bootstrap fires
@@ -52,6 +57,8 @@ pub enum BootstrapError {
     Kels(#[from] KelsError),
     #[error("Bootstrap failed: {0}")]
     Failed(String),
+    #[error("Failed to sync: {0}")]
+    Sync(String),
 }
 
 /// Configuration for bootstrap sync
@@ -94,6 +101,12 @@ pub struct BootstrapSync {
     signer: Arc<dyn PeerSigner>,
     http_client: reqwest::Client,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
+    /// Shared deferred-deps pending map. When set, IEL/SE preload failures
+    /// carrying a typed-422 deferred-deps body are parked here so the live
+    /// `kel_updates` / `iel_updates` / `sad_updates` drainers replay them on
+    /// dep arrival. When `None` (no Redis), preload reverts to fail-and-skip
+    /// — gossip + AE backstop is the only recovery path.
+    pending: Option<PendingMap>,
 }
 
 impl BootstrapSync {
@@ -117,12 +130,22 @@ impl BootstrapSync {
             signer,
             http_client,
             redis: None,
+            pending: None,
         })
     }
 
     /// Set the Redis connection for stale prefix tracking.
     pub fn with_redis(mut self, redis: Arc<redis::aio::ConnectionManager>) -> Self {
         self.redis = Some(redis);
+        self
+    }
+
+    /// Wire the deferred-deps pending map. When set, IEL/SE preload failures
+    /// that surface as typed-422 are parked into the same Redis-backed map
+    /// the inline gossip POST handler uses, so drain on dep arrival picks
+    /// them up automatically.
+    pub fn with_pending(mut self, pending: PendingMap) -> Self {
+        self.pending = Some(pending);
         self
     }
 
@@ -293,6 +316,14 @@ impl BootstrapSync {
             "SAD object preload complete: {} objects synced, {} failed",
             total_synced, total_failed
         );
+
+        if total_failed > 0 {
+            return Err(BootstrapError::Sync(format!(
+                "Failed to preload {} sad objects",
+                total_failed
+            )));
+        }
+
         Ok(())
     }
 
@@ -325,21 +356,39 @@ impl BootstrapSync {
         let mut total_synced: usize = 0;
         let mut total_failed: usize = 0;
 
+        let mut total_parked: usize = 0;
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
+            // Remote effective SAIDs captured during the remote listing
+            // pagination, indexed by chain prefix. The `sync_one` closure
+            // reads this map to construct `ParkSubject::IelChain` when
+            // parking a deferred-deps failure: drain replays from the
+            // recorded origin/effective state, matching the inline POST
+            // park flow's contract.
+            let remote_eff_saids: Arc<Mutex<HashMap<cesr::Digest256, cesr::Digest256>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+
             let remote_for_fetch = remote_client.clone();
             let signer = self.signer.clone();
+            let eff_saids_for_fetch = remote_eff_saids.clone();
             let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
                 move |cursor: Option<cesr::Digest256>| {
                     let client = remote_for_fetch.clone();
                     let signer = signer.clone();
+                    let eff_saids = eff_saids_for_fetch.clone();
                     async move {
                         let resp = client
                             .fetch_iel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
                             .await?;
-                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        let mut keys = Vec::with_capacity(resp.prefixes.len());
+                        let mut map = eff_saids.lock().await;
+                        for s in resp.prefixes {
+                            map.insert(s.prefix, s.said);
+                            keys.push(s.prefix);
+                        }
+                        drop(map);
                         Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
                             keys,
                             next_cursor: resp.next_cursor,
@@ -373,7 +422,13 @@ impl BootstrapSync {
             let local_for_sync = local_client.clone();
             let remote_for_sync = remote_client.clone();
             let peer_node_id = peer.node_id.clone();
+            let peer_kel_prefix = peer.kel_prefix;
             let inflight_sync = inflight.clone();
+            let pending_for_sync = self.pending.clone();
+            let eff_saids_for_sync = remote_eff_saids.clone();
+            let parked_counter: Arc<std::sync::atomic::AtomicUsize> =
+                Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let parked_for_sync = parked_counter.clone();
             let stats = match crate::bootstrap_merge::merge_sync(
                 remote_stream,
                 local_stream,
@@ -384,6 +439,9 @@ impl BootstrapSync {
                     let remote = remote_for_sync.clone();
                     let peer_node_id = peer_node_id.clone();
                     let inflight = inflight_sync.clone();
+                    let pending = pending_for_sync.clone();
+                    let eff_saids = eff_saids_for_sync.clone();
+                    let parked = parked_for_sync.clone();
                     async move {
                         let source = match remote.as_iel_source() {
                             Ok(s) => s,
@@ -412,6 +470,62 @@ impl BootstrapSync {
                         {
                             Ok(()) => true,
                             Err(e) => {
+                                if let Some(pending) = pending.as_ref()
+                                    && let Some(response) = try_parse_deferred_deps(&e)
+                                {
+                                    let remote_eff = eff_saids.lock().await.get(&prefix).copied();
+                                    if let Some(remote_eff_said) = remote_eff {
+                                        let (deps, chain_eff) =
+                                            deferred_deps_to_park_inputs(&response);
+                                        let subject = ParkSubject::IelChain {
+                                            prefix,
+                                            remote_eff_said,
+                                        };
+                                        let record = match ParkRecord::create(
+                                            subject,
+                                            peer_kel_prefix,
+                                            deps,
+                                        ) {
+                                            Ok(r) => r,
+                                            Err(rec_err) => {
+                                                warn!(
+                                                    "ParkRecord::create failed during IEL bootstrap park: {}",
+                                                    rec_err
+                                                );
+                                                warn!(
+                                                    "Failed to sync IEL {} from {} during bootstrap: {}",
+                                                    prefix, peer_node_id, e
+                                                );
+                                                return false;
+                                            }
+                                        };
+                                        match pending
+                                            .park(&record, |p| chain_eff.get(p).copied())
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                debug!(
+                                                    record_said = %record.said,
+                                                    prefix = %prefix,
+                                                    origin = %peer_kel_prefix,
+                                                    "parked bootstrap IEL deferred-deps for drain"
+                                                );
+                                                parked.fetch_add(
+                                                    1,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                                return false;
+                                            }
+                                            Err(park_err) => {
+                                                warn!(
+                                                    record_said = %record.said,
+                                                    "PendingMap::park failed during IEL bootstrap: {}",
+                                                    park_err
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 warn!(
                                     "Failed to sync IEL {} from {} during bootstrap: {}",
                                     prefix, peer_node_id, e
@@ -432,12 +546,21 @@ impl BootstrapSync {
             };
             total_synced += stats.synced;
             total_failed += stats.failed;
+            total_parked += parked_counter.load(std::sync::atomic::Ordering::Relaxed);
         }
 
         info!(
-            "IEL preload complete: {} chains synced, {} failed",
-            total_synced, total_failed
+            "IEL preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
+            total_synced, total_failed, total_parked
         );
+
+        if total_failed > 0 {
+            return Err(BootstrapError::Sync(format!(
+                "Failed to preload {} IELs (incl. {} parked for drain)",
+                total_failed, total_parked
+            )));
+        }
+
         Ok(())
     }
 
@@ -467,21 +590,36 @@ impl BootstrapSync {
         let mut total_synced: usize = 0;
         let mut total_failed: usize = 0;
 
+        let mut total_parked: usize = 0;
         for peer in &ready_peers {
             let peer_sadstore_url = format!("http://sadstore.{}", peer.base_domain);
             let remote_client = kels_core::SadStoreClient::new(&peer_sadstore_url)?;
 
+            // Mirrors the `preload_iels` shape — capture remote effective
+            // SAID per SEL prefix so deferred-deps failures can park into
+            // `ParkSubject::SelChain { prefix, remote_eff_said }`.
+            let remote_eff_saids: Arc<Mutex<HashMap<cesr::Digest256, cesr::Digest256>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+
             let remote_for_fetch = remote_client.clone();
             let signer = self.signer.clone();
+            let eff_saids_for_fetch = remote_eff_saids.clone();
             let remote_stream = crate::bootstrap_merge::SortedKeyStream::new(
                 move |cursor: Option<cesr::Digest256>| {
                     let client = remote_for_fetch.clone();
                     let signer = signer.clone();
+                    let eff_saids = eff_saids_for_fetch.clone();
                     async move {
                         let resp = client
                             .fetch_sel_prefixes(signer.as_ref(), cursor.as_ref(), page_size)
                             .await?;
-                        let keys = resp.prefixes.into_iter().map(|s| s.prefix).collect();
+                        let mut keys = Vec::with_capacity(resp.prefixes.len());
+                        let mut map = eff_saids.lock().await;
+                        for s in resp.prefixes {
+                            map.insert(s.prefix, s.said);
+                            keys.push(s.prefix);
+                        }
+                        drop(map);
                         Ok::<_, KelsError>(crate::bootstrap_merge::KeyPage {
                             keys,
                             next_cursor: resp.next_cursor,
@@ -515,7 +653,13 @@ impl BootstrapSync {
             let local_for_sync = local_client.clone();
             let remote_for_sync = remote_client.clone();
             let peer_node_id = peer.node_id.clone();
+            let peer_kel_prefix = peer.kel_prefix;
             let inflight_sync = inflight.clone();
+            let pending_for_sync = self.pending.clone();
+            let eff_saids_for_sync = remote_eff_saids.clone();
+            let parked_counter: Arc<std::sync::atomic::AtomicUsize> =
+                Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let parked_for_sync = parked_counter.clone();
             let stats = match crate::bootstrap_merge::merge_sync(
                 remote_stream,
                 local_stream,
@@ -526,6 +670,9 @@ impl BootstrapSync {
                     let remote = remote_for_sync.clone();
                     let peer_node_id = peer_node_id.clone();
                     let inflight = inflight_sync.clone();
+                    let pending = pending_for_sync.clone();
+                    let eff_saids = eff_saids_for_sync.clone();
+                    let parked = parked_for_sync.clone();
                     async move {
                         let source = match remote.as_sel_source() {
                             Ok(s) => s,
@@ -554,6 +701,62 @@ impl BootstrapSync {
                         {
                             Ok(()) => true,
                             Err(e) => {
+                                if let Some(pending) = pending.as_ref()
+                                    && let Some(response) = try_parse_deferred_deps(&e)
+                                {
+                                    let remote_eff = eff_saids.lock().await.get(&prefix).copied();
+                                    if let Some(remote_eff_said) = remote_eff {
+                                        let (deps, chain_eff) =
+                                            deferred_deps_to_park_inputs(&response);
+                                        let subject = ParkSubject::SelChain {
+                                            prefix,
+                                            remote_eff_said,
+                                        };
+                                        let record = match ParkRecord::create(
+                                            subject,
+                                            peer_kel_prefix,
+                                            deps,
+                                        ) {
+                                            Ok(r) => r,
+                                            Err(rec_err) => {
+                                                warn!(
+                                                    "ParkRecord::create failed during SEL bootstrap park: {}",
+                                                    rec_err
+                                                );
+                                                warn!(
+                                                    "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
+                                                    prefix, peer_node_id, e
+                                                );
+                                                return false;
+                                            }
+                                        };
+                                        match pending
+                                            .park(&record, |p| chain_eff.get(p).copied())
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                debug!(
+                                                    record_said = %record.said,
+                                                    prefix = %prefix,
+                                                    origin = %peer_kel_prefix,
+                                                    "parked bootstrap SEL deferred-deps for drain"
+                                                );
+                                                parked.fetch_add(
+                                                    1,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                                return false;
+                                            }
+                                            Err(park_err) => {
+                                                warn!(
+                                                    record_said = %record.said,
+                                                    "PendingMap::park failed during SEL bootstrap: {}",
+                                                    park_err
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 warn!(
                                     "Failed to sync SAD Event Log {} from {} during bootstrap: {}",
                                     prefix, peer_node_id, e
@@ -577,12 +780,21 @@ impl BootstrapSync {
             };
             total_synced += stats.synced;
             total_failed += stats.failed;
+            total_parked += parked_counter.load(std::sync::atomic::Ordering::Relaxed);
         }
 
         info!(
-            "SAD Event Log preload complete: {} chains synced, {} failed",
-            total_synced, total_failed
+            "SAD Event Log preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
+            total_synced, total_failed, total_parked
         );
+
+        if total_failed > 0 {
+            return Err(BootstrapError::Sync(format!(
+                "Failed to preload {} SELs (incl. {} parked for drain)",
+                total_failed, total_parked
+            )));
+        }
+
         Ok(())
     }
 
@@ -771,6 +983,14 @@ impl BootstrapSync {
             "KEL preload complete: {} prefixes synced, {} failed",
             total_synced, total_failed
         );
+
+        if total_failed > 0 {
+            return Err(BootstrapError::Sync(format!(
+                "Failed to preload {} KELs",
+                total_failed
+            )));
+        }
+
         Ok(())
     }
 }

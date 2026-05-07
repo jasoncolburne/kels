@@ -425,7 +425,7 @@ const STALE_PREFIX_KEY: &str = "kels:anti_entropy:stale";
 /// then JSON-decoded as `DeferredDepsResponse`. Returns `Some(_)` only when
 /// the body parses as the typed-422 shape *and* carries non-empty deps;
 /// returns `None` for any other error (genuine 5xx, conflict, network).
-fn try_parse_deferred_deps(err: &KelsError) -> Option<DeferredDepsResponse> {
+pub(crate) fn try_parse_deferred_deps(err: &KelsError) -> Option<DeferredDepsResponse> {
     let KelsError::ServerError(body, ErrorCode::InternalError) = err else {
         return None;
     };
@@ -450,7 +450,7 @@ fn try_parse_deferred_deps(err: &KelsError) -> Option<DeferredDepsResponse> {
 /// `MissingDependency::IelPrefix` carries no chain_eff_said in the wire
 /// format (the chain is unknown locally); we substitute the divergent
 /// synthetic so drain still wakes the park on chain-state advance.
-fn deferred_deps_to_park_inputs(
+pub(crate) fn deferred_deps_to_park_inputs(
     response: &DeferredDepsResponse,
 ) -> (BTreeSet<DepRef>, HashMap<cesr::Digest256, cesr::Digest256>) {
     let DeferredDepsResponse::Rejected {
