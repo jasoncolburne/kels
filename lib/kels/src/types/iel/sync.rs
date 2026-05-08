@@ -799,10 +799,14 @@ mod tests {
         let auth = test_digest(b"auth-policy");
         let gov = test_digest(b"gov-policy");
         let mut events = vec![IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap()];
-        for _ in 1..len {
+        for i in 1..len {
             #[allow(clippy::expect_used)]
             let prev = events.last().expect("non-empty");
-            events.push(IdentityEvent::evl(prev, None, None).unwrap());
+            // Each Evl must evolve at least one policy (no-op Evl is a
+            // structural error); evolve auth_policy with a step-unique
+            // SAID so the chain is a sequence of real governance evolutions.
+            let new_auth = test_digest(format!("auth-policy-v{}", i).as_bytes());
+            events.push(IdentityEvent::evl(prev, Some(new_auth), None).unwrap());
         }
         events
     }
@@ -1036,13 +1040,14 @@ mod tests {
     #[tokio::test]
     async fn forward_partitions_contested_divergent_iel_into_non_cnt_then_cnt_chain() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let icp = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
         let prefix = icp.prefix;
 
         // Two competing v=1 events: one Evl, one Cnt. Cnt creates the
         // divergence (post-Evl Cnt would have higher version).
-        let evl_a = IdentityEvent::evl(&icp, None, None).unwrap();
+        let evl_a = IdentityEvent::evl(&icp, Some(auth2), None).unwrap();
         let cnt_b = IdentityEvent::cnt(&icp).unwrap();
 
         // Canonical sort order: at v=1 Evl (kind=1) sorts before Cnt
@@ -1144,7 +1149,10 @@ mod tests {
         } else {
             (evl_b.clone(), evl_a.clone())
         };
-        let evl_v2 = IdentityEvent::evl(&longer_v1, None, None).unwrap();
+        // v=2 Evl extending the longer branch — must evolve at least one
+        // policy. Evolve gov to a SAID distinct from longer_v1's tracked gov.
+        let gov_v2 = test_digest(b"gov-v2");
+        let evl_v2 = IdentityEvent::evl(&longer_v1, None, Some(gov_v2)).unwrap();
 
         // Canonical sort: Icp@0, then v=1 Evls (by said), then v=2 Evl.
         let chain = vec![
@@ -1194,14 +1202,18 @@ mod tests {
 
         // Linear pre-divergence chain: Icp@0, Evl@1, Evl@2, Evl@3, Evl@4.
         // Then divergence at v=5: an Evl on the linear branch + a Cnt
-        // creating divergence by extending v=4.
+        // creating divergence by extending v=4. Each Evl evolves a fresh
+        // auth_policy SAID so every step is a real governance evolution
+        // (no-op Evl is structurally invalid).
         let mut linear = vec![icp.clone()];
-        for _ in 1..=4 {
+        for i in 1..=4 {
             #[allow(clippy::expect_used)]
             let prev = linear.last().expect("non-empty");
-            linear.push(IdentityEvent::evl(prev, None, None).unwrap());
+            let new_auth = test_digest(format!("multi-page-auth-v{}", i).as_bytes());
+            linear.push(IdentityEvent::evl(prev, Some(new_auth), None).unwrap());
         }
-        let evl_v5 = IdentityEvent::evl(linear.last().unwrap(), None, None).unwrap();
+        let auth_v5 = test_digest(b"multi-page-auth-v5");
+        let evl_v5 = IdentityEvent::evl(linear.last().unwrap(), Some(auth_v5), None).unwrap();
         let cnt_v5 = IdentityEvent::cnt(linear.last().unwrap()).unwrap();
         // Canonical sort at v=5: Evl (kind=1) before Cnt (kind=2).
         let mut chain = linear.clone();
@@ -1257,9 +1269,14 @@ mod tests {
         // With page_size=4 and chain length 5 (Icp + Evl@1 + Evl@2 + Evl@v3 +
         // Cnt@v3), page 1 = first 4 events (Icp, Evl@1, Evl@2, Evl@v3),
         // page 2 = [Cnt@v3]. The divergence-creating Cnt is on page 2.
-        let evl_v1 = IdentityEvent::evl(&icp, None, None).unwrap();
-        let evl_v2 = IdentityEvent::evl(&evl_v1, None, None).unwrap();
-        let evl_v3 = IdentityEvent::evl(&evl_v2, None, None).unwrap();
+        // Each Evl evolves a fresh auth_policy SAID so the chain is a
+        // sequence of real governance evolutions (no-op Evl rejected).
+        let auth_v1 = test_digest(b"page-boundary-auth-v1");
+        let auth_v2 = test_digest(b"page-boundary-auth-v2");
+        let auth_v3 = test_digest(b"page-boundary-auth-v3");
+        let evl_v1 = IdentityEvent::evl(&icp, Some(auth_v1), None).unwrap();
+        let evl_v2 = IdentityEvent::evl(&evl_v1, Some(auth_v2), None).unwrap();
+        let evl_v3 = IdentityEvent::evl(&evl_v2, Some(auth_v3), None).unwrap();
         let cnt_v3 = IdentityEvent::cnt(&evl_v2).unwrap();
         let chain = vec![
             icp.clone(),

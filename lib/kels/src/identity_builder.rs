@@ -610,15 +610,16 @@ mod tests {
     fn evolve_extends_pending_tail() {
         let mut b = IdentityEventBuilder::new(None, None, None);
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         b.incept(auth, gov, TEST_TOPIC).unwrap();
 
-        b.evolve(None, None).unwrap();
+        b.evolve(Some(auth2), None).unwrap();
         assert_eq!(b.pending_events().len(), 2);
         let v1 = &b.pending_events()[1];
         assert_eq!(v1.kind, IdentityEventKind::Evl);
         assert_eq!(v1.version, 1);
-        assert_eq!(v1.auth_policy, auth);
+        assert_eq!(v1.auth_policy, auth2);
         assert_eq!(v1.governance_policy, gov);
     }
 
@@ -678,9 +679,10 @@ mod tests {
     async fn contest_with_pending_extends_pending_tail() {
         let mut b = IdentityEventBuilder::new(None, None, None);
         let auth = test_digest(b"auth");
+        let auth2 = test_digest(b"auth-2");
         let gov = test_digest(b"gov");
         b.incept(auth, gov, TEST_TOPIC).unwrap();
-        b.evolve(None, None).unwrap();
+        b.evolve(Some(auth2), None).unwrap();
 
         let cnt_said = b.contest().await.unwrap();
         let staged = b.pending_events();
@@ -690,8 +692,8 @@ mod tests {
         assert_eq!(cnt.said, cnt_said);
         assert_eq!(cnt.previous, Some(staged[1].said));
         assert_eq!(cnt.version, 2);
-        // Cnt preserves both policies.
-        assert_eq!(cnt.auth_policy, auth);
+        // Cnt preserves both policies (i.e., the post-Evl tracked values).
+        assert_eq!(cnt.auth_policy, auth2);
         assert_eq!(cnt.governance_policy, gov);
     }
 
@@ -699,9 +701,10 @@ mod tests {
     async fn decommission_with_pending_extends_pending_tail() {
         let mut b = IdentityEventBuilder::new(None, None, None);
         let auth = test_digest(b"auth");
+        let auth2 = test_digest(b"auth-2");
         let gov = test_digest(b"gov");
         b.incept(auth, gov, TEST_TOPIC).unwrap();
-        b.evolve(None, None).unwrap();
+        b.evolve(Some(auth2), None).unwrap();
 
         let dec_said = b.decommission().await.unwrap();
         let staged = b.pending_events();
@@ -717,9 +720,12 @@ mod tests {
         let mut b = IdentityEventBuilder::new(None, None, None);
         b.incept(test_digest(b"auth"), test_digest(b"gov"), TEST_TOPIC)
             .unwrap();
-        b.evolve(None, None).unwrap();
+        b.evolve(Some(test_digest(b"auth-2")), None).unwrap();
         b.contest().await.unwrap();
 
+        // Second evolve fails on the terminal-state gate (the pending Cnt
+        // freezes further staging) — fires before any structural rule on
+        // the staged event itself, so `(None, None)` is fine here.
         let err = b
             .evolve(None, None)
             .expect_err("expected terminal-state rejection");
@@ -771,10 +777,13 @@ mod tests {
     #[tokio::test]
     async fn contest_on_divergent_chain_extends_lower_said_branch() {
         let auth_a = test_digest(b"auth-1");
+        let auth_a_v1 = test_digest(b"auth-1-v1");
         let auth_b = test_digest(b"auth-2");
         let gov = test_digest(b"gov");
         let v0 = IdentityEvent::icp(auth_a, gov, TEST_TOPIC).unwrap();
-        let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        // Both branches must evolve at least one policy (no-op Evl rejected).
+        // Distinct auth_policy SAIDs both produce divergence and satisfy the rule.
+        let v1_a = IdentityEvent::evl(&v0, Some(auth_a_v1), None).unwrap();
         let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
 
         let (verification, lower_said) =
@@ -804,10 +813,11 @@ mod tests {
     #[tokio::test]
     async fn contest_on_divergent_chain_lower_said_invariant_to_input_order() {
         let auth_a = test_digest(b"auth-1");
+        let auth_a_v1 = test_digest(b"auth-1-v1");
         let auth_b = test_digest(b"auth-2");
         let gov = test_digest(b"gov");
         let v0 = IdentityEvent::icp(auth_a, gov, TEST_TOPIC).unwrap();
-        let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1_a = IdentityEvent::evl(&v0, Some(auth_a_v1), None).unwrap();
         let v1_b = IdentityEvent::evl(&v0, Some(auth_b), None).unwrap();
 
         // Reversed order: v1_b before v1_a.

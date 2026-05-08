@@ -496,14 +496,25 @@ async fn establish_se_chain(setup: &mut Setup, label: &str) -> SadEvent {
     builder.last_event().cloned().expect("v1 tip after flush")
 }
 
-/// Evolve the IEL one step: stage an `Evl` carrying the existing
-/// auth/governance policies forward, anchor in the KEL, submit. Returns
-/// the new IEL event's SAID.
+/// Evolve the IEL one step: stage an `Evl` evolving `auth_policy` to a
+/// freshly-minted immune policy with the same satisfiability as
+/// `setup.policy` (so SE Upds binding to this Evl resolve cleanly under
+/// the original `kel_builder`'s KEL anchor). Anchor the Evl in the KEL
+/// and submit. Returns the new IEL event's SAID and the new policy SAD
+/// (the latter must be threaded into client-side verification via
+/// `verify_chain_with_policies` so the test's `InMemoryPolicyResolver`
+/// can resolve the evolved policy SAID during IEL re-walk).
+///
+/// `Evl` requires evolving at least one of `auth_policy` /
+/// `governance_policy` (no-op `Evl` is a structural rejection); we
+/// evolve `auth_policy` to a `threshold(1, [endorse(KEL_PREFIX)])` shape —
+/// same underlying KEL endorser as the original `endorse(KEL_PREFIX)`,
+/// so satisfiability is preserved while the SAID differs.
 ///
 /// Hand-built rather than via `IdentityEventBuilder::with_prefix` because
 /// `with_prefix` would need an `IdentityStore` to hydrate from, and the
 /// test harness skips that to keep setup lean.
-async fn evolve_iel(setup: &mut Setup, _label: &str) -> Digest256 {
+async fn evolve_iel(setup: &mut Setup, label: &str) -> (Digest256, Policy) {
     use kels_core::IdentityEventKind;
     use verifiable_storage::Chained;
 
@@ -515,9 +526,23 @@ async fn evolve_iel(setup: &mut Setup, _label: &str) -> Digest256 {
         .events;
     let tip = iel_chain.into_iter().last().expect("non-empty IEL");
 
+    let kel_prefix = *setup.kel_builder.prefix().expect("KEL has prefix");
+    let new_auth_policy = Policy::build(
+        &format!("threshold(1, [endorse({})])", kel_prefix),
+        None,
+        true,
+    )
+    .unwrap_or_else(|e| panic!("build evolved auth_policy [{}]: {:?}", label, e));
+    setup
+        .sad_client
+        .post_sad_object(&serde_json::to_value(&new_auth_policy).unwrap())
+        .await
+        .unwrap_or_else(|e| panic!("upload evolved auth_policy [{}]: {:?}", label, e));
+
     let mut evl = tip.clone();
     evl.kind = IdentityEventKind::Evl;
-    // Carry-forward unchanged: same auth_policy / governance_policy.
+    evl.auth_policy = new_auth_policy.said;
+    // governance_policy carries forward (still satisfiable by the same KEL).
     evl.increment().unwrap();
 
     setup.kel_builder.interact(&evl.said).await.unwrap();
@@ -526,7 +551,7 @@ async fn evolve_iel(setup: &mut Setup, _label: &str) -> Digest256 {
         .submit_identity_events(std::slice::from_ref(&evl))
         .await
         .expect("submit IEL Evl");
-    evl.said
+    (evl.said, new_auth_policy)
 }
 
 /// Create IEL divergence: two competing v1 `Evl` events at the same
@@ -1389,7 +1414,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
     let mut setup = setup_kel_iel_policy(harness, "monotonic-regression").await;
 
     // Evolve the IEL once to give us a later Evl event to bind v1 to.
-    let iel_evl_said = evolve_iel(&mut setup, "monotonic-regression").await;
+    let (iel_evl_said, _evolved_policy) = evolve_iel(&mut setup, "monotonic-regression").await;
 
     // Build the SE chain manually so v1 binds to the LATER IEL event
     // (Evl), then attempt v2 binding to the EARLIER IEL Icp.
@@ -1561,11 +1586,17 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     };
     let mut setup = setup_kel_iel_policy(harness, "seal-advances").await;
 
-    // Evolve the IEL so we have a later non-terminal IEL event to bind
-    // the seal to (the builder picks the most recent IEL Icp/Evl).
-    let iel_evl_said = evolve_iel(&mut setup, "seal-advances").await;
-
+    // Establish the SE chain BEFORE evolving the IEL so the SE Icp+Upd
+    // bind to the IEL Icp (whose auth_policy is the original
+    // `setup.policy` known to `setup.checker`). After evolution, the
+    // builder's local resolver doesn't know the evolved auth_policy
+    // SAID, which would trip the client-side flush verifier on
+    // `incept_chain`'s pre-flight resolution.
     let v1 = establish_se_chain(&mut setup, "seal-advances").await;
+
+    // Evolve the IEL so we have a later non-terminal IEL event to bind
+    // the Sea to.
+    let (iel_evl_said, evolved_policy) = evolve_iel(&mut setup, "seal-advances").await;
 
     // Build the seal directly so we control the binding (the builder's
     // `seal()` would also pick the latest IEL Evl; this manual path
@@ -1580,7 +1611,17 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     assert!(resp.applied);
 
     let prefix = sea.prefix;
-    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    // The IEL evolved auth_policy to `evolved_policy`; thread it through
+    // the client-side resolver so the IEL re-walk during verification
+    // resolves the evolved-policy SAID to its (immune) Policy SAD.
+    let v = verify_chain_with_policies(
+        &setup.sad_client,
+        harness,
+        setup.policy.clone(),
+        vec![evolved_policy],
+        &prefix,
+    )
+    .await;
     assert_eq!(
         v.last_governance_version(),
         Some(sea.version),
@@ -1921,7 +1962,7 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
     let v1 = establish_se_chain(&mut setup, "upd-binds-later-evl").await;
 
     // Evolve the IEL.
-    let evl_said = evolve_iel(&mut setup, "upd-binds-later-evl").await;
+    let (evl_said, evolved_policy) = evolve_iel(&mut setup, "upd-binds-later-evl").await;
 
     // Author a v2 Upd binding to the new IEL Evl.
     let content = upload_content(&setup.sad_client, "post-evl").await;
@@ -1935,7 +1976,16 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
     assert!(resp.applied);
 
     let prefix = upd.prefix;
-    let v = verify_chain(&setup.sad_client, &setup, &prefix).await;
+    // The IEL evolved auth_policy; thread the new policy SAD through
+    // client-side verification so the IEL re-walk resolves it.
+    let v = verify_chain_with_policies(
+        &setup.sad_client,
+        harness,
+        setup.policy.clone(),
+        vec![evolved_policy],
+        &prefix,
+    )
+    .await;
     assert_eq!(
         v.last_identity_event(),
         Some(&evl_said),

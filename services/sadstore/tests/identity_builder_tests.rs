@@ -486,7 +486,11 @@ async fn evolve_appends_to_chain() {
     };
     let (_kel_prefix, mut kel_builder, policy, sad_client) =
         setup_kel_and_immune_policy(harness, "evolve-appends").await;
-    let checker = build_checker(harness, vec![policy.clone()]);
+    // Second immune policy to evolve auth_policy at v1 — Evl must evolve at
+    // least one policy (no-op rejected).
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evolve-appends-b").await;
+    let checker = build_checker(harness, vec![policy.clone(), policy_b.clone()]);
 
     let mut builder = IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
     let icp_said = builder
@@ -495,7 +499,9 @@ async fn evolve_appends_to_chain() {
     kel_builder.interact(&icp_said).await.expect("anchor Icp");
     let _ = builder.flush().await.expect("flush Icp");
 
-    let evl_said = builder.evolve(None, None).expect("stage Evl");
+    let evl_said = builder
+        .evolve(Some(policy_b.said), None)
+        .expect("stage Evl evolving auth_policy");
     kel_builder.interact(&evl_said).await.expect("anchor Evl");
     let _ = builder.flush().await.expect("flush Evl");
 
@@ -540,6 +546,105 @@ async fn evolve_with_auth_policy_evolves_branch_state() {
     assert_eq!(evl_event.governance_policy, policy_a.said); // unchanged
     assert_eq!(v.auth_policy_at(&icp_said), Some(policy_a.said));
     assert_eq!(v.auth_policy_at(&evl_said), Some(policy_b.said));
+}
+
+/// Positive companion: Evl evolving only `governance_policy` is accepted.
+/// The auth-only case is covered by
+/// `evolve_with_auth_policy_evolves_branch_state` above.
+#[tokio::test]
+#[serial]
+async fn evolve_with_governance_policy_evolves_branch_state() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy_a, sad_client) =
+        setup_kel_and_immune_policy(harness, "evolve-gov").await;
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evolve-gov-b").await;
+    let checker = build_checker(harness, vec![policy_a.clone(), policy_b.clone()]);
+
+    let mut builder = IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let icp_said = builder
+        .incept(policy_a.said, policy_a.said, TEST_TOPIC)
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    let _ = builder.flush().await.unwrap();
+
+    let evl_said = builder.evolve(None, Some(policy_b.said)).unwrap();
+    kel_builder.interact(&evl_said).await.unwrap();
+    let _ = builder.flush().await.unwrap();
+
+    let v = builder.iel_verification().unwrap();
+    let evl_event = v.current_event().unwrap();
+    assert_eq!(evl_event.auth_policy, policy_a.said); // unchanged
+    assert_eq!(evl_event.governance_policy, policy_b.said);
+    assert_eq!(v.governance_policy_at(&icp_said), Some(policy_a.said));
+    assert_eq!(v.governance_policy_at(&evl_said), Some(policy_b.said));
+}
+
+/// Positive: Evl evolving both `auth_policy` and `governance_policy` lands
+/// cleanly. Two distinct immune policies — one as the new auth, one as the
+/// new governance — are uploaded and threaded through the checker.
+#[tokio::test]
+#[serial]
+async fn evolve_with_both_policies_evolves_branch_state() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy_a, sad_client) =
+        setup_kel_and_immune_policy(harness, "evolve-both").await;
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evolve-both-auth").await;
+    let policy_c =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evolve-both-gov").await;
+    let checker = build_checker(
+        harness,
+        vec![policy_a.clone(), policy_b.clone(), policy_c.clone()],
+    );
+
+    let mut builder = IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+    let icp_said = builder
+        .incept(policy_a.said, policy_a.said, TEST_TOPIC)
+        .unwrap();
+    kel_builder.interact(&icp_said).await.unwrap();
+    let _ = builder.flush().await.unwrap();
+
+    let evl_said = builder
+        .evolve(Some(policy_b.said), Some(policy_c.said))
+        .unwrap();
+    kel_builder.interact(&evl_said).await.unwrap();
+    let _ = builder.flush().await.unwrap();
+
+    let v = builder.iel_verification().unwrap();
+    let evl_event = v.current_event().unwrap();
+    assert_eq!(evl_event.auth_policy, policy_b.said);
+    assert_eq!(evl_event.governance_policy, policy_c.said);
+}
+
+/// Negative: a no-op `Evl` (both `auth_policy` and `governance_policy`
+/// preserved from the predecessor) is rejected as a structural error. The
+/// chain's `last_governance_version` is the evaluation seal, not a heartbeat
+/// counter — every `Evl` must be a real governance evolution.
+#[tokio::test]
+#[serial]
+async fn submit_rejects_evl_with_unchanged_policies() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, policy, sad_client) =
+        setup_kel_and_immune_policy(harness, "evl-no-op-rejected").await;
+
+    let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
+    // No-op: preserves both fields from v0.
+    let v1_no_op = IdentityEvent::evl(&v0, None, None).unwrap();
+    kel_builder.interact(&v0.said).await.unwrap();
+    kel_builder.interact(&v1_no_op.said).await.unwrap();
+
+    let resp = sad_client.submit_identity_events(&[v0, v1_no_op]).await;
+    assert_err_contains(
+        &resp,
+        "must evolve at least one of auth_policy / governance_policy",
+    );
 }
 
 #[tokio::test]
@@ -650,9 +755,12 @@ async fn divergent_chain_rejects_non_cnt_with_contest_required() {
     // any seal exists. Tests `divergent_chain_rejects_dec` and
     // `divergent_chain_accepts_cnt_terminates` use the same shape.
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
-    let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
     let policy_b =
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "divergent-b").await;
+    // Both branches must evolve at least one policy. v1_a evolves
+    // governance_policy to policy_b; v1_b evolves auth_policy to policy_b —
+    // different field changes produce distinct SAIDs (divergence).
+    let v1_a = IdentityEvent::evl(&v0, None, Some(policy_b.said)).unwrap();
     let v1_b = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     kel_builder.interact(&v0.said).await.unwrap();
     kel_builder.interact(&v1_a.said).await.unwrap();
@@ -687,7 +795,9 @@ async fn divergent_chain_rejects_dec_with_contest_required() {
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "divergent-dec-b").await;
 
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
-    let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+    // Both branches evolve a policy (no-op Evl rejected); distinct field
+    // changes produce divergence.
+    let v1_a = IdentityEvent::evl(&v0, None, Some(policy_b.said)).unwrap();
     let v1_b = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     for e in [&v0, &v1_a, &v1_b] {
         kel_builder.interact(&e.said).await.unwrap();
@@ -718,9 +828,27 @@ async fn divergent_chain_accepts_cnt_terminates() {
         setup_kel_and_immune_policy(harness, "divergent-cnt").await;
     let policy_b =
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "divergent-cnt-b").await;
+    // Both branches evolve `auth_policy` (gov is preserved on both) so the
+    // tracked governance_policy on either branch is still satisfied by an
+    // anchor in the original `kel_builder`'s KEL — the Cnt below extends
+    // whichever branch has the lower SAID and must satisfy that branch's
+    // tracked gov to land. policy_c uses a different DSL shape over the
+    // same KEL endorser as the original setup policy (different SAID, same
+    // satisfiability), so v1_a's auth differs from both v0 and v1_b.
+    let kel_prefix_str = kel_builder.prefix().unwrap().to_string();
+    let policy_c = Policy::build(
+        &format!("threshold(1, [endorse({})])", kel_prefix_str),
+        None,
+        true,
+    )
+    .expect("build policy_c");
+    sad_client
+        .post_sad_object(&serde_json::to_value(&policy_c).unwrap())
+        .await
+        .expect("upload policy_c");
 
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
-    let v1_a = IdentityEvent::evl(&v0, None, None).unwrap();
+    let v1_a = IdentityEvent::evl(&v0, Some(policy_c.said), None).unwrap();
     let v1_b = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     for e in [&v0, &v1_a, &v1_b] {
         kel_builder.interact(&e.said).await.unwrap();
@@ -938,10 +1066,13 @@ async fn submit_evl_at_sealed_version_returns_contest_required() {
     };
     let (_kel_prefix, mut kel_builder, policy, sad_client) =
         setup_kel_and_immune_policy(harness, "evl-sealed-version").await;
+    let policy_b =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evl-sealed-b").await;
 
-    // v0 (Icp) + v1 (Evl) → seal at v1.
+    // v0 (Icp) + v1 (Evl) → seal at v1. v1 evolves auth_policy to policy_b
+    // (no-op Evl is rejected; every Evl must be a real evolution).
     let v0 = IdentityEvent::icp(policy.said, policy.said, TEST_TOPIC).unwrap();
-    let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+    let v1 = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     kel_builder.interact(&v0.said).await.unwrap();
     kel_builder.interact(&v1.said).await.unwrap();
     let _ = sad_client
@@ -954,9 +1085,9 @@ async fn submit_evl_at_sealed_version_returns_contest_required() {
     // rejects: "Cannot fork at version 1 — sealed by governance evaluation
     // at version 1". (#171: handler-side algorithmic-ContestRequired
     // duplicate removed; storage layer is the authoritative seal-cap surface.)
-    let policy_b =
-        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "evl-sealed-b").await;
-    let v1_alt = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
+    // v1_alt evolves governance_policy (vs. v1's auth_policy) so it has a
+    // distinct SAID while still being a real evolution.
+    let v1_alt = IdentityEvent::evl(&v0, None, Some(policy_b.said)).unwrap();
     kel_builder.interact(&v1_alt.said).await.unwrap();
     let resp = sad_client.submit_identity_events(&[v1_alt]).await;
     assert_err_contains(&resp, "Cannot fork");
@@ -1017,9 +1148,11 @@ async fn submit_rejects_cnt_with_evolved_auth_policy() {
     let policy_b =
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "x2-cnt-auth-b").await;
 
-    // Land normal Icp + Evl with policy_a.
+    // Land normal Icp + Evl. v1 evolves governance_policy to policy_b so
+    // auth_policy stays = policy_a — the Cnt-tamper below switches Cnt's
+    // auth_policy to policy_b, making it differ from the predecessor v1.
     let v0 = IdentityEvent::icp(policy_a.said, policy_a.said, TEST_TOPIC).unwrap();
-    let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+    let v1 = IdentityEvent::evl(&v0, None, Some(policy_b.said)).unwrap();
     kel_builder.interact(&v0.said).await.unwrap();
     kel_builder.interact(&v1.said).await.unwrap();
     let _ = sad_client
@@ -1057,8 +1190,11 @@ async fn submit_rejects_dec_with_evolved_governance_policy() {
     let policy_b =
         upload_immune_policy(harness, kel_builder.prefix().unwrap(), "x2-dec-gov-b").await;
 
+    // v1 evolves auth_policy to policy_b so governance_policy stays = policy_a
+    // — the Dec-tamper below switches Dec's governance_policy to policy_b,
+    // making it differ from the predecessor v1.
     let v0 = IdentityEvent::icp(policy_a.said, policy_a.said, TEST_TOPIC).unwrap();
-    let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+    let v1 = IdentityEvent::evl(&v0, Some(policy_b.said), None).unwrap();
     kel_builder.interact(&v0.said).await.unwrap();
     kel_builder.interact(&v1.said).await.unwrap();
     let _ = sad_client

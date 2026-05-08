@@ -9,7 +9,7 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 | Kind | Topic | Purpose |
 |---|---|---|
 | `Icp` | `kels/iel/v1/events/icp` | Inception (v0). Declares both `auth_policy` and `governance_policy`. Seeds prefix derivation via `(auth_policy, governance_policy, topic)`. |
-| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_version`; may evolve `auth_policy` and/or `governance_policy`. |
+| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_version`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
@@ -24,7 +24,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 | Kind | version | previous | auth_policy | governance_policy | sort_priority | authorization |
 |---|---|---|---|---|---|---|
 | `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) |
-| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved | 1 | governance |
+| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance |
 | `Cnt` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 2 | governance |
 | `Dec` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 3 | governance |
 
@@ -37,7 +37,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 Every IEL event carries `auth_policy` and `governance_policy`. The verifier checks the per-kind discipline as part of branch-state validation:
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
-- **`Evl`**: may carry the same values as the predecessor (no evolution — `Evl` is a pure governance attestation that advances `last_governance_version` without changing tracked policies) OR may carry different values (an evolution; the verifier records the new tracked policies after confirming the new policy is immune and the Evl is anchored under the *previous* tracked governance_policy). Either field can evolve independently.
+- **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_version` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
 - **`Cnt` / `Dec`**: must carry the same values as the predecessor. The verifier rejects any Cnt/Dec whose `auth_policy` or `governance_policy` differs from the predecessor's as a structural-equivalent error (the design's "forbidden field on terminal kinds" rule, enforced at the verifier rather than at `validate_structure` because the predecessor's values are needed to make the comparison).
 
 ### Satisfaction model
@@ -50,7 +50,7 @@ The "authorization" column names which policy must be satisfied for the verifier
 ### `auth_policy` semantics
 
 - `Icp`: declared as a **field** that seeds the IEL prefix (prefix = Blake3 of v0 template with said+prefix blanked). It does NOT authorize the Icp itself — Icp is governance-authorized (see [governance_policy semantics](#governance_policy-semantics) below). The `auth_policy` declared at Icp is consumed downstream by SEL `Upd` events that bind to this Icp via `identity_event`.
-- `Evl`: present on every event; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`).
+- `Evl`: present on every event; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`). At least one of `auth_policy` / `governance_policy` must evolve in any given `Evl` — an Evl preserving both is rejected.
 - `Cnt` / `Dec`: present on every event; must be preserved (== previous). Verifier rejects evolution at terminal kinds.
 
 The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SE event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
@@ -58,7 +58,7 @@ The verifier's branch state tracks the effective `auth_policy` — seeded from `
 ### `governance_policy` semantics
 
 - `Icp`: declared. Identity chains always declare governance at v0 (no Est dance). Also serves as the **authorization gate** (Icp.said must be anchored under the declared `governance_policy`) — every IEL event is a governance act.
-- `Evl`: present on every event; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy).
+- `Evl`: present on every event; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy). At least one of `auth_policy` / `governance_policy` must evolve per Evl.
 - `Cnt` / `Dec`: present on every event; must be preserved.
 
 ### Policy immunity requirement
@@ -89,10 +89,9 @@ Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary 
 v0  kind=icp  auth_policy=A0, governance_policy=G0
 v1  kind=evl  auth_policy=A1                              ← auth_policy evolved; governance_policy unchanged
 v2  kind=evl  governance_policy=G1                        ← governance_policy evolved; auth_policy unchanged
-v3  kind=evl                                              ← pure attestation; no field evolution
 ```
 
-Pure-attestation `Evl` is permitted — it advances `last_governance_version` without changing tracked policies. Useful as a periodic governance reattestation if no concrete evolution is needed.
+Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_governance_version` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
 
 ### Divergence terminated by contest
 

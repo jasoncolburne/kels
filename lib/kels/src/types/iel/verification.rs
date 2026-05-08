@@ -9,8 +9,11 @@
 //! Discipline`):
 //! - `Icp` — declares both policies; verifier records them as the chain's
 //!   tracked auth/governance after immunity + anchoring checks pass.
-//! - `Evl` — may carry policies forward unchanged (pure attestation) or evolve
-//!   them; the verifier authorizes Evl against the *previous* tracked
+//! - `Evl` — must evolve at least one of `auth_policy` / `governance_policy`
+//!   (a no-op Evl that preserves both fields is rejected as a structural
+//!   error — the chain's `last_governance_version` is the evaluation seal,
+//!   not a heartbeat counter, so every Evl must be a real governance act).
+//!   The verifier authorizes Evl against the *previous* tracked
 //!   governance_policy and immunity-checks any new value before adopting.
 //! - `Cnt` / `Dec` — must preserve both policies. The verifier rejects any
 //!   change as a structural error (the design's "forbidden field on terminal
@@ -707,13 +710,26 @@ impl IelVerifier {
                         self.policy_satisfied = false;
                     }
 
-                    // Per-kind discipline: Evl may evolve policies. Check
-                    // immunity on any new value before adopting it. Hard
-                    // even on post-divergence: structural well-formedness
-                    // is independent of divergence position.
+                    // Per-kind discipline: Evl must evolve at least one of
+                    // auth_policy / governance_policy. A no-op Evl that
+                    // preserves both fields would extend the chain without
+                    // governance progress, diluting `last_governance_version`
+                    // as the evaluation seal. Hard structural rejection,
+                    // independent of divergence position.
                     let auth_changed = event.auth_policy != branch.tracked_auth_policy;
                     let gov_changed = event.governance_policy != branch.tracked_governance_policy;
 
+                    if !auth_changed && !gov_changed {
+                        return Err(KelsError::VerificationFailed(format!(
+                            "IEL Evl {} must evolve at least one of auth_policy / governance_policy \
+                             (no-op Evl rejected — every Evl is a real governance evaluation)",
+                            event.said
+                        )));
+                    }
+
+                    // Immunity check on any new value before adopting it.
+                    // Hard even on post-divergence: structural well-formedness
+                    // is independent of divergence position.
                     if auth_changed && !self.is_immune_collecting(&event.auth_policy).await? {
                         return Err(KelsError::VerificationFailed(format!(
                             "IEL Evl {} evolves auth_policy to non-immune {}",
@@ -1087,10 +1103,11 @@ mod tests {
         }
 
         let auth = test_digest(b"auth-collect-iel");
+        let auth2 = test_digest(b"auth-collect-iel-2");
         let gov = test_digest(b"gov-collect-iel");
         let kel_prefix = test_digest(b"missing-kel-prefix-iel");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
         let v1_said = v1.said;
 
         let checker: Arc<dyn PolicyChecker + Send + Sync> =
@@ -1148,9 +1165,10 @@ mod tests {
         }
 
         let auth = test_digest(b"auth-sad-collect");
+        let auth2 = test_digest(b"auth-sad-collect-2");
         let gov = test_digest(b"gov-sad-collect");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         // Pin the governance_policy SAID as the missing one so both the Icp
         // self-anchor evaluate (`event.governance_policy`) and the Evl
@@ -1215,9 +1233,10 @@ mod tests {
     #[tokio::test]
     async fn linear_chain_icp_then_evl_verifies() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
         verifier
@@ -1233,7 +1252,7 @@ mod tests {
         assert_eq!(v.current_event().map(|e| e.said), Some(v1.said));
         assert_eq!(v.auth_policy_at(&v0.said), Some(auth));
         assert_eq!(v.governance_policy_at(&v0.said), Some(gov));
-        assert_eq!(v.auth_policy_at(&v1.said), Some(auth)); // unchanged
+        assert_eq!(v.auth_policy_at(&v1.said), Some(auth2)); // evolved
     }
 
     #[tokio::test]
@@ -1255,6 +1274,74 @@ mod tests {
         assert_eq!(v.auth_policy_at(&v1.said), Some(auth2));
         assert_eq!(v.governance_policy_at(&v0.said), Some(gov));
         assert_eq!(v.governance_policy_at(&v1.said), Some(gov));
+    }
+
+    /// Positive companion: Evl evolving only `governance_policy` is accepted.
+    #[tokio::test]
+    async fn evl_evolves_governance_policy_visible_in_history() {
+        let auth = test_digest(b"auth-policy");
+        let gov1 = test_digest(b"gov-1");
+        let gov2 = test_digest(b"gov-2");
+        let v0 = IdentityEvent::icp(auth, gov1, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, None, Some(gov2)).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.auth_policy_at(&v0.said), Some(auth));
+        assert_eq!(v.auth_policy_at(&v1.said), Some(auth)); // unchanged
+        assert_eq!(v.governance_policy_at(&v0.said), Some(gov1));
+        assert_eq!(v.governance_policy_at(&v1.said), Some(gov2));
+    }
+
+    /// Positive companion: Evl evolving both policies is accepted.
+    #[tokio::test]
+    async fn evl_evolves_both_policies_visible_in_history() {
+        let auth1 = test_digest(b"auth-1");
+        let auth2 = test_digest(b"auth-2");
+        let gov1 = test_digest(b"gov-1");
+        let gov2 = test_digest(b"gov-2");
+        let v0 = IdentityEvent::icp(auth1, gov1, TEST_TOPIC).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), Some(gov2)).unwrap();
+
+        let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.auth_policy_at(&v1.said), Some(auth2));
+        assert_eq!(v.governance_policy_at(&v1.said), Some(gov2));
+    }
+
+    /// Negative: an Evl that preserves both `auth_policy` and
+    /// `governance_policy` (a "pure attestation") is rejected as a
+    /// structural error. `last_governance_version` is the chain's
+    /// evaluation seal, not a heartbeat counter — every Evl must be a real
+    /// governance evolution. Key rotation is a KEL-layer concern that
+    /// surfaces through the anchoring model, not via no-op IEL extensions.
+    #[tokio::test]
+    async fn evl_with_no_field_changes_rejected() {
+        let auth = test_digest(b"auth-policy");
+        let gov = test_digest(b"gov-policy");
+        let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
+        let v1_no_op = IdentityEvent::evl(&v0, None, None).unwrap();
+
+        let verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
+        let err = run(verifier, &[v0, v1_no_op])
+            .await
+            .expect_err("no-op Evl must HARD-fail");
+        assert!(
+            err.to_string()
+                .contains("must evolve at least one of auth_policy / governance_policy"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -1611,9 +1698,11 @@ mod tests {
     #[tokio::test]
     async fn resume_extends_chain_after_save() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
+        let auth3 = test_digest(b"auth-policy-3");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
         verifier
@@ -1623,7 +1712,7 @@ mod tests {
         let token = verifier.finish().await.unwrap();
 
         // Resume and extend with another Evl.
-        let v2 = IdentityEvent::evl(&v1, None, None).unwrap();
+        let v2 = IdentityEvent::evl(&v1, Some(auth3), None).unwrap();
         let mut resumed = IelVerifier::resume(&token, always_pass()).unwrap();
         resumed
             .verify_page(std::slice::from_ref(&v2))
@@ -1686,9 +1775,10 @@ mod tests {
     #[tokio::test]
     async fn satisfied_saids_populates_for_pre_divergence_anchored_event() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
         verifier.check_satisfied([v0.said, v1.said]);
@@ -1708,9 +1798,10 @@ mod tests {
     #[tokio::test]
     async fn satisfied_saids_excludes_unqueried_event() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         // Only v1 registered; v0 isn't.
         let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
@@ -1734,9 +1825,10 @@ mod tests {
         // at v=1, and per the design Cnt's own SAID is structurally NOT in
         // satisfied_saids regardless of the auth check.
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let evl = IdentityEvent::evl(&v0, None, None).unwrap();
+        let evl = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
         let cnt = IdentityEvent::cnt(&v0).unwrap();
 
         // Sort canonical: kind sort_priority places Evl=1 before Cnt=2.
@@ -1786,10 +1878,11 @@ mod tests {
         // Even with the post-divergence soft-fail, structural rules stay HARD.
         // A Cnt with a tampered governance_policy must still bounce.
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov1 = test_digest(b"gov-1");
         let gov2 = test_digest(b"gov-2");
         let v0 = IdentityEvent::icp(auth, gov1, TEST_TOPIC).unwrap();
-        let evl_a = IdentityEvent::evl(&v0, None, None).unwrap();
+        let evl_a = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
         let mut cnt_b = IdentityEvent::cnt(&v0).unwrap();
         // Tamper structurally: Cnt must preserve governance_policy.
         cnt_b.governance_policy = gov2;
@@ -1812,9 +1905,11 @@ mod tests {
     #[tokio::test]
     async fn resume_rehydrates_queried_and_satisfied_saids() {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
+        let auth3 = test_digest(b"auth-policy-3");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
 
         let mut verifier = IelVerifier::new(Some(&v0.prefix), always_pass());
         verifier.check_satisfied([v0.said, v1.said]);
@@ -1828,7 +1923,7 @@ mod tests {
 
         // Resume: queried_saids and satisfied_saids carry across the
         // resume boundary (IEL/SE divergence from KEL's reset-on-resume).
-        let v2 = IdentityEvent::evl(&v1, None, None).unwrap();
+        let v2 = IdentityEvent::evl(&v1, Some(auth3), None).unwrap();
         let mut resumed = IelVerifier::resume(&token, always_pass()).unwrap();
         resumed
             .verify_page(std::slice::from_ref(&v2))

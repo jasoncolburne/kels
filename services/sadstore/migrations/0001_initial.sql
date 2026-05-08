@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS iel_events (
     version BIGINT NOT NULL,
     topic TEXT NOT NULL,
     kind TEXT NOT NULL,              -- kels/iel/v1/events/{icp,evl,cnt,dec}
-    auth_policy TEXT NOT NULL,       -- declared at Icp; preserved or evolved at Evl; preserved at Cnt/Dec
+    auth_policy TEXT NOT NULL,       -- declared at Icp; preserved or evolved at Evl (at least one of auth/governance MUST evolve per Evl); preserved at Cnt/Dec
     governance_policy TEXT NOT NULL  -- same shape
 );
 

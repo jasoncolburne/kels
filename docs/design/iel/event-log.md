@@ -26,7 +26,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
 | `Icp` | Inception (v0). Declares `auth_policy` and `governance_policy`. | `governance_policy` (Icp.said anchored under the declared governance_policy — every IEL event is a governance act). | No |
-| `Evl` | Evolve — governance evaluation; advances the seal, may evolve `auth_policy` and/or `governance_policy`. | `governance_policy`. | No |
+| `Evl` | Evolve — governance evaluation; advances the seal. MUST evolve at least one of `auth_policy` / `governance_policy` (a no-op Evl is rejected as a structural error). | `governance_policy`. | No |
 | `Cnt` | Contest — terminal due to authority conflict or divergence. | `governance_policy`. | **Yes** |
 | `Dec` | Decommission — terminal owner-initiated end. | `governance_policy`. | **Yes** |
 
@@ -35,6 +35,8 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). *
 ## Evaluation Seal and Anchor Non-Poisonability
 
 The `last_governance_version` is the most recent version at which an `Evl` landed. It is the chain's **evaluation seal**.
+
+**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error. This keeps `last_governance_version` meaningful as the evaluation seal — it advances only when the governance state actually moves, not on heartbeat extensions. There is no use case for a periodic re-attestation: IEL has no repair primitive that would need governance "exercise," and key rotation lives at the KEL layer below (anchoring KELs rotate independently; IEL doesn't need to mirror them).
 
 **Once an evaluation lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on policies introduced or evolved on the chain:
 

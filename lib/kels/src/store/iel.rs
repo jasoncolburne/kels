@@ -138,9 +138,11 @@ mod tests {
 
     fn fixture_chain() -> (IdentityEvent, IdentityEvent) {
         let auth = test_digest(b"auth-policy");
+        let auth2 = test_digest(b"auth-policy-2");
         let gov = test_digest(b"gov-policy");
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
-        let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
+        // Evl must evolve at least one policy (no-op rejected).
+        let v1 = IdentityEvent::evl(&v0, Some(auth2), None).unwrap();
         (v0, v1)
     }
 
