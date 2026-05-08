@@ -54,7 +54,7 @@ The rule is enforced inside the verifier (`SelVerifier::finish_internal` returns
 
 The Icp itself is still permissionless and still dedup-idempotent across submitters — the rule only governs whether the batch as a whole lands. If `[Icp, Upd_A]` and `[Icp, Upd_B]` race, the first batch lands; the second batch's Icp dedups, its Upd extends as v2 (subject to monotonic and authorization rules).
 
-This rule is SE-specific. IEL has no analogous rule — IEL Icp is itself policy-enforced (anchored under its declared `auth_policy`), so an IEL Icp alone is already a meaningful, authorized chain birth.
+This rule is SE-specific. IEL has no analogous rule — IEL Icp is itself policy-enforced (anchored under its declared `governance_policy`, since every IEL event is governance-authorized), so an IEL Icp alone is already a meaningful, authorized chain birth.
 
 ### `identity` semantics
 

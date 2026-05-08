@@ -11,7 +11,7 @@ IEL verification ensures:
 - All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
-- `Icp` is anchored under its declared `auth_policy` (self-authorization)
+- `Icp` is anchored under its declared `governance_policy` (self-governance-endorsement — every IEL event is a governance act)
 - `Evl` / `Cnt` / `Dec` are anchored under the branch's tracked `governance_policy`
 - Any policy referenced as `auth_policy` or `governance_policy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
@@ -80,7 +80,7 @@ When an event requires policy satisfaction, the verifier resolves the relevant p
 ```
 verify_policy(event, branch):
     match event.kind:
-        Icp           → self_satisfies(event)  // anchored under event.auth_policy
+        Icp           → self_satisfies(event)  // anchored under event.governance_policy
         Evl           → satisfies(event, branch.tracked_governance_policy)
         Cnt, Dec      → satisfies(event, branch.tracked_governance_policy)
 
@@ -91,8 +91,8 @@ verify_policy(event, branch):
 
 Policy state is **branch-tracked**:
 
-- `tracked_auth_policy` — seeded from v0's `auth_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it. Updated whenever an authorized `Evl` carries a new `auth_policy` (subject to the same immunity check on the new policy).
-- `tracked_governance_policy` — seeded from v0's `governance_policy` declaration. Updated whenever an authorized `Evl` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
+- `tracked_auth_policy` — seeded from v0's `auth_policy` declaration *after* the verifier confirms the policy is immune (see Immunity check below). The Icp anchor check is against `governance_policy`, not `auth_policy`; tracked_auth_policy is the per-event policy declaration consumed downstream by SEL `Upd` via `identity_event` binding. Updated whenever an authorized `Evl` carries a new `auth_policy` (subject to the same immunity check on the new policy).
+- `tracked_governance_policy` — seeded from v0's `governance_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it (the IEL Icp self-governance-endorsement check). Updated whenever an authorized `Evl` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
 
 **Immunity check.** Whenever `tracked_auth_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
 
@@ -154,11 +154,11 @@ Accessors:
 | Version monotonicity | Each event's version equals predecessor's version + 1 |
 | Inception version | Inception (no `previous`) must have version 0 |
 | Topic consistency | All events on a branch share the same topic |
-| `auth_policy` satisfaction at Icp | `evaluate_anchored_policy(event.auth_policy, event.said)` |
+| `governance_policy` satisfaction at Icp | `evaluate_anchored_policy(event.governance_policy, event.said)` (self-governance-endorsement) |
 | `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Cnt/Dec |
 | Policy immunity | Every introduced/evolved auth_policy or governance_policy must have `immune: true` |
 
-Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event after Icp is governance-authorized — implicit bound).
+Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
 
 ## Divergence Handling
 
@@ -210,7 +210,7 @@ let verification = verifier.finish().await?;
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency
-7. Policy satisfaction via `PolicyChecker` (auth_policy at Icp; governance_policy for Evl/Cnt/Dec)
+7. Policy satisfaction via `PolicyChecker` (`governance_policy` for every kind — Icp anchored under its declared `governance_policy`; Evl/Cnt/Dec anchored under the branch's tracked `governance_policy`)
 8. Immunity check on policy seed/update
 
 ## Cross-Chain Use: SE Authorization Resolution

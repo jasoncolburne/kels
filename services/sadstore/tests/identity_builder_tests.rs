@@ -385,7 +385,7 @@ async fn incept_and_flush(
     kel_builder
         .interact(&icp_said)
         .await
-        .expect("anchor Icp under auth_policy");
+        .expect("anchor Icp under governance_policy");
 
     let _ = builder.flush().await.expect("flush Icp");
     (builder, kel_builder, policy)
@@ -858,14 +858,14 @@ async fn submit_rejects_non_immune_governance_policy_at_evl_evolution() {
 
 #[tokio::test]
 #[serial]
-async fn submit_rejects_icp_not_anchored_under_declared_auth_policy() {
+async fn submit_rejects_icp_not_anchored_under_declared_governance_policy() {
     let Some(harness) = get_harness().await else {
         return;
     };
     let (_kel_prefix, _kel_builder, policy, sad_client) =
         setup_kel_and_immune_policy(harness, "icp-anchor-gate").await;
 
-    // Submit Icp WITHOUT calling kel_builder.interact — the auth_policy
+    // Submit Icp WITHOUT calling kel_builder.interact — the governance_policy
     // requires `endorse(KEL_PREFIX)` to anchor the Icp.said in this KEL,
     // and we deliberately skip that step. Per #156 collect-mode, the
     // missing anchor surfaces as a deferrable `kel_anchor` dep on a
@@ -877,6 +877,57 @@ async fn submit_rejects_icp_not_anchored_under_declared_auth_policy() {
     let resp = sad_client.submit_identity_events(&[v0]).await;
     assert_err_contains(&resp, "kel_anchor");
     assert_err_contains(&resp, "anchorSaid");
+}
+
+/// Positive companion to the anchor-gate test above: an Icp whose
+/// `governance_policy` is satisfied by the Icp.said's anchor lands cleanly
+/// even when the declared `auth_policy` is unsatisfied (its endorse() target
+/// is a different KEL the inceptor never anchors in). Pins that the IEL Icp
+/// gate is the *governance_policy*, not the auth_policy: auth_policy at Icp
+/// is a per-event policy declaration consumed downstream by SEL Upd via
+/// `identity_event` binding, not the gate authorizing Icp itself.
+#[tokio::test]
+#[serial]
+async fn submit_accepts_icp_anchored_under_governance_with_unsatisfied_auth_policy() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let (_kel_prefix, mut kel_builder, gov_policy, sad_client) =
+        setup_kel_and_immune_policy(harness, "icp-gov-gate-positive").await;
+    // `upload_immune_policy` mints a fresh KEL and an `endorse(<that-kel>)`
+    // policy, so anchors in our `kel_builder`'s KEL do NOT satisfy this
+    // policy. Use it as the declared auth_policy — verifier should still
+    // accept the Icp because the gate is governance_policy, not auth_policy.
+    let decoy_auth =
+        upload_immune_policy(harness, kel_builder.prefix().unwrap(), "icp-gov-gate-decoy").await;
+    let checker = build_checker(harness, vec![gov_policy.clone(), decoy_auth.clone()]);
+    let mut builder = IdentityEventBuilder::new(Some(sad_client.clone()), None, Some(checker));
+
+    let icp_said = builder
+        .incept(decoy_auth.said, gov_policy.said, TEST_TOPIC)
+        .expect("stage Icp with decoy auth + satisfied gov");
+    kel_builder
+        .interact(&icp_said)
+        .await
+        .expect("anchor Icp under governance_policy");
+
+    let outcome = builder.flush().await.expect("flush Icp");
+    assert!(
+        outcome.applied,
+        "Icp anchored under satisfied governance_policy must land even when \
+         declared auth_policy is unsatisfied"
+    );
+    assert!(outcome.diverged_at.is_none());
+
+    let prefix = iel_prefix_for(decoy_auth.said, gov_policy.said, TEST_TOPIC);
+    let page = sad_client
+        .fetch_identity_events(&prefix, None)
+        .await
+        .expect("fetch IEL");
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].said, icp_said);
+    assert_eq!(page.events[0].auth_policy, decoy_auth.said);
+    assert_eq!(page.events[0].governance_policy, gov_policy.said);
 }
 
 #[tokio::test]

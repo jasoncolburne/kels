@@ -18,8 +18,11 @@
 //!   because the predecessor's values are needed for the comparison).
 //!
 //! Soft-fail policy:
-//! - Icp anchor check against `event.auth_policy` is **soft** — failure sets
-//!   `policy_satisfied=false` but does not abort verification (mirrors SEL Icp).
+//! - Icp anchor check against `event.governance_policy` is **soft** — failure
+//!   sets `policy_satisfied=false` but does not abort verification (mirrors
+//!   SEL Icp's soft-fail shape; differs from SEL only in which policy
+//!   authorizes Icp — IEL Icp is governance-anchored because every IEL event
+//!   is a governance act).
 //! - Evl governance check is **hard** — anchor failure aborts verification.
 //! - Cnt/Dec governance check is **soft** — a governance-failed Cnt/Dec sets
 //!   `policy_satisfied=false` but the chain's terminal flags
@@ -516,12 +519,16 @@ impl IelVerifier {
                 )));
             }
 
-            // Soft anchor check — Icp self-authorization. Failure leaves the
-            // chain in `policy_satisfied=false` but does not abort.
+            // Soft anchor check — Icp self-governance-endorsement. Failure
+            // leaves the chain in `policy_satisfied=false` but does not abort.
+            // IEL Icp anchors under its declared `governance_policy` because
+            // every IEL event is a governance act; `auth_policy` is reserved
+            // for the application-facing authorization gate consumed by SEL
+            // Upd via `identity_event` binding.
             // Collect-mode (#156): accumulate any `missing_anchors` as
             // deferrable failures. The event still lands either way.
             let icp_evaluation = self
-                .evaluate_collecting(&event.said, &event.auth_policy)
+                .evaluate_collecting(&event.said, &event.governance_policy)
                 .await?;
             if !icp_evaluation.satisfied {
                 self.policy_satisfied = false;
@@ -1145,13 +1152,13 @@ mod tests {
         let v0 = IdentityEvent::icp(auth, gov, TEST_TOPIC).unwrap();
         let v1 = IdentityEvent::evl(&v0, None, None).unwrap();
 
-        // Pin the auth_policy SAID as the missing one so both the Icp
-        // self-anchor evaluate (`event.auth_policy`) and the Evl
-        // governance gate (`branch.tracked_governance_policy = gov`) get
-        // exercised — Evl checks gov, which IS local, so the missing dep
-        // surfaces specifically at the Icp evaluate call.
+        // Pin the governance_policy SAID as the missing one so both the Icp
+        // self-anchor evaluate (`event.governance_policy`) and the Evl
+        // governance gate (`branch.tracked_governance_policy = gov`) exercise
+        // collect-mode's deferral path — both surface as deferrable failures
+        // rather than aborting the walk.
         let checker: Arc<dyn PolicyChecker + Send + Sync> =
-            Arc::new(MissingSadObjectChecker { policy: auth });
+            Arc::new(MissingSadObjectChecker { policy: gov });
         let mut verifier = IelVerifier::new(Some(&v0.prefix), checker);
         verifier
             .verify_page_collecting(&[v0, v1])
@@ -1161,7 +1168,7 @@ mod tests {
 
         assert!(deferred.iter().any(|d| matches!(
             d,
-            DeferredFailure::MissingSadObject(dep) if dep.said == auth
+            DeferredFailure::MissingSadObject(dep) if dep.said == gov
         )));
         assert!(!verification.policy_satisfied());
     }

@@ -12,7 +12,7 @@ The submit handler integrates new events into an existing IEL while handling:
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the chain is divergent or post-evaluation-seal
 
-Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Authorization is the chain's `auth_policy` (for `Icp` self-authorization) or `governance_policy` (for `Evl` / `Cnt` / `Dec`).
+Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governance_policy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `auth_policy` is reserved for SEL Upd authorization through `identity_event` binding (see [../sel/events.md](../sel/events.md)).
 
 **There is no `Rpr` kind on IEL** (see [event-log.md §Why no `Rpr`](event-log.md#why-no-rpr)). Divergence is preserved as data; only `Cnt` resolves it.
 
@@ -48,8 +48,9 @@ for each event:
     verify event.prefix derives from declared (auth_policy, governance_policy, topic) for v0
     verify each batch event shares the same prefix
 
-for v0 (Icp): verify Icp.said is anchored under the declared auth_policy
-              (the inceptor proves membership in the policy they're naming)
+for v0 (Icp): verify Icp.said is anchored under the declared governance_policy
+              (the inceptor proves membership in the governance policy they're
+               declaring — every IEL event is a governance act)
 for v1+ (Evl/Cnt/Dec): verifier checks anchoring against branch.tracked_governance_policy
 
 for events introducing or evolving auth_policy or governance_policy
@@ -59,7 +60,7 @@ for events introducing or evolving auth_policy or governance_policy
               (policy immunity rule — see events.md)
 ```
 
-The Icp authorization requirement is structural authentication of the inceptor against their own declared policy. Unlike SEL's Icp, there is no phishing class to defend against (identity chains are not third-party-discoverable; the prefix is private to the inceptor).
+The Icp authorization requirement is structural authentication of the inceptor against their own declared `governance_policy`. Unlike SEL's Icp, there is no phishing class to defend against (identity chains are not third-party-discoverable; the prefix is private to the inceptor).
 
 The policy-immunity gate makes chain stability structural: a non-immune policy can never be referenced as `auth_policy` or `governance_policy`, so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past authorizations stay satisfied by construction. To revoke an endorser's authority going forward, evolve the policy via `Evl` rather than poisoning past anchors.
 

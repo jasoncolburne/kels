@@ -25,7 +25,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
-| `Icp` | Inception (v0). Declares `auth_policy` and `governance_policy`. | `auth_policy` (Icp.said anchored under the declared auth_policy). | No |
+| `Icp` | Inception (v0). Declares `auth_policy` and `governance_policy`. | `governance_policy` (Icp.said anchored under the declared governance_policy — every IEL event is a governance act). | No |
 | `Evl` | Evolve — governance evaluation; advances the seal, may evolve `auth_policy` and/or `governance_policy`. | `governance_policy`. | No |
 | `Cnt` | Contest — terminal due to authority conflict or divergence. | `governance_policy`. | **Yes** |
 | `Dec` | Decommission — terminal owner-initiated end. | `governance_policy`. | **Yes** |

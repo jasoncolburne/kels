@@ -2275,11 +2275,12 @@ async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
 
 /// Describe the soft-fail that flipped `verification.policy_satisfied=false`,
 /// branching on which kind in `new_events` triggered it. The verifier soft-fails
-/// on Icp anchor (against declared `auth_policy`) and on Cnt/Dec governance
-/// anchor (against the chain's tracked `governance_policy`); Evl governance is
-/// hard-fail and surfaces earlier as a verification error rather than via this
-/// gate. The previous one-line message hard-coded the Icp shape and misled
-/// operators when an unauthorized Cnt/Dec landed.
+/// on Icp anchor (against declared `governance_policy` — every IEL event is a
+/// governance act) and on Cnt/Dec governance anchor (against the chain's
+/// tracked `governance_policy`); Evl governance is hard-fail and surfaces
+/// earlier as a verification error rather than via this gate. The previous
+/// one-line message hard-coded the Icp shape and misled operators when an
+/// unauthorized Cnt/Dec landed.
 fn describe_iel_policy_failure(
     new_events: &[kels_core::IdentityEvent],
     iel_prefix: &cesr::Digest256,
@@ -2288,7 +2289,7 @@ fn describe_iel_policy_failure(
     for event in new_events {
         match event.kind {
             kels_core::IdentityEventKind::Icp => clauses.push(format!(
-                "Icp {} must be anchored under its declared auth_policy",
+                "Icp {} must be anchored under its declared governance_policy",
                 event.said
             )),
             kels_core::IdentityEventKind::Cnt => clauses.push(format!(

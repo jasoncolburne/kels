@@ -335,9 +335,12 @@ async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
     let iel_prefix = *iel_builder.prefix().expect("IEL has prefix after incept");
 
     // Anchor the IEL Icp's SAID in the owner's KEL — the IEL Icp is
-    // self-authorized via `auth_policy`, which the server checks via
-    // `is_anchored(iel_icp.said, auth_policy)` → the SAID must be in
-    // owner's KEL anchor history.
+    // self-governance-endorsed via `governance_policy`, which the server
+    // checks via `is_anchored(iel_icp.said, governance_policy)` → the SAID
+    // must be in owner's KEL anchor history. (Every IEL event is a
+    // governance act; this single test policy is wired as both auth and
+    // governance, so the same anchor satisfies both — but the gate that
+    // authorizes Icp itself is the governance_policy.)
     kel_builder
         .interact(&iel_icp_said)
         .await

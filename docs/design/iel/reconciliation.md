@@ -36,7 +36,7 @@ What happens when a client submits events to the submit handler on a single node
 
 | IEL State | Icp | Evl | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-------------------|-----|
-| **Empty** | Append ✓ if `auth_policy` satisfied (Icp.said anchored under declared auth_policy); reject otherwise | Reject (no chain) | Reject | Reject |
+| **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ (governance-authorized) | Append ✓ (terminates the chain) | Append ✓ (terminates the chain) |
 | **Active, sealed** (governance event at version ≤ `last_governance_version` would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal version; chain terminates cleanly) |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestRequired` (no Rpr on IEL) | Contest ✓ (extends one branch's tip; chain becomes Contested) | `ContestRequired` (Dec doesn't resolve divergence; only Cnt does) |
@@ -49,7 +49,7 @@ The submit handler treats a batch atomically:
 
 - **`[pending..., Cnt]`** — owner's pre-flush staged events plus the contest extending the last bundled tip. At most one page (`MINIMUM_PAGE_SIZE = 64`).
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
-- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SE, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `auth_policy`).
+- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SE, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governance_policy`).
 - **`[Icp, Evl]`** also valid — inception with immediate first evolution. (Icp + governance step in same batch.)
 
 There is no `[..., Rpr]` batch — IEL has no Rpr.
