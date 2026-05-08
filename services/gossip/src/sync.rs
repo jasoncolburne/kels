@@ -1432,7 +1432,7 @@ impl SyncHandler {
             return Ok(());
         }
 
-        info!(
+        debug!(
             "SAID mismatch for {}: local_effective={:?}, remote={}, origin={}. Fetching from peers.",
             announcement.prefix, local_effective_said, announcement.said, announcement.origin,
         );
@@ -1519,7 +1519,7 @@ impl SyncHandler {
                         .await;
                     let new_said = self.local_saids.get(&announcement.prefix).cloned();
                     if new_said != local_effective_said {
-                        info!(
+                        debug!(
                             "Forwarded events for prefix {} from {}",
                             announcement.prefix, kels_url
                         );
@@ -1705,7 +1705,7 @@ async fn forward_with_fallback(
         {
             Ok(()) => return Ok(()),
             Err(KelsError::NotFound(_)) => {
-                info!(
+                debug!(
                     "Since SAID not found on remote for {} (likely recovery). Falling back to full fetch.",
                     prefix
                 );
@@ -2023,7 +2023,7 @@ pub async fn run_anti_entropy_loop(
         };
 
         if !stale_entries.is_empty() {
-            info!(
+            debug!(
                 "Anti-entropy: processing {} stale prefixes",
                 stale_entries.len()
             );
@@ -2120,7 +2120,7 @@ pub async fn run_anti_entropy_loop(
             for (kel_prefix, source_node_prefix, retries, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
-                        info!("Anti-entropy: repaired {}", kel_prefix);
+                        debug!("Anti-entropy: repaired {}", kel_prefix);
                     }
                     RepairResult::Contested => {
                         warn!("Anti-entropy: KEL contested for {}", kel_prefix);
@@ -2220,7 +2220,7 @@ pub async fn run_anti_entropy_loop(
             continue;
         }
 
-        info!("Anti-entropy: random sample mismatch detected, reconciling");
+        debug!("Anti-entropy: random sample mismatch detected, reconciling");
 
         // Sync each mismatched prefix concurrently via forward_key_events
         {
@@ -2241,7 +2241,7 @@ pub async fn run_anti_entropy_loop(
             for (prefix, result) in join_all(tasks).await {
                 match result {
                     RepairResult::Repaired => {
-                        info!("Anti-entropy: repaired {} from remote", prefix);
+                        debug!("Anti-entropy: repaired {} from remote", prefix);
                     }
                     RepairResult::Failed => {
                         record_stale_prefix(redis.as_ref(), &prefix, &peer_kel_prefix).await;
@@ -2320,7 +2320,7 @@ pub async fn run_sad_anti_entropy_loop(
             };
 
         if !stale_entries.is_empty() {
-            info!(
+            debug!(
                 "SAD anti-entropy: processing {} stale SEL prefixes",
                 stale_entries.len()
             );
@@ -2445,7 +2445,7 @@ pub async fn run_sad_anti_entropy_loop(
             {
                 match result {
                     RepairResult::Repaired => {
-                        info!("SAD anti-entropy: repaired chain {}", sel_prefix);
+                        debug!("SAD anti-entropy: repaired chain {}", sel_prefix);
                     }
                     RepairResult::Contested => {
                         // Unreachable today: SE Phase 1 routes through
@@ -2646,13 +2646,13 @@ pub async fn run_sad_anti_entropy_loop(
         if sync_tasks.is_empty() {
             debug!("SAD anti-entropy: random sample mismatch but nothing remote-only to pull");
         } else {
-            info!("SAD anti-entropy: random sample mismatch detected, reconciling");
+            debug!("SAD anti-entropy: random sample mismatch detected, reconciling");
             let concurrency = sad_ae_task_concurrency();
             let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
             while let Some((prefix, peer, result)) = buffered.next().await {
                 match result {
                     Ok(()) => {
-                        info!("SAD anti-entropy: pulled {} from remote", prefix);
+                        debug!("SAD anti-entropy: pulled {} from remote", prefix);
                     }
                     Err(_) => {
                         record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
@@ -2697,7 +2697,7 @@ pub async fn run_sad_anti_entropy_loop(
         }
 
         if obj_pulled > 0 {
-            info!("SAD anti-entropy: objects — pulled {}", obj_pulled);
+            debug!("SAD anti-entropy: objects — pulled {}", obj_pulled);
         }
     }
 }
@@ -2784,7 +2784,7 @@ pub async fn run_iel_anti_entropy_loop(
             };
 
         if !stale_entries.is_empty() {
-            info!(
+            debug!(
                 "IEL anti-entropy: processing {} stale IEL prefixes",
                 stale_entries.len()
             );
@@ -2915,7 +2915,7 @@ pub async fn run_iel_anti_entropy_loop(
             {
                 match result {
                     RepairResult::Repaired => {
-                        info!("IEL anti-entropy: repaired chain {}", iel_prefix);
+                        debug!("IEL anti-entropy: repaired chain {}", iel_prefix);
                     }
                     RepairResult::Contested => {
                         // Unreachable today: IEL Phase 1 routes through
@@ -3113,13 +3113,13 @@ pub async fn run_iel_anti_entropy_loop(
             continue;
         }
 
-        info!("IEL anti-entropy: random sample mismatch detected, reconciling");
+        debug!("IEL anti-entropy: random sample mismatch detected, reconciling");
         let concurrency = sad_ae_task_concurrency();
         let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
         while let Some((prefix, peer, result)) = buffered.next().await {
             match result {
                 Ok(()) => {
-                    info!("IEL anti-entropy: pulled {} from remote", prefix);
+                    debug!("IEL anti-entropy: pulled {} from remote", prefix);
                 }
                 Err(_) => {
                     record_iel_stale_prefix(redis.as_ref(), &prefix, &peer).await;

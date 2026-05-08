@@ -550,10 +550,17 @@ impl BootstrapSync {
             total_parked += parked_counter.load(std::sync::atomic::Ordering::Relaxed);
         }
 
-        info!(
-            "IEL preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
-            total_synced, total_failed, total_parked
-        );
+        if total_parked > 0 {
+            info!(
+                "IEL preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
+                total_synced, total_failed, total_parked
+            );
+        } else {
+            info!(
+                "IEL preload complete: {} chains synced, {} failed",
+                total_synced, total_failed
+            );
+        }
 
         if total_failed > 0 {
             return Err(BootstrapError::Sync(format!(
@@ -784,10 +791,17 @@ impl BootstrapSync {
             total_parked += parked_counter.load(std::sync::atomic::Ordering::Relaxed);
         }
 
-        info!(
-            "SAD Event Log preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
-            total_synced, total_failed, total_parked
-        );
+        if total_parked > 0 {
+            info!(
+                "SAD Event Log preload complete: {} chains synced, {} failed ({} parked for drain — will retry)",
+                total_synced, total_failed, total_parked
+            );
+        } else {
+            info!(
+                "SAD Event Log preload complete: {} chains synced, {} failed",
+                total_synced, total_failed
+            );
+        }
 
         if total_failed > 0 {
             return Err(BootstrapError::Sync(format!(
