@@ -1,0 +1,15 @@
+# [Round-12 review fix → Round-12 third follow-up commit 1] Verifier-side queried/satisfied SAID + post-divergence soft-fail propagation
+
+Closed Important #1 from the second max review. Two mechanisms shipped together because they share the same per-event flow rewrite.
+
+**Caller-bounded SAID querying.** `IelVerification` and `SelVerification` gained `queried_saids` / `satisfied_saids` fields plus `is_said_satisfied(said)` / `satisfied_saids()` / `queried_saids()` accessors mirroring `KelVerification`'s shape. Verifiers gained a `check_satisfied(saids)` builder method (analog of KEL's `check_anchors`). During the walk, an event whose SAID is in `queried_saids` is added to `satisfied_saids` iff the event passed its auth check AND lives at `version < first_divergent_version` (or chain non-divergent). Cnt is structurally always at-or-after divergence and never lands in `satisfied_saids`; Dec on a clean chain CAN.
+
+**`IelResolver::is_satisfied`** added to the trait + both production impls. SE caller pre-walks its own chain (streaming via `collect_identity_event_saids` / `_from_loader`, accumulating SAID-level metadata only — never events), feeds the result into `AnchoredIelResolver::with_queried_saids` / `RepositoryIelResolver::with_queried_saids`, then `is_satisfied` answers consistently. SE per-event flow consults it via β-ordering: after `resolve_*_at`, before `is_anchored`. SOFT-fails for terminals or post-SE-divergence non-terminals; HARD pre-divergence non-terminals.
+
+**Post-divergence soft-fail propagation.** Pre-divergence events keep their existing soft/hard mapping. For events at `version >= first_divergent_version`: auth-check failures (IelDivergent gate, is_satisfied=false, anchor-fail) convert to SOFT — the verifier sets chain-wide `policy_satisfied=false` and the event lands without Err. Implemented on both `IelVerifier` (the round-11 gap: round 11 shipped Cnt's-own-soft-fail but not propagation) and `SelVerifier`. Structural integrity rules (SAID validity, version monotonicity, content preservation, BadIdentityBinding, IEL Evl-immunity) stay HARD always — Cnt doesn't change well-formedness.
+
+**Resume-rehydrate divergence from KEL.** `IelVerifier::resume` / `SelVerifier::resume` rehydrate `queried_saids` and `satisfied_saids` from the prior token, unlike `KelVerifier::resume` which resets them. The IEL/SE streaming pre-walk pattern needs registered interest to persist across page boundaries. KEL's symmetric fix is deferred to #152 (changing it now would touch the KEL surface for no functional gain on the KEL path).
+
+**KEL parity.** `KelVerification` already has the `queried_saids` / `anchored_saids` shape (round-11 baseline); no token-shape changes on KEL. Names differ between primitives intentionally: KEL's "anchored" reflects "SAID found in an IXN event's anchor field"; IEL/SE "satisfied" reflects "auth-passed AND pre-divergence."
+
+Code anchors: `lib/kels/src/types/iel/verification.rs`, `lib/kels/src/types/sad/verification.rs`, `lib/kels/src/types/iel_resolver.rs` (trait), `lib/kels/src/iel_resolver.rs` (`AnchoredIelResolver`), `services/sadstore/src/iel_resolver.rs` (`RepositoryIelResolver`).

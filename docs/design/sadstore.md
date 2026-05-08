@@ -27,7 +27,7 @@ Fields:
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
 - `identity_event` — SAID of the IEL event whose policy authorizes this SE event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
 
-#167: SE events reject inline `custody` and `availability` fields entirely. Replication and lifecycle are SAD-object concerns, not chain-event concerns; chains broadcast as a unit.
+#167: `custody` and `availability` are not part of the `SadEvent` struct, so any inline keys with those names get silently dropped during deserialization — chain events broadcast as a unit and can't carry differential authority/replication across links. The drop is structural (type-system), not an explicit submit-handler rejection: a chain-event JSON body containing those keys parses cleanly with the keys ignored. The `CustodyValidationError::CustodyNotAllowedOnEvent` / `AvailabilityNotAllowedOnEvent` variants exist for a future explicit-rejection path (e.g., `deny_unknown_fields` on `SadEvent` deserialization or boundary JSON-key inspection); they are not raised today.
 
 ### Deterministic Prefix
 

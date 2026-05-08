@@ -61,7 +61,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
-**Policy** — DSL for authorization: `endorse`, `credential`, `threshold`, poison, expiry, renew. See `docs/design/policy.md`.
+**Policy** — DSL for authorization: `endorse(PREFIX)`, `delegate(DELEGATOR, DELEGATE)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. See `docs/design/policy.md`.
 
 **Credentials** — verifiable claims issued under a policy, anchored in KELs. See `docs/design/creds.md`.
 
@@ -72,6 +72,8 @@ use crate::{handlers::AppState, repository::KelsRepository};
 **SAD Event Log (SEL)** — append-only, versioned, identity-rooted data chain in SADStore. Each chain is bound at inception to a specific Identity Event Log via the `identity` field on `Icp`; every v1+ event references a specific IEL event by SAID via `identity_event` to resolve its authorization. SE events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`). Lifecycle: `Icp`/`Upd` (with `[Icp, Upd]` minimum inception batch rule), `Sea` (degenerate seal marker), `Rpr` (repair on unsealed divergence), `Cnt`/`Dec` (terminal). See `docs/design/sel/events.md`, `docs/design/sel/event-log.md`, and the IEL primitive below.
 
 **Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); terminal via `Cnt` (contest, the only divergence resolver — IEL has no `Rpr`) or `Dec` (decommission). Every non-`Icp` event is governance-authorized; every introduced/evolved policy must be `immune: true`. Hosted in `services/sadstore/` alongside SE; `iel_events` table, `/api/v1/iel/events*` routes, `iel_updates` Redis channel, `kels/gossip/v1/topics/iel` gossip topic. See `docs/design/iel/events.md`, `docs/design/iel/event-log.md`, `docs/design/iel/verification.md`, `docs/design/iel/merge.md`.
+
+**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `auth_policy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/sadstore.md` and `docs/design/iel/event-log.md §Cascading effect on dependent SE chains`.
 
 ## Architecture
 

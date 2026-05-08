@@ -111,7 +111,7 @@ Deploy gossip nodes. Each node needs to be authorized in the peer allowlist befo
 1. Deploy the node's infrastructure (kels, gossip, identity, postgres, redis)
 2. Propose the node as a peer from any registry (`registry-admin peer propose-add-peer`)
 3. Vote from enough registries to approve (`registry-admin peer vote`)
-4. Restart the gossip service so it picks up its authorization (this should happen after 5 minutes but why wait)
+4. Restart the gossip service so it picks up its authorization (the unauthorized-loop recheck cadence is 15 minutes — load-shedding for cross-pressure with AE+gossip submits at staggered-rollout vote time; manual restart bypasses the wait. See #157 for the structural fix.)
 5. The node bootstraps: fetches KELs from existing peers, joins the gossip mesh
 
 ### Phase 5: Verify
@@ -225,6 +225,11 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `IDENTITY_URL` | Identity service URL for KELS prefix |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
+| `KELS_BOOTSTRAP_CONCURRENCY` | Concurrent preload tasks per phase during cold-start bootstrap (default: 4). Tuned down from 16 → 8 → 4 driven by RustFS pool exhaustion at scale (282/579 KEL syncs failed at 16; IEL submit failures at 8). Cross-pressure with AE+gossip submits at staggered-rollout vote-time is the binding constraint; revisit when #157 lifts the tx-holds-RustFS-read pattern. See `services/gossip/src/bootstrap.rs:33-47` for tuning history. |
+| `KELS_SAD_AE_TASK_CONCURRENCY` | `buffer_unordered` cap for SE+IEL anti-entropy task fan-out (default: 16). Gates Phase 1 stale-prefix retry and Phase 2 random-sampling concurrency for both `run_sad_anti_entropy_loop` and `run_iel_anti_entropy_loop`. KEL AE is unbounded — KEL events are not the source of cross-chain race. |
+| `KELS_DEFERRED_DRAIN_PERMITS` | Semaphore permits gating concurrent #156 deferred-deps drain network calls (default: 8). Spawn rate is unbounded; backlog bounded by park TTL eviction. |
+| `KELS_PENDING_TTL_SECS` | TTL applied to `pending:msg:*` / `pending:said:*` / `pending:chain:*` Redis entries on park / refresh (default: 300). Same-SAID drain refresh short-circuits (skips TTL renewal) so individual park lifetimes are bounded by this on busy chains. |
+| `GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE` | Per-peer fetch ceiling for inbound chain syncs (default: 1024 / minute ≈ 17 / sec). Throttles a single peer's fan-in pressure on this node's HTTP layer. |
 | `RUST_LOG` | Logging level |
 
 ### SADStore Service (`sadstore`)
@@ -255,18 +260,19 @@ The S3-compatible object store (RustFS) backs SAD content blobs and mail message
 | `RUSTFS_VOLUMES` | Data volume path inside container (default: `/data`) |
 | `RUSTFS_ADDRESS` | S3 API listen address (default: `0.0.0.0:9000`) |
 | `RUSTFS_CONSOLE_ADDRESS` | Console listen address (default: `0.0.0.0:9001`) |
+| `RUSTFS_BUFFER_PROFILE` | Buffer-allocation profile (hardcoded `WebWorkload` in the manifest; not externally tunable today). Empirically chosen for the small-object S3 workload (≤1 MB SAD/mail blobs) at e2e load profile; see `services/objects/manifests.yml.tpl:56-57`. Affects the steady-state working set and therefore the memory-limit sizing below. |
 
 **Resource sizing.** Current values in `services/objects/manifests.yml.tpl`:
 
 | Resource | Request | Limit | Notes |
 |----------|---------|-------|-------|
-| CPU | 25m | 500m | Carry-over starting points (not yet RustFS-tuned); the workload is small-object S3 (≤1 MB SAD/mail blobs) at modest concurrency. |
-| Memory | 128Mi | 512Mi | Carry-over starting points (not yet RustFS-tuned); RustFS is a Rust binary (no GC) so the idle floor may be lower in practice, but the limit is generous enough for write storms during the heisenbug long-loop. |
+| CPU | 25m | 2000m | Tuned from 500m → 2000m to give RustFS headroom under heisenbug long-loop write storms; pinned empirically against the e2e load profile (≥20 concurrent SE submits cross-pressed against IEL writes). Revisit when the #157 tx-holds-RustFS-read structural fix lands and connection-pool starvation no longer dominates the empirical CPU profile. |
+| Memory | 128Mi | 1Gi | Tuned from 512Mi → 1Gi to absorb peak buffer use during the heisenbug long-loop's write-storm phase. RustFS's `WebWorkload` buffer profile (manifests.yml.tpl:56-57) is allocation-heavier than the small-object default; the 1Gi ceiling gives ~2× the observed steady-state working set. |
 | PVC | 1Gi | — | Test workloads produce hundreds of small objects per node (realistic ceiling ~50 MB). 1Gi is comfortable headroom for 50+ heisenbug long-loop iterations without bloating disk across 6 federated namespaces. |
 
 **Trigger to revisit:** OOM-kills, CPU throttling visible in `kubectl top`, or PVC `Used` approaching `Capacity` during the heisenbug long-loop. PVC IOPS / throughput class is not tunable on Garden's `local-docker` substrate (the default storage class is used); revisit when running against a real cloud cluster.
 
-**Empirical sizing is gated on #157.** Current load tests show sadstore PG-pool starvation (16 connections, ~30 s acquire-timeout cliff) at modest concurrency (≥20 concurrent submits). The cause is the tx-holds-object-store pattern: `SadStorePolicyResolver::resolve_policy` performs `object_store.get()` against the object store inside an open DB transaction during cold-cache policy resolution, pinning each connection on external IO. Until #157 lifts the object-store fetch out of the tx scope, observed CPU/memory numbers reflect pool-starvation behavior, not RustFS's actual resource footprint — so the values above remain carry-over starting points rather than empirical tunes.
+**Empirical sizing is post-bump-but-pre-#157.** The CPU/memory limits above were bumped from observed write-storm behavior under the e2e long-loop profile, not from #157-resolved structural improvement. Current load tests still show sadstore PG-pool starvation (16 connections, ~30 s acquire-timeout cliff) at modest concurrency (≥20 concurrent submits). The cause is the tx-holds-object-store pattern: `SadStorePolicyResolver::resolve_policy` performs `object_store.get()` against the object store inside an open DB transaction during cold-cache policy resolution, pinning each connection on external IO. Until #157 lifts the object-store fetch out of the tx scope, observed CPU/memory numbers still reflect pool-starvation-induced spikes — the bumped ceilings absorb those spikes empirically, but the steady-state values may settle lower once #157 lands.
 
 **Replicas:** `1`. Multi-replica HA is deferred to #155, which will need to first re-evaluate RustFS's distributed-mode beta status.
 
