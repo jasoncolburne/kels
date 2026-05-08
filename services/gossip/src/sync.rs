@@ -2195,8 +2195,6 @@ pub async fn run_anti_entropy_loop(
             continue;
         }
 
-        info!("Anti-entropy: random sample mismatch detected, reconciling");
-
         // Collect remote prefixes that need syncing (missing or different locally)
         let mut to_fetch = Vec::new();
         for state in &remote_page.prefixes {
@@ -2213,8 +2211,19 @@ pub async fn run_anti_entropy_loop(
             to_fetch.push((state, local_said));
         }
 
+        // Pull-only AE: when the local map is ahead of remote (remote has
+        // nothing we need), `to_fetch` ends up empty. Don't log "reconciling"
+        // in that case — peers behind us pull on their own AE cycle. Mirrors
+        // the SAD object phase, which only logs when `obj_pulled > 0`.
+        if to_fetch.is_empty() {
+            debug!("Anti-entropy: random sample mismatch but nothing remote-only to pull");
+            continue;
+        }
+
+        info!("Anti-entropy: random sample mismatch detected, reconciling");
+
         // Sync each mismatched prefix concurrently via forward_key_events
-        if !to_fetch.is_empty() {
+        {
             let tasks: Vec<_> = to_fetch
                 .iter()
                 .map(|(state, local_said)| {
@@ -2518,8 +2527,6 @@ pub async fn run_sad_anti_entropy_loop(
             continue;
         }
 
-        info!("SAD anti-entropy: random sample mismatch detected, reconciling");
-
         // Reconcile: for each prefix that differs, determine direction and sync
         let all_prefixes: std::collections::HashSet<&str> = remote_page
             .prefixes
@@ -2620,15 +2627,25 @@ pub async fn run_sad_anti_entropy_loop(
             }));
         }
 
-        let concurrency = sad_ae_task_concurrency();
-        let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
-        while let Some((prefix, peer, result)) = buffered.next().await {
-            match result {
-                Ok(()) => {
-                    info!("SAD anti-entropy: pulled {} from remote", prefix);
-                }
-                Err(_) => {
-                    record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+        // Pull-only AE: when local is ahead of remote for every differing
+        // prefix in this sample, `sync_tasks` ends up empty. Skip the
+        // chain-reconciliation log in that case — the SAD object phase
+        // below still runs. Mirrors the SAD object phase's "log only when
+        // we actually pulled" pattern.
+        if sync_tasks.is_empty() {
+            debug!("SAD anti-entropy: random sample mismatch but nothing remote-only to pull");
+        } else {
+            info!("SAD anti-entropy: random sample mismatch detected, reconciling");
+            let concurrency = sad_ae_task_concurrency();
+            let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
+            while let Some((prefix, peer, result)) = buffered.next().await {
+                match result {
+                    Ok(()) => {
+                        info!("SAD anti-entropy: pulled {} from remote", prefix);
+                    }
+                    Err(_) => {
+                        record_sad_stale_prefix(redis.as_ref(), &prefix, &peer).await;
+                    }
                 }
             }
         }
@@ -2959,8 +2976,6 @@ pub async fn run_iel_anti_entropy_loop(
             continue;
         }
 
-        info!("IEL anti-entropy: random sample mismatch detected, reconciling");
-
         let all_prefixes: std::collections::HashSet<&str> = remote_page
             .prefixes
             .iter()
@@ -3057,6 +3072,16 @@ pub async fn run_iel_anti_entropy_loop(
             }));
         }
 
+        // Pull-only AE: when local is ahead of remote for every differing
+        // IEL prefix in this sample, `sync_tasks` ends up empty. Skip the
+        // "reconciling" log in that case — peers behind us pull on their
+        // own AE cycle.
+        if sync_tasks.is_empty() {
+            debug!("IEL anti-entropy: random sample mismatch but nothing remote-only to pull");
+            continue;
+        }
+
+        info!("IEL anti-entropy: random sample mismatch detected, reconciling");
         let concurrency = sad_ae_task_concurrency();
         let mut buffered = stream::iter(sync_tasks).buffer_unordered(concurrency);
         while let Some((prefix, peer, result)) = buffered.next().await {
