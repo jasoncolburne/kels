@@ -10,7 +10,8 @@
 //! 2. **If NOT authorized**: Loop:
 //!    - Log alert with PeerId (so admin can add it)
 //!    - **preload_kels()**: Sync KELs from Ready peers (read-only via HTTP)
-//!    - Sleep 5 minutes and recheck allowlist
+//!    - Sleep 15 minutes and recheck allowlist (#157 cross-pressure
+//!      mitigation; see `lib.rs:437-442` for rationale)
 //! 3. **Once authorized**:
 //!    - **discover_peers()**: Query registry, register as Bootstrapping
 //!    - Start gossip swarm with discovered peers

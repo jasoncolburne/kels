@@ -2863,6 +2863,15 @@ pub async fn run_iel_anti_entropy_loop(
                         // Re-fetch local effective SAID and declare
                         // `Repaired` only on actual advancement; otherwise
                         // continue.
+                        // Design-correct AE-as-backstop: we don't park on
+                        // 422-deferred-deps here. Parking is the gossip
+                        // path's concern (#156: handle_iel_announcement);
+                        // AE is the rate-limited eventual-consistency
+                        // mechanism that reruns on the next cycle. A
+                        // 422 from the local sink means our verifier saw
+                        // missing cross-chain deps — those will arrive via
+                        // SAD AE / SAD gossip, then a subsequent IEL AE
+                        // cycle succeeds. Same posture for SE AE Phase 1.
                         if let Err(e) = kels_core::forward_identity_events(
                             prefix,
                             &remote_source,

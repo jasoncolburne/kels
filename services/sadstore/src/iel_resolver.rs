@@ -346,6 +346,15 @@ impl kels_core::IelResolver for RepositoryIelResolver {
         deduped.sort();
         deduped.dedup();
 
+        // Resolving-category read: see
+        // `docs/design/streaming-verification-architecture.md §Operation
+        // Categories`. A wrong answer here causes the SE walker's
+        // monotonic ratchet to compare positions by version-only; the
+        // actual auth boundary is `is_satisfied` (which runs the full IEL
+        // verifier walk) — a tampered `first_divergent_version` is caught
+        // there, not here. Cross-primitive asymmetry with the client-side
+        // `AnchoredIelResolver::iel_chain_positions` is design-by-intent
+        // per slice 7 Decision 3.
         let divergent_at = self
             .repo
             .iel_events

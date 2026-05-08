@@ -89,6 +89,14 @@ pub enum MissingDependency {
         #[serde(rename = "chainEffSaid")]
         chain_eff_said: cesr::Digest256,
     },
+    /// Read-side rejection: a SAD object's `custody.read` resolves to an
+    /// IEL prefix not locally known.
+    ///
+    /// **Dormant variant** — no code path emits this today. `verify_custody_read`
+    /// maps unknown-IEL to permanent 403 (`custody_read_resolver_error`),
+    /// not 422 deferred-deps. The wire-format slot is reserved for the
+    /// read-side typed-422 retrofit deferred to #82. Until then the
+    /// matching `deferred_deps_to_park_inputs` arm is forward-compat code.
     IelPrefix {
         #[serde(rename = "ielPrefix")]
         iel_prefix: cesr::Digest256,
