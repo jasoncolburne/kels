@@ -641,9 +641,8 @@ fn parse_inline_custody_and_availability(
     let custody = match value.get("custody") {
         None => None,
         Some(v) => match kels_core::parse_and_validate_custody(v) {
-            Ok(Some(c)) if c.is_empty() => None,
-            Ok(Some(c)) => Some(c),
-            Ok(None) => None, // safety valve — unknown fields, no enforcement
+            Ok(c) if c.is_empty() => None,
+            Ok(c) => Some(c),
             Err(e) => {
                 return Err((StatusCode::BAD_REQUEST, e.to_string()).into_response());
             }
@@ -1636,15 +1635,17 @@ pub async fn submit_sad_events(
         };
 
         if new_events.is_empty() {
-            // Report the chain's *current* divergence state, not "what this
-            // submit changed." A client retrying after a phase-2 / phase-3
-            // failure (Round 4 M1's terminology) has otherwise lost the
-            // original `Some(version)` signal — the first submit's response
-            // never made it to the local token. The normal-path response
-            // populates `diverged_at` from `save_batch`'s `DivergenceCreated`
-            // outcome; this is the symmetric read-side mechanism on the
-            // dedup path. The dedup short-circuit performs no writes, so a
-            // pool-level read alongside the in-flight tx is fine.
+            // Report the chain's *current* divergence and terminal state,
+            // not "what this submit changed." A client retrying after a
+            // phase-2 / phase-3 failure (Round 4 M1's terminology) has
+            // otherwise lost the original `Some(version)` / terminal signal
+            // — the first submit's response never made it to the local
+            // token. The normal-path response populates `diverged_at` /
+            // `terminal` from `save_batch`'s `DivergenceCreated` outcome
+            // and the terminal-state gate; this is the symmetric read-side
+            // mechanism on the dedup path. The dedup short-circuit performs
+            // no writes, so pool-level reads alongside the in-flight tx are
+            // fine.
             let diverged_at = match state
                 .repo
                 .sad_events
@@ -1658,14 +1659,38 @@ pub async fn submit_sad_events(
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
             };
+            let is_contested = match state.repo.sad_events.is_contested(sel_prefix).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query SE is_contested on dedup path: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+            let is_decommissioned = match state.repo.sad_events.is_decommissioned(sel_prefix).await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query SE is_decommissioned on dedup path: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
+            let terminal = if is_contested {
+                Some(kels_core::SadEventTerminalState::Contested)
+            } else if is_decommissioned {
+                Some(kels_core::SadEventTerminalState::Decommissioned)
+            } else {
+                None
+            };
             let response = kels_core::SubmitSadEventsResponse {
                 diverged_at,
                 applied: false,
-                terminal: None,
+                terminal,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }
@@ -2428,7 +2453,12 @@ pub async fn submit_identity_events(
         };
 
         if new_events.is_empty() {
-            // All-duplicates short-circuit: report current divergence.
+            // All-duplicates short-circuit: report current divergence and
+            // terminal state. Mirrors the SE dedup-path: gossip retransmits
+            // of all-already-stored batches against a contested or
+            // decommissioned chain return the same `terminal: Some(_)` shape
+            // a single-new-event submit would have produced via the gate
+            // below.
             let diverged_at = match state
                 .repo
                 .iel_events
@@ -2442,14 +2472,38 @@ pub async fn submit_identity_events(
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
             };
+            let is_contested = match state.repo.iel_events.is_contested(iel_prefix).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query IEL is_contested on dedup path: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
+            let is_decommissioned = match state.repo.iel_events.is_decommissioned(iel_prefix).await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to query IEL is_decommissioned on dedup path: {}", e);
+                    let _ = tx.rollback().await;
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+                }
+            };
             if let Err(e) = tx.commit().await {
                 warn!("Failed to commit transaction: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
+            let terminal = if is_contested {
+                Some(kels_core::IdentityEventTerminalState::Contested)
+            } else if is_decommissioned {
+                Some(kels_core::IdentityEventTerminalState::Decommissioned)
+            } else {
+                None
+            };
             let response = kels_core::SubmitIdentityEventsResponse {
                 applied: false,
                 diverged_at,
-                terminal: None,
+                terminal,
             };
             return (StatusCode::CREATED, Json(response)).into_response();
         }

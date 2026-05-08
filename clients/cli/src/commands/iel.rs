@@ -247,3 +247,18 @@ pub(crate) async fn cmd_iel_submit(cli: &Cli, saids: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn cmd_iel_prefix(
+    auth_policy: &str,
+    governance_policy: &str,
+    topic: &str,
+) -> Result<()> {
+    let auth =
+        cesr::Digest256::from_qb64(auth_policy).context("Invalid --auth-policy SAID (CESR)")?;
+    let gov = cesr::Digest256::from_qb64(governance_policy)
+        .context("Invalid --governance-policy SAID (CESR)")?;
+    let prefix = kels_core::compute_identity_event_prefix(auth, gov, topic)
+        .context("Failed to compute IEL prefix")?;
+    println!("{}", prefix);
+    Ok(())
+}

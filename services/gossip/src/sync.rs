@@ -2448,11 +2448,22 @@ pub async fn run_sad_anti_entropy_loop(
                         info!("SAD anti-entropy: repaired chain {}", sel_prefix);
                     }
                     RepairResult::Contested => {
-                        // Not currently produced by the SE Phase 1 path
-                        // (forward_sel_events doesn't translate
-                        // ContestedSel into a typed signal). Reserved for
-                        // future symmetry with KEL.
-                        warn!("SAD anti-entropy: SE contested for {}", sel_prefix);
+                        // Unreachable today: SE Phase 1 routes through
+                        // `forward_sel_events`, which doesn't translate
+                        // `ContestedSel` into `RepairResult::Contested` —
+                        // only KEL's `forward_with_fallback` does. Reserved
+                        // for future SE parity per #161. debug_assert
+                        // catches a regression in dev/test; warn keeps the
+                        // AE loop running in release.
+                        debug_assert!(
+                            false,
+                            "SE AE Phase 1 produced unexpected Contested for {}",
+                            sel_prefix
+                        );
+                        warn!(
+                            "SAD anti-entropy: unexpected Contested for {} (release-mode warn)",
+                            sel_prefix
+                        );
                     }
                     RepairResult::Failed => {
                         warn!(
@@ -2898,10 +2909,22 @@ pub async fn run_iel_anti_entropy_loop(
                         info!("IEL anti-entropy: repaired chain {}", iel_prefix);
                     }
                     RepairResult::Contested => {
-                        // forward_identity_events doesn't translate
-                        // ContestedIel into a typed signal today; reserved
-                        // for future symmetry with KEL.
-                        warn!("IEL anti-entropy: IEL contested for {}", iel_prefix);
+                        // Unreachable today: IEL Phase 1 routes through
+                        // `forward_identity_events`, which doesn't translate
+                        // `ContestedIel` into `RepairResult::Contested` —
+                        // only KEL's `forward_with_fallback` does. Reserved
+                        // for future IEL parity per #161. debug_assert
+                        // catches a regression in dev/test; warn keeps the
+                        // AE loop running in release.
+                        debug_assert!(
+                            false,
+                            "IEL AE Phase 1 produced unexpected Contested for {}",
+                            iel_prefix
+                        );
+                        warn!(
+                            "IEL anti-entropy: unexpected Contested for {} (release-mode warn)",
+                            iel_prefix
+                        );
                     }
                     RepairResult::Failed => {
                         warn!(

@@ -338,6 +338,20 @@ enum IelCommands {
         #[arg(required = true, num_args = 1..)]
         saids: Vec<String>,
     },
+
+    /// Compute an IEL prefix from auth/governance policy SAIDs and topic
+    Prefix {
+        /// Auth-policy SAID
+        #[arg(long)]
+        auth_policy: String,
+
+        /// Governance-policy SAID
+        #[arg(long)]
+        governance_policy: String,
+
+        /// Topic string
+        topic: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -781,6 +795,11 @@ async fn main() -> Result<()> {
             } => commands::iel::cmd_iel_decommission(&cli, iel_prefix, *publish).await,
             IelCommands::Get { iel_prefix } => commands::iel::cmd_iel_get(&cli, iel_prefix).await,
             IelCommands::Submit { saids } => commands::iel::cmd_iel_submit(&cli, saids).await,
+            IelCommands::Prefix {
+                auth_policy,
+                governance_policy,
+                topic,
+            } => commands::iel::cmd_iel_prefix(auth_policy, governance_policy, topic),
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {

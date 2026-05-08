@@ -75,6 +75,10 @@ pub struct SelVerifier {
     diverged_at_version: Option<u64>,
     queried_saids: BTreeSet<cesr::Digest256>,
     satisfied_saids: BTreeSet<cesr::Digest256>,
+    /// Set to false once any branch's `events_since_evaluation` exceeds
+    /// `MAX_NON_EVALUATION_EVENTS`. Mirrors KEL's `proactive_ror_compliant`;
+    /// surface signal only — does not halt the walk.
+    is_proactively_governed: bool,
     checker: Arc<dyn PolicyChecker + Send + Sync>,
     iel_resolver: Arc<dyn IelResolver + Send + Sync>,
     /// #156 collect-mode: when `true`, deferrable failures
@@ -108,6 +112,7 @@ impl SelVerifier {
             diverged_at_version: None,
             queried_saids: BTreeSet::new(),
             satisfied_saids: BTreeSet::new(),
+            is_proactively_governed: true,
             checker,
             iel_resolver,
             collecting: false,
@@ -176,6 +181,7 @@ impl SelVerifier {
             diverged_at_version: verification.diverged_at_version(),
             queried_saids: verification.queried_saids().clone(),
             satisfied_saids: verification.satisfied_saids().clone(),
+            is_proactively_governed: verification.is_proactively_governed(),
             checker,
             iel_resolver,
             collecting: false,
@@ -776,10 +782,11 @@ impl SelVerifier {
             let (new_last_governance_version, new_events_since_evaluation) = match event.kind {
                 SadEventKind::Upd => {
                     // Non-evaluation event; counter advances.
-                    (
-                        branch.last_governance_version,
-                        branch.events_since_evaluation + 1,
-                    )
+                    let next = branch.events_since_evaluation + 1;
+                    if next > crate::MAX_NON_EVALUATION_EVENTS {
+                        self.is_proactively_governed = false;
+                    }
+                    (branch.last_governance_version, next)
                 }
                 SadEventKind::Sea | SadEventKind::Rpr => {
                     // Authorized governance evaluation; advances seal,
@@ -967,6 +974,7 @@ impl SelVerifier {
                 self.diverged_at_version,
                 self.queried_saids,
                 self.satisfied_saids,
+                self.is_proactively_governed,
             ),
             deferred,
         ))

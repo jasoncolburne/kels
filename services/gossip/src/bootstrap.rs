@@ -888,6 +888,7 @@ impl BootstrapSync {
         let local_client = KelsClient::new(&self.config.kels_url)?;
         let concurrency = bootstrap_task_concurrency();
         let page_size = self.config.page_size;
+        let inflight = crate::telemetry::LocalInflight::new("bootstrap-kel");
         let mut total_synced: usize = 0;
         let mut total_failed: usize = 0;
 
@@ -936,6 +937,7 @@ impl BootstrapSync {
             let local_for_sync = local_client.clone();
             let remote_for_sync = remote_client.clone();
             let peer_node_id = peer.node_id.clone();
+            let inflight_sync = inflight.clone();
             let stats = match crate::bootstrap_merge::merge_sync(
                 remote_stream,
                 local_stream,
@@ -945,7 +947,9 @@ impl BootstrapSync {
                     let local = local_for_sync.clone();
                     let remote = remote_for_sync.clone();
                     let peer_node_id = peer_node_id.clone();
+                    let inflight = inflight_sync.clone();
                     async move {
+                        let _g = inflight.enter("sync_prefix");
                         match crate::sync::sync_prefix(&remote, &local, &prefix, None).await {
                             crate::sync::RepairResult::Repaired
                             | crate::sync::RepairResult::NoOp => true,

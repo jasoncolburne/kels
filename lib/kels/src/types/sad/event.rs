@@ -439,6 +439,12 @@ pub struct SelVerification {
     /// at-or-after the divergence cut and never appears here; Dec on a clean
     /// chain CAN.
     satisfied_saids: BTreeSet<cesr::Digest256>,
+    /// False once any branch's `events_since_evaluation` exceeded
+    /// `MAX_NON_EVALUATION_EVENTS = 63` during the walk — i.e., the chain
+    /// went 64+ non-evaluation events without a `Sea`/`Rpr`/`Cnt`/`Dec`
+    /// re-evaluating `governance_policy`. Mirrors KEL's
+    /// `proactive_ror_compliant`. Surface signal only — does not gate.
+    is_proactively_governed: bool,
 }
 
 impl SelVerification {
@@ -453,6 +459,7 @@ impl SelVerification {
         diverged_at_version: Option<u64>,
         queried_saids: BTreeSet<cesr::Digest256>,
         satisfied_saids: BTreeSet<cesr::Digest256>,
+        is_proactively_governed: bool,
     ) -> Self {
         Self {
             branches,
@@ -463,6 +470,7 @@ impl SelVerification {
             diverged_at_version,
             queried_saids,
             satisfied_saids,
+            is_proactively_governed,
         }
     }
 
@@ -591,6 +599,18 @@ impl SelVerification {
     /// The full set of satisfied SAIDs (subset of `queried_saids`).
     pub fn satisfied_saids(&self) -> &BTreeSet<cesr::Digest256> {
         &self.satisfied_saids
+    }
+
+    /// True iff every branch stayed within the proactive governance bound
+    /// during the walk — `events_since_evaluation <=
+    /// MAX_NON_EVALUATION_EVENTS = 63` at every step, i.e. no branch went
+    /// 64+ non-evaluation events without a `Sea`/`Rpr`/`Cnt`/`Dec`
+    /// re-evaluating `governance_policy`. Mirrors KEL's
+    /// `is_proactive_ror_compliant`. Surface signal only — non-compliance
+    /// does not halt the walk (terminal events still land; `Sea`/`Rpr`
+    /// resets the counter).
+    pub fn is_proactively_governed(&self) -> bool {
+        self.is_proactively_governed
     }
 
     /// The set of SAIDs the caller registered interest in.

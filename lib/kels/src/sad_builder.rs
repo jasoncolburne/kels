@@ -573,6 +573,37 @@ impl SadEventBuilder {
         Ok(said)
     }
 
+    /// Stage a `Cnt` bound to a caller-supplied IEL event SAID, bypassing
+    /// the live-IEL lookup `contest()` performs.
+    ///
+    /// Use this when the authorizing IEL has terminated (Cnt/Dec landed)
+    /// and the SE chain owner needs to contest. Per
+    /// `docs/design/iel/event-log.md §Cascading effect on dependent SE
+    /// chains`, the operator's recourse on a terminal IEL is to bind the
+    /// SE Cnt to the **last non-terminal IEL event** — its
+    /// `governance_policy` was satisfied at write time, persists in the
+    /// IEL verifier's `policy_history`, and is resolvable forever even
+    /// though the IEL no longer accepts new events. SE Cnt's governance
+    /// check is SOFT terminal anyway (`docs/design/sel/verification.md`
+    /// §Soft-fail), so a govfailed binding still lands with
+    /// `policy_satisfied=false` content-flag — the caller retains
+    /// responsibility for choosing a meaningful binding.
+    pub async fn contest_with_iel_event_said(
+        &mut self,
+        iel_event_said: cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+
+        let _server_view = self.verify_server_chain_pre_action().await?;
+
+        let cnt_previous = self.choose_terminal_anchor(false)?;
+        let cnt = SadEvent::cnt(&cnt_previous, iel_event_said)?;
+        let said = cnt.said;
+        self.pending_events.push(cnt);
+        Ok(said)
+    }
+
     /// Stage a `Dec` (and any pending events) for submission.
     ///
     /// Fails fast on a divergent chain — `Dec` cannot resolve a divergent
@@ -598,6 +629,37 @@ impl SadEventBuilder {
         let dec_previous = self.choose_terminal_anchor(true)?;
         let identity = self.chain_identity()?;
         let iel_event_said = self.fetch_current_iel_binding(&identity).await?;
+        let dec = SadEvent::dec(&dec_previous, iel_event_said)?;
+        let said = dec.said;
+        self.pending_events.push(dec);
+        Ok(said)
+    }
+
+    /// Stage a `Dec` bound to a caller-supplied IEL event SAID, bypassing
+    /// the live-IEL lookup `decommission()` performs.
+    ///
+    /// Use when the authorizing IEL has terminated (Cnt/Dec landed) — same
+    /// rationale as [`Self::contest_with_iel_event_said`]. Caller picks a
+    /// meaningful binding (typically the last non-terminal IEL event); SE
+    /// Dec's governance check is SOFT terminal, so the verifier sets
+    /// `policy_satisfied=false` if the chosen binding's
+    /// `governance_policy` doesn't authorize this Dec.
+    pub async fn decommission_with_iel_event_said(
+        &mut self,
+        iel_event_said: cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        self.require_incepted()?;
+        self.require_non_terminal()?;
+
+        let server_view = self.verify_server_chain_pre_action().await?;
+
+        if self.is_divergent_view(server_view.as_ref()) {
+            return Err(KelsError::DecommissionBlockedByDivergence(
+                "chain is divergent — use contest() (sealed) or repair() (unsealed) instead".into(),
+            ));
+        }
+
+        let dec_previous = self.choose_terminal_anchor(true)?;
         let dec = SadEvent::dec(&dec_previous, iel_event_said)?;
         let said = dec.said;
         self.pending_events.push(dec);

@@ -98,11 +98,18 @@ const KNOWN_CUSTODY_FIELDS: &[&str] = &["write", "read"];
 
 /// Parse and validate a custody object from a JSON value.
 ///
+/// Fail-secure: unknown fields reject. The SAID covers the whole `custody`
+/// object including unknown siblings, so the wire form is content-addressed
+/// — there is no v2-schema "old SAD breaks under stricter parsing" scenario
+/// where a forgiving parse would help. A fail-open posture would let a
+/// malformed (or maliciously-padded) `custody` land with the SAD passing
+/// downstream consumers' eyes as if `write` / `read` were enforced when in
+/// fact no enforcement ran.
+///
 /// Returns:
-/// - `Ok(Some(custody))` — valid custody with recognized fields only.
-/// - `Ok(None)` — unknown fields present, safety valve: caller should treat
-///   as unenforceable. Mirrors the existing safety-valve posture.
-/// - `Err(e)` — the value isn't an object, or parsing failed.
+/// - `Ok(custody)` — valid custody with recognized fields only.
+/// - `Err(ParseError)` — the value isn't an object, parsing failed, or
+///   unknown sibling fields were present.
 ///
 /// Per-event rejection of `custody` (`CustodyNotAllowedOnEvent`) and
 /// `availability` (`AvailabilityNotAllowedOnEvent`) is enforced at the
@@ -111,7 +118,7 @@ const KNOWN_CUSTODY_FIELDS: &[&str] = &["write", "read"];
 /// for the inline value.
 pub fn parse_and_validate_custody(
     value: &serde_json::Value,
-) -> Result<Option<Custody>, CustodyValidationError> {
+) -> Result<Custody, CustodyValidationError> {
     let obj = match value.as_object() {
         Some(obj) => obj,
         None => {
@@ -121,16 +128,18 @@ pub fn parse_and_validate_custody(
         }
     };
 
-    // Safety valve: any unrecognized key disengages enforcement.
     let known: HashSet<&str> = KNOWN_CUSTODY_FIELDS.iter().copied().collect();
-    if obj.keys().any(|k| !known.contains(k.as_str())) {
-        return Ok(None);
+    if let Some(unknown) = obj.keys().find(|k| !known.contains(k.as_str())) {
+        return Err(CustodyValidationError::ParseError(format!(
+            "unknown custody field {:?}",
+            unknown
+        )));
     }
 
     let custody: Custody = serde_json::from_value(value.clone())
         .map_err(|e| CustodyValidationError::ParseError(e.to_string()))?;
 
-    Ok(Some(custody))
+    Ok(custody)
 }
 
 #[cfg(test)]
@@ -155,7 +164,7 @@ mod tests {
             "write": test_digest(b"iel-event").to_string(),
             "read": test_digest(b"iel-prefix").to_string(),
         });
-        let parsed = parse_and_validate_custody(&value).unwrap().unwrap();
+        let parsed = parse_and_validate_custody(&value).unwrap();
         assert_eq!(parsed.write, Some(test_digest(b"iel-event")));
         assert_eq!(parsed.read, Some(test_digest(b"iel-prefix")));
     }
@@ -165,25 +174,25 @@ mod tests {
         let read_only = serde_json::json!({
             "read": test_digest(b"iel-prefix").to_string(),
         });
-        let parsed = parse_and_validate_custody(&read_only).unwrap().unwrap();
+        let parsed = parse_and_validate_custody(&read_only).unwrap();
         assert!(parsed.write.is_none());
         assert_eq!(parsed.read, Some(test_digest(b"iel-prefix")));
     }
 
     #[test]
-    fn test_unknown_field_safety_valve() {
+    fn test_unknown_field_rejected() {
         let value = serde_json::json!({
             "write": test_digest(b"x").to_string(),
             "customField": "something",
         });
-        let result = parse_and_validate_custody(&value).unwrap();
-        assert!(result.is_none());
+        let err = parse_and_validate_custody(&value).unwrap_err();
+        assert!(matches!(err, CustodyValidationError::ParseError(_)));
     }
 
     #[test]
     fn test_empty_object_parses_as_default() {
         let value = serde_json::json!({});
-        let parsed = parse_and_validate_custody(&value).unwrap().unwrap();
+        let parsed = parse_and_validate_custody(&value).unwrap();
         assert!(parsed.is_empty());
     }
 
@@ -195,10 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_field_names_rejected_via_safety_valve() {
-        // Pre-#167 field names — should disengage enforcement. Identifiers
-        // built dynamically so the literal forbidden tokens never appear in
-        // source files (see `.terminology-forbidden`).
+    fn test_legacy_field_names_rejected() {
+        // Pre-#167 field names — fail-secure: caller gets a parse error,
+        // not silent unenforcement. Identifiers built dynamically so the
+        // literal forbidden tokens never appear in source files (see
+        // `.terminology-forbidden`).
         let legacy_write = format!("{}{}", "write", "Policy");
         let legacy_read = format!("{}{}", "read", "Policy");
         let mut obj = serde_json::Map::new();
@@ -211,7 +221,7 @@ mod tests {
             serde_json::Value::String(test_digest(b"y").to_string()),
         );
         let value = serde_json::Value::Object(obj);
-        let result = parse_and_validate_custody(&value).unwrap();
-        assert!(result.is_none());
+        let err = parse_and_validate_custody(&value).unwrap_err();
+        assert!(matches!(err, CustodyValidationError::ParseError(_)));
     }
 }

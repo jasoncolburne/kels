@@ -178,9 +178,47 @@ impl IdentityEventBuilder {
         self.iel_verification.as_ref().map(|v| v.prefix())
     }
 
+    /// SAID of the most recent event (pending tail, then verified tip).
+    /// Mirrors `SadEventBuilder::last_said`.
+    pub fn last_said(&self) -> Option<&cesr::Digest256> {
+        self.last_event().map(|e| &e.said)
+    }
+
+    /// Version of the most recent event. Mirrors
+    /// `SadEventBuilder::version`.
+    pub fn version(&self) -> Option<u64> {
+        self.last_event().map(|e| e.version)
+    }
+
+    /// True iff the chain has terminated locally — a `Cnt` or `Dec` is
+    /// staged or already verified. Mirrors `SadEventBuilder::is_terminal`;
+    /// refuses further staging when true.
+    pub fn is_terminal(&self) -> bool {
+        if self.pending_events.iter().any(|e| {
+            matches!(
+                e.kind,
+                crate::types::IdentityEventKind::Cnt | crate::types::IdentityEventKind::Dec
+            )
+        }) {
+            return true;
+        }
+        self.iel_verification
+            .as_ref()
+            .map(|v| v.is_contested() || v.is_decommissioned())
+            .unwrap_or(false)
+    }
+
     // ==================== Staging (sync) ====================
 
     /// Stage a v0 `Icp` declaring both `auth_policy` and `governance_policy`.
+    ///
+    /// The IEL immunity rule (`docs/design/iel/event-log.md §Immunity`)
+    /// requires both introduced policies to declare `immune: true`. Staging
+    /// does **not** pre-check immunity; the verifier (run client-side at
+    /// `flush` and server-side at submit) is authoritative and rejects a
+    /// non-immune `Icp` HARD. Operators that batch lengthy work (KEL
+    /// anchoring, etc.) before flush should validate immunity via the
+    /// resolver/checker independently to fail fast.
     pub fn incept(
         &mut self,
         auth_policy: cesr::Digest256,
@@ -207,6 +245,12 @@ impl IdentityEventBuilder {
 
     /// Stage a v+1 `Evl` extending the current tip (or last pending event).
     /// `auth_policy` / `governance_policy` carry forward when `None`.
+    ///
+    /// Like `incept`, immunity on **changed** policy values is verified at
+    /// flush, not staging — the verifier compares against tracked
+    /// `policy_history` and HARD-rejects non-immune evolutions
+    /// pre-divergence. Pre-flight by the operator is optional but
+    /// recommended for offline pipelines that commit work before flush.
     pub fn evolve(
         &mut self,
         auth_policy: Option<cesr::Digest256>,

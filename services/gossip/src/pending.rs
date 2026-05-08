@@ -405,10 +405,14 @@ impl PendingMap {
         let new_record =
             ParkRecord::create(old_record.subject.clone(), old_record.origin, new_deps)
                 .map_err(|e| PendingError::Operational(e.to_string()))?;
-        // Idempotent: if the new SAID equals the old, the cleanup+park
-        // sequence still produces a correct park (cleanup removes, park
-        // re-adds). Same-SAID typically means deps-unchanged — caller
-        // ought to filter that case but we don't enforce here.
+        // Same-SAID short-circuit: deps unchanged from the original park.
+        // Skipping the cleanup+park keeps the original record's TTL intact
+        // — without this, busy chains whose advances never satisfy a parked
+        // record's deps would re-enter refresh on every advance and renew
+        // the TTL indefinitely, blowing past the 5-minute eviction bound.
+        if new_record.said == old_record.said {
+            return Ok(new_record);
+        }
         self.cleanup_record(&old_record.said).await?;
         self.park(&new_record, chain_eff_said_for).await?;
         Ok(new_record)
