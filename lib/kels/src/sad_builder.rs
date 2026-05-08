@@ -96,7 +96,7 @@ impl SadEventBuilder {
         }
     }
 
-    /// Construct a builder for an existing SE chain at `sel_prefix` and
+    /// Construct a builder for an existing SEL at `sel_prefix` and
     /// hydrate verified state from the **server**, via
     /// `sad_client.verify_sel_events`.
     ///
@@ -104,8 +104,8 @@ impl SadEventBuilder {
     /// `repair`, `contest`, `decommission`) where each invocation is
     /// short-lived and there is no useful local SAD store. The pre-walk
     /// collects the chain's queried IEL SAIDs so the constructed
-    /// `IelResolver` can answer `is_satisfied` during the SE walk; the
-    /// SE verification itself is checker-gated, so the trust boundary
+    /// `IelResolver` can answer `is_satisfied` during the SEL walk; the
+    /// SEL verification itself is checker-gated, so the trust boundary
     /// matches `with_prefix` — the server's wire output is verified
     /// end-to-end before being adopted as the builder's tail. Returns a
     /// fresh builder with no `sad_verification` if the server has no
@@ -180,7 +180,7 @@ impl SadEventBuilder {
         Ok(builder)
     }
 
-    /// Construct a builder for an existing SE chain at `sel_prefix` and
+    /// Construct a builder for an existing SEL at `sel_prefix` and
     /// hydrate verified state from the **local SAD store only**.
     ///
     /// Hydration runs only when both `sad_store` and `checker` are set —
@@ -200,7 +200,7 @@ impl SadEventBuilder {
         if let (Some(store), Some(c), Some(client)) =
             (sad_store.as_ref(), checker.as_ref(), sad_client.as_ref())
         {
-            // SE pre-walk over the local store, accumulating only
+            // SEL pre-walk over the local store, accumulating only
             // identity_event SAIDs so the IelResolver can answer
             // is_satisfied during the verification walk that follows.
             let mut prewalk = crate::SadStorePageLoader::new(store.as_ref());
@@ -259,7 +259,7 @@ impl SadEventBuilder {
         self.last_event().map(|e| &e.said)
     }
 
-    /// SE prefix (pending v0, then verified prefix).
+    /// SEL prefix (pending v0, then verified prefix).
     pub fn prefix(&self) -> Option<&cesr::Digest256> {
         if let Some(first) = self.pending_events.first() {
             return Some(&first.prefix);
@@ -311,7 +311,7 @@ impl SadEventBuilder {
 
     // ==================== Staging (async) ====================
 
-    /// Atomically stage `[Icp, Upd]` for a fresh SE chain bound to
+    /// Atomically stage `[Icp, Upd]` for a fresh SEL bound to
     /// `identity`. Returns `(icp_said, upd_said)`.
     ///
     /// The Upd's `identity_event` resolves to the most recent IEL
@@ -577,13 +577,13 @@ impl SadEventBuilder {
     /// the live-IEL lookup `contest()` performs.
     ///
     /// Use this when the authorizing IEL has terminated (Cnt/Dec landed)
-    /// and the SE chain owner needs to contest. Per
-    /// `docs/design/iel/event-log.md §Cascading effect on dependent SE
+    /// and the SEL owner needs to contest. Per
+    /// `docs/design/iel/event-log.md §Cascading effect on dependent SEL
     /// chains`, the operator's recourse on a terminal IEL is to bind the
-    /// SE Cnt to the **last non-terminal IEL event** — its
+    /// SEL Cnt to the **last non-terminal IEL event** — its
     /// `governance_policy` was satisfied at write time, persists in the
     /// IEL verifier's `policy_history`, and is resolvable forever even
-    /// though the IEL no longer accepts new events. SE Cnt's governance
+    /// though the IEL no longer accepts new events. SEL Cnt's governance
     /// check is SOFT terminal anyway (`docs/design/sel/verification.md`
     /// §Soft-fail), so a govfailed binding still lands with
     /// `policy_satisfied=false` content-flag — the caller retains
@@ -607,7 +607,7 @@ impl SadEventBuilder {
     /// Stage a `Dec` (and any pending events) for submission.
     ///
     /// Fails fast on a divergent chain — `Dec` cannot resolve a divergent
-    /// SE chain (sealed-divergent → ContestRequired; unsealed-divergent →
+    /// SEL (sealed-divergent → ContestRequired; unsealed-divergent →
     /// RepairRequired). The builder surfaces
     /// `KelsError::DecommissionBlockedByDivergence` and lets the operator
     /// route to `repair()` or `contest()`. The error is generic by design
@@ -640,7 +640,7 @@ impl SadEventBuilder {
     ///
     /// Use when the authorizing IEL has terminated (Cnt/Dec landed) — same
     /// rationale as [`Self::contest_with_iel_event_said`]. Caller picks a
-    /// meaningful binding (typically the last non-terminal IEL event); SE
+    /// meaningful binding (typically the last non-terminal IEL event); SEL
     /// Dec's governance check is SOFT terminal, so the verifier sets
     /// `policy_satisfied=false` if the chosen binding's
     /// `governance_policy` doesn't authorize this Dec.
@@ -837,11 +837,11 @@ impl SadEventBuilder {
     /// `sad_client` / `checker` / `prefix` is missing (offline-staging
     /// flows). Mirrors `IdentityEventBuilder::verify_server_chain_pre_action`.
     ///
-    /// #147 follow-up: pre-walks the server's SE chain to collect
+    /// #147 follow-up: pre-walks the server's SEL to collect
     /// the unique `identity_event` SAIDs the IEL verification needs to query.
     /// The collected set is forwarded to the `IelResolver` via
     /// `with_queried_saids` so `is_satisfied` answers correctly during the
-    /// SE chain walk.
+    /// SEL walk.
     async fn verify_server_chain_pre_action(&self) -> Result<Option<SelVerification>, KelsError> {
         let (Some(client), Some(checker), Some(prefix)) = (
             self.sad_client.as_ref(),
@@ -851,7 +851,7 @@ impl SadEventBuilder {
             return Ok(None);
         };
 
-        // SE pre-walk over the server's SE source — streaming, accumulates
+        // SEL pre-walk over the server's SEL source — streaming, accumulates
         // only SAIDs.
         let queried_iel_saids = crate::collect_identity_event_saids(
             prefix,
@@ -870,9 +870,9 @@ impl SadEventBuilder {
     }
 
     /// Fetch the SAID of the most recent IEL non-terminal event (Icp or
-    /// Evl) for `identity`. The event's policy fields authorize SE
+    /// Evl) for `identity`. The event's policy fields authorize SEL
     /// staging. Errors if the IEL is divergent (no canonical "current"
-    /// event) or terminated (chain can't authorize new SE work).
+    /// event) or terminated (chain can't authorize new SEL work).
     async fn fetch_current_iel_binding(
         &self,
         identity: &cesr::Digest256,
@@ -888,14 +888,14 @@ impl SadEventBuilder {
             .await?;
         if verification.is_divergent() {
             return Err(KelsError::IelDivergent(format!(
-                "IEL {} is divergent — cannot pick a binding for SE staging",
+                "IEL {} is divergent — cannot pick a binding for SEL staging",
                 identity
             )));
         }
         if verification.is_contested() || verification.is_decommissioned() {
             return Err(KelsError::InvalidIel(format!(
                 "IEL {} is terminal (contested/decommissioned) — cannot \
-                 authorize SE staging",
+                 authorize SEL staging",
                 identity
             )));
         }
@@ -905,7 +905,7 @@ impl SadEventBuilder {
                 identity
             ))
         })?;
-        // SE bindings target Icp / Evl events (the kinds that
+        // SEL bindings target Icp / Evl events (the kinds that
         // carry policy state forward). Terminal IEL kinds (Cnt / Dec)
         // shouldn't be reachable here because we just gated on
         // `is_contested` / `is_decommissioned`, but stay defensive.
@@ -914,7 +914,7 @@ impl SadEventBuilder {
             IdentityEventKind::Cnt | IdentityEventKind::Dec
         ) {
             return Err(KelsError::InvalidIel(format!(
-                "IEL {}'s current event is terminal kind {} — cannot bind SE \
+                "IEL {}'s current event is terminal kind {} — cannot bind SEL \
                  events to a terminated IEL",
                 identity, current.kind
             )));
@@ -954,7 +954,7 @@ impl SadEventBuilder {
         Ok(view.current_event().clone())
     }
 
-    /// `chain.identity` — the IEL prefix this SE chain is bound to.
+    /// `chain.identity` — the IEL prefix this SEL is bound to.
     /// Sourced from the verified Icp (preferred) or the pending v0 Icp.
     fn chain_identity(&self) -> Result<cesr::Digest256, KelsError> {
         if let Some(v) = self.sad_verification.as_ref() {
@@ -1041,7 +1041,7 @@ impl SadEventBuilder {
             .clone();
         // queried_saids = prior token's queried (carried across resume) ∪
         // identity_event SAIDs from the pending events being absorbed.
-        // SE pre-walk for absorb_pending is in-memory: pending_events is
+        // SEL pre-walk for absorb_pending is in-memory: pending_events is
         // already a `Vec<SadEvent>` held by the builder, so SAID extraction
         // is a single pass with no I/O.
         let mut queried: std::collections::BTreeSet<cesr::Digest256> = self

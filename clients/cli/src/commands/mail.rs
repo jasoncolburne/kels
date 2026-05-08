@@ -25,7 +25,7 @@ pub(crate) async fn cmd_mail_send(
 
     // Recipient's KEL prefix is the routing/binding identity (mail
     // service indexes inbox by it; ESSR seal binds to it). Recipient's
-    // IEL identity is what publishes their encap-key SEL chain — SEL
+    // IEL identity is what publishes their encap-key SEL — SEL
     // prefix derives from `(identity, ENCAP_KEY_KIND)`.
     let recipient_digest =
         cesr::Digest256::from_qb64(recipient).context("Invalid recipient KEL prefix CESR")?;

@@ -397,7 +397,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
-        // Wire the deferred-deps pending map into bootstrap so IEL/SE
+        // Wire the deferred-deps pending map into bootstrap so IEL/SEL
         // preload failures parking on `MissingKelEvent` / `MissingSadObject`
         // / `MissingIelEvent` get replayed by the live `kel_updates`/`iel_updates`/
         // `sad_updates` drain subscribers when the awaited dep lands. The
@@ -923,7 +923,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         });
 
         // IEL anti-entropy loop (#172): closes the structural gap where
-        // SE→IEL deferred-deps parks could TTL out without the IEL chain
+        // SEL→IEL deferred-deps parks could TTL out without the IEL chain
         // ever propagating to the parking peer.
         let iel_ae_redis = redis.clone();
         let iel_ae_allowlist = allowlist.clone();

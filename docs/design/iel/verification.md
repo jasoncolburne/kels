@@ -110,13 +110,13 @@ This rule is path-agnostic: it fires identically on submit, gossip-receipt, and 
 
 ### Caller-Bounded SAID Querying (`queried_saids` / `satisfied_saids`)
 
-The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SE verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SE to bind under?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
+The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`: if the event is at `version < first_divergent_version` (or chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
 - Token exposes `is_said_satisfied(said) -> bool` and `satisfied_saids() -> &BTreeSet<Digest256>`.
 
-The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SE verifier collects `identity_event` references from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
+The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SEL verifier collects `identity_event` references from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
 
 ## Verification Return Value
 
@@ -136,7 +136,7 @@ Accessors:
 
 - `current_event()` → `None` if divergent
 - `prefix()`, `topic()`
-- `auth_policy_at(event_said)` — the auth_policy declared/evolved at the named IEL event (used by SE verification to resolve `identity_event` bindings)
+- `auth_policy_at(event_said)` — the auth_policy declared/evolved at the named IEL event (used by SEL verification to resolve `identity_event` bindings)
 - `governance_policy_at(event_said)` — same, for governance_policy
 - `policy_satisfied()` — overall policy satisfaction across the chain
 - `last_governance_version()`
@@ -213,17 +213,17 @@ let verification = verifier.finish().await?;
 7. Policy satisfaction via `PolicyChecker` (`governance_policy` for every kind — Icp anchored under its declared `governance_policy`; Evl/Cnt/Dec anchored under the branch's tracked `governance_policy`)
 8. Immunity check on policy seed/update
 
-## Cross-Chain Use: SE Authorization Resolution
+## Cross-Chain Use: SEL Authorization Resolution
 
-SE verification depends on IEL verification for resolving `identity_event` bindings. The flow:
+SEL verification depends on IEL verification for resolving `identity_event` bindings. The flow:
 
-1. SE event has `identity_event = IEL_X.said`.
-2. SE verifier (or merge handler) needs to know "what auth_policy or governance_policy was declared/evolved at IEL_X?"
+1. SEL event has `identity_event = IEL_X.said`.
+2. SEL verifier (or merge handler) needs to know "what auth_policy or governance_policy was declared/evolved at IEL_X?"
 3. The IEL is fetched (or already cached). `IelVerification` is loaded or computed.
 4. `auth_policy_at(IEL_X.said)` (or `governance_policy_at(...)`) returns the relevant policy SAID.
-5. SE event's anchor is verified against that policy.
+5. SEL event's anchor is verified against that policy.
 
-The IEL verifier produces these accessors as part of its normal verification output. SE verification is a consumer of IEL verification, not an inverter or re-implementor.
+The IEL verifier produces these accessors as part of its normal verification output. SEL verification is a consumer of IEL verification, not an inverter or re-implementor.
 
 ## References
 
@@ -231,7 +231,7 @@ The IEL verifier produces these accessors as part of its normal verification out
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.
-- [../sel/verification.md](../sel/verification.md) — SE verification (consumer of IEL verification for binding resolution).
+- [../sel/verification.md](../sel/verification.md) — SEL verification (consumer of IEL verification for binding resolution).
 - [../policy.md](../policy.md) — Policy DSL and anchoring model.
 - [../streaming-verification-architecture.md](../streaming-verification-architecture.md) — Cross-side streaming-verification architecture.
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

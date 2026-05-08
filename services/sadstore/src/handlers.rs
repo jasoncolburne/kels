@@ -1223,7 +1223,7 @@ pub async fn sad_event_exists(
 
 // === Layer 2: SAD Events (Postgres) ===
 
-/// Stream the SE chain inside the submit transaction and accumulate the
+/// Stream the SEL inside the submit transaction and accumulate the
 /// unique `event.identity_event` SAIDs (drops events). Mirrors
 /// `kels_core::collect_identity_event_saids[_from_loader]` for the
 /// transactional repository path. Bounded by `max_pages × page_size × 32B`;
@@ -1231,9 +1231,9 @@ pub async fn sad_event_exists(
 /// silently using a partial set, which would soft-fail every binding for
 /// SAIDs past the limit).
 ///
-/// Used by the SE submit handler to pre-walk the chain before constructing
+/// Used by the SEL submit handler to pre-walk the chain before constructing
 /// the `IelResolver` with a `queried_saids` set, so `is_satisfied` answers
-/// reflect the full SE chain's bindings.
+/// reflect the full SEL's bindings.
 async fn collect_se_chain_identity_event_saids_via_tx<Tx: TransactionExecutor>(
     tx: &mut Tx,
     repo: &SadEventRepository,
@@ -1255,7 +1255,7 @@ async fn collect_se_chain_identity_event_saids_via_tx<Tx: TransactionExecutor>(
             )
             .await
             .map_err(|e| {
-                warn!("Failed to pre-walk SE chain for queried_saids: {}", e);
+                warn!("Failed to pre-walk SEL for queried_saids: {}", e);
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response()
             })?;
         if page.is_empty() {
@@ -1276,7 +1276,7 @@ async fn collect_se_chain_identity_event_saids_via_tx<Tx: TransactionExecutor>(
     }
     if !exhausted {
         let msg = format!(
-            "SE pre-walk for queried_saids exceeded max_pages limit ({}) for {}",
+            "SEL pre-walk for queried_saids exceeded max_pages limit ({}) for {}",
             max_pages, prefix
         );
         warn!("{}", msg);
@@ -1325,7 +1325,7 @@ async fn verify_existing_chain<Tx: TransactionExecutor>(
             // via `KelsError::ChainVerificationFailed` so federation peers
             // and operators can distinguish server-internal failures from
             // routine 409 conflict responses.
-            warn!("SE existing-chain re-verification failed: {}", e);
+            warn!("SEL existing-chain re-verification failed: {}", e);
             let err = kels_core::KelsError::ChainVerificationFailed(e.to_string());
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         })?;
@@ -1547,7 +1547,7 @@ pub async fn submit_sad_events(
             .into_response();
     }
 
-    // #167: SE events reject `custody` and `availability`
+    // #167: SEL events reject `custody` and `availability`
     // entirely — chains replicate as a unit; differential authority or
     // lifecycle across links breaks descendant verification. The struct
     // doesn't carry these fields anymore, so a well-formed
@@ -1662,7 +1662,7 @@ pub async fn submit_sad_events(
             let is_contested = match state.repo.sad_events.is_contested(sel_prefix).await {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to query SE is_contested on dedup path: {}", e);
+                    warn!("Failed to query SEL is_contested on dedup path: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
@@ -1671,7 +1671,7 @@ pub async fn submit_sad_events(
             {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to query SE is_decommissioned on dedup path: {}", e);
+                    warn!("Failed to query SEL is_decommissioned on dedup path: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
@@ -1721,7 +1721,7 @@ pub async fn submit_sad_events(
         {
             Ok(v) => v,
             Err(e) => {
-                warn!("Failed to query SE pre-batch seal: {}", e);
+                warn!("Failed to query SEL pre-batch seal: {}", e);
                 let _ = tx.rollback().await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
@@ -1729,7 +1729,7 @@ pub async fn submit_sad_events(
         let pre_batch_contested = match state.repo.sad_events.is_contested(sel_prefix).await {
             Ok(v) => v,
             Err(e) => {
-                warn!("Failed to query SE is_contested: {}", e);
+                warn!("Failed to query SEL is_contested: {}", e);
                 let _ = tx.rollback().await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
             }
@@ -1738,13 +1738,13 @@ pub async fn submit_sad_events(
             match state.repo.sad_events.is_decommissioned(sel_prefix).await {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to query SE is_decommissioned: {}", e);
+                    warn!("Failed to query SEL is_decommissioned: {}", e);
                     let _ = tx.rollback().await;
                     return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
                 }
             };
 
-        // Terminal-state gates: a contested or decommissioned SE chain
+        // Terminal-state gates: a contested or decommissioned SEL
         // accepts no further events of any kind. Mirrors the IEL handler:
         // 200 OK with `terminal: Some(_)` so gossip forwarders see
         // idempotent success; owner-side callers branch on `terminal` to
@@ -1781,7 +1781,7 @@ pub async fn submit_sad_events(
                 Arc::clone(&policy_resolver),
             ));
 
-        // SE pre-walk: stream the SE chain (storage + new events), accumulate
+        // SEL pre-walk: stream the SEL (storage + new events), accumulate
         // unique `identity_event` SAIDs. The set is forwarded as
         // `queried_saids` to the `IelResolver` so its `is_satisfied`
         // answers reflect IEL verification of these SAIDs. Bounded by
@@ -1887,7 +1887,7 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::FORBIDDEN,
-                    "SE Rpr not anchored under IEL-resolved governance_policy",
+                    "SEL Rpr not anchored under IEL-resolved governance_policy",
                 )
                     .into_response();
             }
@@ -1932,7 +1932,7 @@ pub async fn submit_sad_events(
             // integrity issue. Surface as 500 via `ChainVerificationFailed`.
             for event in &new_events {
                 if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert SE Cnt (post-dedup-locked): {}", e);
+                    warn!("Failed to insert SEL Cnt (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
                     let err = kels_core::KelsError::ChainVerificationFailed(format!(
                         "post-dedup-locked Cnt insert failed: {}",
@@ -1970,11 +1970,11 @@ pub async fn submit_sad_events(
                 return response;
             }
 
-            // Same shape as the SE Cnt insert above — failure post-dedup-
+            // Same shape as the SEL Cnt insert above — failure post-dedup-
             // locked-verified is server-internal integrity, not 409.
             for event in &new_events {
                 if let Err(e) = state.repo.sad_events.insert_event(&mut tx, event).await {
-                    warn!("Failed to insert SE Dec (post-dedup-locked): {}", e);
+                    warn!("Failed to insert SEL Dec (post-dedup-locked): {}", e);
                     let _ = tx.rollback().await;
                     let err = kels_core::KelsError::ChainVerificationFailed(format!(
                         "post-dedup-locked Dec insert failed: {}",
@@ -2021,7 +2021,7 @@ pub async fn submit_sad_events(
                 let _ = tx.rollback().await;
                 return (
                     StatusCode::FORBIDDEN,
-                    "SE event not anchored under IEL-resolved policy",
+                    "SEL event not anchored under IEL-resolved policy",
                 )
                     .into_response();
             }
@@ -2076,7 +2076,7 @@ pub async fn submit_sad_events(
     // as kels-service.
     accrue_prefix_rate_limit(&state.prefix_rate_limits, sel_prefix, new_event_count);
 
-    // #167: SE events broadcast unconditionally. Replication
+    // #167: SEL events broadcast unconditionally. Replication
     // gating is a SAD-object concern (via `availability.nodes`); chains
     // replicate as a unit because a chain's events all participate in the
     // same identity-rooted history. The pre-#167 per-event custody-routing
@@ -2258,7 +2258,7 @@ async fn verify_existing_iel_chain<Tx: TransactionExecutor>(
         let page_len = page.len();
         since = page.last().map(|e| e.said);
         verifier.verify_page(&page).await.map_err(|e| {
-            // Same shape as `verify_existing_chain` for SE — re-verification
+            // Same shape as `verify_existing_chain` for SEL — re-verification
             // of already-stored IEL events is a server-internal integrity
             // contract, not a client-vs-state conflict. Surface as 500 via
             // `KelsError::ChainVerificationFailed`.
@@ -2455,7 +2455,7 @@ pub async fn submit_identity_events(
 
         if new_events.is_empty() {
             // All-duplicates short-circuit: report current divergence and
-            // terminal state. Mirrors the SE dedup-path: gossip retransmits
+            // terminal state. Mirrors the SEL dedup-path: gossip retransmits
             // of all-already-stored batches against a contested or
             // decommissioned chain return the same `terminal: Some(_)` shape
             // a single-new-event submit would have produced via the gate
@@ -2629,7 +2629,7 @@ pub async fn submit_identity_events(
         if is_contest {
             // A failure here is post-dedup, post-advisory-lock, post-verifier
             // — server-internal integrity, not 409. Surface as 500 via
-            // `ChainVerificationFailed` (mirrors the SE Cnt/Dec sites).
+            // `ChainVerificationFailed` (mirrors the SEL Cnt/Dec sites).
             for event in &new_events {
                 if let Err(e) = state.repo.iel_events.insert_event(&mut tx, event).await {
                     warn!("Failed to insert IEL Cnt (post-dedup-locked): {}", e);

@@ -341,7 +341,7 @@ public final class KelsClient: @unchecked Sendable {
 
     // MARK: - Reset
 
-    /// Reset all local state (KELs, keys, SE Keychain entries)
+    /// Reset all local state (KELs, keys, SEL Keychain entries)
     /// This is a static method that can be called without an existing client instance
     /// - Parameter stateDir: Directory containing local state (defaults to app documents)
     public static func reset(stateDir: String? = nil) throws {

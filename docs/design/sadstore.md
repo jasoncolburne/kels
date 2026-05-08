@@ -7,7 +7,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (RustFS, S3-compatible) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SE event's authorization resolves through the bound IEL (`identity` at Icp; `identity_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SEL event's authorization resolves through the bound IEL (`identity` at Icp; `identity_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
 
@@ -25,7 +25,7 @@ Fields:
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
-- `identity_event` — SAID of the IEL event whose policy authorizes this SE event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
+- `identity_event` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](sel/events.md) for the full per-kind matrix.
 
 #167: `custody` and `availability` are not part of the `SadEvent` struct, so any inline keys with those names get silently dropped during deserialization — chain events broadcast as a unit and can't carry differential authority/replication across links. The drop is structural (type-system), not an explicit submit-handler rejection: a chain-event JSON body containing those keys parses cleanly with the keys ignored. The `CustodyValidationError::CustodyNotAllowedOnEvent` / `AvailabilityNotAllowedOnEvent` variants exist for a future explicit-rejection path (e.g., `deny_unknown_fields` on `SadEvent` deserialization or boundary JSON-key inspection); they are not raised today.
 
@@ -69,7 +69,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 
 ## Chain Lifecycle
 
-A SEL chain transitions through states (Active → Divergent → Contested / Decommissioned) driven by the events in the chain itself, not external flags. The **effective SAID** for a chain is its gossip-visible identity:
+A SEL transitions through states (Active → Divergent → Contested / Decommissioned) driven by the events in the chain itself, not external flags. The **effective SAID** for a chain is its gossip-visible identity:
 - Linear chain: the tip event's SAID.
 - Divergent chain: `hash_effective_said("divergent:{prefix}")` — synthetic, deterministic, cross-node-consistent.
 - Contested chain: `hash_effective_said("contested:{prefix}")` — terminal.

@@ -88,7 +88,7 @@ struct SharedHarness {
     /// or run raw SQL outside the HTTP API (e.g., the
     /// integrity-500 test corrupts a stored event row to trigger
     /// `verify_existing_iel_chain` failure on the next submit).
-    /// Mirrors the SE-side harness at `sad_builder_tests.rs`.
+    /// Mirrors the SEL-side harness at `sad_builder_tests.rs`.
     sad_db_url: String,
     _pg_kels: ContainerAsync<Postgres>,
     _pg_sad: ContainerAsync<Postgres>,
@@ -317,7 +317,7 @@ async fn upload_non_immune_policy(
     policy
 }
 
-/// Build the `AnchoredPolicyChecker` for IEL flows. Same shape as SE's tests
+/// Build the `AnchoredPolicyChecker` for IEL flows. Same shape as SEL's tests
 /// — an HttpKelSource against the harness KELS plus an in-memory resolver
 /// seeded with the supplied policies.
 fn build_checker(
@@ -1256,7 +1256,7 @@ async fn _suppress_incept_and_flush_unused(harness: &SharedHarness) {
 }
 
 /// Server-internal-integrity-failure → 500 contract for IEL.
-/// Mirrors the SE test in `sad_builder_tests.rs`: when the receiver's
+/// Mirrors the SEL test in `sad_builder_tests.rs`: when the receiver's
 /// already-stored IEL chain fails re-verification, the
 /// `verify_existing_iel_chain` helper surfaces the failure as
 /// `KelsError::ChainVerificationFailed` and the handler returns 500.

@@ -76,7 +76,7 @@ pub struct IdentityBranchTip {
 /// Carries per-branch tip state plus a SAID-keyed map of every event's
 /// declared/tracked `(auth_policy, governance_policy)`. The SAID-keyed map is
 /// the data source for `auth_policy_at` and `governance_policy_at`, which
-/// SE-side verification (per #147) will use to resolve `identity_event`
+/// SEL-side verification (per #147) will use to resolve `identity_event`
 /// bindings.
 #[derive(Debug, Clone)]
 pub struct IelVerification {
@@ -233,7 +233,7 @@ impl IelVerification {
 
     /// Whether the named IEL event passed its auth check AND lives at
     /// `version < first_divergent_version` (or the chain is non-divergent).
-    /// Mirrors `KelVerification::is_said_anchored`. Used by SE verification
+    /// Mirrors `KelVerification::is_said_anchored`. Used by SEL verification
     /// to gate `identity_event` bindings. Returns `false` for SAIDs not in
     /// `queried_saids` — callers must register interest before walking.
     pub fn is_said_satisfied(&self, said: &cesr::Digest256) -> bool {
@@ -354,7 +354,7 @@ impl IelVerifier {
     ///
     /// Unlike `KelVerifier::resume` (which resets queried/anchored), the IEL
     /// path rehydrates `queried_saids` and `satisfied_saids` from the prior
-    /// token. SE-driven multi-page verification needs the caller's registered
+    /// token. SEL-driven multi-page verification needs the caller's registered
     /// interest to persist across page boundaries; resetting would force the
     /// caller to re-register on every resume, which conflicts with the
     /// streaming pre-walk pattern where the queried set is collected once
@@ -790,7 +790,7 @@ impl IelVerifier {
                     // Terminal flags reflect chain CONTENT (any Cnt/Dec event
                     // sets them) per `docs/design/iel/event-log.md` §"Chain
                     // States". Authorization status is conveyed separately via
-                    // `policy_satisfied` so SE consumers reading the
+                    // `policy_satisfied` so SEL consumers reading the
                     // verification token see "this chain is terminated" even
                     // when the terminating event was governance-failed at
                     // verification time.
@@ -1922,7 +1922,7 @@ mod tests {
         assert!(token.is_said_satisfied(&v1.said));
 
         // Resume: queried_saids and satisfied_saids carry across the
-        // resume boundary (IEL/SE divergence from KEL's reset-on-resume).
+        // resume boundary (IEL/SEL divergence from KEL's reset-on-resume).
         let v2 = IdentityEvent::evl(&v1, Some(auth3), None).unwrap();
         let mut resumed = IelVerifier::resume(&token, always_pass()).unwrap();
         resumed

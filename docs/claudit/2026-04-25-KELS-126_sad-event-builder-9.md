@@ -301,7 +301,7 @@ The natural staging order via `current_tip()` produces `[Rpr, optional_extension
 
 End-to-end shell script exercising both repair cases against a live deployment (testcontainers or real services, whichever the existing scripts use). Plan:
 
-1. Create owner identity, incept SEL chain, flush a few Upds. (Script uses the existing `kels` CLI; if SEL CLI is missing, this is the moment to add the relevant subcommands — see #147.)
+1. Create owner identity, incept SEL, flush a few Upds. (Script uses the existing `kels` CLI; if SEL CLI is missing, this is the moment to add the relevant subcommands — see #147.)
 2. **Case A (divergent):** stage two conflicting Upds at the same version via direct `submit_sad_events` calls (bypassing the builder), confirm server reports divergence. Run repair via the builder. Assert post-repair `effective_said` reports `divergent: false` and the resulting tip is owner's Rpr.
 3. **Case B (silent extension):** simulate adversary by submitting an Upd extending owner's tip via direct `submit_sad_events` (signed with a separate signer that satisfies write_policy). Confirm server accepts. Run `with_prefix` on a fresh builder; assert `sad_verification.current_event()` is *owner's* last-authored event, not adversary's. Run repair; assert truncation lands at the right version.
 4. **Sanity:** clean state on a fresh chain — `with_prefix` produces `repair_target_version: None`, `repair` returns `NothingToRepair`.

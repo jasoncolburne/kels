@@ -1,4 +1,4 @@
-//! Full-stack tests for the #147 SE submit handler + builder.
+//! Full-stack tests for the #147 SEL submit handler + builder.
 //!
 //! **Critical-subset coverage.** The plan's full taxonomy is 30+ cases;
 //! this file ships ~10 high-value tests covering the genuinely-new #147
@@ -267,16 +267,16 @@ impl SharedHarness {
 
 // ==================== Per-test setup helpers ====================
 
-/// Ground-truth setup for any #147 SE test: creates a KEL on the KELS
+/// Ground-truth setup for any #147 SEL test: creates a KEL on the KELS
 /// service, a single-endorser policy `endorse(KEL_PREFIX)` (acts as both
 /// auth_policy and governance_policy on the IEL — testing-grade default),
 /// uploads the policy SAD, incepts an IEL on the sadstore service via
 /// `IdentityEventBuilder`, and anchors the IEL Icp's SAID in the KEL
 /// through `kel_builder.interact`.
 ///
-/// Returns everything individual tests need to drive SE staging:
-/// the KEL builder (for anchoring SE event SAIDs), the SE-side policy
-/// checker (for hydrating builders), the IEL prefix (= the SE chain's
+/// Returns everything individual tests need to drive SEL staging:
+/// the KEL builder (for anchoring SEL event SAIDs), the SEL-side policy
+/// checker (for hydrating builders), the IEL prefix (= the SEL's
 /// `identity`), the policy SAD (for runtime policy resolution), and a
 /// fresh `SadStoreClient`.
 struct Setup {
@@ -437,7 +437,7 @@ async fn fetch_chain(sad_client: &SadStoreClient, prefix: &Digest256) -> Vec<Sad
 /// Verify a fetched chain owner-locally and return the verification token.
 ///
 /// Mirrors the production `SadEventBuilder::verify_server_chain_pre_action`
-/// flow: SE pre-walk over the source → collect identity_event SAIDs →
+/// flow: SEL pre-walk over the source → collect identity_event SAIDs →
 /// construct resolver via `with_queried_saids` → verify.
 async fn verify_chain(
     sad_client: &SadStoreClient,
@@ -452,7 +452,7 @@ async fn verify_chain(
         kels_core::max_pages(),
     )
     .await
-    .expect("SE pre-walk");
+    .expect("SEL pre-walk");
     let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
         Arc::new(sad_client.as_iel_source().expect("iel source"));
     let resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(
@@ -470,7 +470,7 @@ async fn verify_chain(
         .expect("verify chain")
 }
 
-/// Stage and flush a fresh `[Icp, Upd]` SE chain bound to the IEL in
+/// Stage and flush a fresh `[Icp, Upd]` SEL bound to the IEL in
 /// `setup`. Returns the v1 (Upd) event for callers that need to extend
 /// the chain further.
 async fn establish_se_chain(setup: &mut Setup, label: &str) -> SadEvent {
@@ -498,7 +498,7 @@ async fn establish_se_chain(setup: &mut Setup, label: &str) -> SadEvent {
 
 /// Evolve the IEL one step: stage an `Evl` evolving `auth_policy` to a
 /// freshly-minted immune policy with the same satisfiability as
-/// `setup.policy` (so SE Upds binding to this Evl resolve cleanly under
+/// `setup.policy` (so SEL Upds binding to this Evl resolve cleanly under
 /// the original `kel_builder`'s KEL anchor). Anchor the Evl in the KEL
 /// and submit. Returns the new IEL event's SAID and the new policy SAD
 /// (the latter must be threaded into client-side verification via
@@ -597,7 +597,7 @@ async fn create_iel_divergence(
     // the policies are unsatisfiable in practice. That's fine: this
     // helper only needs the IEL Evls to LAND (governance check uses
     // the original tracked policy; immunity check passes since
-    // `immune=true`). No SE chain we build here ever extends under
+    // `immune=true`). No SEL we build here ever extends under
     // these synthetic policies.
     let fake_endorser_a = Digest256::blake3_256(format!("fake-endorser-a-{label}").as_bytes());
     let fake_endorser_b = Digest256::blake3_256(format!("fake-endorser-b-{label}").as_bytes());
@@ -673,7 +673,7 @@ async fn verify_chain_with_policies(
         Arc::new(InMemoryPolicyResolver::new(all));
     let checker: Arc<dyn PolicyChecker + Send + Sync> =
         Arc::new(AnchoredPolicyChecker::new(kel_source, resolver_inner));
-    // SE pre-walk to collect identity_event SAIDs, mirroring the production
+    // SEL pre-walk to collect identity_event SAIDs, mirroring the production
     // pattern in `SadEventBuilder::verify_server_chain_pre_action`.
     let queried = kels_core::collect_identity_event_saids(
         prefix,
@@ -682,7 +682,7 @@ async fn verify_chain_with_policies(
         kels_core::max_pages(),
     )
     .await
-    .expect("SE pre-walk");
+    .expect("SEL pre-walk");
     let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
         Arc::new(sad_client.as_iel_source().expect("iel source"));
     let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(
@@ -700,7 +700,7 @@ async fn verify_chain_with_policies(
         .expect("verify chain with policies")
 }
 
-/// Seal the SE chain with a `Sea` event. Mutates the chain on the
+/// Seal the SEL with a `Sea` event. Mutates the chain on the
 /// server; returns the seal event's SAID.
 async fn seal_se_chain(setup: &mut Setup, v1_or_later: &SadEvent, label: &str) -> SadEvent {
     let sea = SadEvent::sea(v1_or_later, setup.iel_icp_said).expect("build Sea");
@@ -718,7 +718,7 @@ async fn seal_se_chain(setup: &mut Setup, v1_or_later: &SadEvent, label: &str) -
 }
 
 /// Submit two competing Upd events at the next version to create
-/// server-side divergence on the SE chain. Returns the two events.
+/// server-side divergence on the SEL. Returns the two events.
 async fn create_se_divergence(
     setup: &mut Setup,
     tip: &SadEvent,
@@ -996,7 +996,7 @@ async fn submit_lands_govfailed_dec_chain_becomes_decommissioned_with_policy_uns
     assert_eq!(resp.terminal, Some(SadEventTerminalState::Decommissioned));
 }
 
-/// Cnt on an unsealed-divergent SE chain: rejected by the verifier's
+/// Cnt on an unsealed-divergent SEL: rejected by the verifier's
 /// divergent-chain gate (#171) with "cannot extend unsealed-divergent
 /// chain ... only Rpr allowed post-divergence" — `Rpr` is the natural
 /// unsealed-divergence resolver; `Cnt` is reserved for sealed-divergent
@@ -1072,7 +1072,7 @@ async fn unsealed_divergent_chain_rejects_cnt_with_repair_required() {
 
 /// Dec on unsealed-divergent: rejected by the verifier's divergent-chain
 /// gate (#171) — Dec isn't in {Rpr, Cnt}, the kinds allowed post-divergence
-/// on SE. Symmetric to the Cnt case above.
+/// on SEL. Symmetric to the Cnt case above.
 #[tokio::test]
 #[serial]
 async fn unsealed_divergent_chain_rejects_dec_with_repair_required() {
@@ -1416,7 +1416,7 @@ async fn update_rejects_when_identity_event_regresses_monotonic_ratchet() {
     // Evolve the IEL once to give us a later Evl event to bind v1 to.
     let (iel_evl_said, _evolved_policy) = evolve_iel(&mut setup, "monotonic-regression").await;
 
-    // Build the SE chain manually so v1 binds to the LATER IEL event
+    // Build the SEL manually so v1 binds to the LATER IEL event
     // (Evl), then attempt v2 binding to the EARLIER IEL Icp.
     let initial_content = upload_content(&setup.sad_client, "monotonic-init").await;
     let icp = SadEvent::icp(setup.iel_prefix, TEST_TOPIC).unwrap();
@@ -1455,14 +1455,14 @@ async fn update_rejects_when_bound_iel_event_lives_on_divergent_iel_branch() {
     };
     let mut setup = setup_kel_iel_policy(harness, "iel-divergent-upd").await;
 
-    // 1. Establish a clean SE chain so we have a v1 tip.
+    // 1. Establish a clean SEL so we have a v1 tip.
     let v1 = establish_se_chain(&mut setup, "iel-divergent-upd-base").await;
 
     // 2. Create IEL divergence at v1 (two competing Evl events).
     let (evl_a, _evl_b, _new_policies) =
         create_iel_divergence(&mut setup, "iel-divergent-upd").await;
 
-    // 3. Bind a new SE Upd to one of the post-divergence IEL events.
+    // 3. Bind a new SEL Upd to one of the post-divergence IEL events.
     //    HARD reject expected.
     let content = upload_content(&setup.sad_client, "post-iel-div").await;
     let upd = SadEvent::upd(&v1, evl_a, content).unwrap();
@@ -1552,7 +1552,7 @@ async fn submit_lands_iel_divergent_dec_chain_becomes_decommissioned_with_policy
 }
 
 /// Pre-divergence shared IEL events resolve cleanly even when the IEL
-/// is divergent: an SE Upd binding to the IEL Icp (pre-divergence)
+/// is divergent: an SEL Upd binding to the IEL Icp (pre-divergence)
 /// succeeds even after the IEL has diverged at v1.
 #[tokio::test]
 #[serial]
@@ -1586,7 +1586,7 @@ async fn seal_advances_last_governance_version_and_ratchets() {
     };
     let mut setup = setup_kel_iel_policy(harness, "seal-advances").await;
 
-    // Establish the SE chain BEFORE evolving the IEL so the SE Icp+Upd
+    // Establish the SEL BEFORE evolving the IEL so the SEL Icp+Upd
     // bind to the IEL Icp (whose auth_policy is the original
     // `setup.policy` known to `setup.checker`). After evolution, the
     // builder's local resolver doesn't know the evolved auth_policy
@@ -1682,7 +1682,7 @@ async fn repair_resolves_divergence_archives_adversary_events() {
     let mut setup = setup_kel_iel_policy(harness, "repair-divergence").await;
     let v1 = establish_se_chain(&mut setup, "repair-divergence").await;
 
-    // Create SE divergence.
+    // Create SEL divergence.
     let (_v_a, _v_b) = create_se_divergence(&mut setup, &v1, "repair-divergence").await;
 
     // Build Rpr at v2 with previous = v1.said. Server's is_repair path
@@ -1958,7 +1958,7 @@ async fn update_appends_with_identity_event_binding_to_later_iel_evl() {
     };
     let mut setup = setup_kel_iel_policy(harness, "upd-binds-later-evl").await;
 
-    // Establish the SE chain (binds to IEL Icp).
+    // Establish the SEL (binds to IEL Icp).
     let v1 = establish_se_chain(&mut setup, "upd-binds-later-evl").await;
 
     // Evolve the IEL.
@@ -2211,11 +2211,11 @@ async fn submit_returns_500_when_existing_se_chain_fails_reverification() {
 /// `auth_policy` column on a stored Icp row without recomputing its SAID
 /// must surface as a verification failure (Blake3 mismatch in
 /// `verify_said` during the resolver's `verification_for` walk), not a
-/// silent leak of the tampered value to the SE verifier.
+/// silent leak of the tampered value to the SEL verifier.
 ///
 /// Per AGENTS.md §Verification Invariant ("the DB cannot be trusted"),
 /// resolvers must re-verify on lookup; this test pins that contract on
-/// the in-process `RepositoryIelResolver` consumed by the SE submit
+/// the in-process `RepositoryIelResolver` consumed by the SEL submit
 /// handler.
 #[tokio::test]
 #[serial]

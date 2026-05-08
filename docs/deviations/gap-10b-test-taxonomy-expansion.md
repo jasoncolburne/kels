@@ -15,6 +15,6 @@ Gap 10b additions (13 new tests):
 - `repair_resolves_divergence_archives_adversary_events`.
 - `contest_after_seal_via_algorithmic_trigger` — algorithmic `ContestRequired` (Upd/Sea at version <= seal on linear chain).
 - `active_sealed_chain_accepts_dec_terminates_decommissioned` — Dec on linear sealed chain (post-seal-version) lands cleanly, pinning the algorithmic-trigger exclusion for terminal kinds.
-- `update_appends_with_identity_event_binding_to_later_iel_evl` — binding to a post-Icp IEL Evl advances the SE ratchet.
+- `update_appends_with_identity_event_binding_to_later_iel_evl` — binding to a post-Icp IEL Evl advances the SEL ratchet.
 
 Helpers added: `establish_se_chain`, `evolve_iel`, `create_iel_divergence` (returns the new policies for verifier policy-resolver seeding), `seal_se_chain`, `create_se_divergence`, `verify_chain_with_policies`. The IEL divergence helper differentiates the two competing Evls via fake-endorser SAIDs (Policy::build rejects poison+immune as mutually exclusive).

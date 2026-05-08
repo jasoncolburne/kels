@@ -1,7 +1,7 @@
 //! In-process [`IelResolver`](kels_core::IelResolver) backed by
 //! [`SadStoreRepository`](crate::repository::SadStoreRepository).
 //!
-//! The SE submit handler runs in the same process as the IEL repository,
+//! The SEL submit handler runs in the same process as the IEL repository,
 //! so cross-chain reads go through this struct rather than through
 //! `kels_core::AnchoredIelResolver` (which page-walks an HTTP source).
 //! This impl issues per-SAID lookups against the IEL events table and
@@ -19,9 +19,9 @@ use crate::repository::SadStoreRepository;
 /// IEL verification helper (`verify_identity_events_with_queried`) can
 /// drive the walk for both HTTP and in-process callers.
 ///
-/// Reads are non-transactional — the SE submit transaction wrapping
-/// `is_satisfied` isolates SE state; IEL state is read-only here so pool
-/// reads (consistent with the SE handler's pre-batch
+/// Reads are non-transactional — the SEL submit transaction wrapping
+/// `is_satisfied` isolates SEL state; IEL state is read-only here so pool
+/// reads (consistent with the SEL handler's pre-batch
 /// `is_divergent` / `first_divergent_version` queries) are correct.
 struct RepositoryIelPageSource {
     repo: Arc<SadStoreRepository>,
@@ -59,17 +59,17 @@ impl kels_core::PagedIelSource for RepositoryIelPageSource {
 /// In-process [`IelResolver`](kels_core::IelResolver) backed directly by
 /// the SAD store's `IdentityEventRepository`.
 ///
-/// Construct via [`Self::new`]; register the SE caller's pre-walked
+/// Construct via [`Self::new`]; register the SEL caller's pre-walked
 /// identity_event SAIDs via [`Self::with_queried_saids`] so `is_satisfied`
 /// answers consistently across calls.
 pub struct RepositoryIelResolver {
     repo: Arc<SadStoreRepository>,
     /// `PolicyChecker` used by the in-process `IelVerifier` walks inside
-    /// `is_satisfied`. Same checker the SE handler builds for its own
+    /// `is_satisfied`. Same checker the SEL handler builds for its own
     /// `SelVerifier` — passing it here keeps the IEL-side auth check
     /// answer-equivalent to the IEL submit handler's own walk.
     checker: Arc<dyn kels_core::PolicyChecker + Send + Sync>,
-    /// SE caller's pre-walked identity_event SAIDs. Forwarded to the
+    /// SEL caller's pre-walked identity_event SAIDs. Forwarded to the
     /// `IelVerifier` constructed in `is_satisfied` via `check_satisfied`.
     /// Empty until `with_queried_saids` is called.
     queried_saids: BTreeSet<cesr::Digest256>,
@@ -87,7 +87,7 @@ impl RepositoryIelResolver {
         }
     }
 
-    /// Register the SE caller's pre-walked queried SAIDs for satisfaction
+    /// Register the SEL caller's pre-walked queried SAIDs for satisfaction
     /// tracking. Mirrors `AnchoredIelResolver::with_queried_saids`.
     #[must_use]
     pub fn with_queried_saids(mut self, saids: impl IntoIterator<Item = cesr::Digest256>) -> Self {
@@ -348,7 +348,7 @@ impl kels_core::IelResolver for RepositoryIelResolver {
 
         // Resolving-category read: see
         // `docs/design/streaming-verification-architecture.md §Operation
-        // Categories`. A wrong answer here causes the SE walker's
+        // Categories`. A wrong answer here causes the SEL walker's
         // monotonic ratchet to compare positions by version-only; the
         // actual auth boundary is `is_satisfied` (which runs the full IEL
         // verifier walk) — a tampered `first_divergent_version` is caught

@@ -49,7 +49,7 @@ The submit handler treats a batch atomically:
 
 - **`[pending..., Cnt]`** — owner's pre-flush staged events plus the contest extending the last bundled tip. At most one page (`MINIMUM_PAGE_SIZE = 64`).
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
-- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SE, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governance_policy`).
+- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SEL, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governance_policy`).
 - **`[Icp, Evl]`** also valid — inception with immediate first evolution. (Icp + governance step in same batch.)
 
 There is no `[..., Rpr]` batch — IEL has no Rpr.
@@ -96,9 +96,9 @@ The protocol does not pick a winner — picking would mean architecting around "
 
 Same shape as case 1 — no protocol-level distinction between "innocent race" and "compromise" since both produce the same chain shape. Owner detects via federation status, submits `Cnt`. Chain terminates.
 
-### 3. Cross-chain effect: SE chains bound to a divergent IEL event
+### 3. Cross-chain effect: SELs bound to a divergent IEL event
 
-If an SE chain's `identity_event` references an IEL event that lives on a now-divergent IEL branch, the SE chain's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SE submissions to that chain are rejected with `IelDivergent`. SE chains stay in their pre-divergence state until the IEL is contested-and-replaced.
+If an SEL's `identity_event` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
 
 ### 4. Multiple adversary injections to different nodes
 

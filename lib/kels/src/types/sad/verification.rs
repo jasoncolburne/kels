@@ -135,7 +135,7 @@ impl SelVerifier {
         &self.deferred_failures
     }
 
-    /// Register SE event SAIDs the caller cares about for satisfaction
+    /// Register SEL event SAIDs the caller cares about for satisfaction
     /// tracking. Mirrors `KelVerifier::check_anchors`. Call before
     /// `verify_page` (or before resuming the walk via `resume`). Repeated
     /// calls union the sets — they don't replace.
@@ -152,7 +152,7 @@ impl SelVerifier {
     /// each branch's `last_identity_event` ratchet.
     ///
     /// Like the IEL parallel, rehydrates `queried_saids` / `satisfied_saids`
-    /// from the prior token (KEL's `resume` resets these; the IEL/SE
+    /// from the prior token (KEL's `resume` resets these; the IEL/SEL
     /// streaming pre-walk pattern needs them to persist across pages).
     /// KEL's symmetric fix is deferred to #161.
     pub fn resume(
@@ -244,19 +244,19 @@ impl SelVerifier {
             // without satisfying the IEL-resolved auth_policy at v1).
             if events.len() != 1 {
                 return Err(KelsError::VerificationFailed(
-                    "Multiple events at version 0 — SE v0 divergence is not permitted".into(),
+                    "Multiple events at version 0 — SEL v0 divergence is not permitted".into(),
                 ));
             }
             let event = &events[0];
             if version != 0 {
                 return Err(KelsError::VerificationFailed(format!(
-                    "First SE generation must be at version 0, got {}",
+                    "First SEL generation must be at version 0, got {}",
                     version
                 )));
             }
             if event.kind != SadEventKind::Icp {
                 return Err(KelsError::VerificationFailed(format!(
-                    "First SE event must be Icp, got {}",
+                    "First SEL event must be Icp, got {}",
                     event.kind
                 )));
             }
@@ -264,7 +264,7 @@ impl SelVerifier {
 
             let identity = event.identity.ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "SE Icp {} missing required `identity` field",
+                    "SEL Icp {} missing required `identity` field",
                     event.said
                 ))
             })?;
@@ -280,8 +280,8 @@ impl SelVerifier {
                 },
             );
 
-            // Satisfied-SAIDs tracking. SE Icp is permissionless (no anchor
-            // check); landing means it satisfies the SE auth contract by
+            // Satisfied-SAIDs tracking. SEL Icp is permissionless (no anchor
+            // check); landing means it satisfies the SEL auth contract by
             // construction. v=0 is structurally pre-divergence.
             if self.queried_saids.contains(&event.said) {
                 self.satisfied_saids.insert(event.said);
@@ -296,7 +296,7 @@ impl SelVerifier {
         // Max 2 events per generation post-Icp (one per branch).
         if events.len() > 2 {
             return Err(KelsError::VerificationFailed(format!(
-                "SE generation at version {} has {} events, max 2 allowed",
+                "SEL generation at version {} has {} events, max 2 allowed",
                 version,
                 events.len()
             )));
@@ -366,7 +366,7 @@ impl SelVerifier {
         for event in &events {
             let previous = event.previous.as_ref().ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "Non-inception SE event {} has no previous event",
+                    "Non-inception SEL event {} has no previous event",
                     event.said
                 ))
             })?;
@@ -379,7 +379,7 @@ impl SelVerifier {
                 .get(previous)
                 .ok_or_else(|| {
                     KelsError::VerificationFailed(format!(
-                        "SE event {} previous {} does not match any branch tip",
+                        "SEL event {} previous {} does not match any branch tip",
                         event.said, previous
                     ))
                 })?
@@ -421,7 +421,7 @@ impl SelVerifier {
                         ("unsealed-divergent", "Rpr")
                     };
                     return Err(KelsError::VerificationFailed(format!(
-                        "SE event {} ({}) cannot extend {} chain at version {} \
+                        "SEL event {} ({}) cannot extend {} chain at version {} \
                          (only {} allowed post-divergence)",
                         event.said, event.kind, state_label, event.version, allowed_label
                     )));
@@ -440,7 +440,7 @@ impl SelVerifier {
             // and pass. See `docs/design/sel/event-log.md §Chain States`.
             if branch.tip.kind.is_terminal() {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SE event {} cannot extend terminal {} {}",
+                    "SEL event {} cannot extend terminal {} {}",
                     event.said, branch.tip.kind, branch.tip.said
                 )));
             }
@@ -448,7 +448,7 @@ impl SelVerifier {
             let expected_version = branch.tip.version + 1;
             if event.version != expected_version {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SE event {} has version {} but expected {} (branch tip + 1)",
+                    "SEL event {} has version {} but expected {} (branch tip + 1)",
                     event.said, event.version, expected_version
                 )));
             }
@@ -461,7 +461,7 @@ impl SelVerifier {
             ) && event.content != branch.tip.content
             {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SE {} event {} must preserve content (got {:?}, expected {:?})",
+                    "SEL {} event {} must preserve content (got {:?}, expected {:?})",
                     event.kind, event.said, event.content, branch.tip.content
                 )));
             }
@@ -469,7 +469,7 @@ impl SelVerifier {
             // Resolve cross-chain authorization. Steps 1–4 from the plan.
             let identity_event_said = event.identity_event.ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "Non-inception SE event {} missing required `identity_event`",
+                    "Non-inception SEL event {} missing required `identity_event`",
                     event.said
                 ))
             })?;
@@ -485,7 +485,7 @@ impl SelVerifier {
             //     Mirrors `docs/design/sel/verification.md §Soft-fail policy`.
             //
             //  2. **Post-divergence-soft** (#147 follow-up): on
-            //     SE chains where Cnt has structurally created divergence
+            //     SELs where Cnt has structurally created divergence
             //     (`diverged_at_version <= event.version`), ALL v1+ kinds'
             //     auth-failures soft-fail. The chain is already invalidated
             //     by the terminal; further auth failures don't add information
@@ -506,7 +506,7 @@ impl SelVerifier {
             //   1. fetch_iel_event              — chain integrity (HARD always).
             //   2. resolve_*_at                 — IelDivergent gate (severity per `auth_soft_eligible`).
             //   3. is_satisfied                 — IEL-side auth + divergence cutoff (severity per `auth_soft_eligible`).
-            //   4. is_anchored                  — SE-side auth check (severity per `auth_soft_eligible`).
+            //   4. is_anchored                  — SEL-side auth check (severity per `auth_soft_eligible`).
             //   5. monotonic-ratchet            — chain integrity (HARD always).
             //
             // Step 3 lands AFTER `resolve_*_at` so the existing IelDivergent
@@ -530,7 +530,7 @@ impl SelVerifier {
             {
                 Ok(_) => {}
                 Err(KelsError::MissingIelEvent(_)) if auth_soft_eligible => {
-                    // Soft-eligible (terminal or post-SE-divergence):
+                    // Soft-eligible (terminal or post-SEL-divergence):
                     // chain still lands; missing IEL event isn't accumulated
                     // — soft-fail is the intentional behavior.
                     self.policy_satisfied = false;
@@ -571,7 +571,7 @@ impl SelVerifier {
             };
 
             // IelDivergent: HARD pre-divergence on non-terminals; SOFT for
-            // terminals OR post-divergence on the SE chain.
+            // terminals OR post-divergence on the SEL.
             let resolved_policy = match policy_resolution {
                 Ok(p) => p,
                 Err(KelsError::IelDivergent(_)) if auth_soft_eligible => {
@@ -588,11 +588,11 @@ impl SelVerifier {
 
             // Step 3.5 (β-ordering) — IEL satisfied-check. After resolve_*_at,
             // before the anchor check. The trait now returns
-            // `IelSatisfaction` (#156); the SE walk maps each variant per
+            // `IelSatisfaction` (#156); the SEL walk maps each variant per
             // the documented contract:
             //   - Satisfied        → continue.
             //   - AuthFailed       → soft-eligible carve-out (terminals or
-            //                        post-SE-divergence land soft); else HARD.
+            //                        post-SEL-divergence land soft); else HARD.
             //   - MissingEvent     → HARD here; Gap 3's collect-mode walk
             //                        will route this to deferrable accumulation.
             //   - PermanentFailure → HARD always (chain-integrity).
@@ -617,8 +617,8 @@ impl SelVerifier {
                         continue;
                     }
                     return Err(KelsError::VerificationFailed(format!(
-                        "SE {} event {}: bound IEL event {} did not satisfy IEL verification \
-                         (auth-fail; non-terminal pre-SE-divergence)",
+                        "SEL {} event {}: bound IEL event {} did not satisfy IEL verification \
+                         (auth-fail; non-terminal pre-SEL-divergence)",
                         event.kind, event.said, identity_event_said,
                     )));
                 }
@@ -627,7 +627,7 @@ impl SelVerifier {
                     event_said,
                 } => {
                     // Soft-eligible takes precedence: terminals /
-                    // post-SE-divergence land soft regardless of
+                    // post-SEL-divergence land soft regardless of
                     // bound IEL event state.
                     if auth_soft_eligible {
                         self.policy_satisfied = false;
@@ -687,7 +687,7 @@ impl SelVerifier {
             };
 
             if !evaluation.satisfied {
-                // Soft-eligible path (terminals + post-SE-divergence)
+                // Soft-eligible path (terminals + post-SEL-divergence)
                 // takes precedence over collect-mode accumulation.
                 // Terminals are intentionally soft-fail — the chain
                 // still lands as terminal regardless of anchor state;
@@ -718,7 +718,7 @@ impl SelVerifier {
                     continue;
                 }
                 return Err(KelsError::VerificationFailed(format!(
-                    "SE {} event {} not anchored under resolved policy {} \
+                    "SEL {} event {} not anchored under resolved policy {} \
                      (bound IEL event {})",
                     event.kind, event.said, resolved_policy, identity_event_said,
                 )));
@@ -728,7 +728,7 @@ impl SelVerifier {
             // for all kinds.
             let new_position = position_batch.get(&identity_event_said).ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "SE event {} identity_event {} missing from prefetched IEL positions \
+                    "SEL event {} identity_event {} missing from prefetched IEL positions \
                      (resolver invariant breach)",
                     event.said, identity_event_said,
                 ))
@@ -751,7 +751,7 @@ impl SelVerifier {
                     match new_position.try_cmp(prior_position) {
                         Ok(Ordering::Less) => {
                             return Err(KelsError::identity_binding_violation(format!(
-                                "SE event {} identity_event {} regresses prior ratchet {} \
+                                "SEL event {} identity_event {} regresses prior ratchet {} \
                                  in IEL chain order (monotonic)",
                                 event.said, identity_event_said, prior_said,
                             )));
@@ -769,7 +769,7 @@ impl SelVerifier {
                             // `IdentityBindingViolation` for the
                             // chain-integrity umbrella per #156).
                             return Err(KelsError::identity_binding_violation(format!(
-                                "SE event {} identity_event {} compares as IelDivergent \
+                                "SEL event {} identity_event {} compares as IelDivergent \
                                  against prior ratchet {} (monotonic — chain integrity breach)",
                                 event.said, identity_event_said, prior_said,
                             )));
@@ -936,7 +936,7 @@ impl SelVerifier {
         }
         if self.branches.is_empty() {
             return Err(KelsError::VerificationFailed(
-                "No tip after SE verification".into(),
+                "No tip after SEL verification".into(),
             ));
         }
 
@@ -1207,8 +1207,8 @@ mod tests {
             // (analog of "in-chain but soft-failed"). The fake's `events`
             // map doesn't record auth-pass-status, so otherwise default to
             // "auth-passed" — tests that need to pin auth-fail-soft cases
-            // construct chains where the SE checker rejects, exercising the
-            // SE-side gate without driving an in-fake IEL verifier.
+            // construct chains where the SEL checker rejects, exercising the
+            // SEL-side gate without driving an in-fake IEL verifier.
             let event = match self.fetch_iel_event(identity, said).await {
                 Ok(e) => e,
                 Err(KelsError::MissingIelEvent(dep)) => {
@@ -1340,7 +1340,7 @@ mod tests {
         })
     }
 
-    // ==================== Helpers to build SE chains ====================
+    // ==================== Helpers to build SELs ====================
 
     fn make_icp(identity: cesr::Digest256) -> SadEvent {
         SadEvent::icp(identity, TEST_TOPIC).unwrap()
@@ -1864,7 +1864,7 @@ mod tests {
         );
     }
 
-    /// #171 SE divergent-chain gate (unsealed-divergent): on an
+    /// #171 SEL divergent-chain gate (unsealed-divergent): on an
     /// unsealed-divergent chain (no Sea/Rpr advanced past divergence),
     /// only `Rpr` is allowed post-divergence — `Rpr` truncates the
     /// adversary branch and resolves cleanly. The legitimate-resolver
@@ -1899,7 +1899,7 @@ mod tests {
         assert!(v.policy_satisfied());
     }
 
-    /// #171 SE divergent-chain gate (sealed-divergent rejects Rpr): once
+    /// #171 SEL divergent-chain gate (sealed-divergent rejects Rpr): once
     /// the seal has advanced to-or-past the divergence point, `Rpr`
     /// cannot truncate behind the seal — only `Cnt` is the legitimate
     /// move.
@@ -1940,7 +1940,7 @@ mod tests {
         );
     }
 
-    /// #171 SE divergent-chain gate (sealed-divergent accepts Cnt): the
+    /// #171 SEL divergent-chain gate (sealed-divergent accepts Cnt): the
     /// only legitimate resolver on a sealed-divergent chain.
     #[tokio::test]
     async fn cnt_on_sealed_divergent_accepted() {
@@ -1970,7 +1970,7 @@ mod tests {
         assert!(v.is_contested());
     }
 
-    /// #171 SE divergent-chain gate (unsealed-divergent rejects Cnt):
+    /// #171 SEL divergent-chain gate (unsealed-divergent rejects Cnt):
     /// `Cnt` is reserved for sealed-divergent — on unsealed-divergent
     /// the operator must `Rpr` instead.
     #[tokio::test]
@@ -2279,7 +2279,7 @@ mod tests {
 
     // ==================== Caller-bounded SAID querying ====================
 
-    /// Pre-divergence SE events that pass auth land in `satisfied_saids`
+    /// Pre-divergence SEL events that pass auth land in `satisfied_saids`
     /// when the caller registered them via `check_satisfied`.
     #[tokio::test]
     async fn satisfied_saids_populates_for_pre_divergence_se_events() {
@@ -2339,7 +2339,7 @@ mod tests {
     }
 
     /// Resume rehydrates `queried_saids` and `satisfied_saids` from the
-    /// prior token. Diverges from KEL's reset-on-resume; the IEL/SE
+    /// prior token. Diverges from KEL's reset-on-resume; the IEL/SEL
     /// streaming pre-walk pattern needs registered interest to persist.
     #[tokio::test]
     async fn resume_rehydrates_queried_and_satisfied_saids_se() {
@@ -2424,7 +2424,7 @@ mod tests {
 
         let v0 = make_icp(identity);
         let v1 = make_upd(&v0, iel_icp, b"c1");
-        // Sea binds to the post-divergence IEL Evl. HARD reject: SE chain
+        // Sea binds to the post-divergence IEL Evl. HARD reject: SEL
         // is non-divergent (Sea is the first thing past v=1 that would
         // touch the divergent IEL), so the auth-fail isn't soft-converted.
         let sea = SadEvent::sea(&v1, iel_evl_div).unwrap();
@@ -2467,7 +2467,7 @@ mod tests {
         let v0 = make_icp(identity);
         let v1 = make_upd(&v0, iel_icp, b"c1");
         // Rpr binds to the post-divergence IEL Evl. Same HARD path as Sea
-        // — Rpr is an advancement event (resolves divergence on SE side)
+        // — Rpr is an advancement event (resolves divergence on SEL side)
         // and cannot rest on an unstable IEL state.
         let rpr = SadEvent::rpr(&v1, iel_evl_div).unwrap();
 
@@ -2562,19 +2562,19 @@ mod tests {
         assert!(v.current_content().is_none());
     }
 
-    // ==================== Post-SE-divergence taxonomy ====================
+    // ==================== Post-SEL-divergence taxonomy ====================
     //
     // The post-divergence soft-fail rule (#147 follow-up)
     // converts auth-related failures (IelDivergent / is_satisfied=false /
-    // is_anchored=false) on post-SE-divergence non-terminals from HARD to
+    // is_anchored=false) on post-SEL-divergence non-terminals from HARD to
     // SOFT. Structural integrity rules stay HARD regardless.
     //
-    // Fixture pattern: divergent SE chain at v=1 via two competing Upds (Cnt
+    // Fixture pattern: divergent SEL at v=1 via two competing Upds (Cnt
     // would also create divergence; Upd-divergence is simpler to construct
     // here and exercises the same `event.version >= diverged_at_version`
     // predicate). Post-divergence event at v=2 extends one branch.
 
-    /// Helper: build a divergent-at-v=1 SE chain. Returns (v0, lo_v1_branch_tip,
+    /// Helper: build a divergent-at-v=1 SEL. Returns (v0, lo_v1_branch_tip,
     /// hi_v1_branch_tip, iel_icp_said).
     fn divergent_chain_at_v1() -> (
         SadEvent,
@@ -2596,7 +2596,7 @@ mod tests {
         (v0, lo, hi, identity, iel_icp)
     }
 
-    /// Rpr post-SE-divergence with anchor-fail soft-lands.
+    /// Rpr post-SEL-divergence with anchor-fail soft-lands.
     #[tokio::test]
     async fn rpr_post_divergence_anchor_fail_soft_lands_no_err() {
         let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
@@ -2617,7 +2617,7 @@ mod tests {
         verifier
             .verify_page(&[v0, lo, hi, rpr.clone()])
             .await
-            .expect("post-SE-div Rpr anchor-fail should soft-pass");
+            .expect("post-SEL-div Rpr anchor-fail should soft-pass");
         let v = verifier.finish().await.unwrap();
         assert_eq!(v.diverged_at_version(), Some(1));
         assert!(!v.policy_satisfied());

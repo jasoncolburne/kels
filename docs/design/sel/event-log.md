@@ -1,8 +1,8 @@
 # SAD Event Log (SEL) — Lifecycle, Repair, Contest, Decommission
 
-> Source-of-truth design doc for the SEL chain lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing and `truncate_and_replace` discriminator), and [verification.md](verification.md) (SelVerifier algorithm). For the SADStore service architecture (object store, custody, gossip), see [../sadstore.md](../sadstore.md).
+> Source-of-truth design doc for the SEL lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing and `truncate_and_replace` discriminator), and [verification.md](verification.md) (SelVerifier algorithm). For the SADStore service architecture (object store, custody, gossip), see [../sadstore.md](../sadstore.md).
 
-The SAD Event Log (SEL) is a per-prefix chain of `SadEvent` records describing the evolving state of a SAD object (typically a publication, credential template, custody record, or other governance-managed artifact). SE chains are **identity-rooted** — every SE chain binds at inception to an Identity Event Log (IEL) and resolves its per-event authorization through specific IEL events. Authority over the chain is asserted by anchoring `ixn` events in KELs identified by the IEL's currently-tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`).
+The SAD Event Log (SEL) is a per-prefix chain of `SadEvent` records describing the evolving state of a SAD object (typically a publication, credential template, custody record, or other governance-managed artifact). SELs are **identity-rooted** — every SEL binds at inception to an Identity Event Log (IEL) and resolves its per-event authorization through specific IEL events. Authority over the chain is asserted by anchoring `ixn` events in KELs identified by the IEL's currently-tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`).
 
 See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability) for the unified validation rules that govern the binding.
 
@@ -20,7 +20,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
 - `last_governance_version: Option<u64>` — version of the most recent `Sea`/`Rpr` (the "evaluation seal").
-- `last_identity_event: Option<Digest256>` — the highest IEL event (in IEL chain order) that any SE event has bound to. Ratchets forward; never decreases.
+- `last_identity_event: Option<Digest256>` — the highest IEL event (in IEL chain order) that any SEL event has bound to. Ratchets forward; never decreases.
 
 ## Event Kinds
 
@@ -35,22 +35,22 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 `Sea`, `Rpr`, `Cnt`, `Dec` all return `evaluates_governance() = true`.
 
-For per-kind field rules and typical chain shapes, see [events.md](events.md). SE has no `Est` kind — identity rooting eliminates the optional-governance-at-Icp dance.
+For per-kind field rules and typical chain shapes, see [events.md](events.md). SEL has no `Est` kind — identity rooting eliminates the optional-governance-at-Icp dance.
 
 ### Inception batch rule
 
-A submission containing an `Icp` event MUST also contain an `Upd` event at v1 in the same batch. SE Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 Upd, the chain is born with content, an `identity_event` binding, and the first policy-enforced event. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+A submission containing an `Icp` event MUST also contain an `Upd` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 Upd, the chain is born with content, an `identity_event` binding, and the first policy-enforced event. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ## Authorization via IEL — and Why That's Enough
 
-SE chains do not declare or evolve their own authorization policies. Every authorization decision routes through the IEL the chain is bound to:
+SELs do not declare or evolve their own authorization policies. Every authorization decision routes through the IEL the chain is bound to:
 
-- **`Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SE event's `identity_event`.
+- **`Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `identity_event`.
 - **`Sea` / `Rpr` / `Cnt` / `Dec`** is authorized iff anchored under the IEL's tracked `governance_policy` resolved through `identity_event`.
 
-The IEL primitive is responsible for the immunity rule and the anchor-non-poisonability guarantees that today's SEL spent considerable design effort on. SE inherits stability for free: every IEL event referenced by an SE binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
+The IEL primitive is responsible for the immunity rule and the anchor-non-poisonability guarantees that today's SEL spent considerable design effort on. SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
-The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include monotonic-on-SE-chain (the chain's `last_identity_event` ratchets in IEL chain order; no rebinding to stale IEL events).
+The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include monotonic-on-SEL (the chain's `last_identity_event` ratchets in IEL chain order; no rebinding to stale IEL events).
 
 ## Trust Caveat — Recovered Anchoring KELs
 
@@ -58,14 +58,14 @@ The seal property and the anchoring model give *structural* guarantees against p
 
 `Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the owner's branch stay (`rec` archives only the adversary branch); anchors on the now-archived adversary branch do not. This applies to anchors of any kind — SEL governance evaluations, SEL writes, IEL evolutions.
 
-Implications for SE consumers:
+Implications for SEL consumers:
 
-- A past SE event whose authorizing anchor was placed on the owner's branch of the anchoring KEL: re-verifies cleanly post-`rec`.
-- A past SE event whose authorizing anchor was placed on the adversary branch (now archived): may *fail* re-verification. The recovery mechanism has reverted what the adversary did to the underlying KEL, and that reversal propagates to dependent SE chains.
+- A past SEL event whose authorizing anchor was placed on the owner's branch of the anchoring KEL: re-verifies cleanly post-`rec`.
+- A past SEL event whose authorizing anchor was placed on the adversary branch (now archived): may *fail* re-verification. The recovery mechanism has reverted what the adversary did to the underlying KEL, and that reversal propagates to dependent SELs.
 
-This is observable, not hidden — the chain mathematics make the post-`rec` state visible. The consumer's runtime trust judgement is: when a participating KEL has `rec` history, re-verify the SE chain (and the IEL it binds to) and treat past state with caution proportionate to what survives.
+This is observable, not hidden — the chain mathematics make the post-`rec` state visible. The consumer's runtime trust judgement is: when a participating KEL has `rec` history, re-verify the SEL (and the IEL it binds to) and treat past state with caution proportionate to what survives.
 
-`Cnt` on a participating KEL is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past SE evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case.
+`Cnt` on a participating KEL is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past SEL evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case.
 
 ## Divergence and Freeze
 
@@ -73,7 +73,7 @@ Divergence is detected when two events share the same `previous` SAID. The chain
 
 v0 divergence is rejected outright (inception is fully deterministic — two distinct v0 events for the same prefix indicate protocol-level corruption, not authority conflict).
 
-Two routes create divergence on a SE chain:
+Two routes create divergence on a SEL:
 
 1. **Concurrent extensions** (race, same-batch fork): two events with the same `previous` land at the same version. Divergence is created at the moment of submission. The proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) bounds the post-`d` window to one page.
 2. **Retroactive `Cnt`-from-non-tip** (operator contestation of a previously-clean linear chain): the chain was clean linear; the operator submits `Cnt` whose `previous` points at any event in the chain (versions `0` through `N-1`); `Cnt`'s version `c = previous.version + 1` falls in `(0, N]`. Divergence is created retroactively at version `c`: the pre-existing chain forms one branch (the contested branch, with events at versions ≥ `c`); the Cnt-only branch is terminal at `c`. The contested branch's events stay in storage as forensic record. **Verifier processing is bounded by single-event Cnt verification — the contested branch was already verified during the pre-Cnt walk and is *not re-walked* on Cnt arrival.** **Note**: this mode requires non-tip parent-lookup support in the verifier, which lands in [#174](https://github.com/jasoncolburne/kels/issues/174). Until then current implementation rejects Cnt whose `previous` is a non-tip event; operator's recourse for compromise of a previously-clean linear chain is abandon-and-re-incept under a new prefix.
@@ -83,9 +83,9 @@ The divergence invariant guarantees:
 - At most 1 event at each version `> d` (the contested branch's pre-existing events for retroactive `Cnt`; nothing for concurrent-extension divergence beyond pre-divergence pending or optional Cnt-tip-extension).
 - **Bounded verifier processing.** For concurrent-extension divergence the post-`d` window is bounded by the proactive evaluation rule (one page). For retroactive `Cnt` the post-`d` window can include the entire pre-existing contested branch, but those events were already verified pre-Cnt; `Cnt` arrival is processed as a single-event addition (parent-lookup resolves Cnt's `previous` against any known event in the chain, divergence point set to Cnt's version, chain marked contested-terminal). Verifier work for the Cnt-arrival step is bounded by single-event verification cost regardless of contested-branch length.
 
-### Why SE has Rpr (and IEL doesn't)
+### Why SEL has Rpr (and IEL doesn't)
 
-SE divergence happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting `Upd` submissions. The legitimate operator's branch is "owner"; the adversarial branch is "adversary." `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the adversary branch.
+SEL divergence happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting `Upd` submissions. The legitimate operator's branch is "owner"; the adversarial branch is "adversary." `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the adversary branch.
 
 IEL has no analog because every IEL event after Icp is governance-authorized; there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
 
@@ -134,7 +134,7 @@ KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_rec
 
 ## Contest (Cnt)
 
-Contest is the terminal state for SE — the legitimate operator cannot defeat an adversary who has demonstrated `governance_policy` authority on the bound IEL (or the chain is otherwise unrecoverable). `Cnt` freezes the SE chain.
+Contest is the terminal state for SEL — the legitimate operator cannot defeat an adversary who has demonstrated `governance_policy` authority on the bound IEL (or the chain is otherwise unrecoverable). `Cnt` freezes the SEL.
 
 ### Algorithmic trigger — `ContestRequired`
 
@@ -209,9 +209,9 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
 
 **Notable changes from the dual-policy era:**
-- No `Est` kind. SE events carry no first-class authorization-policy fields.
+- No `Est` kind. SEL events carry no first-class authorization-policy fields.
 - No per-branch tracking of authorization policies on branch state.
-- No SE-side immunity rule (lives on IEL).
+- No SEL-side immunity rule (lives on IEL).
 - New `identity_event` field on every v1+ event.
 - New `last_identity_event` ratchet on branch state.
 - New `[Icp, Upd]` minimum inception batch rule.
@@ -222,7 +222,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - [verification.md](verification.md) — `SelVerifier` algorithm.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
-- [../iel/event-log.md](../iel/event-log.md) — IEL counterpart; SE chains bind to IEL events.
+- [../iel/event-log.md](../iel/event-log.md) — IEL counterpart; SELs bind to IEL events.
 - [../iel/events.md](../iel/events.md) — IEL per-kind reference.
 - [../sadstore.md](../sadstore.md) — SADStore service architecture.
 - [../policy.md](../policy.md) — Policy DSL, anchoring model.

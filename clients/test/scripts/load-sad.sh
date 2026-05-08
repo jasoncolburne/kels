@@ -3,7 +3,7 @@
 #
 # For each group, creates a KEL, sets up an IEL identity (single-endorser
 # immune policy bound to the KEL), publishes content SAD objects, then
-# drives a SEL chain via `kels sel incept` (atomic [Icp, Upd@v1]) followed
+# drives a SEL via `kels sel incept` (atomic [Icp, Upd@v1]) followed
 # by zero or more `kels sel update` calls. Each version references a
 # different SAD object as content.
 #

@@ -55,7 +55,7 @@ for v0 (Icp): no authorization gate (permissionless, deterministic prefix deriva
 
 for v1+: cross-chain authorization resolution:
     fetch IEL event by event.identity_event
-    confirm IEL event's prefix == SE chain's bound identity
+    confirm IEL event's prefix == SEL's bound identity
     if IEL is divergent at the bound branch → reject IelDivergent
 
     pick the relevant policy:
@@ -73,7 +73,7 @@ The `identity_event` resolution may walk back through the IEL chain if the named
 
 ### 2. Inception Batch Rule
 
-The rule lives inside the verifier (`SelVerifier::finish_internal`): if any branch tip is still an `Icp`, finalization returns `IncompleteInception`. Icp is structurally pinned to v=0, so an Icp tip is precisely the "lone-`[Icp]` chain" shape. SE Icp is permissionless and deterministic — anyone can submit `[Icp]` alone — but the resulting chain has no content and no authorized event, so the verifier rejects it at end-verification. Every consumer's verifier walk applies the same rule; submit handlers do not duplicate it. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+The rule lives inside the verifier (`SelVerifier::finish_internal`): if any branch tip is still an `Icp`, finalization returns `IncompleteInception`. Icp is structurally pinned to v=0, so an Icp tip is precisely the "lone-`[Icp]` chain" shape. SEL Icp is permissionless and deterministic — anyone can submit `[Icp]` alone — but the resulting chain has no content and no authorized event, so the verifier rejects it at end-verification. Every consumer's verifier walk applies the same rule; submit handlers do not duplicate it. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ### 3. Terminal-State Gate
 
@@ -205,7 +205,7 @@ All SEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for 
 
 ## Gossip Send-Side Partitioning (divergent SELs)
 
-Propagating a divergent SEL chain to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ContestRequired`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+Propagating a divergent SEL to a remote node requires more than canonical chain ordering. The receiver's submit handler routes batches by content predicates (`is_repair`, `is_contest`, `is_decommission`, divergent-rejection); a single batch that spans the divergence point with mixed kinds may route through `RepairRequired` or `ContestRequired`, blocking propagation. The SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
 
 `send_divergent_sel_events` (analog of KEL's `send_divergent_events` at `lib/kels/src/types/kel/sync.rs:517`):
 

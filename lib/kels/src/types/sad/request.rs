@@ -56,7 +56,7 @@ pub struct SadEventEffectiveSaidRequest {
     pub prefix: cesr::Digest256,
 }
 
-/// Terminal state of an SE chain at the moment a submission was rejected
+/// Terminal state of an SEL at the moment a submission was rejected
 /// because the chain is already terminal. Returned via
 /// `SubmitSadEventsResponse.terminal` on a 200 OK response so gossip
 /// relays / forwarders see idempotent success while owner-side callers can

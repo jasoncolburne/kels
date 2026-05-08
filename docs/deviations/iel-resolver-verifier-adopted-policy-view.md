@@ -30,8 +30,8 @@ The `first_divergent_version` repo query is dropped from the resolver paths — 
 4. Calls `resolve_auth_policy_at` again — asserts the resolver errors (re-verification catches the tampering) rather than silently returning the bogus value.
 5. Symmetric assertion on `resolve_governance_policy_at` to confirm both accessors share the same `verification_for` walk and both fail on the same tampering.
 
-The test exercises the AGENTS.md §Verification Invariant ("the DB cannot be trusted") at the resolver boundary specifically; the parallel SE/IEL `submit_returns_500_when_existing_*_chain_fails_reverification` integration tests (added under the round-12 third follow-up commit 2) cover the submit-handler-side integrity contract, while this test covers the resolver-side one.
+The test exercises the AGENTS.md §Verification Invariant ("the DB cannot be trusted") at the resolver boundary specifically; the parallel SEL/IEL `submit_returns_500_when_existing_*_chain_fails_reverification` integration tests (added under the round-12 third follow-up commit 2) cover the submit-handler-side integrity contract, while this test covers the resolver-side one.
 
 **Verifier-internal sites preserved as-is.** The IEL verifier code itself reads `event.auth_policy` / `event.governance_policy` to populate `policy_history` — that's by design; the verifier IS the authority. Excluded from the audit per the original framing. Tests + event-construction sites also excluded.
 
-No changes to `IelVerification::auth_policy_at` / `governance_policy_at` accessors themselves; no changes to the verifier's policy_history population logic; no changes to the in-process `AnchoredIelResolver` (already correct). Single-resolver fix restoring SE↔server-side parity.
+No changes to `IelVerification::auth_policy_at` / `governance_policy_at` accessors themselves; no changes to the verifier's policy_history population logic; no changes to the in-process `AnchoredIelResolver` (already correct). Single-resolver fix restoring SEL↔server-side parity.

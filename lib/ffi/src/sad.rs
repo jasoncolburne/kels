@@ -14,7 +14,7 @@ use crate::{
 /// Compute the deterministic SAD event prefix for a given identity SAID and topic.
 ///
 /// This is an offline operation -- no network access needed. Per #147,
-/// SE chains are identity-rooted, so prefix derivation takes the bound IEL
+/// SELs are identity-rooted, so prefix derivation takes the bound IEL
 /// identity rather than a per-chain authorization-policy SAID.
 ///
 /// # Arguments

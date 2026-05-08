@@ -6,11 +6,11 @@
 //!   bound to an Identity Event Log (IEL). Each non-inception event references
 //!   content in the SAD object store via `content`.
 //!
-//! #147 shape: SE chains are **identity-rooted**. The chain prefix is
+//! #147 shape: SELs are **identity-rooted**. The chain prefix is
 //! derived from `(identity, topic)`; every v1+ event binds to a specific IEL
 //! event by SAID via `identity_event` to resolve its authorization policy
 //! (auth_policy for `Upd`; governance_policy for `Sea` / `Rpr` / `Cnt` / `Dec`).
-//! SE no longer carries first-class authorization-policy fields — those
+//! SEL no longer carries first-class authorization-policy fields — those
 //! live on IEL.
 
 use std::{collections::BTreeSet, fmt, str::FromStr};
@@ -170,7 +170,7 @@ impl FromStr for SadEventKind {
 /// #147: identity-rooted. The v0 `Icp` carries `identity` (the IEL
 /// prefix the chain is bound to) and no `content`; v1+ events carry
 /// `identity_event` (the SAID of the IEL event whose policy authorizes them).
-/// SE has no first-class policy fields — authorization is resolved by walking
+/// SEL has no first-class policy fields — authorization is resolved by walking
 /// to the bound IEL event via `IelResolver`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
 #[storable(table = "sad_events")]
@@ -197,7 +197,7 @@ pub struct SadEvent {
     /// in prefix derivation alongside `topic`); `None` on every other kind.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub identity: Option<cesr::Digest256>,
-    /// SAID of the IEL event whose policy authorizes this SE event. `None` on
+    /// SAID of the IEL event whose policy authorizes this SEL event. `None` on
     /// `Icp` (permissionless inception); `Some` on every v1+ kind.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub identity_event: Option<cesr::Digest256>,
@@ -207,7 +207,7 @@ pub struct SadEvent {
 ///
 /// Anyone can call this offline — no server needed. The prefix is derived from
 /// the v0 inception event content (with said+prefix as placeholders), which
-/// contains only `(identity, topic)` as discriminators. #147 SE inception
+/// contains only `(identity, topic)` as discriminators. #147 SEL inception
 /// is permissionless: prefix derivation grants no authority by itself, since
 /// the chain cannot advance past `Icp` without satisfying the IEL-resolved
 /// `auth_policy`.
@@ -379,7 +379,7 @@ impl SadEvent {
     }
 }
 
-/// A verified SE branch endpoint: tip event plus the per-branch state the
+/// A verified SEL branch endpoint: tip event plus the per-branch state the
 /// verifier needs to authorize extension and to ratchet the IEL binding.
 ///
 /// #147 shape: the chain is identity-rooted, so every branch carries
@@ -430,11 +430,11 @@ pub struct SelVerification {
     is_decommissioned: bool,
     last_governance_version: Option<u64>,
     diverged_at_version: Option<u64>,
-    /// Caller-provided up-front: SE event SAIDs the consumer cares about.
+    /// Caller-provided up-front: SEL event SAIDs the consumer cares about.
     /// Mirrors `KelVerification::queried_saids` and the IEL parallel.
     queried_saids: BTreeSet<cesr::Digest256>,
     /// Verifier-populated subset of `queried_saids`: SAIDs whose corresponding
-    /// SE event passed its auth check AND lives at `version <
+    /// SEL event passed its auth check AND lives at `version <
     /// first_divergent_version` (or chain non-divergent). Cnt is structurally
     /// at-or-after the divergence cut and never appears here; Dec on a clean
     /// chain CAN.
@@ -587,7 +587,7 @@ impl SelVerification {
         self.branches.len() > 1
     }
 
-    /// Whether the named SE event passed its auth check AND lives at
+    /// Whether the named SEL event passed its auth check AND lives at
     /// `version < first_divergent_version` (or chain is non-divergent).
     /// Mirrors `KelVerification::is_said_anchored` and the IEL parallel.
     /// Returns `false` for SAIDs not in `queried_saids` — callers must

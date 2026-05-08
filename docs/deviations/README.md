@@ -50,7 +50,7 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ### [Issue #171 → Issue #174] Cnt-supersedes-Dec + Cnt-from-non-tip family deferred
 
-The full Cnt operator-contestation surface across all three log primitives (KEL, IEL, SE) requires verifier-side non-tip parent-lookup so `Cnt.previous` can resolve to any event in the chain (not just current branch tips). Two compromise-recourse modes depend on this primitive:
+The full Cnt operator-contestation surface across all three log primitives (KEL, IEL, SEL) requires verifier-side non-tip parent-lookup so `Cnt.previous` can resolve to any event in the chain (not just current branch tips). Two compromise-recourse modes depend on this primitive:
 
 - **Cnt-supersedes-Dec** — the operator's recourse against forced/coerced `Dec` or post-`Dec` key compromise. `Cnt` forks from a pre-`Dec` ancestor, creating divergence at `Cnt.version` with `Dec` and `Cnt` as competing branches; chain becomes contested-terminal. The naive "Cnt extends Dec tip" linear shape (`[..., Dec@N, Cnt@N+1]`) is structurally invalid: Cnt always creates divergence, so a linear-and-contested chain shape can't exist (per `memory/project_kels_terminal_semantics.md`). Correct shape requires non-tip parent-lookup.
 
@@ -69,8 +69,8 @@ Item 6 of #171's tracker called for cleaning up the `insert_event` privileged-wr
 
 Cleanup is still pending. `insert_event` remains called at:
 
-- `services/sadstore/src/handlers.rs:1892` (SE Cnt path).
-- `services/sadstore/src/handlers.rs:1934` (SE Dec path).
+- `services/sadstore/src/handlers.rs:1892` (SEL Cnt path).
+- `services/sadstore/src/handlers.rs:1934` (SEL Dec path).
 - `services/sadstore/src/handlers.rs:2562` (IEL Cnt path).
 - `services/sadstore/src/handlers.rs:2576` (IEL Dec path).
 
@@ -80,10 +80,10 @@ The cleanup is blocked on the unified-walk primitive replacing the merge-engine 
 
 Phase 2B of #171 enumerated six handler-side duplicate checks for deletion (each duplicates a check the verifier already performs):
 
-- All-events-same-prefix (SE `services/sadstore/src/handlers.rs:1503-1510`, IEL `:2301-2307`).
-- Per-event `verify_said` + `validate_structure` (SE `:1513-1521`, IEL `:2310-2325`).
-- `Icp` `verify_prefix` (SE `:1524-1532`, IEL `:2328-2336`).
-- `policy_satisfied` gate post-verifier (SE `:1844`, `:1978`, IEL `:2537`) — these are post-verifier handler reads, may be intentional defense-in-depth rather than duplicate; needs review.
+- All-events-same-prefix (SEL `services/sadstore/src/handlers.rs:1503-1510`, IEL `:2301-2307`).
+- Per-event `verify_said` + `validate_structure` (SEL `:1513-1521`, IEL `:2310-2325`).
+- `Icp` `verify_prefix` (SEL `:1524-1532`, IEL `:2328-2336`).
+- `policy_satisfied` gate post-verifier (SEL `:1844`, `:1978`, IEL `:2537`) — these are post-verifier handler reads, may be intentional defense-in-depth rather than duplicate; needs review.
 - KEL `signatures.is_empty()` check (`services/kels/src/handlers.rs:401-411` block — exact line drift not re-audited at this pass).
 - KEL dual-signature on recovery events (`services/kels/src/handlers.rs:401-411` block — same).
 
@@ -95,7 +95,7 @@ None deleted in #171. Code-quality cleanup, not structural correctness — submi
 
 - Federation race producing divergence (multi-node).
 - Tampered-DB rejection (pre-populate violating shape — e.g., `[Icp]` alone, post-terminal event — consumer rejects).
-- Cross-primitive consequence: SE bound to pre-divergence vs post-divergence IEL events.
+- Cross-primitive consequence: SEL bound to pre-divergence vs post-divergence IEL events.
 
 Verifier-side rule lifts (items 1, 4, 5) are exercised at unit level + the existing heisenbug long-loop. The federation/tampered/cross-primitive scenarios add coverage for cross-node and cross-primitive trust-layer interactions that aren't reachable from a single-node harness. Defer to follow-up PR alongside the next `test-sadstore.sh` expansion pass; pair with the Gap 10b multi-node cases owed in the entry below.
 
@@ -157,7 +157,7 @@ Shipped: `custody_read_unauthenticated_fetch_rejected` (the no-SignedRequest 403
 2. The shared sadstore harness modified to pass `redis_url` to `kels_sadstore::run` (currently `None` at `services/sadstore/tests/sad_builder_tests.rs:227` — `state.redis_conn` is `None`, and `authenticate_peer_request` early-returns 403 with "Peer verification unavailable in standalone mode").
 3. Direct injection of `kels:verified-peer:{prefix}` Redis entries (the harness has empty `registry_urls`, so the registry-fetch peer-cache refresh path is a no-op).
 
-That's a ~150–250-line test-infrastructure expansion across a harness used by 30+ existing tests, with non-trivial regression risk on the unrelated SE-builder coverage. The federation-peer-auth surface is being reworked under #82 (service access control via `AuthorizedPayload<T>`); the test infrastructure built now would be replaced.
+That's a ~150–250-line test-infrastructure expansion across a harness used by 30+ existing tests, with non-trivial regression risk on the unrelated SEL-builder coverage. The federation-peer-auth surface is being reworked under #82 (service access control via `AuthorizedPayload<T>`); the test infrastructure built now would be replaced.
 
 **Code paths ARE in place.** `verify_custody_read` (`services/sadstore/src/handlers.rs`) and `custody_read_resolver_error` map `KelsError::NotFound`/`IelDivergent`/`ContestedIel`/`IelDecommissioned` to the right HTTP status codes (403/503/403/403). Code review confirms the contract; only execution-time pinning is missing.
 
@@ -165,21 +165,21 @@ That's a ~150–250-line test-infrastructure expansion across a harness used by 
 
 ### [Round-12 review fix → pre-production / #152] `is_satisfied` per-call IEL re-verification
 
-`AnchoredIelResolver::is_satisfied` and `RepositoryIelResolver::is_satisfied` each rebuild the full `IelVerification` token on every call (now via the shared `verify_identity_events_with_queried` helper). For an SE chain with N v1+ events, that's N IEL walks per SE verification — bounded by `max_pages × page_size = 4096` events per walk at default config.
+`AnchoredIelResolver::is_satisfied` and `RepositoryIelResolver::is_satisfied` each rebuild the full `IelVerification` token on every call (now via the shared `verify_identity_events_with_queried` helper). For an SEL with N v1+ events, that's N IEL walks per SEL verification — bounded by `max_pages × page_size = 4096` events per walk at default config.
 
-For round-12 production (short chains, 1–3 v1+ events) this is fine. Pre-production with deeper SE chains, this becomes a meaningful per-SE-verification cost multiplier.
+For round-12 production (short chains, 1–3 v1+ events) this is fine. Pre-production with deeper SELs, this becomes a meaningful per-SEL-verification cost multiplier.
 
-**Fix path:** cache the per-identity `IelVerification` inside the resolver (Mutex<HashMap<Digest256, IelVerification>> or OnceCell keyed by identity). Cache lifetime equals resolver lifetime equals SE-verification lifetime, so no invalidation needed during the SE walk. Same shape on both impls. Not blocking #147 e2e gating; tracked here for the #152 perf pass.
+**Fix path:** cache the per-identity `IelVerification` inside the resolver (Mutex<HashMap<Digest256, IelVerification>> or OnceCell keyed by identity). Cache lifetime equals resolver lifetime equals SEL-verification lifetime, so no invalidation needed during the SEL walk. Same shape on both impls. Not blocking #147 e2e gating; tracked here for the #152 perf pass.
 
-### [Issue #171 → Permanent design choice] SE seal-divergence cap and IEL Evl-at-or-below-seal stay at storage layer
+### [Issue #171 → Permanent design choice] SEL seal-divergence cap and IEL Evl-at-or-below-seal stay at storage layer
 
-Items 2 and 3 of #171's Phase 2A audit enumerated the SE seal-divergence cap (`save_batch` rejects fork-creation when `divergence_version <= last_governance_version`) and the IEL Evl-at-or-below-seal cap (analog) as candidates for verifier-side lift. After analysis (slice 1 §F2, slice 2 §F1, slice 7 binding decision 1), **the storage-layer placement is the correct design choice** per `docs/design/iel/event-log.md §Chain Validity vs Consumer Trust`:
+Items 2 and 3 of #171's Phase 2A audit enumerated the SEL seal-divergence cap (`save_batch` rejects fork-creation when `divergence_version <= last_governance_version`) and the IEL Evl-at-or-below-seal cap (analog) as candidates for verifier-side lift. After analysis (slice 1 §F2, slice 2 §F1, slice 7 binding decision 1), **the storage-layer placement is the correct design choice** per `docs/design/iel/event-log.md §Chain Validity vs Consumer Trust`:
 
 - The verifier's job is chain-shape authenticity. A sealed-divergent chain is a structurally-authentic shape (the events landed under valid auth at submit time); the verifier accepts it.
 - The trust layer (post-divergence soft-fail propagation, `policy_satisfied`, `satisfied_saids`) suspends consumer trust on post-divergence events.
 - The seal-cap is a source-side write-time gate that prevents creation of consumer-trust-failing shapes. A tampered DB serving such a shape produces the same consumer trust outcome as if the cap had fired source-side: post-divergence soft-fail flips `policy_satisfied=false` for every post-divergence event.
 
-Implementation: `services/sadstore/src/repository.rs:148-156` (SE), `:1065-1080` (IEL). Rationale comments: `services/sadstore/src/handlers.rs:1990-1997` (SE), `:2589-2596` (IEL). The chain-validity-vs-consumer-trust split is canonically described at `docs/design/iel/event-log.md` lines 84-94 and 111-118.
+Implementation: `services/sadstore/src/repository.rs:148-156` (SEL), `:1065-1080` (IEL). Rationale comments: `services/sadstore/src/handlers.rs:1990-1997` (SEL), `:2589-2596` (IEL). The chain-validity-vs-consumer-trust split is canonically described at `docs/design/iel/event-log.md` lines 84-94 and 111-118.
 
 Items 2 and 3 of #171's audit are closed as design-by-intent. No follow-up scheduled.
 
@@ -223,14 +223,14 @@ fn try_parse_deferred_deps(err: &KelsError) -> Option<DeferredDepsResponse> {
 
 `HttpSelSink` / `HttpIelSink` / `SadStoreClient::post_sad_object` wrap any non-2xx-non-409 response into `KelsError::ServerError(text, ErrorCode::InternalError)`. The body text is JSON-decoded as `DeferredDepsResponse`; the actual HTTP status code is **lost**. Routing relies on the body shape (`kind: "rejected"` field) rather than status code.
 
-**Why this works today.** Per slice 2's audit, the typed-422 shape is only emitted at SE submit, IEL submit, and `verify_custody_write` boundaries; no other endpoint emits it. Until the read-side typed-422 retrofit lands (deferred to #82), the surface is bounded.
+**Why this works today.** Per slice 2's audit, the typed-422 shape is only emitted at SEL submit, IEL submit, and `verify_custody_write` boundaries; no other endpoint emits it. Until the read-side typed-422 retrofit lands (deferred to #82), the surface is bounded.
 
 **Fragility.** A future endpoint that emits the `kind: "rejected"` shape on a non-422 status code would silently park. The contract relies on body shape, not status code.
 
 **Resolution.** Either:
 
 - Pin the contract that `kind: "rejected"` is only emitted on 422 across all sadstore endpoints (this entry serves that pinning).
-- Thread the actual status code through the sink wrap (`HttpSelSink::store_page`, `HttpIelSink::store_page`, `SadStoreClient::post_sad_object`) so `try_parse_deferred_deps` can require status==422. Cleaner but touches the sink shape across SE/IEL/SAD-object sinks.
+- Thread the actual status code through the sink wrap (`HttpSelSink::store_page`, `HttpIelSink::store_page`, `SadStoreClient::post_sad_object`) so `try_parse_deferred_deps` can require status==422. Cleaner but touches the sink shape across SEL/IEL/SAD-object sinks.
 
 Slice 4 §H1. Defer until the typed-422 retrofit on `verify_custody_write` (`[#156 → standalone]` above) or read-side cleanup (#82) makes a status-code thread feasible alongside.
 
@@ -246,19 +246,19 @@ The wire-format slot is **reserved for the read-side typed-422 retrofit deferred
 
 Slice 4 §H1 + sync.rs §H2. Cross-reference: `[#167 → #82] Read-enforcement positive-path + IEL-state-mapping test cells deferred`.
 
-### [Issue #150 → Issue #161] SE/IEL inbound-gossip handlers diverge from KEL's recovery shape
+### [Issue #150 → Issue #161] SEL/IEL inbound-gossip handlers diverge from KEL's recovery shape
 
-Three asymmetries between SE/IEL and KEL inbound-gossip handlers, all flagged by slice 5 (§F1, §F2, §F3):
+Three asymmetries between SEL/IEL and KEL inbound-gossip handlers, all flagged by slice 5 (§F1, §F2, §F3):
 
-**§F1 — No stale-prefix Redis hash population on non-422 forward failures.** SE/IEL inbound handlers (`handle_sel_announcement` at `services/gossip/src/sync.rs:1039-1201`, `handle_iel_announcement` at `:1211-1367`) park on 422 (deferred-deps protocol) but on other failures (HTTP 5xx, network, peer-not-in-allowlist) just log and return. KEL's `handle_announcement` calls `record_kel_stale_prefix` on no-state-change AND on no-peer-had-events, feeding the AE Phase 1 retry queue. SE/IEL non-422 errors fall through with no targeted retry — only Phase 2 random sampling catches them, statistically.
+**§F1 — No stale-prefix Redis hash population on non-422 forward failures.** SEL/IEL inbound handlers (`handle_sel_announcement` at `services/gossip/src/sync.rs:1039-1201`, `handle_iel_announcement` at `:1211-1367`) park on 422 (deferred-deps protocol) but on other failures (HTTP 5xx, network, peer-not-in-allowlist) just log and return. KEL's `handle_announcement` calls `record_kel_stale_prefix` on no-state-change AND on no-peer-had-events, feeding the AE Phase 1 retry queue. SEL/IEL non-422 errors fall through with no targeted retry — only Phase 2 random sampling catches them, statistically.
 
-**§F2 — Origin-only retry, no full-peer-list iteration.** SE/IEL inbound handlers try only the origin peer. KEL's `handle_announcement` iterates the full peer list (origin first, then others) on `forward_with_fallback` failure. For SE/IEL, an origin-down event becomes "park if 422, drop otherwise" — drop falls to Phase 2 backstop, statistically.
+**§F2 — Origin-only retry, no full-peer-list iteration.** SEL/IEL inbound handlers try only the origin peer. KEL's `handle_announcement` iterates the full peer list (origin first, then others) on `forward_with_fallback` failure. For SEL/IEL, an origin-down event becomes "park if 422, drop otherwise" — drop falls to Phase 2 backstop, statistically.
 
-**§F3 — No `forward_with_fallback` (delta-with-NotFound-fallback-to-full-fetch).** KEL AE Phase 1 routes through `sync_prefix → forward_with_fallback`. SE/IEL AE Phase 1 calls `forward_sel_events` / `forward_identity_events` directly with `since_digest` and no NotFound fallback. SE/IEL handle the divergence case via `use_repair = local_divergent && !remote_divergent` upfront. The missing fallback covers the case where the `since` SAID isn't on the remote because the remote did a recovery that removed it. SE has Rpr (could rotate canonical branch); IEL has no Rpr, so for IEL the asymmetry is moot. For SE the gap is theoretical (Rpr establishes a new branch tip but doesn't remove events) but worth flagging.
+**§F3 — No `forward_with_fallback` (delta-with-NotFound-fallback-to-full-fetch).** KEL AE Phase 1 routes through `sync_prefix → forward_with_fallback`. SEL/IEL AE Phase 1 calls `forward_sel_events` / `forward_identity_events` directly with `since_digest` and no NotFound fallback. SEL/IEL handle the divergence case via `use_repair = local_divergent && !remote_divergent` upfront. The missing fallback covers the case where the `since` SAID isn't on the remote because the remote did a recovery that removed it. SEL has Rpr (could rotate canonical branch); IEL has no Rpr, so for IEL the asymmetry is moot. For SEL the gap is theoretical (Rpr establishes a new branch tip but doesn't remove events) but worth flagging.
 
-**Why these are functionally bounded today.** Deferred-deps protocol (#156) covers the dependent cases for SE/IEL via park-and-drain; AE Phase 2 random sampling backstops the rest, eventually-consistent over O(N_pages × interval). Cost is statistical convergence latency vs. KEL's targeted retry latency.
+**Why these are functionally bounded today.** Deferred-deps protocol (#156) covers the dependent cases for SEL/IEL via park-and-drain; AE Phase 2 random sampling backstops the rest, eventually-consistent over O(N_pages × interval). Cost is statistical convergence latency vs. KEL's targeted retry latency.
 
-**Resolution path.** #161 (KEL pending-bundling work, referenced from `docs/design/sel/event-log.md:157` for the `verify_server_chain_pre_repair` rename candidate) is the natural carrier for KEL/SE/IEL recovery-shape harmonization. Slice 5 reads the asymmetries as low-risk and design-defensible (deferred-deps shifts the recovery model for SE/IEL); pinned here so the asymmetry is documented at the deviations-log level rather than implicit.
+**Resolution path.** #161 (KEL pending-bundling work, referenced from `docs/design/sel/event-log.md:157` for the `verify_server_chain_pre_repair` rename candidate) is the natural carrier for KEL/SEL/IEL recovery-shape harmonization. Slice 5 reads the asymmetries as low-risk and design-defensible (deferred-deps shifts the recovery model for SEL/IEL); pinned here so the asymmetry is documented at the deviations-log level rather than implicit.
 
 ### [Round-12 audit → Permanent design choice] `iel_chain_positions` divergence-source split (server-DB vs client-verifier)
 
@@ -266,9 +266,9 @@ Server-side `RepositoryIelResolver::iel_chain_positions` reads `first_divergent_
 
 The asymmetry is **design-intent** per `docs/design/streaming-verification-architecture.md §Operation Categories`. The system defines three categories: (1) Serving — no verification needed; (2) Consuming — must verify (verification token required); (3) Resolving — wrong answer triggers unnecessary sync, not a security hole. `iel_chain_positions` fits category 3.
 
-The trust boundary for SE auth is `IelResolver::is_satisfied` (slice 1 §Q4 β-ordering: step 3.5), which runs the full IEL verifier walk on both client and server impls (`sadstore/iel_resolver.rs:222-271`, `lib/kels/iel_resolver.rs:258-297`). A tampered DB lying about `first_divergent_version` causes a wrong monotonic-ratchet comparison; the next `is_satisfied` call independently runs the IEL verifier and catches the actual divergence (slice 1 §Q3 post-divergence soft-fail propagation).
+The trust boundary for SEL auth is `IelResolver::is_satisfied` (slice 1 §Q4 β-ordering: step 3.5), which runs the full IEL verifier walk on both client and server impls (`sadstore/iel_resolver.rs:222-271`, `lib/kels/iel_resolver.rs:258-297`). A tampered DB lying about `first_divergent_version` causes a wrong monotonic-ratchet comparison; the next `is_satisfied` call independently runs the IEL verifier and catches the actual divergence (slice 1 §Q3 post-divergence soft-fail propagation).
 
-Server-side perf preserved (one DB read vs. one full IEL walk per SE event; the IEL walk cost per `iel_chain_positions` call is the same concern tracked under `[Round-12 review fix → pre-production / #152]`).
+Server-side perf preserved (one DB read vs. one full IEL walk per SEL event; the IEL walk cost per `iel_chain_positions` call is the same concern tracked under `[Round-12 review fix → pre-production / #152]`).
 
 Inline comment at the storage-layer site (added in this PR) cites this entry and the streaming-verification design doc.
 
@@ -336,39 +336,39 @@ Both groups depend on the test harness having ≥2 sadstore nodes (the existing 
 
 Newest first. Each entry's body lives in its own slug file in this directory.
 
-- **[Round-12 doc drift → resolved]** [SE `is_proactively_governed` flag mirrors KEL's `is_proactive_ror_compliant`](se-proactive-governance-flag.md) — added a chain-wide proactive-governance compliance flag to `SelVerifier` / `SelVerification` that flips false once any branch's `events_since_evaluation` exceeds `MAX_NON_EVALUATION_EVENTS = 63`; closes the slice 1 §F1 doc/code mismatch.
+- **[Round-12 doc drift → resolved]** [SEL `is_proactively_governed` flag mirrors KEL's `is_proactive_ror_compliant`](se-proactive-governance-flag.md) — added a chain-wide proactive-governance compliance flag to `SelVerifier` / `SelVerification` that flips false once any branch's `events_since_evaluation` exceeds `MAX_NON_EVALUATION_EVENTS = 63`; closes the slice 1 §F1 doc/code mismatch.
 
 - **[Issue #156 → resolved]** [PendingMap::refresh same-SAID short-circuit](pending-refresh-same-said-shortcircuit.md) — `refresh()` now compares the candidate ParkRecord SAID against the old record and skips the cleanup+park when they match; bounds park lifetime to the original 5-minute TTL on busy chains (slice 4 §F1).
 
-- **[Round-12 review fix → 3rd follow-up c1]** [Verifier queried/satisfied + post-divergence soft-fail propagation](verifier-queried-satisfied-and-post-divergence-soft-fail.md) — IEL/SE caller-bounded SAID querying + `IelResolver::is_satisfied` trait method + post-divergence soft-fail propagation on both verifiers; KEL parity deferred to #152.
+- **[Round-12 review fix → 3rd follow-up c1]** [Verifier queried/satisfied + post-divergence soft-fail propagation](verifier-queried-satisfied-and-post-divergence-soft-fail.md) — IEL/SEL caller-bounded SAID querying + `IelResolver::is_satisfied` trait method + post-divergence soft-fail propagation on both verifiers; KEL parity deferred to #152.
 
 - **[Round-12 follow-up → resolved]** [Gap 8 PUSH-direction post-sync chose Option 1](gap-8-push-direction-post-sync-option-1.md) — PUSH skips post-sync state-advancement check (HTTP-2xx is acceptance proof); PULL keeps local-SAID re-fetch; uniform check was a copy-error from KEL Phase 1's no-PUSH branch.
 
-- **[Gap 1 → standalone]** [lib/policy/src/identity_chain.rs deleted](identity-chain-rs-deleted.md) — pre-round-12 SE-based identity-chain primitive removed (superseded by IEL); UnreachableIelResolver test fake removed alongside.
+- **[Gap 1 → standalone]** [lib/policy/src/identity_chain.rs deleted](identity-chain-rs-deleted.md) — pre-round-12 SEL-based identity-chain primitive removed (superseded by IEL); UnreachableIelResolver test fake removed alongside.
 
 - **[Gap 0 → Gap 0]** [IelChainPosition shape extended beyond plan's suggestion](iel-chain-position-shape-extended.md) — added kind + said fields beyond the plan's `{version, branch_marker}` suggestion to satisfy try_cmp's canonical (version, kind, said) tie-break; permanent design choice.
 
-- **[Gap 11 → standalone]** [write_policy not globally forbidden](write-policy-global-forbid-exempted.md) — Custody legitimately uses `write_policy` as a distinct concept from SE auth; global forbid would have broken Custody's field naming. Plan author error scoped to SE only.
+- **[Gap 11 → standalone]** [write_policy not globally forbidden](write-policy-global-forbid-exempted.md) — Custody legitimately uses `write_policy` as a distinct concept from SEL auth; global forbid would have broken Custody's field naming. Plan author error scoped to SEL only.
 
 - **[Issue #154 → Issue #154]** [Sadstore integration tests still use minio/minio:latest testcontainer](sadstore-tests-rustfs-testcontainer.md) — testcontainer fixture migrated to `rustfs/rustfs:latest` with `WaitFor::seconds(5)`; container env vars switched to `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`/`RUSTFS_VOLUMES`/`RUSTFS_ADDRESS`/`RUSTFS_CONSOLE_ADDRESS`; locals + struct field renamed `_minio`→`_objects`.
 
 - **[Gap 5 → #162]** [Builder-level IEL state caching retargeted to client-side caching strategy](gap-5-builder-iel-state-caching-retargeted-to-162.md) — narrow CLI-builder-cache item reframed as one instance of a broader client-side dep-graph caching strategy; #162 captures the general concern.
 
-- **[Gap 11 → #147]** [est/evl wire-format patterns exempted at `clients/test/scripts/`](test-scripts-est-evl-exemption.md) — test-script migration rewrote every IEL/SE script onto the round-12 CLI surface (no inline event JSON), retired the subtree `.terminology-forbidden` exemption, and added `--owner-prefix` to `sel repair` for kels-style silent-extension boundary discovery.
+- **[Gap 11 → #147]** [est/evl wire-format patterns exempted at `clients/test/scripts/`](test-scripts-est-evl-exemption.md) — test-script migration rewrote every IEL/SEL script onto the round-12 CLI surface (no inline event JSON), retired the subtree `.terminology-forbidden` exemption, and added `--owner-prefix` to `sel repair` for kels-style silent-extension boundary discovery.
 
-- **[Gap 5 → #147]** [Exchange CLI commands parked compile-clean since SE rewrite](cli-exchange-parked-gap-5-resolved-147.md) — `cmd_exchange_publish_key` / `_rotate_key` / `_lookup_key` rewired onto round-12 SE primitives; new `--identity <iel-prefix>` arg replaces inline `write_policy` derivation.
+- **[Gap 5 → #147]** [Exchange CLI commands parked compile-clean since SEL rewrite](cli-exchange-parked-gap-5-resolved-147.md) — `cmd_exchange_publish_key` / `_rotate_key` / `_lookup_key` rewired onto round-12 SEL primitives; new `--identity <iel-prefix>` arg replaces inline `write_policy` derivation.
 
 - **[Round-12 review fix → audit + resolver fix on KELS-126]** [Post-divergence auth-failed Evl: `policy_history` records prior tracked policies, not event-declared values](iel-resolver-verifier-adopted-policy-view.md) — KELS-126 Group A audit found one consumer (`RepositoryIelResolver::resolve_{auth,governance}_policy_at`) reading `event.auth_policy` / `event.governance_policy` directly; rerouted through a new `verification_for` helper + `verification.auth_policy_at(said)` / `governance_policy_at(said)` so the resolver consults the verifier-adopted view (mirroring `AnchoredIelResolver`). DB-tamper integration test pins the new contract.
 
-- **[Round-12 review fix → audit confirmed clean]** [Auth-passing post-SE-divergence event keeps `chain.policy_satisfied=true`](policy-satisfied-consumer-audit.md) — KELS-126 Group A consumer audit walked all five `.policy_satisfied()` production sites; every one answers "did any auth check fail in the walk?" rather than the divergence/terminal questions. SE Cnt path explicitly does NOT gate on the flag (SOFT-auth design respected). No code changes needed; design contract pinned for future consumers.
+- **[Round-12 review fix → audit confirmed clean]** [Auth-passing post-SEL-divergence event keeps `chain.policy_satisfied=true`](policy-satisfied-consumer-audit.md) — KELS-126 Group A consumer audit walked all five `.policy_satisfied()` production sites; every one answers "did any auth check fail in the walk?" rather than the divergence/terminal questions. SEL Cnt path explicitly does NOT gate on the flag (SOFT-auth design respected). No code changes needed; design contract pinned for future consumers.
 
-- **[Pre-existing → round-12 third follow-up commit 2]** [HttpSelSink/HttpIelSink 409 silent-skip + server-side response-code semantics](sink-409-and-response-code-semantics.md) — audit + fix of all server-side 409 sites; server-internal integrity failures split off to 500 via `ChainVerificationFailed`; IEL terminal-state-gate response moved to 200-with-`terminal: Some(_)` indicator (option C); SE side picks up symmetric idempotency.
+- **[Pre-existing → round-12 third follow-up commit 2]** [HttpSelSink/HttpIelSink 409 silent-skip + server-side response-code semantics](sink-409-and-response-code-semantics.md) — audit + fix of all server-side 409 sites; server-internal integrity failures split off to 500 via `ChainVerificationFailed`; IEL terminal-state-gate response moved to 200-with-`terminal: Some(_)` indicator (option C); SEL side picks up symmetric idempotency.
 
 - **[Round-12 review fix → resolved]** [IEL verifier + walker structural extraction](iel-verifier-and-walker-extraction.md) — page-walk + queried/satisfied registration triplication eliminated; closes Important #1 (multi-page IEL walk duplicate-event bug at page boundaries) plus M1 and M11.
 
-- **[Round-12 review fix → resolved]** [SE pre-walk + soft-fail predicate split + β-ordering documentation](se-prewalk-and-soft-fail-predicate.md) — handler pre-walk fail-secures on `max_pages`; `auth_soft_eligible` split into named pieces; β-ordering rationale documented inline.
+- **[Round-12 review fix → resolved]** [SEL pre-walk + soft-fail predicate split + β-ordering documentation](se-prewalk-and-soft-fail-predicate.md) — handler pre-walk fail-secures on `max_pages`; `auth_soft_eligible` split into named pieces; β-ordering rationale documented inline.
 
-- **[Round-12 review fix → resolved]** [Test coverage closeout](round-12-third-followup-test-coverage.md) — post-SE-divergence cell tests, IEL send-side coverage, V=D+1 walk-back integration test.
+- **[Round-12 review fix → resolved]** [Test coverage closeout](round-12-third-followup-test-coverage.md) — post-SEL-divergence cell tests, IEL send-side coverage, V=D+1 walk-back integration test.
 
 - **[Pre-round-12 IEL primitive gap → Round-12 third follow-up commit 4]** [IEL send-side divergence partitioning implemented](iel-send-side-divergence-partitioning.md) — `send_divergent_iel_events` mirroring KEL's pattern; KEL/SEL/IEL symmetry restored.
 
@@ -384,7 +384,7 @@ Newest first. Each entry's body lives in its own slug file in this directory.
 
 - **[Gap 1 → Gap 5]** [`sad_builder.rs` stub](sad-builder-rs-stub.md) — Gap 5 shipped the round-12 `SadEventBuilder` end-to-end with `incept_chain` / `update` / `seal` / `repair` / `contest` / `decommission`.
 
-- **[Gap 0 → Gap 5]** [`AnchoredIelResolver` moved from lib/policy to lib/kels](anchored-iel-resolver-relocation.md) — relocation upstream so the SE builder can construct it.
+- **[Gap 0 → Gap 5]** [`AnchoredIelResolver` moved from lib/policy to lib/kels](anchored-iel-resolver-relocation.md) — relocation upstream so the SEL builder can construct it.
 
 - **[Gap 2 → Gap 5]** [CLI exchange commands parked](cli-exchange-parked-gap-2-resolved-gap-5.md) — Gap 2's "parked pending Gap 11 CLI rewrite" stubs documented as resolved; the follow-on parking (Gap 5 → #147) is tracked as a separate Open entry.
 

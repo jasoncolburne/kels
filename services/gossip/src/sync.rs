@@ -1204,7 +1204,7 @@ impl SyncHandler {
     /// effective SAID differs.
     ///
     /// Mirrors `handle_sel_announcement` but simpler: IEL has no `Rpr`, so
-    /// the divergence-aware page transfer logic that SE uses isn't needed —
+    /// the divergence-aware page transfer logic that SEL uses isn't needed —
     /// the IEL submit handler dedupes by SAID, routes terminals (`Cnt`/`Dec`)
     /// to their own paths, and routes `Evl` batches to `save_batch` (which
     /// handles overlap-creates-fork). Sending the full chain is safe.
@@ -2448,16 +2448,16 @@ pub async fn run_sad_anti_entropy_loop(
                         debug!("SAD anti-entropy: repaired chain {}", sel_prefix);
                     }
                     RepairResult::Contested => {
-                        // Unreachable today: SE Phase 1 routes through
+                        // Unreachable today: SEL Phase 1 routes through
                         // `forward_sel_events`, which doesn't translate
                         // `ContestedSel` into `RepairResult::Contested` —
                         // only KEL's `forward_with_fallback` does. Reserved
-                        // for future SE parity per #161. debug_assert
+                        // for future SEL parity per #161. debug_assert
                         // catches a regression in dev/test; warn keeps the
                         // AE loop running in release.
                         debug_assert!(
                             false,
-                            "SE AE Phase 1 produced unexpected Contested for {}",
+                            "SEL AE Phase 1 produced unexpected Contested for {}",
                             sel_prefix
                         );
                         warn!(
@@ -2871,7 +2871,7 @@ pub async fn run_iel_anti_entropy_loop(
                         // 422 from the local sink means our verifier saw
                         // missing cross-chain deps — those will arrive via
                         // SAD AE / SAD gossip, then a subsequent IEL AE
-                        // cycle succeeds. Same posture for SE AE Phase 1.
+                        // cycle succeeds. Same posture for SEL AE Phase 1.
                         if let Err(e) = kels_core::forward_identity_events(
                             prefix,
                             &remote_source,

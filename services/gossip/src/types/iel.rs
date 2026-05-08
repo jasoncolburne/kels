@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Gossip message for an Identity Event Log update.
 ///
 /// Broadcast on topic `kels/gossip/v1/topics/iel`. IEL has no separate
-/// object store (every IEL "object" is just an event), so unlike SE there
+/// object store (every IEL "object" is just an event), so unlike SEL there
 /// is only one variant — chain-tip announcement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -549,7 +549,7 @@ pub async fn verify_sel_events(
 }
 
 /// Verify a SAD Event Log with a per-batch callback that fires after each
-/// page passes verification. Mirrors `verify_key_events_with` for the SE
+/// page passes verification. Mirrors `verify_key_events_with` for the SEL
 /// primitive — same `transfer_sel_events` engine with a `CallbackSink` in
 /// place of the `NoOpSelSink`.
 ///
@@ -584,7 +584,7 @@ where
 }
 
 /// Sink that invokes a callback for each batch of events. Mirrors KEL's
-/// `CallbackSink` for the SE primitive.
+/// `CallbackSink` for the SEL primitive.
 struct CallbackSadSink<F: FnMut(&[SadEvent]) + Send>(std::sync::Mutex<F>);
 
 #[async_trait]
@@ -597,11 +597,11 @@ impl<F: FnMut(&[SadEvent]) + Send> PagedSelSink for CallbackSadSink<F> {
     }
 }
 
-/// Stream a SEL chain from `source` and accumulate the unique
-/// `event.identity_event` SAIDs the SE caller needs from the bound IEL.
+/// Stream a SEL from `source` and accumulate the unique
+/// `event.identity_event` SAIDs the SEL caller needs from the bound IEL.
 ///
-/// Used by SE consumers (submit handler, builder pre-action verify) to
-/// pre-walk the SE chain and collect the queried-IEL-SAID set before
+/// Used by SEL consumers (submit handler, builder pre-action verify) to
+/// pre-walk the SEL and collect the queried-IEL-SAID set before
 /// constructing the `IelResolver`. The accumulator is a `BTreeSet<Digest256>`
 /// — events themselves are dropped after each page is processed, so the
 /// in-memory cost is bounded by SAID-level metadata only (proportional to
@@ -649,8 +649,8 @@ pub async fn collect_identity_event_saids(
     )))
 }
 
-/// Stream a SEL chain from a local `SelPageLoader` and accumulate the
-/// unique `event.identity_event` SAIDs the SE caller needs from the bound
+/// Stream a SEL from a local `SelPageLoader` and accumulate the
+/// unique `event.identity_event` SAIDs the SEL caller needs from the bound
 /// IEL. Mirrors [`collect_identity_event_saids`] but for owner-local
 /// verification flows that page through `SadStore` rather than over HTTP.
 ///
@@ -776,7 +776,7 @@ mod tests {
         }
     }
 
-    /// Wire-level mapping contract: a 409 from the SE submit endpoint
+    /// Wire-level mapping contract: a 409 from the SEL submit endpoint
     /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`, not
     /// `InternalError` (silent-skip dropped — #147 follow-up
     /// commit 2). Production conflict-409 paths in the submit handler

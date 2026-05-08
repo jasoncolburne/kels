@@ -73,7 +73,7 @@ pub(crate) async fn cmd_sel_update(
 
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
-        .context("Failed to hydrate SE state from server")?;
+        .context("Failed to hydrate SEL state from server")?;
 
     let said = builder
         .update(content)
@@ -99,7 +99,7 @@ pub(crate) async fn cmd_sel_seal(cli: &Cli, sel_prefix: &str, publish: bool) -> 
 
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
-        .context("Failed to hydrate SE state from server")?;
+        .context("Failed to hydrate SEL state from server")?;
 
     let said = builder.seal().await.context("Failed to stage Sea")?;
 
@@ -166,7 +166,7 @@ pub(crate) async fn cmd_sel_repair(
 
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
-        .context("Failed to hydrate SE state from server")?;
+        .context("Failed to hydrate SEL state from server")?;
 
     let said = builder
         .repair(owner_anchors.as_ref())
@@ -192,7 +192,7 @@ pub(crate) async fn cmd_sel_contest(cli: &Cli, sel_prefix: &str, publish: bool) 
 
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
-        .context("Failed to hydrate SE state from server")?;
+        .context("Failed to hydrate SEL state from server")?;
 
     let said = builder.contest().await.context("Failed to stage Cnt")?;
 
@@ -215,7 +215,7 @@ pub(crate) async fn cmd_sel_decommission(cli: &Cli, sel_prefix: &str, publish: b
 
     let mut builder = SadEventBuilder::with_remote_prefix(sad_client, checker, &prefix)
         .await
-        .context("Failed to hydrate SE state from server")?;
+        .context("Failed to hydrate SEL state from server")?;
 
     let said = builder
         .decommission()
@@ -323,7 +323,7 @@ pub(crate) async fn cmd_sel_get(cli: &Cli, sel_prefix: &str) -> Result<()> {
         kels_core::max_pages(),
     )
     .await
-    .context("Failed to pre-walk SEL chain for queried IEL SAIDs")?;
+    .context("Failed to pre-walk SEL for queried IEL SAIDs")?;
 
     let iel_source: std::sync::Arc<dyn kels_core::PagedIelSource + Send + Sync> =
         std::sync::Arc::new(sad_client.as_iel_source()?);

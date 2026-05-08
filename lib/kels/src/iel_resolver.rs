@@ -31,11 +31,11 @@ use crate::{
 /// The walk is bounded by `page_size` / `max_pages`; both fail-secure when
 /// the chain exceeds the limit.
 ///
-/// `queried_saids` is the set the SE caller pre-walked from its own chain
+/// `queried_saids` is the set the SEL caller pre-walked from its own chain
 /// (#147 follow-up). The resolver registers it on every `IelVerifier`
 /// it constructs so `is_satisfied` answers consistently across calls. Set
 /// once at construction via [`Self::with_queried_saids`]; lifetime of the
-/// resolver = lifetime of the SE verification it serves.
+/// resolver = lifetime of the SEL verification it serves.
 #[derive(Clone)]
 pub struct AnchoredIelResolver {
     source: Arc<dyn PagedIelSource + Send + Sync>,
@@ -61,11 +61,11 @@ impl AnchoredIelResolver {
         }
     }
 
-    /// Register IEL event SAIDs the SE caller cares about. Forwarded to
+    /// Register IEL event SAIDs the SEL caller cares about. Forwarded to
     /// every `IelVerifier` this resolver constructs so `is_satisfied`
     /// answers correctly.
     ///
-    /// Caller pattern: SE pre-walks its own chain (streaming over a
+    /// Caller pattern: SEL pre-walks its own chain (streaming over a
     /// `PagedSelSource`), accumulates `event.identity_event` SAIDs into a
     /// `BTreeSet`, then constructs the resolver via
     /// `AnchoredIelResolver::new(...).with_queried_saids(saids)`.
@@ -267,7 +267,7 @@ impl IelResolver for AnchoredIelResolver {
         // re-classify into `IelSatisfaction::MissingEvent` (deferrable);
         // cross-IEL contamination surfaces `IdentityBindingViolation`,
         // re-classified into `IelSatisfaction::PermanentFailure`. In-chain
-        // auth-fail surfaces as `IelSatisfaction::AuthFailed` (the SE
+        // auth-fail surfaces as `IelSatisfaction::AuthFailed` (the SEL
         // verifier's soft-eligible carve-out path; wire-permanent).
         match self.fetch_iel_event(identity, said).await {
             Ok(_) => {}

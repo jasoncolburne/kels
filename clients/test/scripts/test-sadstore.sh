@@ -340,7 +340,7 @@ else
             wait_for_chain_propagation "$SEL_PREFIX" "$UPD_SAID" "$CONVERGENCE_TIMEOUT" "$NODE_B_SAD_URL"
 
         # IEL bootstrap+AE coverage (#172): the bound IEL chain must also
-        # propagate to node-b. Without this, SE chains binding to IEL events
+        # propagate to node-b. Without this, SELs binding to IEL events
         # on the parking peer can't resolve and #156's deferred-deps parks
         # TTL out indefinitely.
         IEL_TIP_SAID_A=$(get_iel_effective_said "$NODE_A_SAD_URL" "$IEL_PREFIX")
@@ -535,14 +535,14 @@ else
     EXT_OR_POLICY=$(build_immune_or_policy "$NODE_A_CLI" "$ALICE_KEL" "$BOB_KEL")
     run_test "Extension: OR policy uploaded" [ -n "$EXT_OR_POLICY" ]
 
-    # IEL identity, anchored by Alice. Both Alice and Bob can author SE
+    # IEL identity, anchored by Alice. Both Alice and Bob can author SEL
     # events on chains under this identity (the OR policy gates auth).
     EXT_IEL=$(setup_iel_identity_with_policy "$NODE_A_CLI" "$ALICE_KEL" "$EXT_OR_POLICY" "scenario8")
     run_test "Extension: IEL identity created" [ -n "$EXT_IEL" ]
     EXT_PREFIX=$(kels-cli sel prefix "$EXT_IEL" "$EXT_TOPIC" 2>/dev/null)
     echo "SEL prefix: $EXT_PREFIX"
 
-    # Alice incepts the SEL chain (atomic [Icp, v1]).
+    # Alice incepts the SEL (atomic [Icp, v1]).
     echo "{\"said\":\"$PLACEHOLDER\",\"value\":\"scenario8-initial\"}" > "$TEMP_DIR/ext-content-init.json"
     EXT_CONTENT_INIT=$(put_sad_object "$NODE_A_CLI" "$TEMP_DIR/ext-content-init.json")
 

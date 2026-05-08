@@ -66,7 +66,7 @@ pub struct AnchorPermanentFailure {
 
 /// #156: deferrable dep payload — SAD object not present locally.
 ///
-/// Carrier for [`KelsError::MissingSadObject`]. Used by the IEL/SE
+/// Carrier for [`KelsError::MissingSadObject`]. Used by the IEL/SEL
 /// verifier walks when a referenced SAD object (typically a Policy SAD
 /// referenced by an Icp's `auth_policy` / `governance_policy`) hasn't
 /// propagated to this node yet. The deferred-deps layer maps to a 422 +
@@ -229,7 +229,7 @@ pub enum KelsError {
     IelDecommissioned(String),
 
     #[error(
-        "IEL is divergent: {0} — only `Cnt` resolves an IEL; bound an SE event to a non-divergent branch state instead"
+        "IEL is divergent: {0} — only `Cnt` resolves an IEL; bound an SEL event to a non-divergent branch state instead"
     )]
     IelDivergent(String),
 
@@ -320,7 +320,7 @@ pub enum KelsError {
     // returned by the crate.
     SadStorePayloadMissing { prefix: String, said: String },
 
-    /// #147: an SE batch contained an `Icp` but did not also contain an
+    /// #147: an SEL batch contained an `Icp` but did not also contain an
     /// `Upd` at v1. The inception batch rule (`docs/design/sel/events.md`)
     /// requires `[Icp, Upd, ...]` minimum so every chain is born with both
     /// content and an IEL binding; lone-Icp batches are rejected.
@@ -335,14 +335,14 @@ pub enum KelsError {
     MissingIelEvent(Box<MissingIelEvent>),
 
     /// #156 (split from prior `BadIdentityBinding`): permanent — the
-    /// SE event's `identity_event` binding is structurally invalid.
+    /// SEL event's `identity_event` binding is structurally invalid.
     /// Covers cross-IEL contamination (named SAID's IEL prefix doesn't
-    /// match the SE chain's `identity`), IEL chain-order regression
-    /// (named SAID regresses the SE branch's monotonic ratchet), and
+    /// match the SEL's `identity`), IEL chain-order regression
+    /// (named SAID regresses the SEL branch's monotonic ratchet), and
     /// chain-integrity breaches (event referenced not in policy_history,
     /// walk-back failures). The `reason` describes which.
     ///
-    /// HARD for ALL SE kinds (`Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`) —
+    /// HARD for ALL SEL kinds (`Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`) —
     /// a chain with no valid IEL binding cannot be recorded; chain
     /// integrity beats forensic preservation.
     #[error("Identity binding violation: {0}")]
@@ -353,13 +353,13 @@ pub enum KelsError {
     /// `auth_policy` / `governance_policy` field) is not present in the
     /// local SAD object store. Object may commit later via gossip
     /// propagation; caller can defer on `said` and replay when the SAD
-    /// object lands. Used by IEL/SE verifier collect-mode to accumulate
+    /// object lands. Used by IEL/SEL verifier collect-mode to accumulate
     /// `DeferredFailure::MissingSadObject`.
     #[error("Missing SAD object: {}", .0.said)]
     MissingSadObject(Box<MissingSadObject>),
 
     /// #147: `SadEventBuilder::decommission()` pre-flight refused
-    /// because the SE chain is divergent. Generic — does not distinguish
+    /// because the SEL is divergent. Generic — does not distinguish
     /// sealed vs. unsealed (the routing rules differ — sealed →
     /// `ContestRequired`, unsealed → `RepairRequired`); operators see the
     /// concrete next move from the server's response on a force-submit.

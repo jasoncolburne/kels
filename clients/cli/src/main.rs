@@ -356,10 +356,10 @@ enum IelCommands {
 
 #[derive(Subcommand, Debug)]
 enum SelCommands {
-    /// Stage atomic [Icp, Upd] for a fresh SEL chain bound to an IEL
+    /// Stage atomic [Icp, Upd] for a fresh SEL bound to an IEL
     /// identity. Prints the Icp SAID and the Upd SAID, one per line.
     Incept {
-        /// SE topic string (e.g., "kels/sad/v1/keys/mlkem")
+        /// SEL topic string (e.g., "kels/sad/v1/keys/mlkem")
         topic: String,
 
         /// IEL identity (prefix) the chain binds to at inception
@@ -375,7 +375,7 @@ enum SelCommands {
         publish: bool,
     },
 
-    /// Stage an Upd extending an existing SEL chain. Prints the SAID.
+    /// Stage an Upd extending an existing SEL. Prints the SAID.
     Update {
         /// SEL prefix to update
         sel_prefix: String,
@@ -399,7 +399,7 @@ enum SelCommands {
     },
 
     /// Stage a repair (Rpr) on an unsealed-divergent or
-    /// adversary-extended SEL chain. Prints the SAID.
+    /// adversary-extended SEL. Prints the SAID.
     Repair {
         /// SEL prefix to repair
         sel_prefix: String,
@@ -464,13 +464,13 @@ enum SelCommands {
 #[allow(clippy::enum_variant_names)]
 enum ExchangeCommands {
     /// Publish an ML-KEM encapsulation key to the SADStore. Stages,
-    /// anchors, and submits an SEL chain bound to `--identity`.
+    /// anchors, and submits an SEL bound to `--identity`.
     PublishKey {
         /// KEL prefix whose key signs the anchoring Ixn events
         #[arg(long)]
         prefix: String,
 
-        /// IEL identity (prefix) the SEL chain binds to. Must already
+        /// IEL identity (prefix) the SEL binds to. Must already
         /// exist in SADStore with auth/governance policies set.
         #[arg(long)]
         identity: String,
@@ -486,7 +486,7 @@ enum ExchangeCommands {
         #[arg(long)]
         prefix: String,
 
-        /// IEL identity (prefix) the SEL chain binds to
+        /// IEL identity (prefix) the SEL binds to
         #[arg(long)]
         identity: String,
 

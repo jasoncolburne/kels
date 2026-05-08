@@ -37,7 +37,7 @@ use crate::pending::{ParkRecord, ParkSubject, PendingMap};
 use crate::sync::{deferred_deps_to_park_inputs, try_parse_deferred_deps};
 
 /// Concurrency cap for bootstrap preload tasks (KEL / SAD object / IEL /
-/// SE). Mirrors `KELS_SAD_AE_TASK_CONCURRENCY`'s posture: bootstrap fires
+/// SEL). Mirrors `KELS_SAD_AE_TASK_CONCURRENCY`'s posture: bootstrap fires
 /// the whole world at once on cold-start, so an unbounded `join_all`
 /// saturates the source peer (observed: 282 of 579 KELs failed to sync at
 /// scale). Default 4 — bootstrap correctness matters more than speed, and
@@ -102,7 +102,7 @@ pub struct BootstrapSync {
     signer: Arc<dyn PeerSigner>,
     http_client: reqwest::Client,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
-    /// Shared deferred-deps pending map. When set, IEL/SE preload failures
+    /// Shared deferred-deps pending map. When set, IEL/SEL preload failures
     /// carrying a typed-422 deferred-deps body are parked here so the live
     /// `kel_updates` / `iel_updates` / `sad_updates` drainers replay them on
     /// dep arrival. When `None` (no Redis), preload reverts to fail-and-skip
@@ -141,7 +141,7 @@ impl BootstrapSync {
         self
     }
 
-    /// Wire the deferred-deps pending map. When set, IEL/SE preload failures
+    /// Wire the deferred-deps pending map. When set, IEL/SEL preload failures
     /// that surface as typed-422 are parked into the same Redis-backed map
     /// the inline gossip POST handler uses, so drain on dep arrival picks
     /// them up automatically.
@@ -336,7 +336,7 @@ impl BootstrapSync {
     /// (no `since` — bootstrap only ensures the prefix is present locally;
     /// AE catches event-level deltas after the join). Sequenced after
     /// `preload_sad_objects` (policy SAD objects referenced by IEL events)
-    /// and before `preload_sad_events` (SE chains binding to IEL events).
+    /// and before `preload_sad_events` (SELs binding to IEL events).
     pub async fn preload_iels(&self) -> Result<(), BootstrapError> {
         let ready_peers = self.get_ready_peers().await;
 
@@ -890,7 +890,7 @@ impl BootstrapSync {
     ///
     /// Per peer, walks remote and local KEL prefix listings in lockstep and
     /// enqueues remote-only prefixes for full-chain sync (`sync_prefix` with
-    /// `since=None`). Mirrors the SAD-objects/IEL/SE preload shape: bootstrap
+    /// `since=None`). Mirrors the SAD-objects/IEL/SEL preload shape: bootstrap
     /// only ensures the prefix is present locally; AE catches event-level
     /// deltas after the join. Eliminates the per-prefix
     /// `fetch_effective_said` storm (observed at 579 prefixes × N peers,

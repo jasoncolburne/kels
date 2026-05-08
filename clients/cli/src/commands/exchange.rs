@@ -1,6 +1,6 @@
 //! Exchange protocol command handlers.
 //!
-//! Single-device ergonomic wrappers around the SE primitive for
+//! Single-device ergonomic wrappers around the SEL primitive for
 //! ML-KEM encapsulation-key publication. Each command runs the full
 //! stage → publish → anchor → submit cycle in one CLI invocation against
 //! a caller-supplied `--identity` (IEL prefix). Multi-device flows use
@@ -52,7 +52,7 @@ fn parse_kem_algorithm(
 }
 
 /// Build, save, and post a new ML-KEM encapsulation-key publication SAD
-/// object. Returns the publication's SAID — used as the SEL chain's content
+/// object. Returns the publication's SAID — used as the SEL's content
 /// reference.
 async fn build_and_post_publication(
     cli: &Cli,
@@ -149,7 +149,7 @@ pub(crate) async fn cmd_exchange_publish_key(
             publication_said,
         )
         .await
-        .context("Failed to stage atomic [Icp, Upd] for SEL chain")?;
+        .context("Failed to stage atomic [Icp, Upd] for SEL")?;
 
     sad_builder
         .publish_pending()
@@ -171,7 +171,7 @@ pub(crate) async fn cmd_exchange_publish_key(
         println!("  Upd SAID: {}", upd_said);
     } else if let Some(terminal) = outcome.terminal {
         return Err(anyhow!(
-            "SEL chain is already terminal ({:?}) — submit was a no-op",
+            "SEL is already terminal ({:?}) — submit was a no-op",
             terminal
         ));
     } else {
@@ -183,7 +183,7 @@ pub(crate) async fn cmd_exchange_publish_key(
     if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
-            format!("warning: SEL chain diverged at version {}", at).yellow()
+            format!("warning: SEL diverged at version {}", at).yellow()
         );
     }
 
@@ -212,7 +212,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     let mut sad_builder =
         SadEventBuilder::with_remote_prefix(sad_client.clone(), checker, &sel_prefix)
             .await
-            .context("Failed to hydrate SE state from server")?;
+            .context("Failed to hydrate SEL state from server")?;
 
     let upd_said = sad_builder
         .update(publication_said)
@@ -237,7 +237,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
         println!("  SEL Prefix: {}", sel_prefix);
     } else if let Some(terminal) = outcome.terminal {
         return Err(anyhow!(
-            "SEL chain is already terminal ({:?}) — submit was a no-op",
+            "SEL is already terminal ({:?}) — submit was a no-op",
             terminal
         ));
     } else {
@@ -249,7 +249,7 @@ pub(crate) async fn cmd_exchange_rotate_key(
     if let Some(at) = outcome.diverged_at {
         eprintln!(
             "{}",
-            format!("warning: SEL chain diverged at version {}", at).yellow()
+            format!("warning: SEL diverged at version {}", at).yellow()
         );
     }
 

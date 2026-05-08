@@ -74,16 +74,16 @@ test_sad_chain_verifier_
 # === Grammar: common slip introduced by in-place renames ===
 \ba event\b
 
-# === KELS-126 round 12: SE identity-rooting ===
-# SE chains are now bound to IEL identities; auth/governance policies live
-# on the IEL. These tokens were SE-only; IEL still uses `governance_policy`
+# === KELS-126 round 12: SEL identity-rooting ===
+# SELs are now bound to IEL identities; auth/governance policies live
+# on the IEL. These tokens were SEL-only; IEL still uses `governance_policy`
 # internally (do NOT blanket-forbid that token). `write_policy` /
 # `writePolicy` are NOT forbidden — Custody legitimately uses them for
-# per-SAD-object write access control (distinct concept from SE auth).
+# per-SAD-object write access control (distinct concept from SEL auth).
 \btracked_write_policy\b
 \bestablishment_version\b
 
-# Round-12 dropped SE kinds: `Est` removed; `Evl` renamed to `Sea`. The
+# Round-12 dropped SEL kinds: `Est` removed; `Evl` renamed to `Sea`. The
 # Rust path forms catch new code; the wire-format topic strings catch
 # shell scripts, JSON literals, and design-doc references.
 \bSadEventKind::Est\b
@@ -95,7 +95,7 @@ kels/sad/v1/events/evl
 
 # === No "round N" labels: cite issue numbers (e.g., #147 / #167) instead ===
 # These are review-iteration counts that bled into source/docs and are
-# untraceable. Mapping for reference: round-12 ↔ #147 (SE identity-rooting),
+# untraceable. Mapping for reference: round-12 ↔ #147 (SEL identity-rooting),
 # round 13 ↔ #167 (custody reshape). Only rounds 10–13 are offenders;
 # narrower than \b1[0-9]\b to avoid future false positives. docs/deviations/
 # has its own subtree rule and is exempt; docs/claudit/ is excluded by the

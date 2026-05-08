@@ -1,6 +1,6 @@
 # SEL Repair Workflow
 
-Operator-facing workflow for handling SEL chain transitions — divergence detection, repair, contest, decommission, and gossip propagation. SEL counterpart to [../kel/recovery-workflow.md](../kel/recovery-workflow.md).
+Operator-facing workflow for handling SEL transitions — divergence detection, repair, contest, decommission, and gossip propagation. SEL counterpart to [../kel/recovery-workflow.md](../kel/recovery-workflow.md).
 
 ## Detection
 

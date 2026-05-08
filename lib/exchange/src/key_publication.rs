@@ -11,7 +11,7 @@ pub const ENCAP_KEY_KIND: &str = "kels/sad/v1/keys/mlkem";
 /// The owner publishes this by creating a `SadEvent` chain with kind
 /// [`ENCAP_KEY_KIND`] and `content` pointing to this object's SAID.
 /// Anyone can discover the key by computing the deterministic SEL prefix
-/// from `(identity, topic)` — where `identity` is the IEL prefix the SE
+/// from `(identity, topic)` — where `identity` is the IEL prefix the SEL
 /// chain binds to and `topic` is [`ENCAP_KEY_KIND`] — via
 /// `compute_sad_event_prefix(identity, ENCAP_KEY_KIND)`.
 #[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]

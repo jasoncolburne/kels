@@ -8,7 +8,7 @@
 # Verifies:
 #   1. All nodes have the same set of SEL prefixes
 #   2. All SEL chains have the same number of events on each node
-#   3. A SHA-256 digest of each SEL chain matches across all nodes
+#   3. A SHA-256 digest of each SEL matches across all nodes
 #   4. All nodes have the same set of SAD objects
 #   5. All nodes have the same set of IEL prefixes (#172)
 #   6. All IEL chains have the same number of events / matching digests (#172)

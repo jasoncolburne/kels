@@ -1,10 +1,10 @@
-//! Cross-chain IEL access for SE-side verification (per #147).
+//! Cross-chain IEL access for SEL-side verification (per #147).
 //!
 //! `IelResolver` is a separate concern from [`PolicyChecker`](crate::PolicyChecker):
 //! the policy checker evaluates `(said, policy)` anchoring without any
 //! awareness of how the policy was discovered, while the resolver knows how
 //! to navigate an IEL chain to extract the policy-at-event lookup that the
-//! SE verifier needs to authorize a `Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`.
+//! SEL verifier needs to authorize a `Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`.
 //!
 //! Splitting the two responsibilities keeps `PolicyChecker` reusable across
 //! KEL / SEL / IEL primitives (it takes SAIDs only) and keeps IEL chain
@@ -36,11 +36,11 @@ use crate::{KelsError, error::IdentityBindingViolation};
 /// - `MissingEvent` → 422 + `iel_event` dep (deferrable; the SAID may
 ///   commit later via gossip propagation).
 /// - `AuthFailed` → 4xx-permanent (the IEL event and its pre-state are
-///   fixed; re-eval won't change). The SE verifier's existing
+///   fixed; re-eval won't change). The SEL verifier's existing
 ///   soft-eligible carve-out applies here: terminals or
-///   post-SE-divergence land soft (`policy_satisfied=false`); else HARD.
+///   post-SEL-divergence land soft (`policy_satisfied=false`); else HARD.
 /// - `PermanentFailure` → 4xx-permanent (chain-integrity violation).
-///   SE verifier always hard-fails; no soft-eligible carve-out.
+///   SEL verifier always hard-fails; no soft-eligible carve-out.
 ///
 /// `AuthFailed` is wire-equivalent to `PermanentFailure` but distinct
 /// internally because the soft-eligible path differs.
@@ -59,7 +59,7 @@ pub enum IelSatisfaction {
     /// Referenced IEL event found in chain, but the IEL event's own auth
     /// check failed (Cnt's-own-soft-fail, or auth policy not satisfied at
     /// the IEL event's pre-state). The `reason` describes which.
-    /// Permanent at the wire layer; soft-eligible inside the SE walk.
+    /// Permanent at the wire layer; soft-eligible inside the SEL walk.
     AuthFailed { reason: String },
     /// Chain-integrity violation (cross-IEL contamination, IEL chain-order
     /// regression, etc.). Permanent. Always hard-fails.
@@ -93,7 +93,7 @@ impl IelChainPositionBatch {
 /// The position of an IEL event within its chain's canonical order.
 ///
 /// Returned (in batches) by [`IelResolver::iel_chain_positions`] and consumed
-/// by the SE verifier's monotonic-ratchet check. Two positions are compared
+/// by the SEL verifier's monotonic-ratchet check. Two positions are compared
 /// via [`IelChainPosition::try_cmp`], which returns
 /// [`KelsError::IelDivergent`] when comparison would cross divergent IEL
 /// branches.
@@ -152,8 +152,8 @@ impl IelChainPosition {
     }
 }
 
-/// Cross-chain access into an Identity Event Log, used by the SE verifier and
-/// submit handler to resolve `identity_event` bindings on SE chains.
+/// Cross-chain access into an Identity Event Log, used by the SEL verifier and
+/// submit handler to resolve `identity_event` bindings on SELs.
 ///
 /// Implementations must scope every operation to a specific IEL prefix
 /// (`identity`) — they reject any SAID whose stored event prefix doesn't
@@ -161,7 +161,7 @@ impl IelChainPosition {
 /// (added per #147; split per #156 — the "missing event by SAID"
 /// case became deferrable [`KelsError::MissingIelEvent`]).
 ///
-/// The trait deliberately omits any SE-chain awareness: a resolver knows
+/// The trait deliberately omits any SEL awareness: a resolver knows
 /// only how to look up an IEL event by SAID and how to map that SAID to the
 /// (auth_policy, governance_policy) pair the IEL verifier already recorded.
 #[async_trait::async_trait]
@@ -204,7 +204,7 @@ pub trait IelResolver: Send + Sync {
 
     /// Batch-fetch IEL chain-order positions for a set of SAIDs.
     ///
-    /// Used by the SE verifier's monotonic-ratchet check. The verifier
+    /// Used by the SEL verifier's monotonic-ratchet check. The verifier
     /// collects every v1+ event's `identity_event` plus each branch's
     /// current `last_identity_event` and calls this once; subsequent
     /// `try_cmp` calls on the returned positions are O(1) hashmap lookups.
@@ -223,10 +223,10 @@ pub trait IelResolver: Send + Sync {
         saids: &[cesr::Digest256],
     ) -> Result<IelChainPositionBatch, KelsError>;
 
-    /// Whether the named IEL event satisfies binding from an SE chain.
+    /// Whether the named IEL event satisfies binding from an SEL.
     ///
-    /// Used by the SE verifier (β-ordering: after `resolve_*_at`, before
-    /// the anchor check) to gate SE bindings.
+    /// Used by the SEL verifier (β-ordering: after `resolve_*_at`, before
+    /// the anchor check) to gate SEL bindings.
     ///
     /// Returns an [`IelSatisfaction`] with one of four legitimate verifier
     /// products:
@@ -236,7 +236,7 @@ pub trait IelResolver: Send + Sync {
     ///   locally (deferrable per #156).
     /// - [`IelSatisfaction::AuthFailed`] — SAID found in chain but the
     ///   IEL event's own auth check failed (Cnt's-own-soft-fail or
-    ///   post-IEL-divergence soft). Wire-permanent; the SE verifier
+    ///   post-IEL-divergence soft). Wire-permanent; the SEL verifier
     ///   applies its existing soft-eligible carve-out internally.
     /// - [`IelSatisfaction::PermanentFailure`] — chain-integrity breach
     ///   (cross-IEL contamination, regression). Always hard.

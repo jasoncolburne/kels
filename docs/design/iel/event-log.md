@@ -2,9 +2,9 @@
 
 > Source-of-truth design doc for the IEL chain lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing), and [verification.md](verification.md) (IelVerifier algorithm).
 
-The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `auth_policy` and `governance_policy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked policies (mirrors SEL's anchoring model).
+The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `auth_policy` and `governance_policy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked governance policy.
 
-IEL is the authorization root for SE chains. Every SAD Event Log binds to a specific IEL by SAID at inception and resolves its per-event authorization through specific IEL events. See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SE-side binding.
+IEL is the authorization root for SELs. Every SAD Event Log binds to a specific IEL by SAID at inception and resolves its per-event authorization through specific IEL events. See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SEL-side binding.
 
 ## Chain States
 
@@ -119,68 +119,68 @@ The IEL verifier and downstream consumers operate on different questions:
 
 The verifier's job is to make chain authenticity unambiguous; the consumer's job is to apply the trust layer on top of that verified-authentic data. The cutoff for trust is `first_divergent_version`, which applies uniformly whether the divergence was race, compromise, or operator-initiated `Cnt`.
 
-### Effect on Bound SE Chains
+### Effect on Bound SELs
 
-A SE chain bound to an IEL event is honoured as long as:
+A SEL bound to an IEL event is honoured as long as:
 
 - The IEL chain is structurally valid (verifier accepts).
 - The bound IEL event is at `version < first_divergent_version` (pre-divergence portion).
 - The IEL event's auth/governance policy was satisfied at the time it landed.
 
-When the IEL diverges (race, compromise, or `Cnt`), SE chains bound to pre-divergence IEL events keep verifying cleanly — those bindings predate the divergence point. SE chains bound to post-divergence IEL events fail consumer trust (auth-fail propagates per the soft-fail model). SE chains bound to a `Cnt`'d IEL behave the same way: pre-divergence IEL events stay authoritative, post-divergence (and the `Cnt` itself) are not.
+When the IEL diverges (race, compromise, or `Cnt`), SELs bound to pre-divergence IEL events keep verifying cleanly — those bindings predate the divergence point. SELs bound to post-divergence IEL events fail consumer trust (auth-fail propagates per the soft-fail model). SELs bound to a `Cnt`'d IEL behave the same way: pre-divergence IEL events stay authoritative, post-divergence (and the `Cnt` itself) are not.
 
-This is the operator's recovery surface: when an IEL fails for any reason, the operator re-incepts under a new IEL prefix and rotates dependent SE chains forward to the new identity. Pre-failure history stays honoured.
+This is the operator's recovery surface: when an IEL fails for any reason, the operator re-incepts under a new IEL prefix and rotates dependent SELs forward to the new identity. Pre-failure history stays honoured.
 
 ## Cross-Chain Anchor Stability
 
-IEL is the cornerstone of cross-chain consistency for the federation. Every SE event at v1+ binds to a specific IEL event by SAID via `identity_event`. The immunity rule on IEL is what makes this binding stable across time.
+IEL is the cornerstone of cross-chain consistency for the federation. Every SEL event at v1+ binds to a specific IEL event by SAID via `identity_event`. The immunity rule on IEL is what makes this binding stable across time.
 
-### Why IEL stability matters to SE
+### Why IEL stability matters to SEL
 
-A SE event bound to `IEL_event_X.said` resolves authorization through:
+A SEL event bound to `IEL_event_X.said` resolves authorization through:
 1. Look up `IEL_event_X` in the IEL's authentic chain.
 2. Read the policy declared (`Icp`) or evolved (`Evl`) at that event.
-3. Verify SE.said is anchored under that policy.
+3. Verify SEL.said is anchored under that policy.
 
 For this resolution to remain deterministic forever:
 - `IEL_event_X` must remain in IEL's authentic chain (never archived) — guaranteed by chain immutability and the no-`Rpr` rule (we never archive on IEL).
 - The policy declared at `IEL_event_X` must have stable content (anchors don't move) — guaranteed by the IEL immunity rule.
-- The KEL ixn anchoring SE.said must remain in its KEL — caveat: subject to KEL `rec` / `cnt` (see Trust Caveat).
+- The KEL ixn anchoring SEL.said must remain in its KEL — caveat: subject to KEL `rec` / `cnt` (see Trust Caveat).
 
 The first two are structural. The third is a runtime trust concern that applies to all anchoring in the system.
 
 ### Path-agnostic validation rules
 
-KELS data is path-agnostic: an event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. The submit handler and the verifier enforce identical rules for SE event bindings.
+KELS data is path-agnostic: an event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. The submit handler and the verifier enforce identical rules for SEL event bindings.
 
-For an SE event at v1+, all paths (submit, gossip ingestion, bootstrap, re-verification) check:
+For an SEL event at v1+, all paths (submit, gossip ingestion, bootstrap, re-verification) check:
 
-- `identity_event` references an IEL event in IEL's authentic chain (`prefix == SE.identity`).
-- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SE `Upd`, `governance_policy` for SE `Sea`/`Rpr`/`Cnt`/`Dec`.
+- `identity_event` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
+- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SEL `Upd`, `governance_policy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
 - IEL is not divergent at the bound event's branch.
-- SE.said is anchored under the resolved policy.
-- **Monotonic on SE chain**: `identity_event` is at-or-after the SE chain's prior `last_identity_event` in IEL chain order.
+- SEL.said is anchored under the resolved policy.
+- **Monotonic on SEL**: `identity_event` is at-or-after the SEL's prior `last_identity_event` in IEL chain order.
 
 There is no separate "most recent at submit time" rule. Such a rule would create a path distinction (submit vs. gossip) that breaks data agnosticism, and would reject historical bindings during bootstrap.
 
 ### What monotonicity blocks (and what it doesn't)
 
-Monotonic-on-SE-chain prevents an adversary from "rolling back" the chain — once the chain is bound to IEL_v5, no new event can bind to anything earlier. On actively-maintained chains, the legitimate operator's recent events have ratcheted `last_identity_event` forward; an adversary with stale (revoked-since) authority cannot insert new events bound to their old IEL state.
+Monotonic-on-SEL prevents an adversary from "rolling back" the chain — once the chain is bound to IEL_v5, no new event can bind to anything earlier. On actively-maintained chains, the legitimate operator's recent events have ratcheted `last_identity_event` forward; an adversary with stale (revoked-since) authority cannot insert new events bound to their old IEL state.
 
 Monotonic does NOT prevent:
 
-- **Brand-new chain races.** Before `last_identity_event` is set, an adversary can submit `[Icp, Upd_stale]` first and establish the chain with stale binding. Recovery: legitimate operator's next Upd (with current binding) ratchets `last_identity_event` forward; subsequent stale-bound events are rejected. The adversary's stale v1 entry remains in chain history but is buried by subsequent Upds (consumer-side reads "latest content"). The SE inception batch rule (`[Icp, Upd]` minimum) makes this race well-defined: every chain starts with both content and a binding.
-- **Stale governance termination.** An adversary with stale governance authority can submit `Cnt` or `Dec` if the SE chain hasn't been bound past their stale event. Mitigation is **operator discipline**: after IEL evolves governance, the owner submits a `Sea` on each dependent SE chain to ratchet `last_identity_event` forward to the current IEL event. After the ratchet, stale-bound `Cnt`/`Dec` fail monotonic and are rejected. The vulnerable window is "between IEL governance evolution and the SE Sea ratchets" — bounded by gossip latency plus operator reaction time.
+- **Brand-new chain races.** Before `last_identity_event` is set, an adversary can submit `[Icp, Upd_stale]` first and establish the chain with stale binding. Recovery: legitimate operator's next Upd (with current binding) ratchets `last_identity_event` forward; subsequent stale-bound events are rejected. The adversary's stale v1 entry remains in chain history but is buried by subsequent Upds (consumer-side reads "latest content"). The SEL inception batch rule (`[Icp, Upd]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+- **Stale governance termination.** An adversary with stale governance authority can submit `Cnt` or `Dec` if the SEL hasn't been bound past their stale event. Mitigation is **operator discipline**: after IEL evolves governance, the owner submits a `Sea` on each dependent SEL to ratchet `last_identity_event` forward to the current IEL event. After the ratchet, stale-bound `Cnt`/`Dec` fail monotonic and are rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea ratchets" — bounded by gossip latency plus operator reaction time.
 
 ### Consumer-side discipline
 
-Independent of any submit/verify gates, a consumer reading an SE chain can detect stale-bound events by checking whether the bound IEL event's declared policy is still IEL's currently-tracked policy. If not, the SE event was authorized under a now-revoked policy and the consumer can filter, treat with caution, or reject per their use-case rules. The chain mathematics make this visible without protocol modification.
+Independent of any submit/verify gates, a consumer reading an SEL can detect stale-bound events by checking whether the bound IEL event's declared policy is still IEL's currently-tracked policy. If not, the SEL event was authorized under a now-revoked policy and the consumer can filter, treat with caution, or reject per their use-case rules. The chain mathematics make this visible without protocol modification.
 
 ### Operator-discipline corollary for governance evolution
 
-When the IEL's `governance_policy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SE chain to ratchet that chain's `last_identity_event` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` against an unmaintained SE chain.
+When the IEL's `governance_policy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SEL to ratchet that chain's `last_identity_event` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` against an unmaintained SEL.
 
-This is an operator best practice, not a protocol-enforced rule. Future automation could auto-issue SE Seas on IEL governance evolution, but is out of scope for v1 of this design.
+This is an operator best practice, not a protocol-enforced rule. Future automation could auto-issue SEL Seas on IEL governance evolution, but is out of scope for v1 of this design.
 
 ## Trust Caveat — Recovered Anchoring KELs
 
@@ -188,16 +188,16 @@ The seal property and the anchoring model give *structural* guarantees against p
 
 `Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the owner's branch stay (`rec` archives only the adversary branch); anchors on the now-archived adversary branch do not.
 
-Implications for IEL consumers (and transitively SE consumers, since SE binds to IEL events):
+Implications for IEL consumers (and transitively SEL consumers, since SEL binds to IEL events):
 
-- An IEL `Evl` / `Cnt` / `Dec` whose policy was satisfied entirely by owner-placed anchors: re-verifies cleanly across `rec`. Past evaluation stands. SE chains bound to that IEL event continue to verify under it.
-- An IEL event whose satisfaction depended on adversary-placed anchors (now archived): may *fail* re-verification. SE chains bound to that IEL event may also fail re-verification, since the upstream authorization is no longer satisfied.
+- An IEL `Evl` / `Cnt` / `Dec` whose policy was satisfied entirely by owner-placed anchors: re-verifies cleanly across `rec`. Past evaluation stands. SELs bound to that IEL event continue to verify under it.
+- An IEL event whose satisfaction depended on adversary-placed anchors (now archived): may *fail* re-verification. SELs bound to that IEL event may also fail re-verification, since the upstream authorization is no longer satisfied.
 
-This is observable, not hidden — the chain mathematics make the post-rec state visible. The consumer's runtime trust judgement is: when an anchoring KEL has `rec` history, re-verify the IEL and any SE chains bound to it; treat past state with caution proportionate to what survives.
+This is observable, not hidden — the chain mathematics make the post-rec state visible. The consumer's runtime trust judgement is: when an anchoring KEL has `rec` history, re-verify the IEL and any SELs bound to it; treat past state with caution proportionate to what survives.
 
-`Cnt` is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past IEL and SE evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case.
+`Cnt` is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past IEL and SEL evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case.
 
-The caveat applies to anchors of any kind — IEL events (governance), and transitively SE events that bind to them.
+The caveat applies to anchors of any kind — IEL events (governance), and transitively SEL events that bind to them.
 
 ## Contest (Cnt)
 
@@ -228,24 +228,24 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 - Bundles pending events into the batch (mirrors SEL).
 - Builds `Cnt` extending the appropriate tip. **On a divergent chain, the builder selects the lower-SAID tip** (deterministic across nodes; the choice is operationally invisible because both branches are preserved post-Cnt regardless). Without this rule, builders on different nodes could pick different tips and produce two distinct `Cnt` events at the same divergent version, doubling the divergence into a "doubly contested" state — avoidable with the deterministic selection.
 
-### Cascading effect on dependent SE chains
+### Cascading effect on dependent SELs
 
-A contested IEL freezes the IEL. SE chains bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so SE's tracked `auth_policy` and tracked `governance_policy` are effectively frozen at whatever was current when IEL contested.
+A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so SEL's tracked `auth_policy` and tracked `governance_policy` are effectively frozen at whatever was current when IEL contested.
 
-Operator response per SE chain:
-- **Migrate**: incept a new SE chain bound to a different IEL.
-- **Decommission**: end the SE chain via `Dec`.
-- **Contest**: if the SE chain itself is contested in the same incident, `Cnt` it.
+Operator response per SEL:
+- **Migrate**: incept a new SEL bound to a different IEL.
+- **Decommission**: end the SEL via `Dec`.
+- **Contest**: if the SEL itself is contested in the same incident, `Cnt` it.
 
-These are operator decisions, not protocol-enforced. The federation continues operating: SE chains can still be read; they just cannot be advanced if the IEL is contested.
+These are operator decisions, not protocol-enforced. The federation continues operating: SELs can still be read; they just cannot be advanced if the IEL is contested.
 
 ## Decommission (Dec)
 
 Decommission is the clean terminal state for owner-initiated identity end. Same shape as SEL `Dec` and same governance authorization.
 
-### Cascading effect on dependent SE chains
+### Cascading effect on dependent SELs
 
-Same as `Cnt`: SE chains bound to a decommissioned IEL face frozen authorization. Operator chooses migrate/decommission/contest per chain.
+Same as `Cnt`: SELs bound to a decommissioned IEL face frozen authorization. Operator chooses migrate/decommission/contest per chain.
 
 ## Server-Observable Case Taxonomy
 
@@ -287,7 +287,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - [verification.md](verification.md) — `IelVerifier` algorithm.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
-- [../sel/event-log.md](../sel/event-log.md) — SEL counterpart; SE chains bind to IEL events.
-- [../sel/events.md](../sel/events.md) — SE per-kind reference.
+- [../sel/event-log.md](../sel/event-log.md) — SEL counterpart; SELs bind to IEL events.
+- [../sel/events.md](../sel/events.md) — SEL per-kind reference.
 - [../policy.md](../policy.md) — Policy DSL, anchoring model, immunity rule.
 - [../kel/event-log.md](../kel/event-log.md) — KEL counterpart.

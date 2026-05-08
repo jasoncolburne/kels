@@ -67,7 +67,7 @@ impl IdentityEventKind {
 
     /// True for kinds that evaluate `governance_policy` (`Evl` / `Cnt` / `Dec`).
     /// All non-`Icp` kinds evaluate governance — there is no auth-only
-    /// equivalent of SE's `Upd` on IEL.
+    /// equivalent of SEL's `Upd` on IEL.
     pub fn evaluates_governance(&self) -> bool {
         matches!(self, Self::Evl | Self::Cnt | Self::Dec)
     }
@@ -93,7 +93,7 @@ impl IdentityEventKind {
     }
 
     /// Sort priority within the same version (lower = earlier in sorted
-    /// order). Mirrors SE's `SadEventKind::sort_priority` shape; Icp leads,
+    /// order). Mirrors SEL's `SadEventKind::sort_priority` shape; Icp leads,
     /// Evl normal, Cnt and Dec terminal sort after.
     pub fn sort_priority(&self) -> u8 {
         match self {
@@ -173,7 +173,7 @@ pub struct IdentityEvent {
 /// Prefix is derived from the v0 `Icp` template with `said` and `prefix`
 /// blanked. Anyone with `(auth_policy, governance_policy, topic)` can
 /// reproduce the prefix — but those inputs are private to the inceptor on
-/// IEL (unlike SE's third-party-discoverable `(identity, topic)` shape,
+/// IEL (unlike SEL's third-party-discoverable `(identity, topic)` shape,
 /// where `identity` is the IEL prefix and is publicly known), so prefix
 /// derivation is itself non-discoverable in practice.
 ///

@@ -3,13 +3,13 @@ BEGIN;
 
 -- SAD Event Log events table.
 --
--- #147: SE chains are identity-rooted (bound to an IEL via `identity` at
+-- #147: SELs are identity-rooted (bound to an IEL via `identity` at
 -- Icp; subsequent events bind via `identity_event` to a specific IEL event
--- whose policy authorizes them). Pre-#147 SE-side authorization fields are
+-- whose policy authorizes them). Pre-#147 SEL-side authorization fields are
 -- gone — those policy values now live on the IEL and are resolved on
 -- demand.
 --
--- #167: the `custody` column is gone. SE/IEL events reject
+-- #167: the `custody` column is gone. SEL/IEL events reject
 -- inline `custody` and `availability` (chains replicate as a unit;
 -- differential authority/availability across links breaks descendant
 -- verification). Replication and lifecycle are SAD-object concerns; chains
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS sad_events (
     -- IEL prefix the chain is bound to. Non-NULL only on Icp; NULL on every
     -- other kind. Participates in chain prefix derivation alongside `topic`.
     identity TEXT,
-    -- SAID of the IEL event whose policy authorizes this SE event. NULL on
+    -- SAID of the IEL event whose policy authorizes this SEL event. NULL on
     -- Icp (permissionless inception); NOT NULL on every v1+ kind.
     identity_event TEXT
 );
@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS sel_repair_events (
 CREATE INDEX IF NOT EXISTS sel_repair_events_repair_idx ON sel_repair_events(repair_said);
 
 -- Identity Event Log (IEL) events. Mirrors `sad_events` shape but trims
--- fields IEL doesn't carry (no `content` / `custody`; no SE-side write
+-- fields IEL doesn't carry (no `content` / `custody`; no SEL-side write
 -- authorization column) and keeps `auth_policy` / `governance_policy` as
 -- NOT NULL (every IEL event
 -- always declares both — see `docs/design/iel/events.md §Per-Kind Field Rules`).

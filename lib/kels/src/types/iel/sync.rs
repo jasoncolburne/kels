@@ -58,7 +58,7 @@ pub trait PagedIelSource: Send + Sync {
 
 /// Destination for a batch of Identity Event Log events. The HTTP impl posts
 /// to the IEL submit endpoint; the local-store impl writes through to an
-/// `IdentityStore`. Mirrors `PagedSelSink` for SE.
+/// `IdentityStore`. Mirrors `PagedSelSink` for SEL.
 #[async_trait]
 pub trait PagedIelSink: Send + Sync {
     async fn store_page(&self, events: &[IdentityEvent]) -> Result<(), KelsError>;
@@ -68,7 +68,7 @@ pub trait PagedIelSink: Send + Sync {
 
 /// Trait for loading offset-paginated IEL events for a given chain prefix.
 ///
-/// Offset-based parallel of `PagedIelSource`. Mirrors SE's `SelPageLoader`
+/// Offset-based parallel of `PagedIelSource`. Mirrors SEL's `SelPageLoader`
 /// (`lib/kels/src/types/sad/sync.rs`) — implemented by
 /// `IdentityStorePageLoader` over a `&dyn IdentityStore`.
 #[async_trait]
@@ -366,7 +366,7 @@ async fn send_divergent_iel_events(
 /// mode, accumulates remaining events, and submits them via
 /// [`send_divergent_iel_events`] in an order the remote can accept.
 ///
-/// Mirrors SE's `transfer_sel_events` (`lib/kels/src/types/sad/sync.rs`).
+/// Mirrors SEL's `transfer_sel_events` (`lib/kels/src/types/sad/sync.rs`).
 /// Uses the held-back-event strategy: holds the last event of each page
 /// (when `has_more`) so a same-version overlap with the next page's
 /// first event is detectable.
@@ -468,7 +468,7 @@ async fn transfer_identity_events(
         }
     }
 
-    // Final held-back event handling — same shape as SE's transfer.
+    // Final held-back event handling — same shape as SEL's transfer.
     if let Some(held) = held_back {
         if divergence_found {
             post_divergence.push(held);
@@ -504,7 +504,7 @@ pub async fn forward_identity_events(
 /// Verify a full IEL using paginated reads from a local store, returning a
 /// trusted owner-local `IelVerification`.
 ///
-/// Mirrors SE's `sel_completed_verification`. Walks pages via
+/// Mirrors SEL's `sel_completed_verification`. Walks pages via
 /// `loader.load_page`, runs `IelVerifier::verify_page` per page, and returns
 /// the proof-of-verification token. `max_pages` limits resource exhaustion —
 /// fails secure if exceeded.
@@ -589,7 +589,7 @@ pub async fn iel_completed_verification_with_queried(
 }
 
 /// Verify an IEL by paging through a `PagedIelSource`. Returns a verification
-/// token. Mirrors SE's `verify_sel_events`.
+/// token. Mirrors SEL's `verify_sel_events`.
 ///
 /// `max_pages` bounds resource exhaustion; fails secure if exceeded.
 pub async fn verify_identity_events(
@@ -813,7 +813,7 @@ mod tests {
 
     /// Wire-level mapping contract: a 409 from the IEL submit endpoint
     /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`,
-    /// not `InternalError`. Mirrors the SE-side test in
+    /// not `InternalError`. Mirrors the SEL-side test in
     /// `lib/kels/src/types/sad/sync.rs` — #147 follow-up dropped
     /// both 409 and 403 silent-skips (replaced by 200-with-`terminal`
     /// for the gossip-race-already-terminal case).

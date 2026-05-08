@@ -1204,8 +1204,8 @@ impl IdentityEventRepository {
     /// Non-transactional companion to [`Self::fetch_iel_page`] using
     /// `&self.pool` directly. Used by in-process readers that don't hold
     /// a transaction (e.g. `RepositoryIelResolver` walking the IEL to
-    /// answer `is_satisfied` from inside the SE submit handler — the SE
-    /// submit's tx isolates SE state, but IEL state is read-only here so
+    /// answer `is_satisfied` from inside the SEL submit handler — the SEL
+    /// submit's tx isolates SEL state, but IEL state is read-only here so
     /// pool reads are appropriate).
     ///
     /// Same semantics as the transactional variant: ordered

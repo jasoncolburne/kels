@@ -369,7 +369,7 @@ impl IdentityEventBuilder {
             }
         }
 
-        // Absorb pending into the verified state. Unlike SE, IEL has no Rpr
+        // Absorb pending into the verified state. Unlike SEL, IEL has no Rpr
         // and no archival — terminal events (`Cnt` / `Dec`) just extend the
         // chain. The verifier's resume + verify_page path correctly sets
         // `is_contested` / `is_decommissioned` via flush_generation, so no
@@ -408,7 +408,7 @@ impl IdentityEventBuilder {
     }
 
     /// Re-verify pending events against the local verifier and roll into
-    /// `iel_verification`, then clear pending. Mirrors SE's `absorb_pending`.
+    /// `iel_verification`, then clear pending. Mirrors SEL's `absorb_pending`.
     async fn absorb_pending(&mut self) -> Result<(), KelsError> {
         if self.pending_events.is_empty() {
             return Ok(());

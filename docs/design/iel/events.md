@@ -53,7 +53,7 @@ The "authorization" column names which policy must be satisfied for the verifier
 - `Evl`: present on every event; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`). At least one of `auth_policy` / `governance_policy` must evolve in any given `Evl` — an Evl preserving both is rejected.
 - `Cnt` / `Dec`: present on every event; must be preserved (== previous). Verifier rejects evolution at terminal kinds.
 
-The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SE event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
+The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SEL event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
 
 ### `governance_policy` semantics
 
@@ -67,13 +67,13 @@ Any policy referenced as a chain's `auth_policy` OR `governance_policy` — whet
 
 To revoke an endorser's authority, evolve the policy via `Evl` (issuing a new auth_policy or governance_policy SAID that excludes the endorser); do not attempt to poison past events. `Evl`-driven evolution is the canonical correction path.
 
-This rule mirrors today's SEL immunity rule and serves the same purpose. With IEL, it becomes the cornerstone of cross-chain consistency: every SE event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains verifiable for the lifetime of any dependent SE chain.
+This rule mirrors today's SEL immunity rule and serves the same purpose. With IEL, it becomes the cornerstone of cross-chain consistency: every SEL event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains verifiable for the lifetime of any dependent SEL.
 
-See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability) for the SE-side implications.
+See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability) for the SEL-side implications.
 
 ### No `content` field
 
-IEL events do not carry content. The chain's "data" is its tracked policy state, mutated via `Evl`. This is the structural contrast with SE: SE has `content` (mutated by `Upd`); IEL has policy state (mutated by `Evl`). The two primitives split policy-management from content-recording at the type level.
+IEL events do not carry content. The chain's "data" is its tracked policy state, mutated via `Evl`. This is the structural contrast with SEL: SEL has `content` (mutated by `Upd`); IEL has policy state (mutated by `Evl`). The two primitives split policy-management from content-recording at the type level.
 
 ### Evaluation bound — not applicable
 
@@ -126,18 +126,18 @@ vN+1     kind=dec                                            ← owner ends the 
 
 After `Cnt` or `Dec`, all submissions are rejected. See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
 
-## Cross-chain binding from SE to IEL
+## Cross-chain binding from SEL to IEL
 
-Every SE event at v1+ carries `identity_event: Digest256` — the SAID of the IEL event whose declared/evolved policy authorizes the SE event. Per-kind binding:
+Every SEL event at v1+ carries `identity_event: Digest256` — the SAID of the IEL event whose declared/evolved policy authorizes the SEL event. Per-kind binding:
 
-- SE `Upd` → binds to an IEL `Icp` or `Evl`-with-auth-policy event whose declared/evolved `auth_policy` authorizes the Upd's anchor.
-- SE `Sea` / `Rpr` / `Cnt` / `Dec` → binds to an IEL `Icp` or `Evl`-with-governance-policy event whose declared/evolved `governance_policy` authorizes the lifecycle event's anchor. (SE retains its own `Sea` and `Rpr` kinds; the asymmetry is intentional — see [../sel/events.md](../sel/events.md) for the SE kind set.)
+- SEL `Upd` → binds to an IEL `Icp` or `Evl`-with-auth-policy event whose declared/evolved `auth_policy` authorizes the Upd's anchor.
+- SEL `Sea` / `Rpr` / `Cnt` / `Dec` → binds to an IEL `Icp` or `Evl`-with-governance-policy event whose declared/evolved `governance_policy` authorizes the lifecycle event's anchor. (SEL retains its own `Sea` and `Rpr` kinds; the asymmetry is intentional — see [../sel/events.md](../sel/events.md) for the SEL kind set.)
 
 Binding by SAID (not version) is unambiguous under IEL divergence, robust against re-tracked-same-policy patterns, and enables a fast-eval shortcut: one IEL event fetch + one anchor check, without paginating the full IEL chain.
 
 The binding rule is **path-agnostic** — the same validation applies at submit, gossip ingestion, bootstrap, and re-verification. The protocol does not distinguish data by ingestion path. KELS data is data; pulling it from one node and putting it into another is no big deal. See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability) for the unified rule and the operator-discipline corollary that handles governance-evolution races.
 
-See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SE-side field rules.
+See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SEL-side field rules.
 
 ## References
 
@@ -145,5 +145,5 @@ See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_ev
 - [verification.md](verification.md) — `IelVerifier` algorithm.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
-- [../sel/events.md](../sel/events.md) — SE per-kind reference (the chain primitive that binds to IEL events).
+- [../sel/events.md](../sel/events.md) — SEL per-kind reference (the chain primitive that binds to IEL events).
 - [../policy.md](../policy.md) — Policy DSL and anchoring model (immunity rule).

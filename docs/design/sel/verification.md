@@ -18,12 +18,12 @@ SEL verification ensures:
 - Authorization for v1+ events resolves through the bound IEL event's declared/evolved policy:
   - `Upd` → IEL's tracked `auth_policy` at the bound event
   - `Sea` / `Rpr` / `Cnt` / `Dec` → IEL's tracked `governance_policy` at the bound event
-- Anchoring of the SE event's SAID under the resolved IEL policy
-- Monotonic-on-SE-chain: each event's `identity_event` is at-or-after the chain's prior `last_identity_event` in IEL chain order
+- Anchoring of the SEL event's SAID under the resolved IEL policy
+- Monotonic-on-SEL: each event's `identity_event` is at-or-after the chain's prior `last_identity_event` in IEL chain order
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
 
-Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SE event's SAID. The verifier uses two traits — `PolicyChecker` for anchor-and-immunity checks (the same trait IEL/KEL use), and `IelResolver` for cross-chain navigation into the bound IEL.
+Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SEL event's SAID. The verifier uses two traits — `PolicyChecker` for anchor-and-immunity checks (the same trait IEL/KEL use), and `IelResolver` for cross-chain navigation into the bound IEL.
 
 ## Verification Algorithm
 
@@ -97,7 +97,7 @@ verify_authorization(event, branch):
         Upd                  → resolver.resolve_auth_policy_at(branch.identity, event.identity_event)
         Sea, Rpr, Cnt, Dec   → resolver.resolve_governance_policy_at(branch.identity, event.identity_event)
 
-    // Verify the SE event's anchoring under that policy
+    // Verify the SEL event's anchoring under that policy
     if !checker.is_anchored(event.said, policy):
         return Error("Authorization failed")
 
@@ -139,13 +139,13 @@ This rule is path-agnostic: it fires identically on submit, gossip-receipt, and 
 
 #### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
 
-The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers (notably the SE verifier when resolving `identity_event` bindings into IEL) need to ask about specific events: "is THIS IEL event valid for binding?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
+The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers (notably the SEL verifier when resolving `identity_event` bindings into IEL) need to ask about specific events: "is THIS IEL event valid for binding?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`: if the event is at `version < first_divergent_version` (or chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
 - Token exposes `is_said_satisfied(said) -> bool` and `satisfied_saids() -> &BTreeSet<Digest256>`.
 
-The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SE verifier collects identity_event SAIDs from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
+The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs. The SEL verifier collects identity_event SAIDs from its own chain walk, passes them as queried_saids to the IEL verification, and uses `is_said_satisfied` to decide whether each binding is valid. Same shape as KEL's `is_said_anchored`.
 
 ### Inception Batch Rule
 
@@ -163,7 +163,7 @@ struct SadBranchTip {
 }
 ```
 
-SE branch state does **not** track authorization policies per branch. Those policies live on IEL; SE branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
+SEL branch state does **not** track authorization policies per branch. Those policies live on IEL; SEL branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
 
 ## Verification Return Value
 
@@ -240,7 +240,7 @@ struct SelVerifier {
 
 ### Two-trait split: `PolicyChecker` and `IelResolver`
 
-#147 splits SE-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
+#147 splits SEL-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
 
 `PolicyChecker` is unchanged from KEL/IEL — anchor-and-immunity only:
 
@@ -273,7 +273,7 @@ trait IelResolver: Send + Sync {
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
 
-    /// Batch-fetch IEL chain-order positions for the SE verifier's monotonic-
+    /// Batch-fetch IEL chain-order positions for the SEL verifier's monotonic-
     /// ratchet check. Returns BadIdentityBinding for any SAID that doesn't
     /// resolve in the named IEL — chain-integrity breach, the entire call fails.
     async fn iel_chain_positions(&self, identity: &Digest256, saids: &[Digest256])
@@ -281,7 +281,7 @@ trait IelResolver: Send + Sync {
 }
 ```
 
-The SE merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SE-side would be defense-in-depth that drifts. SE trusts the IEL gate. `is_immune` remains on `PolicyChecker` for IEL's own use (both IEL submit and IEL verification).
+The SEL merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SEL-side would be defense-in-depth that drifts. SEL trusts the IEL gate. `is_immune` remains on `PolicyChecker` for IEL's own use (both IEL submit and IEL verification).
 
 The production resolver (`AnchoredIelResolver`, `lib/kels/src/iel_resolver.rs`) re-verifies the named IEL on each call to obtain a fresh `IelVerification` token; layered caching lives above the trait so the impl stays simple and the divergence gate is exercised cleanly per call.
 
@@ -294,7 +294,7 @@ Two top-level helpers in `lib/kels/src/types/sad/sync.rs`:
 
 ## Path-Agnostic Validation
 
-The validation rules above apply identically at submit, gossip ingestion, bootstrap, and re-verification. KELS data is path-agnostic — a SE event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. See [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules) for the cross-chain rationale.
+The validation rules above apply identically at submit, gossip ingestion, bootstrap, and re-verification. KELS data is path-agnostic — a SEL event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. See [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules) for the cross-chain rationale.
 
 ## References
 
@@ -302,7 +302,7 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.
-- [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SE).
+- [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SEL).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle (immunity rule, anchor stability).
 - [../policy.md](../policy.md) — Policy DSL and anchoring model.
 - [../streaming-verification-architecture.md](../streaming-verification-architecture.md) — Cross-side streaming-verification architecture.

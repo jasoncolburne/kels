@@ -226,7 +226,7 @@ RDB snapshots are enabled (`save 300 1`, `save 60 100`) and stored on a Persiste
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval (default: 10) |
 | `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval (default: 60) |
 | `KELS_BOOTSTRAP_CONCURRENCY` | Concurrent preload tasks per phase during cold-start bootstrap (default: 4). Tuned down from 16 → 8 → 4 driven by RustFS pool exhaustion at scale (282/579 KEL syncs failed at 16; IEL submit failures at 8). Cross-pressure with AE+gossip submits at staggered-rollout vote-time is the binding constraint; revisit when #157 lifts the tx-holds-RustFS-read pattern. See `services/gossip/src/bootstrap.rs:33-47` for tuning history. |
-| `KELS_SAD_AE_TASK_CONCURRENCY` | `buffer_unordered` cap for SE+IEL anti-entropy task fan-out (default: 16). Gates Phase 1 stale-prefix retry and Phase 2 random-sampling concurrency for both `run_sad_anti_entropy_loop` and `run_iel_anti_entropy_loop`. KEL AE is unbounded — KEL events are not the source of cross-chain race. |
+| `KELS_SAD_AE_TASK_CONCURRENCY` | `buffer_unordered` cap for SEL+IEL anti-entropy task fan-out (default: 16). Gates Phase 1 stale-prefix retry and Phase 2 random-sampling concurrency for both `run_sad_anti_entropy_loop` and `run_iel_anti_entropy_loop`. KEL AE is unbounded — KEL events are not the source of cross-chain race. |
 | `KELS_DEFERRED_DRAIN_PERMITS` | Semaphore permits gating concurrent #156 deferred-deps drain network calls (default: 8). Spawn rate is unbounded; backlog bounded by park TTL eviction. |
 | `KELS_PENDING_TTL_SECS` | TTL applied to `pending:msg:*` / `pending:said:*` / `pending:chain:*` Redis entries on park / refresh (default: 300). Same-SAID drain refresh short-circuits (skips TTL renewal) so individual park lifetimes are bounded by this on busy chains. |
 | `GOSSIP_MAX_FETCHES_PER_PEER_PER_MINUTE` | Per-peer fetch ceiling for inbound chain syncs (default: 1024 / minute ≈ 17 / sec). Throttles a single peer's fan-in pressure on this node's HTTP layer. |
@@ -266,7 +266,7 @@ The S3-compatible object store (RustFS) backs SAD content blobs and mail message
 
 | Resource | Request | Limit | Notes |
 |----------|---------|-------|-------|
-| CPU | 25m | 2000m | Tuned from 500m → 2000m to give RustFS headroom under heisenbug long-loop write storms; pinned empirically against the e2e load profile (≥20 concurrent SE submits cross-pressed against IEL writes). Revisit when the #157 tx-holds-RustFS-read structural fix lands and connection-pool starvation no longer dominates the empirical CPU profile. |
+| CPU | 25m | 2000m | Tuned from 500m → 2000m to give RustFS headroom under heisenbug long-loop write storms; pinned empirically against the e2e load profile (≥20 concurrent SEL submits cross-pressed against IEL writes). Revisit when the #157 tx-holds-RustFS-read structural fix lands and connection-pool starvation no longer dominates the empirical CPU profile. |
 | Memory | 128Mi | 1Gi | Tuned from 512Mi → 1Gi to absorb peak buffer use during the heisenbug long-loop's write-storm phase. RustFS's `WebWorkload` buffer profile (manifests.yml.tpl:56-57) is allocation-heavier than the small-object default; the 1Gi ceiling gives ~2× the observed steady-state working set. |
 | PVC | 1Gi | — | Test workloads produce hundreds of small objects per node (realistic ceiling ~50 MB). 1Gi is comfortable headroom for 50+ heisenbug long-loop iterations without bloating disk across 6 federated namespaces. |
 

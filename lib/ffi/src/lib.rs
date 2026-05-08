@@ -847,7 +847,7 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
         }
     };
 
-    // Delete all SE keys from the app's Keychain before removing state files
+    // Delete all SEL keys from the app's Keychain before removing state files
     #[cfg(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
