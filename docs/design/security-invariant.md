@@ -63,7 +63,12 @@ The protocol's terminal-authority mechanism is built on three composable rules:
 
 Cnt is one such privileged event; its presence in the divergent set triggers contested via this same rule. There is no "Cnt-specific path" in verifier logic — Cnt is just another privileged event whose presence in the divergent set triggers contested.
 
-**Important distinction**: Rec (KEL) and Rpr (SEL) **extend a branch tip at `v_{d+1}` and resolve divergence by archiving the other branch** — they do not join the divergent set at `v_d`. Only Cnt joins the divergent set at `v_d` via the upgrade rule below. The privileged-divergence rule applies to events whose `previous` is the divergence ancestor `v_{d-1}`; Rec/Rpr's `previous` points to a tip at `v_d`, not the ancestor.
+**Important distinction**: Rec (KEL) and Rpr (SEL) resolve divergence by archiving events via the discriminator. They have two modes, distinguished by `previous`:
+
+- **Mode 1**: `Rec.previous` / `Rpr.previous` is a branch tip at `v_d`. Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived. Used when one branch is the operator's legitimate content.
+- **Mode 2**: `Rec.previous` / `Rpr.previous` is `v_{d-1}` (the divergence ancestor). Rec/Rpr lands at `v_d`; ALL events at `version >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs. Used when both branches are adversary-planted; the operator replaces `v_d` entirely.
+
+Cnt has the same Mode-2 parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but a different effect: Cnt joins the divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec/Rpr vs Cnt) determines whether the chain recovers (archival) or terminates (no archival).
 
 **3. Upgrade rule for cross-node consistency**: when a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states; the upgrade rule eliminates this divergence.
 

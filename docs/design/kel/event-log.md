@@ -79,7 +79,14 @@ End state: all nodes have effective SAID `hash_effective_said("contested:{prefix
 
 ## Recovery (Rec)
 
-Recovery resolves a non-privileged-divergent chain by archiving the events on the branch not extended by `Rec.previous`, leaving the branch the Rec extends intact, then appending a `Rec` (and optionally a follow-up `Rot`). **`Rec` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch** — it does not join the divergent set at `v_d`. (Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` and Cnt's own version is `v_d`; see [§Cnt](#cnt).) Whoever holds the recovery key dictates which branch the Rec extends.
+Recovery resolves a non-privileged-divergent chain by archiving all events at `serial >= diverged_at` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
+
+1. **`Rec.previous` is a branch tip at `v_d`.** Rec extends that branch at `v_{d+1}`. The discriminator's walkback from `Rec.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: one of the two branches at `v_d` is the operator's legitimate content; the operator preserves it via Rec.
+2. **`Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `diverged_at`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rec.
+
+Whoever holds the recovery key dictates which mode and (in mode 1) which branch the Rec extends. Both modes are handled uniformly by `archive_adversary_chain` — the walkback structure determines which events get archived without a separate code path per mode.
+
+Cnt shares the Mode-2 parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the existing divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec vs Cnt) determines whether the chain recovers (archival) or terminates (no archival). See [§Cnt](#cnt).
 
 ### Builder pre-flight
 
@@ -150,7 +157,7 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
 Cnt is privileged (recovery-revealing). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal. There is no separate "explicit Cnt" handling: Cnt is just another privileged event that triggers contested via the divergence rule.
 
-**Distinction from Rec.** `Rec` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch — it does not join the divergent set at `v_d`. Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` (the divergence ancestor) and Cnt's own version is `v_d`. Submitting `Cnt` with `previous = v_{d-1}.said` is what creates the contest; submitting `Rec` with `previous = a-tip-at-v_d` is what creates a recovery.
+**Distinction from Rec.** Cnt and Rec's Mode 2 (Rec extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. Rec.Mode-2 archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rec as the new `v_d` event (recovery; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` is what creates a contest; submitting `Rec` with `previous = v_{d-1}.said` is what creates a Mode-2 recovery.
 
 ### Operator recourse against signing-key-only Rot takeover
 
@@ -251,7 +258,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event, freeze. `Diverged (non-privileged)`, `diverged_at: Some(d)`. |
 | Linear (active) | batch ending in `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
 | Linear, overlap, recovery revealed in existing branch | non-`Cnt` events | `ContestRequired`. |
-| Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery (Rec extends a tip at `v_{d+1}` and archives the other branch). `Recovered`. |
+| Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Rec.Mode-1: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Rec.Mode-2: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
 | Divergent (non-privileged), no recovery revealed | non-`Rec`/non-`Cnt` events | `RecoverRequired`. |
 | Divergent (non-privileged), no recovery revealed | batch ending in `Rec` | Discriminator-driven recovery. `Recovered`. |
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |

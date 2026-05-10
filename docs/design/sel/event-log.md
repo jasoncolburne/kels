@@ -29,7 +29,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | `Icp` | Inception (v0). Declares `identity` (IEL prefix). Permissionless — deterministic prefix derivation; no auth gate. | None at v0; chain advances require IEL-resolved authorization at v1+. | No |
 | `Upd` | Normal update — append content. | `auth_policy` resolved through `identity_event`. | No |
 | `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `identity_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `identity_event`. | No |
-| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence (extends a tip at `v_{d+1}` and archives the events on the other branch). | `governance_policy` resolved through `identity_event`. | No |
+| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Mode 1: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Mode 2: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). | `governance_policy` resolved through `identity_event`. | No |
 | `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `identity_event`. | **Yes** |
 | `Dec` | Decommission — terminal owner-initiated end. | `governance_policy` resolved through `identity_event`. | **Yes** |
 
@@ -93,7 +93,14 @@ IEL has no analog because every IEL event after Icp is governance-authorized; th
 
 ## Repair (Rpr)
 
-Repair resolves a non-privileged-divergent SEL by archiving the events on the branch not extended by `Rpr.previous`, leaving the branch the Rpr extends intact, then appending an `Rpr` that advances the seal. **`Rpr` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch** — it does not join the divergent set at `v_d`. (Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` and Cnt's own version is `v_d`; see [§Contest (Cnt)](#contest-cnt).) The asymmetry between auth-only `Upd`s in the divergent set and the governance-authorized `Rpr` is what lets `Rpr` resolve the divergence.
+Repair resolves a non-privileged-divergent SEL by archiving all events at `version >= diverged_at` not on `Rpr.previous`'s walkback, then appending the `Rpr` (which advances the seal). `Rpr.previous` takes one of two shapes:
+
+1. **`Rpr.previous` is a branch tip at `v_d`.** Rpr extends that branch at `v_{d+1}`. The discriminator's walkback from `Rpr.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: one of the two branches at `v_d` is the operator's legitimate content; the operator preserves it via Rpr.
+2. **`Rpr.previous` is `v_{d-1}` (the divergence ancestor).** Rpr lands at `v_d`. The discriminator's walkback from `Rpr.previous` stops immediately (version drops below `diverged_at`); all events at `version >= d` (both branches) are archived. Rpr is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rpr.
+
+Both modes are handled uniformly by `truncate_and_replace` — the walkback structure determines which events get archived without a separate code path per mode.
+
+The asymmetry between auth-only `Upd`s in the divergent set and the governance-authorized `Rpr` is what lets `Rpr` resolve the divergence (`governance_policy` is structurally a higher bar than `auth_policy`). Cnt shares the Mode-2 parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the existing divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rpr vs Cnt) determines whether the chain repairs (archival) or terminates (no archival). See [§Contest (Cnt)](#contest-cnt).
 
 ### Builder boundary derivation
 
@@ -153,7 +160,7 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
 
 Cnt is privileged (governance-authorized). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal.
 
-**Distinction from Rpr.** `Rpr` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch — it does not join the divergent set at `v_d`. Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` (the divergence ancestor) and Cnt's own version is `v_d`. Submitting `Cnt` with `previous = v_{d-1}.said` is what creates the contest; submitting `Rpr` with `previous = a-tip-at-v_d` is what creates a repair.
+**Distinction from Rpr.** Cnt and Rpr's Mode 2 (Rpr extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. Rpr.Mode-2 archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rpr as the new `v_d` event (repair; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` is what creates a contest; submitting `Rpr` with `previous = v_{d-1}.said` is what creates a Mode-2 repair.
 
 See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
@@ -207,7 +214,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Linear, overlap (fork, includes privileged) | concurrent governance event | Insert second event at `v_d`; privileged-divergence rule fires; chain becomes contested-terminal. |
 | Linear, post-evaluation-seal | non-terminal/non-`Rpr`/non-`Cnt` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger). |
 | Linear (any) | `Dec` | Insert at tip, mark decommissioned. |
-| Divergent (non-privileged), unsealed | `Rpr` | Discriminator-driven repair (Rpr extends a tip at `v_{d+1}` and archives the other branch). `Repaired`. |
+| Divergent (non-privileged), unsealed | `Rpr` | Discriminator-driven repair. Rpr.Mode-1: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Rpr.Mode-2: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Repaired`. |
 | Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
