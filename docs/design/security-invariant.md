@@ -53,7 +53,7 @@ A new event's `previous` MUST point to a chain event at version at-or-after the 
 
 The protocol's terminal-authority mechanism is built on three composable rules:
 
-**1. Cnt's parent is `v_{tip-1}`** — a unifying structural rule across linear and divergent chains. On a linear chain, `v_{tip-1}` is the parent of the chain's single tip; Cnt extending it creates fresh divergence at `v_{tip}`. On a divergent chain, freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — the divergence ancestor (the unique shared parent of all events at `v_d` by the divergence invariant). The same rule applies in both shapes; the divergent-chain case is the bounded fork-contest shape where Cnt joins the existing diverged events at the divergence version. Across all nodes, `v_{d-1}` is structurally shared (it lands cleanly before any divergence), so Cnt with `previous = v_{d-1}.said` validates uniformly across nodes — solving the cross-node propagation problem that breaks tip-extension and combined-digest approaches.
+**1. Cnt's parent is `v_{tip-1}`** — a unifying structural rule across linear and divergent chains. On a linear chain, `v_{tip-1}` is the parent of the chain's single tip; Cnt extending it creates fresh divergence at `v_{tip}`. On a divergent chain, the **new (divergence-causing) branch** is single-event at `v_d` — freeze-on-divergence blocks any further extension on that branch — so the new branch's `v_{tip-1}` is `v_{d-1}`, the divergence ancestor (the unique shared parent of all events at `v_d` by the divergence invariant). The **pre-existing branch** may have extended past `v_d` before divergence was detected: up to ~62 events on KEL per the proactive-ROR cap; up to ~63 events on SEL per the proactive-evaluation cap; never on IEL, where every event advances the seal so the chain transitions to contested-terminal at first 2-event divergence and the pre-existing branch cannot extend past `v_d` (both branches single-event by construction on IEL). The same `v_{tip-1}` rule applies in both linear and divergent shapes; Cnt's parent rule selects the **new branch's** `v_{tip-1}` = `v_{d-1}` because `v_{d-1}` is structurally shared across all nodes (it lands cleanly before any divergence), so Cnt with `previous = v_{d-1}.said` validates uniformly across nodes — solving the cross-node propagation problem that breaks tip-extension and combined-digest approaches.
 
 **2. Privileged-divergence-is-terminal**: divergence at a version where the divergent set contains at least one privileged event makes the chain immediately and terminally contested. Privileged events differ per primitive:
 
@@ -63,14 +63,19 @@ The protocol's terminal-authority mechanism is built on three composable rules:
 
 Cnt is one such privileged event; its presence in the divergent set triggers contested via this same rule. There is no "Cnt-specific path" in verifier logic — Cnt is just another privileged event whose presence in the divergent set triggers contested.
 
-**Important distinction**: Rec (KEL) and Rpr (SEL) resolve divergence by archiving events via the discriminator. They have two modes, distinguished by `previous`:
+**Important distinction**: Rec (KEL) and Rpr (SEL) resolve divergence by archiving events via the discriminator. They take two parent shapes, named by what `previous` points at:
 
-- **Mode 1**: `Rec.previous` / `Rpr.previous` is a branch tip at `v_d`. Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived. Used when one branch is the operator's legitimate content.
-- **Mode 2**: `Rec.previous` / `Rpr.previous` is `v_{d-1}` (the divergence ancestor). Rec/Rpr lands at `v_d`; ALL events at `version >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs. Used when both branches are adversary-planted; the operator replaces `v_d` entirely.
+- **Branch-tip-extending shape** (`Rec.previous` / `Rpr.previous` is a branch tip at `v_d`): Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived. Used when one branch is the operator's legitimate content and the operator preserves it.
+- **Divergence-ancestor-extending shape** (`Rec.previous` / `Rpr.previous` is `v_{d-1}`, the divergence ancestor): Rec/Rpr lands at `v_d`; ALL events at `version >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs. Used when both branches at `v_d` are adversary-planted; the operator replaces `v_d` entirely.
 
-Cnt has the same Mode-2 parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but a different effect: Cnt joins the divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec/Rpr vs Cnt) determines whether the chain recovers (archival) or terminates (no archival).
+Cnt shares the divergence-ancestor-extending shape's parent (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec/Rpr vs Cnt) determines whether the chain recovers (archival) or terminates (no archival).
 
-**3. Upgrade rule for cross-node consistency**: when a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states; the upgrade rule eliminates this divergence.
+**3. Upgrade rule for cross-node consistency** (applies to **non-archiving privileged events** with `previous = v_{d-1}.said` — `Ror`, `Cnt`, `Dec` on KEL; `Sea`, `Cnt`, `Dec` on SEL; n/a on IEL, where every event is privileged so no non-privileged divergent set can form): when a node has a non-privileged divergent set at `v_d` and gossip delivers such a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states; the upgrade rule eliminates that divergence for the non-archiving privileged kinds.
+
+**Kind-discriminator routing precedence.** Privileged events route by kind in the merge engine, so the upgrade rule's scope is well-defined and the rules above don't conflict with one another:
+
+- **Archiving privileged kinds** — `Rec` (KEL), `Rpr` (SEL): go through the discriminator's archival path. The branch-tip-extending shape has `previous = v_d.said` (a tip), lands at `v_{d+1}`, archives the other branch. The divergence-ancestor-extending shape has `previous = v_{d-1}.said`, lands at `v_d`, archives both v_d branches. Either shape bypasses the upgrade rule — the discriminator removes the divergent set before any divergent-set check fires.
+- **Non-archiving privileged kinds** — `Ror`, `Cnt`, `Dec` on KEL; `Sea`, `Cnt`, `Dec` on SEL: do not archive. When their parent is `v_{d-1}.said` and a non-privileged divergent set already exists at `v_d`, they join the divergent set as a third event via the upgrade rule, triggering contested via privileged-divergence-is-terminal. Their parent shapes vary: `Cnt.previous = v_{tip-1}.said` (Cnt's special parent rule), which resolves to `v_{d-1}.said` when tip is at `v_d`; `Ror`/`Dec`/`Sea` extend the tip directly with `previous = tip.said`, which resolves to `v_{d-1}.said` when the submitter's local tip is at `v_{d-1}`. In every case the event lands at `v_d` (see the **Cnt is always at v_d** invariant below; the same lands-at-v_d behavior holds for Ror/Sea/Dec when their parent is v_{d-1}.said).
 
 The verifier rule simplifies to:
 - Divergent at `v_d`?
@@ -78,6 +83,59 @@ The verifier rule simplifies to:
   - Yes → privileged event in the divergent set?
     - Yes → contested (terminal).
     - No → divergent (recoverable via Rec on KEL or Rpr on SEL; no recovery primitive on IEL — divergent IEL is auto-contested because every IEL event is privileged).
+
+**Cnt is always at `v_d`.** Across every valid scenario the parent rule resolves to land Cnt at the divergence version. The three scenarios:
+
+```
+Scenario 1 — Cnt on a linear chain (creates fresh divergence at v_d):
+
+  Pre-state:        ... → v_{d-1} → v_d  (existing tip at v_d)
+                                      ↑
+                                     tip
+
+  Cnt construction: cnt.previous = v_{tip-1}.said = v_{d-1}.said
+                    cnt.serial   = d
+
+  Post-state:       ... → v_{d-1} ─┬─ existing tip @ v_d  ┐
+                                   └─ cnt          @ v_d  ┴── contested (cnt privileged)
+
+
+Scenario 2 — Cnt on an already-divergent chain (joins divergent set at v_d):
+
+  Pre-state (existing non-priv divergence at v_d, e.g., ixn-ixn race):
+                    ... → v_{d-1} ─┬─ ixn_a @ v_d
+                                   └─ ixn_b @ v_d
+
+  Cnt construction (via the upgrade rule's v_{d-1} parent):
+                    cnt.previous = v_{d-1}.said
+                    cnt.serial   = d
+
+  Post-state:       ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
+                                   ├─ ixn_b @ v_d  ├── contested (cnt privileged)
+                                   └─ cnt   @ v_d  ┘
+
+
+Scenario 3 — Sequential post-ixn Cnt (Cnt extends an existing v_d event after gossip):
+
+  Step 1 — ixn_a lands at v_d on Node A (linear at v_d):
+                    ... → v_{d-1} → ixn_a @ v_d
+                                       ↑
+                                      tip
+
+  Step 2 — gossip propagates ixn_a to Node C; Node C's tip is now v_d.
+
+  Step 3 — Node C constructs cnt_c. tip = v_d, v_{tip-1} = v_{d-1}:
+                    cnt_c.previous = v_{d-1}.said
+                    cnt_c.serial   = d
+
+  Final state on Node C:
+                    ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
+                                   └─ cnt_c @ v_d  ┴── contested (cnt_c privileged)
+```
+
+Across all three scenarios: Cnt's parent is `v_{d-1}` (the divergence ancestor / parent of the pre-Cnt v_d event), Cnt's serial equals `d`, Cnt lands at `v_d`. The invariant — **Cnt is at `v_d` in every valid scenario** — falls out of the `v_{tip-1}` parent rule applied across linear and divergent shapes.
+
+The same lands-at-`v_d` behavior holds for non-archiving privileged events whose parent happens to be `v_{d-1}.said` for other reasons (Ror/Dec on KEL, Sea/Dec on SEL, when the submitter's local tip is at `v_{d-1}`). They join the divergent set at `v_d` via the upgrade rule and trigger contested.
 
 **Cnt's authorization** resolves through the same policy/key state required to accept `v_{tip}` — i.e., the commitments made at `v_{tip-1}` for the verifier to accept events that extend it. On a divergent chain, that's the same authorization material the verifier used to accept the existing events at `v_d` that already extend `v_{d-1}`. For KEL specifically, Cnt's dual signature uses the preimages of `v_{tip-1}`'s `rotation_hash` and `recovery_hash` commitments — the same key state any non-Cnt event extending `v_{tip-1}` would need. For IEL, it's the `governance_policy` declared at `v_{tip-1}`. For SEL, it's the IEL-resolved governance policy at the SEL's `identity_event` binding for `v_{tip-1}`.
 
