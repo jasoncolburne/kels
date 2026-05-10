@@ -23,14 +23,14 @@ Events are linked by their `previous` SAID. Authority is via the anchoring model
 | Field | Meaning |
 |---|---|
 | `applied` | `true` if the batch was accepted; `false` if rejected (duplicates or routing rejection). |
-| `diverged_at_version` | First version at which divergence was observed, or `None` if linear. |
+| `divergence_ancestor` | SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), or `None` if linear. |
 
 Server errors map to:
 
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Submission to a divergent chain (non-Cnt), OR normal-event submission at version ≤ `last_governance_version` | unchanged |
+| `ContestRequired { reason }` | Submission to a divergent chain (non-Cnt), OR normal-event submission at-or-before `last_governance_event` in chain order | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `IelDecommissioned` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
@@ -90,7 +90,7 @@ let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 if is_contest        → contest path (insert + mark contested; works on divergent or linear)
 else if chain is divergent → reject ContestRequired
 else if is_decommission → decommission path (insert + mark decommissioned; non-divergent only)
-else if event.version ≤ last_governance_version AND policy satisfied AND non-terminal AND not divergent → reject ContestRequired
+else if event is at-or-before `last_governance_event` in chain order AND policy satisfied AND non-terminal AND not divergent → reject ContestRequired
 else if event creates a fork (overlap) → insert single forking event, freeze
 else → normal append
 ```
@@ -118,7 +118,7 @@ Events chain from the current tip, no divergence, no terminal kind in batch. Ins
 Before inserting a non-terminal event, the handler checks:
 
 ```
-if event.version ≤ last_governance_version
+if event is at-or-before `last_governance_event` in chain order
    AND policy is satisfied
    AND event.kind is non-terminal
    AND chain is not divergent:
@@ -134,9 +134,9 @@ This fires when a write-authorized normal event would land at or before the eval
 When a non-Cnt/Dec event chains from an event earlier than the current tip:
 
 ```
-diverged_at_version = first_branch_point.version + 1
+divergence_ancestor = first_branch_point.said    // the parent of v_d
 insert single forking event (the first batch event that creates the fork)
-return applied: true, diverged_at: Some(diverged_at_version)
+return applied: true, divergence_ancestor: Some(first_branch_point.said)
 ```
 
 Subsequent submissions return `ContestRequired` until the chain is contested.

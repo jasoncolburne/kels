@@ -16,10 +16,10 @@ See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `DecommissionedSel`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `SelVerification` token surfaces:
-- `diverged_at_version: Option<u64>` — first version with multiple events, or `None` if linear.
+- `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
-- `last_governance_version: Option<u64>` — version of the most recent `Sea`/`Rpr` (the "evaluation seal").
+- `last_governance_event: Option<Digest256>` — SAID of the most recent `Sea`/`Rpr` (the "evaluation seal").
 - `last_identity_event: Option<Digest256>` — derived aggregate: the highest IEL event (in IEL chain order) that any SEL event in the chain has bound to. Computed across all events; not used as a watermark gate. New event acceptance is gated by per-event parent-monotonic on `identity_event`, applied per branch (see [verification.md](verification.md) and [../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
 
 ## Event Kinds
@@ -139,7 +139,7 @@ KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_rec
 
 ### Bounds
 
-`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63` caps the chain since the last `Sea`/`Rpr`/`Cnt`/`Dec` to 63 non-evaluation events. Repair cannot truncate at or before the evaluation seal (`from_version <= last_governance_version` is rejected). One page (limit 64) covers both branches and the bundled `[pending..., Rpr]`.
+`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63` caps the chain since the last `Sea`/`Rpr`/`Cnt`/`Dec` to 63 non-evaluation events. Repair cannot truncate at or before the evaluation seal (a fork-point at-or-before `last_governance_event` in IEL chain order is rejected). One page (limit 64) covers both branches and the bundled `[pending..., Rpr]`.
 
 ## Contest (Cnt)
 
@@ -149,7 +149,7 @@ Contest is the terminal state for SEL — the operator cannot defeat a party who
 
 The merge engine returns `ContestRequired { reason }` when:
 - The submitted event is non-terminal AND non-Rpr.
-- The event's version is `<= last_governance_version` (the submitter's view is at-or-before the evaluation seal — someone with governance authority advanced the seal past the submitter's view).
+- The event is at-or-before `last_governance_event` in chain order (the submitter's view is at-or-before the evaluation seal — someone with governance authority advanced the seal past the submitter's view).
 - The chain is not divergent (divergence routes to `RepairRequired` instead).
 
 This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, governance evaluation) has been used, and safe normal-flow continuation is no longer possible. See [../kel/event-log.md §Contest (Cnt)](../kel/event-log.md#contest-cnt) for the structural parallel.
@@ -204,7 +204,7 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 
 When the merge engine processes a submitted batch (full routing logic in [merge.md](merge.md); the exhaustive matrix and multi-node correctness proof are in [reconciliation.md](reconciliation.md); summarized here for lifecycle correlation):
 
-Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** iff `last_governance_version >= first_divergent_version`; otherwise **unsealed**.
+Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** iff `last_governance_event` is at-or-after the divergence point in chain order (i.e., a Sea/Rpr landed at-or-after `v_d`); otherwise **unsealed**.
 
 | State observed | Batch content | Outcome |
 |---|---|---|

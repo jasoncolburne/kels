@@ -32,9 +32,9 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
-- **KEL**: `last_recovery_revealing_serial` — the serial of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
-- **IEL**: `last_governance_version` — the version of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
-- **SEL**: `last_governance_version` — the version of the most recent `Sea`/`Rpr` (Cnt/Dec analogous).
+- **KEL**: `last_recovery_revealing_event` — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
+- **IEL**: `last_governance_event` — the SAID of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
+- **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec analogous).
 
 A new event's `previous` MUST point to a chain event at version at-or-after the seal (≥ seal). Any submission whose fork-point is strictly before the seal is rejected (`"Cannot fork at version V — sealed by evaluation/recovery at version S"`). This guarantees that any divergent branch's parent is at-or-after the seal, so the auth context resolved at that parent is the chain's currently-tracked policy / key state — not a stale one.
 

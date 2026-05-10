@@ -68,7 +68,7 @@ verify_generation(events_at_version):
     if events_at_version.len() > branches.len():
         // More events than branches = divergence detected
         fork BranchState for new branches
-        record diverged_at_version if first divergence
+        record divergence_ancestor (the SAID of v_{d-1}) if first divergence
 
     for each event:
         match to branch via event.previous
@@ -186,7 +186,7 @@ struct SadBranchTip {
     identity: Digest256,                  // bound IEL prefix (set at Icp)
     tip_identity_event: Option<Digest256>, // tip event's identity_event — used for the per-event parent-monotonic check on the next event extending this branch
     events_since_evaluation: u64,
-    last_governance_version: Option<u64>,
+    last_governance_event: Option<Digest256>, // SAID of most recent Sea/Rpr on this branch
 }
 ```
 
@@ -199,12 +199,12 @@ SEL branch state does **not** track authorization policies per branch. Those pol
 ```
 SelVerification:
     prefix: Digest256
-    branches: Vec<BranchTip>            // 1 = linear, 2 = divergent (or 3 with Cnt fork-contest)
-    diverged_at_version: Option<u64>
+    branches: Vec<BranchTip>                  // 1 = linear, 2 = divergent (or 3 with Cnt fork-contest)
+    divergence_ancestor: Option<Digest256>    // SAID of v_{d-1} on a divergent chain (None on linear)
     is_contested: bool
     is_decommissioned: bool
-    last_governance_version: Option<u64>  // version of most recent Sea/Rpr
-    last_identity_event: Option<Digest256> // derived aggregate: max identity_event across all events in the chain
+    last_governance_event: Option<Digest256>  // SAID of most recent Sea/Rpr
+    last_identity_event: Option<Digest256>    // derived aggregate: max identity_event across all events in the chain
 ```
 
 Accessors:
@@ -214,8 +214,9 @@ Accessors:
 - `prefix()`, `topic()`, `identity()` → the bound IEL prefix
 - `last_identity_event()` → derived aggregate; max identity_event across all events in the chain (informational, not used as a gate)
 - `policy_satisfied()` — overall authorization satisfaction across the chain
-- `last_governance_version()`
-- `is_contested()`, `is_decommissioned()`, `diverged_at_version()`
+- `last_governance_event()` — SAID of the most recent `Sea`/`Rpr`
+- `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
+- `is_contested()`, `is_decommissioned()`
 
 ## Key Properties Verified
 
@@ -238,7 +239,7 @@ Accessors:
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `SelVerification` token (`is_divergent()`, `diverged_at_version()`)
+- Divergence is detected and tracked in the `SelVerification` token (`is_divergent()`, `divergence_ancestor()`)
 - Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler resolves divergence via `Rpr` (see [merge.md](merge.md))
 
@@ -253,7 +254,7 @@ struct SelVerifier {
     resolver: Arc<dyn IelResolver>,     // cross-chain navigation into the bound IEL
     branches: HashMap<Digest256, BranchState>,
     last_verified_version: Option<u64>,
-    diverged_at_version: Option<u64>,
+    divergence_ancestor: Option<Digest256>,
     is_contested: bool,
     is_decommissioned: bool,
     ...

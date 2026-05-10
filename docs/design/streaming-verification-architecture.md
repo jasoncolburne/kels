@@ -15,7 +15,7 @@ The sole verification mechanism for KELs. Walks forward through events, tracking
 **State:**
 - `branches: HashMap<String, BranchState>` — per-branch state keyed by tip SAID
 - `last_verified_serial` — current position in the chain
-- `diverged_at_serial` — where divergence was first detected
+- `divergence_ancestor` — SAID of `v_{d-1}` (the unique parent of all divergent events) on a divergent chain, `None` on linear
 - `is_contested` — whether a contest event was seen
 - `queried_saids` / `anchored_saids` — inline anchor checking
 
@@ -34,7 +34,7 @@ The sole verification mechanism for KELs. Walks forward through events, tracking
 - `prefix` — the KEL prefix
 - `branch_tips: Vec<BranchTip>` — one per branch (1 = linear, N = divergent)
 - `is_contested` — whether the KEL is permanently frozen
-- `diverged_at_serial` — where divergence occurs
+- `divergence_ancestor` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `anchored_saids` / `queried_saids` — anchor checking results
 
 **Key invariant:** `KelVerification` has no public constructor. The only way to obtain one is through `KelVerifier::into_verification()` or `completed_verification()`. Functions that consume KEL data accept `&KelVerification` to prove the KEL was verified. This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.

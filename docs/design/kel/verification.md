@@ -60,7 +60,7 @@ verify_generation(events_at_serial):
     if events_at_serial.len() > branches.len():
         // More events than branches = divergence detected
         fork BranchState for new branches
-        record diverged_at_serial if first divergence
+        record divergence_ancestor (the SAID of v_{d-1}) if first divergence
 
     for each event:
         match to branch via event.previous
@@ -120,11 +120,12 @@ verify_signatures(signed_event, public_key):
 ```
 KelVerification:
     prefix: String
-    branch_tips: Vec<BranchTip>   // one per branch (1 = linear, N = divergent)
+    branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, N = divergent)
     is_contested: bool
-    diverged_at_serial: Option<u64>
-    anchored_saids: BTreeSet<String>
-    queried_saids: BTreeSet<String>
+    divergence_ancestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
+    last_recovery_revealing_event: Option<Digest256> // SAID of most recent Rec/Ror/Cnt/Dec
+    anchored_saids: BTreeSet<Digest256>
+    queried_saids: BTreeSet<Digest256>
 
 BranchTip:
     tip: SignedKeyEvent            // chain head (latest event on this branch)
@@ -157,7 +158,7 @@ Derived accessors:
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `KelVerification` token (`is_divergent()`, `diverged_at_serial()`)
+- Divergence is detected and tracked in the `KelVerification` token (`is_divergent()`, `divergence_ancestor()`)
 - All branches of a divergent KEL are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler is responsible for resolving divergence
 
@@ -214,7 +215,7 @@ struct KelVerifier {
     prefix: String,
     branches: HashMap<String, BranchState>,  // keyed by tip SAID
     last_verified_serial: Option<u64>,
-    diverged_at_serial: Option<u64>,
+    divergence_ancestor: Option<Digest256>,
     is_contested: bool,
     queried_saids: BTreeSet<String>,   // anchor checking
     anchored_saids: BTreeSet<String>,  // anchor checking

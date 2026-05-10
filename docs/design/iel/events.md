@@ -9,7 +9,7 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 | Kind | Topic | Purpose |
 |---|---|---|
 | `Icp` | `kels/iel/v1/events/icp` | Inception (v0). Declares both `auth_policy` and `governance_policy`. Seeds prefix derivation via `(auth_policy, governance_policy, topic)`. |
-| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_version`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
+| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_event`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
@@ -37,7 +37,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 Every IEL event carries `auth_policy` and `governance_policy`. The verifier checks the per-kind discipline as part of branch-state validation:
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
-- **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_version` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
+- **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
 - **`Cnt` / `Dec`**: must carry the same values as the predecessor. The verifier rejects any Cnt/Dec whose `auth_policy` or `governance_policy` differs from the predecessor's as a structural-equivalent error (the design's "forbidden field on terminal kinds" rule, enforced at the verifier rather than at `validate_structure` because the predecessor's values are needed to make the comparison).
 
 ### Satisfaction model
@@ -79,7 +79,7 @@ IEL events do not carry content. The chain's "data" is its tracked policy state,
 
 Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
 
-(`last_governance_version` advances only on `Evl` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
+(`last_governance_event` advances only on `Evl` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
 
 ## Typical Chain Shapes
 
@@ -91,7 +91,7 @@ v1  kind=evl  auth_policy=A1                              ← auth_policy evolve
 v2  kind=evl  governance_policy=G1                        ← governance_policy evolved; auth_policy unchanged
 ```
 
-Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_governance_version` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
+Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_governance_event` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
 
 ### Divergence terminated by contest
 
@@ -110,7 +110,7 @@ This is intentional: history is encoded in the data. We accept divergence and re
 ### Contest after governance compromise
 
 ```
-v0..v4   normal chain, last_governance_version=4 (Evl at v4)
+v0..v4   normal chain, last_governance_event = Evl_v4.said (Evl at v4)
          (an unauthorized actor submits Evl at v5 — racing the legitimate owner or simply substituting)
 v6       owner submits Cnt extending current tip            ← chain becomes contested, terminal
 ```

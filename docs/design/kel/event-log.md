@@ -14,10 +14,10 @@ The Key Event Log (KEL) is a per-prefix chain of `SignedKeyEvent` records descri
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `KelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `KelVerification` token surfaces:
-- `diverged_at_serial: Option<u64>` — first serial with multiple events, or `None` if linear.
+- `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
-- `last_recovery_revealing_serial: Option<u64>` — serial of the most recent `Rec`/`Ror`/`Dec`/`Cnt` (the recovery-key revelation seal).
+- `last_recovery_revealing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`/`Cnt` (the recovery-key revelation seal).
 
 ## Event Kinds
 
@@ -37,7 +37,7 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 ## Recovery-Revelation Seal and Key Non-Poisonability
 
-The `last_recovery_revealing_serial` is the most recent serial at which a `Rec`/`Ror`/`Dec`/`Cnt` landed. It is the chain's **recovery-revelation seal** — recovery cannot truncate at or before it (handlers reject attempts to displace any prior recovery-revealing event).
+The `last_recovery_revealing_event` is the SAID of the most recent `Rec`/`Ror`/`Dec`/`Cnt` event. It is the chain's **recovery-revelation seal** — recovery cannot truncate at or before it (handlers reject attempts to displace any prior recovery-revealing event).
 
 **Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization. The seal locks in the key state at that serial.
 
@@ -132,7 +132,7 @@ The cost of discarding pending may be substantial: a flush that involved collect
 Both follow the same algorithmic shape as SEL's `truncate_and_replace`:
 
 1. Detect recovery: any event in the batch has `kind = Rec` (or `Cnt` for contest).
-2. Compute archive lower bound `L = diverged_at_serial`.
+2. Compute archive lower bound `L = serial of (divergence_ancestor) + 1` (i.e., the divergence version `v_d`).
 3. **Single page fetch**: events at `serial >= L` for the prefix, ordered `(serial ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`. One round-trip.
 4. **Trust gate**: feed the page through the resume-mode verifier (`KelVerifier::resume(&prefix, &kel_verification).verify_page(&page)`). The verifier checks SAID, prefix, chain linkage, and verifies each event's signatures against the establishment-declared keys. Verification failure aborts archival — fail-secure on tampered DB rows.
 5. Build a SAID-keyed in-memory map of the verified page (and of the batch's own new events not yet on the chain — bundled missing events may be referenced by `Rec.previous`).
@@ -145,7 +145,7 @@ The page+resume-verify pattern is the SEL backport: prior to it, the discriminat
 
 ### Bounds
 
-Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before any prior recovery-revealing event, so `d > last_recovery_revealing_serial` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
+Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before any prior recovery-revealing event, so the divergence ancestor is strictly after `last_recovery_revealing_event` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
 
 ## Contest (Cnt)
 
@@ -270,7 +270,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 **Code:**
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
-- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `diverged_at_serial`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_serial`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
+- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergence_ancestor`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_event`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
 - `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
 - `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. The SEL backport replaces per-hop DB queries with a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.

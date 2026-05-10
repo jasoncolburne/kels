@@ -12,7 +12,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 |---|---|---|
 | `Icp` | `kels/sad/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
 | `Upd` | `kels/sad/v1/events/upd` | Normal update — append content to the chain. |
-| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_version`. No field evolution (policies live on IEL). |
+| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No field evolution (policies live on IEL). |
 | `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Cnt` | `kels/sad/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
 | `Dec` | `kels/sad/v1/events/dec` | Decommission — terminal owner-initiated end. |
@@ -146,7 +146,7 @@ The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (pre
 ### Contest after IEL governance compromise
 
 ```
-v0..v4   normal chain, last_governance_version=4 (Sea at v4)
+v0..v4   normal chain, last_governance_event = Sea_v4.said (Sea at v4)
          (an unauthorized actor submits Evl on IEL evolving auth_policy/governance_policy in their favor)
 v5       owner Upd at v5 — would have to bind to the IEL's new authority event, which the owner doesn't satisfy
          → owner cannot safely continue normally; Cnt is the only legitimate path

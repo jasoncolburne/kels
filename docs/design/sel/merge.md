@@ -23,14 +23,14 @@ Events are linked by their `previous` SAID. Authority is via the anchoring model
 | Field | Meaning |
 |---|---|
 | `applied` | `true` if the batch was accepted; `false` if rejected. |
-| `diverged_at_version` | First version at which divergence was observed, or `None` if linear. |
+| `divergence_ancestor` | SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), or `None` if linear. |
 
 Server errors map to:
 
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event at version ≤ `last_governance_version` (write-authorized but seal advanced past submitter's view) | unchanged |
+| `ContestRequired { reason }` | Normal-event at-or-before `last_governance_event` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
@@ -101,7 +101,7 @@ let is_contest      = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 let is_divergent    = first_divergent_version.is_some();
 let is_sealed       =
-    first_divergent_version.unwrap_or(u64::MAX) <= last_governance_version.unwrap_or(0);
+    divergence_ancestor.is_some() && last_governance_event_is_at_or_after(divergence_ancestor);
 
 if is_repair:
     if is_divergent and is_sealed → reject ContestRequired
@@ -119,7 +119,7 @@ elif is_divergent:
     if is_sealed                  → reject ContestRequired (Upd/Sea on sealed-divergent)
     else                          → reject RepairRequired
 elif normal-event
-       AND version ≤ last_governance_version
+       AND event is at-or-before `last_governance_event` in chain order
        AND kind-relevant authorization satisfied
        AND event.kind is non-terminal:
                                     → reject ContestRequired (algorithmic trigger)
@@ -131,7 +131,7 @@ else:
 
 The repair / contest / decommission discriminators bind to predicate methods on `SadEventKind`. Any of these kinds at any position in the batch routes to its dedicated path.
 
-The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `first_divergent_version` and `last_governance_version`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
+The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `divergence_ancestor` and `last_governance_event`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
 
 ### 6. Repair Path
 
@@ -166,7 +166,7 @@ Events chain from the current tip, no divergence, no terminal kind in batch. Ins
 Before inserting a non-terminal event, the handler checks:
 
 ```
-if event.version ≤ last_governance_version
+if event is at-or-before `last_governance_event` in chain order
    AND kind-relevant authorization was satisfied (from §1)
    AND event.kind is non-terminal
    AND chain is not divergent:
@@ -184,9 +184,9 @@ This mirrors KEL's `ContestRequired` shape: someone else used the privileged pri
 When a non-Rpr/Cnt/Dec event chains from an event earlier than the current tip:
 
 ```
-diverged_at_version = first_branch_point.version + 1
+divergence_ancestor = first_branch_point.said    // the parent of v_d
 insert single forking event (the first batch event that creates the fork)
-return applied: true, diverged_at: Some(diverged_at_version)
+return applied: true, divergence_ancestor: Some(first_branch_point.said)
 ```
 
 Subsequent submissions return `RepairRequired` until owner repairs.
@@ -225,7 +225,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Cnt`/`Dec`.
-4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects `from_version ≤ last_governance_version`.
+4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `last_governance_event` in chain order.
 5. **Terminal states are permanent** — any `Cnt` or `Dec` in the chain freezes it.
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Upd, ...]` is the minimum legal inception batch.

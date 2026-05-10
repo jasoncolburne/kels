@@ -16,10 +16,10 @@ An IEL is the authorization root for a SEL. Every SAD Event Log binds to a speci
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `IelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `IelVerification` token surfaces:
-- `diverged_at_version: Option<u64>`
+- `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_contested: bool`
 - `is_decommissioned: bool`
-- `last_governance_version: Option<u64>` — version of the most recent `Evl` (the "evaluation seal").
+- `last_governance_event: Option<Digest256>` — SAID of the most recent `Evl` (the "evaluation seal").
 
 ## Event Kinds
 
@@ -34,9 +34,9 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). *
 
 ## Evaluation Seal and Anchor Non-Poisonability
 
-The `last_governance_version` is the most recent version at which an `Evl` landed. It is the chain's **evaluation seal**.
+The `last_governance_event` is the SAID of the most recent `Evl` event. It is the chain's **evaluation seal**.
 
-**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error. This keeps `last_governance_version` meaningful as the evaluation seal — it advances only when the governance state actually moves, not on heartbeat extensions. There is no use case for a periodic re-attestation: IEL has no repair primitive that would need governance "exercise," and key rotation lives at the KEL layer below (anchoring KELs rotate independently; IEL doesn't need to mirror them).
+**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error. This keeps `last_governance_event` meaningful as the evaluation seal — it advances only when the governance state actually moves, not on heartbeat extensions. There is no use case for a periodic re-attestation: IEL has no repair primitive that would need governance "exercise," and key rotation lives at the KEL layer below (anchoring KELs rotate independently; IEL doesn't need to mirror them).
 
 **Once an evaluation lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on policies introduced or evolved on the chain:
 

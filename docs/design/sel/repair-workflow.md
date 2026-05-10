@@ -6,7 +6,7 @@ Operator-facing workflow for handling SEL transitions — divergence detection, 
 
 A chain owner detects abnormal state via two signals:
 
-1. **`flush()` response carries `diverged_at_version: Some(d)`** — the most recent submission either created a fork (owner-caused overlap) or hit a chain that was already divergent and got rejected. The builder records this on its `SelVerification` token; the owner's CLI surfaces a warning.
+1. **`flush()` response carries `divergence_ancestor: Some(said)`** — the most recent submission either created a fork (owner-caused overlap) or hit a chain that was already divergent and got rejected. The builder records this on its `SelVerification` token; the owner's CLI surfaces a warning.
 2. **Effective SAID mismatch** — owner's local view differs from the gossip-published effective SAID. Owner runs `kels-cli sel get <prefix>` and compares against their `SelVerification`'s `effective_tail_said()`; mismatch indicates server-side state has advanced or diverged.
 
 Both signals route to the same recovery action: owner runs `repair`, `contest`, or `decommission` depending on the chain state.
@@ -69,7 +69,7 @@ Owner's `repair`/`contest`/`decommission` builders run `verify_sel_events` again
 
 When a chain divergence is observed:
 
-1. Owner inspects: `kels-cli sel status --prefix <prefix>` shows `diverged_at_version: Some(d)`.
+1. Owner inspects: `kels-cli sel status --prefix <prefix>` shows `divergence_ancestor: Some(said)`.
 2. Owner inspects server: `kels-cli sel get <prefix>` returns the divergent branches.
 3. Owner decides:
    - If the seal hasn't advanced past their view → run `repair`. Adversary events archived synchronously.

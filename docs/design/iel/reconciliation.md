@@ -38,7 +38,7 @@ What happens when a client submits events to the submit handler on a single node
 |-----------|-----|-----|-------------------|-----|
 | **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ (governance-authorized) | Append ✓ (terminates the chain) | Append ✓ (terminates the chain) |
-| **Active, sealed** (governance event at version ≤ `last_governance_version` would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal version; chain terminates cleanly) |
+| **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestRequired` (no Rpr on IEL) | Contest ✓ (extends one branch's tip; chain becomes Contested) | `ContestRequired` (Dec doesn't resolve divergence; only Cnt does) |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
