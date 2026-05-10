@@ -146,15 +146,26 @@ The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (pre
 ### Contest after IEL governance compromise
 
 ```
-v0..v4   normal chain, last_governance_event = Sea_v4.said (Sea at v4)
-         (an unauthorized actor submits Evl on IEL evolving auth_policy/governance_policy in their favor)
-v5       owner Upd at v5 — would have to bind to the IEL's new authority event, which the owner doesn't satisfy
-         → owner cannot safely continue normally; Cnt is the only legitimate path
-v6       kind=cnt  identity_event=current_IEL_governance_event_said    ← chain becomes contested, terminal
-                                                                              (Cnt's content preserved from v5)
+v0..v3   normal chain
+v4       kind=sea  Sea_v4 advances last_governance_event to Sea_v4.said (chain tip)
+         (a second governance-authorized party — authority acquired via threshold
+          compromise on the bound IEL — submits Evl on the IEL evolving
+          auth_policy / governance_policy in their favor; operator detects the
+          compromise on the IEL and chooses to terminate the SEL since they cannot
+          safely advance under the new IEL governance)
+v4'      kind=cnt  previous=v_3.said, version=4                       ← Cnt joins Sea_v4 in a 2-event
+         identity_event = (IEL event whose governance_policy was in effect at v_3 —    privileged divergent set at v_4;
+                          the legitimate pre-compromise IEL governance, which the      privileged-divergence-is-terminal
+                          operator still satisfies)                                    fires; chain contested.
+         content preserved from v_3                                                    (Cnt's land-version v_4 = seal_version
+                                                                                       = Sea_v4.version; the seal-cap's
+                                                                                       event_version >= seal_version rule
+                                                                                       admits this parent-at-(seal − 1)
+                                                                                       boundary — see security-invariant.md
+                                                                                       §Forks are Seal-Bounded.)
 ```
 
-Contest is the operator's path when an adversary has demonstrated authority on the IEL (and thus over the SEL) that the legitimate holder cannot defeat.
+Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../security-invariant.md §Forks are Seal-Bounded](../security-invariant.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 

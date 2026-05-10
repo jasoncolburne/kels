@@ -39,7 +39,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ (governance-authorized) | Append ✓ (terminates the chain) | Append ✓ (terminates the chain) |
 | **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
-| **Divergent** | Reject (Icp can't appear at v1+) | `ContestRequired` (no Rpr on IEL) | Contest ✓ (extends one branch's tip; chain becomes Contested) | `ContestRequired` (Dec doesn't resolve divergence; only Cnt does) |
+| **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` (divergent IEL is structurally contested-terminal) | `ContestedIel` (divergent IEL is structurally contested-terminal — no further events including Cnt accepted; Cnt only lands as one of the events in the original 2-event divergent set, or on a linear chain) | `ContestedIel` (divergent IEL is structurally contested-terminal) |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
 
@@ -104,9 +104,11 @@ If an SEL's `identity_event` references an IEL event that lives on a now-diverge
 
 Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain freezes after the first divergence; subsequent injections are dedup-rejected (only one extra event per version is accepted as the divergence marker). Owner submits `Cnt` to terminate.
 
-### 5. Cnt on one branch of a divergent IEL
+### 5. Concurrent Cnt + Evl at v_d
 
-Owner submits `Cnt` extending one branch's tip (say branch A). The other branch (branch B) stays in storage but accepts no further events (chain is contested). Gossip propagates `Cnt` to all nodes; all nodes mark the chain contested. The other branch B is preserved as forensic record everywhere.
+Two governance-authorized parties submit concurrently to different nodes at v_d: party 1 submits `Cnt` with `previous = v_{d-1}.said`; party 2 submits `Evl` with `previous = v_{d-1}.said`. Both land. The 2-event divergent set at v_d is privileged (Cnt is privileged; even without Cnt, Evl–Evl would still be privileged because every IEL event is privileged) → privileged-divergence-is-terminal fires immediately; chain becomes contested-terminal as of v_d. Subsequent submissions arriving at v_d via gossip — including any further `Cnt` — are rejected by the contested-state gate. Both events stay in storage as forensic record; all nodes converge on `hash_effective_said("contested:{prefix}")`.
+
+The same shape applies to concurrent `[Cnt_a, Cnt_b]` (two operators contesting simultaneously) and `[Evl_a, Evl_b]` (two governance parties racing): in every case the 2-event divergent set is contested-terminal and no 3rd event lands. Cnt on a linear chain — operator-initiated termination — is the other scenario in which Cnt lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
 
 ## References
 

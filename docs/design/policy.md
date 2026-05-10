@@ -82,6 +82,14 @@ Same pattern as credential compaction. Strip variable parts (delegates), recompu
 
 Edges reference **canonical policy SAIDs**. The edge says "I accept any credential whose policy compacts to this canonical SAID." The credential carries the full policy (with specific delegates). Verification: compact the credential's policy to canonical form, check `canonical.said == edge.policy`. The edge doesn't need updating when delegates rotate — only the credential is re-issued with a new full policy that compacts to the same canonical SAID.
 
+### Threshold Redundancy
+
+A `threshold(N, id_1, ..., id_M)` policy with `M > N` tolerates loss of up to `M − N` identities' authority while remaining satisfiable. If an anchor was originally satisfied by some subset of `N` identities and one of those identities is later contested (per [kel/event-log.md](kel/event-log.md) / [iel/event-log.md](iel/event-log.md)), the original anchor loses authority — but a new anchor under the same policy can be created using a different subset that excludes the contested identity, satisfying the threshold again. The underlying SAID's authorization is re-established without changing the policy itself.
+
+This is a structural feature of anchored policies: threshold satisfaction depends on which identities anchor at any given moment, not which identities ever anchored historically. Policies themselves are immune SADs with fixed content — they don't evolve. Re-anchoring is bounded only by the operator's continued control of enough identities to meet the threshold.
+
+Operators designing governance / authorization policies should set thresholds with `M − N >= expected partial-compromise tolerance`.
+
 ## AST
 
 ```rust

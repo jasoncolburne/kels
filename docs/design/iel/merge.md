@@ -70,10 +70,14 @@ Before routing, check whether the chain is already terminal:
 
 ```
 if chain has any Cnt event → reject ContestedIel
+if chain is divergent      → reject ContestedIel
+                             (every IEL event is privileged; any divergent set on
+                              IEL fires the privileged-divergence-is-terminal rule,
+                              regardless of whether an explicit Cnt event has landed)
 if chain has any Dec event → reject IelDecommissioned
 ```
 
-These checks fire before any other routing, including dedup — terminal state means no further events of any kind.
+These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
 
 ### 3. Deduplication
 
@@ -87,23 +91,31 @@ The handler inspects the post-dedup batch for kind discriminators:
 let is_contest = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 
-if is_contest        → contest path (insert + mark contested; works on divergent or linear)
-else if chain is divergent → reject ContestRequired
-else if is_decommission → decommission path (insert + mark decommissioned; non-divergent only)
-else if event is at-or-before `last_governance_event` in chain order AND policy satisfied AND non-terminal AND not divergent → reject ContestRequired
-else if event creates a fork (overlap) → insert single forking event, freeze
+(by §2 above, the chain reaching this routing block is necessarily linear:
+ divergent IEL is contested-terminal and was rejected upstream)
+
+if is_contest        → contest path (insert; Cnt's previous = v_{tip-1}.said creates
+                       fresh divergence at v_tip with the existing tip; the new
+                       2-event divergent set is privileged → chain transitions to
+                       contested-terminal at this moment)
+else if is_decommission → decommission path (insert + mark decommissioned)
+else if event is at-or-before `last_governance_event` in chain order AND policy satisfied AND non-terminal → reject ContestRequired
+else if event creates a fork (overlap) → insert single concurrent event at v_d;
+                                         the new 2-event divergent set is
+                                         privileged → chain transitions to
+                                         contested-terminal at this moment
 else → normal append
 ```
 
-Order matters: `Cnt` is accepted on Active and on Divergent states (extending `v_{tip-1}` per the bounded fork-contest rule); rejected on Contested and Decommissioned. On IEL specifically, any divergence is immediately contested by the privileged-divergence rule (every IEL event is governance-authorized → privileged), so the "Divergent" intermediate state is structurally vacuous on IEL — divergence transitions directly to Contested. `Dec` is operator-initiated clean termination and only lands on a non-divergent chain.
+`Cnt` lands in two scenarios on IEL: (a) extending `v_{tip-1}` on a linear chain (creating fresh divergence at v_tip — the 2-event divergent set immediately fires the privileged-divergence-is-terminal rule), or (b) as one of the two events in an original 2-event divergent set (concurrent submission with another `Evl` or `Cnt`). After divergence is observed the chain is contested-terminal and the §2 gate rejects any further submission with `ContestedIel` — no Cnt joins as a 3rd event. `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
 
-Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL accepts only `Cnt`; everything else returns `ContestRequired`.
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly; there is no recoverable intermediate state.
 
 ### 5. Contest Path
 
 Detected when any batch event has `kind = Cnt`. Inserts the batch (pending events first, then `Cnt`); no archival. Marks chain as contested. All future submissions return `ContestedIel`.
 
-Contest works on both linear and divergent chains. On a divergent chain, `Cnt` extends one branch's tip — the chain becomes contested with both branches preserved as forensic record.
+On IEL specifically, Cnt only lands in two scenarios: (a) on a linear chain — Cnt's `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip, and the new 2-event divergent set immediately fires the privileged-divergence-is-terminal rule (every IEL event is privileged); or (b) as one of the events of an original 2-event divergent set (concurrent submission with another `Evl` or `Cnt`, both with `previous = v_{d-1}.said` landing at v_d). After divergence is observed, the chain is contested-terminal and no further Cnt is accepted — the §2 terminal-state gate rejects any post-divergence submission with `ContestedIel`.
 
 ### 6. Decommission Path
 

@@ -45,6 +45,8 @@ This is an accepted security boundary. Without it, a chain's history could be in
 
 KEL's recovery-revelation seal is the structural analog of IEL's and SEL's evaluation seal (see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
 
+The seal-cap rule (`event_version >= seal_version`; see [../security-invariant.md §Forks are Seal-Bounded](../security-invariant.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Ror-tipped KEL is structurally permitted.
+
 ## Divergence and Freeze
 
 Divergence is detected when two events share the same `previous` SAID. The chain transitions per the privileged-divergence rule:

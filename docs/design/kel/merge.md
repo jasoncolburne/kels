@@ -120,12 +120,17 @@ If the `KelVerification` shows the KEL is already divergent, the merge engine se
 ```
 if batch contains a cnt event:
     if cnt is not the last event: return Error("Contest must be last")
-    if KEL does NOT reveal recovery in divergent events:
-        return RecoverRequired  // No recovery revealed — recover, don't contest
-    continue KEL verification with submitted events (from branch tip)
+    verify cnt's parent shape: cnt.previous = v_{d-1}.said
+        (cnt joins the existing divergent set at v_d as a 3rd event via the upgrade rule;
+         the new branch is single-event by freeze-on-divergence — its v_{tip-1} is v_{d-1})
+    continue KEL verification with submitted events
     check proactive ROR compliance
-    append all events (surviving branch + cnt)
+    insert cnt as the 3rd event at v_d
     return Contested
+        (privileged-divergence-is-terminal fires; cnt is privileged → chain contested-terminal.
+         No "must reveal recovery first" gate — under the new design, Cnt always joins the
+         divergent set via the upgrade rule, regardless of whether recovery has been revealed
+         on either branch.)
 ```
 
 **Recovery path** (`rec` anywhere in batch):

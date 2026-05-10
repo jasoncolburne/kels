@@ -93,29 +93,37 @@ v2  kind=evl  governance_policy=G1                        ← governance_policy 
 
 Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_governance_event` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
 
-### Divergence terminated by contest
+### Divergence is contested-terminal
 
 ```
 v0  kind=icp  auth_policy=A0, governance_policy=G0
-v1  kind=evl  auth_policy=A1                                 (owner)
-v1' kind=evl  auth_policy=A1_alternate                       (concurrent submission, gossip race)
-    — both branches preserved; chain divergent —
-v2  kind=cnt  previous=v1.said                               ← Cnt extends one branch; chain becomes contested
+v1  kind=evl  auth_policy=A1
+v2  kind=evl  previous=v1.said, auth_policy=A2_a            ← concurrent submission #1
+v2' kind=cnt  previous=v1.said                              ← concurrent submission #2 (lands at v_2 alongside v_2)
+    — 2-event divergent set at v_2, both with previous = v_1.said.
+      Every IEL event is privileged → privileged-divergence-is-terminal fires
+      immediately; chain becomes contested-terminal as of v_2. —
 ```
 
-Both branches stay in storage forever as forensic record. The chain is terminal once `Cnt` lands. Owner re-incepts under a different prefix (different topic, or new IEL identity).
+The two events at `v_2` carry the same `previous = v_1.said` (the `v_{tip-1}` rule applied to a chain whose tip is v_1). The 2-event set may be any combination of `Evl`/`Cnt` (and structurally any IEL kind, since every IEL event is governance-authorized — `Icp`, `Evl`, `Cnt`, `Dec` are all privileged); the outcome is the same. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving at v_2 via gossip. **Once divergence is observed, no Cnt is accepted on a divergent IEL** — Cnt only lands as one of the events in the original 2-event divergent set, or as the linear-chain operator-initiated termination (see next example).
 
-This is intentional: history is encoded in the data. We accept divergence and resolve via `Cnt`, rather than having an `Rpr` archive one branch in favor of the other. When two governance-authorized parties produce conflicting events, neither can be "the" branch under the other's authority — the chain has demonstrated that its governance is no longer single-authoritative, and termination is the honest answer.
+Both events stay in storage forever as forensic record. Operator re-incepts under a different prefix (different topic, or new IEL identity).
 
-### Contest after governance compromise
+This is intentional: history is encoded in the data. We accept divergence and treat it as the chain's structural admission that governance is no longer single-authoritative. Termination is the honest answer; there is no `Rpr` to archive one branch in favor of the other (every branch is governance-authorized; the protocol has no grounds to declare one "the" branch).
+
+### Contest joining a divergent set after governance compromise
 
 ```
-v0..v4   normal chain, last_governance_event = Evl_v4.said (Evl at v4)
-         (an unauthorized actor submits Evl at v5 — racing the legitimate owner or simply substituting)
-v6       owner submits Cnt extending current tip            ← chain becomes contested, terminal
+v0..v3   normal chain
+v4       kind=evl  Evl_v4 advances last_governance_event to Evl_v4.said
+         (a second governance-authorized party — authority acquired via threshold compromise —
+          submits Evl_v5 at v_5 with previous = v_4.said; lands first via gossip race)
+v5'      kind=cnt  previous=v_4.said, version=5             ← operator's Cnt joins Evl_v5 in divergent set at v_5
+    — 2-event divergent set at v_5: {Evl_v5 (other party), Cnt}. Privileged-divergence-is-
+      terminal fires; chain contested-terminal as of v_5. —
 ```
 
-Contest is the operator's path whenever the chain's governance integrity has broken — whether via gossip race or compromise. Same kind, same lifecycle.
+Cnt's `previous = v_{tip-1}.said = v_4.said` is the divergence ancestor — the parent shared with Evl_v5. Authorization resolves through `v_4`'s tracked `governance_policy` (the policy in effect when v_4 landed — the legitimate pre-compromise governance), which the operator still satisfies. The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment + out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
 
 ### Clean decommission
 

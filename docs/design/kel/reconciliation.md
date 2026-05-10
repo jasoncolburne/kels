@@ -36,8 +36,8 @@ What happens when a client submits events to the merge engine on a single node.
 | KEL State | ixn/rot | ror | rec / rec+rot | cnt / events+cnt | dec |
 |-----------|---------|-----|---------------|------------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Normal** | Append ✓ | Append ✓ | Append ✓ (accepted to support gossip-sync of recovered KELs) | Overlap: Contest ✓ (requires existing recovery-revealing event, creates divergence + freezes); Append: Reject | Append ✓ |
-| **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (no recovery revealed — recover, don't contest) | `RecoverRequired` |
+| **Normal** | Append ✓ | Append ✓ | Append ✓ (accepted to support gossip-sync of recovered KELs) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ |
+| **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | Contest ✓ (Cnt with `previous = v_{d-1}.said` joins divergent set as 3rd event via upgrade rule; privileged-divergence-is-terminal fires; chain becomes Contested) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
 | **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |

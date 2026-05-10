@@ -36,9 +36,9 @@ The structural mechanism that enforces "current-state-only authority" is the cha
 - **IEL**: `last_governance_event` — the SAID of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
 - **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec analogous).
 
-A new event's `previous` MUST point to a chain event at version at-or-after the seal (≥ seal). Any submission whose fork-point is strictly before the seal is rejected (`"Cannot fork at version V — sealed by evaluation/recovery at version S"`). This guarantees that any divergent branch's parent is at-or-after the seal, so the auth context resolved at that parent is the chain's currently-tracked policy / key state — not a stale one.
+A new event's land-version MUST be at-or-after the seal (`event_version >= seal_version`). Any submission whose land-version is strictly before the seal is rejected (`"Cannot land at version V — sealed by evaluation/recovery at version S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
-(Note: parent-version = seal is permitted because that's where Cnt must land on chains where every event advances the seal — IEL specifically. Disallowing parent-at-seal would block Cnt on linear IEL chains entirely.)
+The land-version framing matters at the parent-at-seal boundary. When the chain's tip is itself the most recent privileged event (always-true on linear IEL chains where every event advances the seal; sometimes-true on KEL when the tip is a `Ror` and on SEL when the tip is a `Sea`), a Cnt with `previous = v_{tip-1}.said` lands at v_tip = seal_version with `parent_version = seal_version − 1`. `event_version = seal_version` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal. Disallowing this boundary case would block Cnt on linear chains whose tip is a privileged event entirely — including all linear IEL chains.
 
 **Bounds on the post-seal window per primitive**:
 - **KEL**: protocol-bounded. `MAX_NON_REVEALING_EVENTS = 62` proactive-ROR rule caps the chain since the last recovery-revealing event to 62 non-revealing events; after that, the next event MUST be `Rec`/`Ror`/`Dec`/`Cnt`. The window in which past-but-not-yet-revealed keys could create new divergence is therefore bounded by ≤ 62 events.
@@ -190,6 +190,7 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 - Separation of custody — no single point of compromise grants current-state authority.
 - Monitoring for unexpected governance / rotation events — fire alerts before adversary completes rotation.
 - Fast operator response — cut the detect-to-Cnt latency to within the gossip window.
+- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [policy.md §Threshold Redundancy](policy.md#threshold-redundancy)).
 - **Abandon-and-reincept** under a new prefix when current-state compromise is suspected — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
