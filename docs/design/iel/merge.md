@@ -107,7 +107,7 @@ else if event creates a fork (overlap) → insert single concurrent event at v_d
 else → normal append
 ```
 
-`Cnt` lands in two scenarios on IEL: (a) extending `v_{tip-1}` on a linear chain (creating fresh divergence at v_tip — the 2-event divergent set immediately fires the privileged-divergence-is-terminal rule), or (b) as one of the two events in an original 2-event divergent set (concurrent submission with another `Evl` or `Cnt`). After divergence is observed the chain is contested-terminal and the §2 gate rejects any further submission with `ContestedIel` — no Cnt joins as a 3rd event. `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
+`Cnt` lands on IEL in exactly one scenario: extending `v_{tip-1}` on a linear chain. Acceptance creates fresh 2-event divergence at v_tip (existing linear tip + Cnt, both with `previous = v_{tip-1}.said`); the privileged-divergence-is-terminal rule fires immediately. After divergence is observed the chain is contested-terminal and the §2 gate rejects any further submission with `ContestedIel` — including any further `Evl`/`Cnt`/`Dec` arriving via gossip (no 3rd event lands at v_d). The 2-event divergent shape can also be observed when two concurrent linear-chain submissions on different nodes (each accepted as a linear-chain extension on its own node — e.g., an `Evl` on one node and a `Cnt` on another, or two `Evl`s) merge via gossip; that's an emergent gossip-merge observation, not a separate acceptance scenario. `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
 
 Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly; there is no recoverable intermediate state.
 
@@ -115,7 +115,7 @@ Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is 
 
 Detected when any batch event has `kind = Cnt`. Inserts the batch (pending events first, then `Cnt`); no archival. Marks chain as contested. All future submissions return `ContestedIel`.
 
-On IEL specifically, Cnt only lands in two scenarios: (a) on a linear chain — Cnt's `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip, and the new 2-event divergent set immediately fires the privileged-divergence-is-terminal rule (every IEL event is privileged); or (b) as one of the events of an original 2-event divergent set (concurrent submission with another `Evl` or `Cnt`, both with `previous = v_{d-1}.said` landing at v_d). After divergence is observed, the chain is contested-terminal and no further Cnt is accepted — the §2 terminal-state gate rejects any post-divergence submission with `ContestedIel`.
+On IEL specifically, Cnt lands only on a linear chain: Cnt's `previous = v_{tip-1}.said` extends the parent of the chain's linear tip. Acceptance creates fresh 2-event divergence at v_tip (existing tip + Cnt); the new divergent set immediately fires the privileged-divergence-is-terminal rule (every IEL event is privileged). After divergence is observed, the chain is contested-terminal and no further Cnt is accepted — the §2 terminal-state gate rejects any post-divergence submission with `ContestedIel`. (The 2-event divergent shape is also reachable when two concurrent linear-chain submissions on different nodes — an `Evl` and a `Cnt`, or two `Evl`s — merge via gossip; that's an emergent gossip-merge observation, not a separate Cnt acceptance scenario.)
 
 ### 6. Decommission Path
 

@@ -105,25 +105,26 @@ v2' kind=cnt  previous=v1.said                              ← concurrent submi
       immediately; chain becomes contested-terminal as of v_2. —
 ```
 
-The two events at `v_2` carry the same `previous = v_1.said` (the `v_{tip-1}` rule applied to a chain whose tip is v_1). The 2-event set may be any combination of `Evl`/`Cnt` (and structurally any IEL kind, since every IEL event is governance-authorized — `Icp`, `Evl`, `Cnt`, `Dec` are all privileged); the outcome is the same. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving at v_2 via gossip. **Once divergence is observed, no Cnt is accepted on a divergent IEL** — Cnt only lands as one of the events in the original 2-event divergent set, or as the linear-chain operator-initiated termination (see next example).
+The two events at `v_2` carry the same `previous = v_1.said` — each was accepted as a linear-chain extension on its submitting node at submission time, with the two extensions independently landing at `v_2`. The 2-event set may be any combination of `Evl`/`Cnt` (and structurally any IEL kind, since every IEL event is governance-authorized — `Icp`, `Evl`, `Cnt`, `Dec` are all privileged); the outcome is the same. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving at v_2 via gossip. **Once divergence is observed, no Cnt is accepted on a divergent IEL** — Cnt acceptance is always a linear-chain extension on the submitting node's local chain; the 2-event divergent set is emergent (observed via gossip-merge of two independently-submitted linear-chain extensions, or as the post-acceptance state on a node whose tip is the gossip-delivered concurrent event when Cnt lands — see next example).
 
 Both events stay in storage forever as forensic record. Operator re-incepts under a different prefix (different topic, or new IEL identity).
 
 This is intentional: history is encoded in the data. We accept divergence and treat it as the chain's structural admission that governance is no longer single-authoritative. Termination is the honest answer; there is no `Rpr` to archive one branch in favor of the other (every branch is governance-authorized; the protocol has no grounds to declare one "the" branch).
 
-### Contest joining a divergent set after governance compromise
+### Contest after concurrent Cnt and Evl submissions
 
 ```
-v0..v3   normal chain
-v4       kind=evl  Evl_v4 advances last_governance_event to Evl_v4.said
-         (a second governance-authorized party — authority acquired via threshold compromise —
-          submits Evl_v5 at v_5 with previous = v_4.said; lands first via gossip race)
-v5'      kind=cnt  previous=v_4.said, version=5             ← operator's Cnt joins Evl_v5 in divergent set at v_5
-    — 2-event divergent set at v_5: {Evl_v5 (other party), Cnt}. Privileged-divergence-is-
-      terminal fires; chain contested-terminal as of v_5. —
+v0..v3   normal linear chain (across the federation)
+v4       kind=evl   advances last_governance_event to Evl_v4.said
+v5       kind=evl   previous=v_4.said       ← compromised party's Evl_v5
+v5'      kind=cnt   previous=v_4.said       ← operator's Cnt
+    — 2-event divergent set at v_5: {Evl_v5, Cnt}. Privileged-divergence-
+      is-terminal fires; chain contested-terminal as of v_5. —
 ```
 
-Cnt's `previous = v_{tip-1}.said = v_4.said` is the divergence ancestor — the parent shared with Evl_v5. Authorization resolves through `v_4`'s tracked `governance_policy` (the policy in effect when v_4 landed — the legitimate pre-compromise governance), which the operator still satisfies. The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment + out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
+Each submission is a linear-chain extension on its submitting node's local state at submission time. A second governance-authorized party — authority acquired via threshold compromise — submits Evl_v5 on their node (whose tip is v_4); Evl_v5 extends v_4 (= the submitter's tip) and lands at v_5 on their node. Gossip propagates Evl_v5 to the operator's node; the operator's tip advances to v_5. The operator, observing the unexpected v_5 event as evidence of compromise, submits Cnt; Cnt extends v_4 (= v_{tip-1} on the operator's node, where the tip is now Evl_v5) and lands at v_5 alongside Evl_v5 on the operator's node. Neither submission "knowingly joins a pre-existing divergent set" — each is a linear-chain extension on its node at submission time. The 2-event divergent set at v_5 is the post-acceptance state once Cnt lands on the operator's node (Evl_v5 already present from gossip), and the gossip-merged state on other nodes once both events propagate.
+
+Cnt's `previous = v_4.said` is `v_{tip-1}` on the operator's node at submission, and `v_{d-1}` (the divergence ancestor — the parent shared with Evl_v5) once the divergent set is observable. Authorization resolves through `v_4`'s tracked `governance_policy` (the policy in effect when v_4 landed — the legitimate pre-compromise governance), which the operator still satisfies. The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment + out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
 
 ### Clean decommission
 
