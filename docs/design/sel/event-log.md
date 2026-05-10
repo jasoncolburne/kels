@@ -11,16 +11,16 @@ See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event
 | State | Description | Accepts new events? |
 |---|---|---|
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` (per IEL-resolved authorization). |
-| **Divergent** | Two events at some version `d`. Chain is frozen until repaired. | Only `Rpr` (governance-authorized via IEL). Bundled owner-pending events permitted in the same batch. |
-| **Contested** | Chain has terminated due to authority conflict — at least one `Cnt` event in the chain. Forensic preservation. `Cnt` is the unconditional terminal: once contested, no further events land. | None. All submissions rejected. |
-| **Decommissioned** | Chain has terminated cleanly by owner action — at least one `Dec` event in the chain, no `Cnt`. Decommission is the operator's clean-retirement signal but is designed to be **not** unconditional: a subsequent `Cnt` can supersede it if compromise is detected post-Dec (forced Dec, post-Dec key compromise, etc.). | **Designed to accept Cnt** (IEL-authorized supersedure; chain becomes Contested). All other submissions rejected. **Note**: Cnt-supersedure requires non-tip parent-lookup support in the verifier, which lands in [#174](https://github.com/jasoncolburne/kels/issues/174). Until then current implementation rejects all post-Dec submissions including Cnt; operator's recourse for post-Dec compromise is abandon-and-re-incept under a new prefix. |
+| **Divergent (non-privileged)** | Two events at some version `d`, both non-privileged (e.g., `Upd`-`Upd` race). Chain is recoverable via `Rpr` (extends one branch tip and archives the other branch). | `Rpr` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
+| **Contested** | Chain has terminated due to a privileged event in a divergent set (privileged-divergence-is-terminal rule), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). SEL privileged events: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized). | None. All submissions rejected. |
+| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `DecommissionedSel`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `SelVerification` token surfaces:
 - `diverged_at_version: Option<u64>` — first version with multiple events, or `None` if linear.
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
 - `last_governance_version: Option<u64>` — version of the most recent `Sea`/`Rpr` (the "evaluation seal").
-- `last_identity_event: Option<Digest256>` — the highest IEL event (in IEL chain order) that any SEL event has bound to. Ratchets forward; never decreases.
+- `last_identity_event: Option<Digest256>` — derived aggregate: the highest IEL event (in IEL chain order) that any SEL event in the chain has bound to. Computed across all events; not used as a watermark gate. New event acceptance is gated by per-event parent-monotonic on `identity_event`, applied per branch (see [verification.md](verification.md) and [../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
 
 ## Event Kinds
 
@@ -28,8 +28,8 @@ State is computed from the chain's events, never tracked as a separate flag. The
 |---|---|---|---|
 | `Icp` | Inception (v0). Declares `identity` (IEL prefix). Permissionless — deterministic prefix derivation; no auth gate. | None at v0; chain advances require IEL-resolved authorization at v1+. | No |
 | `Upd` | Normal update — append content. | `auth_policy` resolved through `identity_event`. | No |
-| `Sea` | Seal — governance evaluation; advances the seal and ratchets `last_identity_event`. No field evolution (policies live on IEL). | `governance_policy` resolved through `identity_event`. | No |
-| `Rpr` | Repair — advances the seal AND resolves divergence (replaces adversary events at the divergence point). | `governance_policy` resolved through `identity_event`. | No |
+| `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `identity_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `identity_event`. | No |
+| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence (extends a tip at `v_{d+1}` and archives the events on the other branch). | `governance_policy` resolved through `identity_event`. | No |
 | `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `identity_event`. | **Yes** |
 | `Dec` | Decommission — terminal owner-initiated end. | `governance_policy` resolved through `identity_event`. | **Yes** |
 
@@ -50,52 +50,54 @@ SELs do not declare or evolve their own authorization policies. Every authorizat
 
 The IEL primitive is responsible for the immunity rule and the anchor-non-poisonability guarantees that today's SEL spent considerable design effort on. SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
-The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include monotonic-on-SEL (the chain's `last_identity_event` ratchets in IEL chain order; no rebinding to stale IEL events).
+The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include per-event parent-monotonic on `identity_event` applied per branch (each event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order; branches with different parent-chains do not constrain each other). This rule is SEL-specific — KEL and IEL have no separate field referencing another chain's authorization context, so no analog rule applies to them.
 
-## Trust Caveat — Recovered Anchoring KELs
+## Trust Caveat — Recovered or Contested Anchoring KELs
 
-The seal property and the anchoring model give *structural* guarantees against poisoning (via IEL's immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered — because recovery archives the adversary branch, anchors made on that branch are removed from the live KEL.
+The seal property and the anchoring model give *structural* guarantees against poisoning (via IEL's immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered, and *no* guarantees when a participating KEL has been contested.
 
-`Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the owner's branch stay (`rec` archives only the adversary branch); anchors on the now-archived adversary branch do not. This applies to anchors of any kind — SEL governance evaluations, SEL writes, IEL evolutions.
+`Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the branch the Rec extends stay (`rec` archives only the other branch); anchors on the now-archived branch do not. This applies to anchors of any kind — SEL governance evaluations, SEL writes, IEL evolutions.
 
 Implications for SEL consumers:
 
-- A past SEL event whose authorizing anchor was placed on the owner's branch of the anchoring KEL: re-verifies cleanly post-`rec`.
-- A past SEL event whose authorizing anchor was placed on the adversary branch (now archived): may *fail* re-verification. The recovery mechanism has reverted what the adversary did to the underlying KEL, and that reversal propagates to dependent SELs.
+- A past SEL event whose authorizing anchor was placed on the surviving branch of the anchoring KEL: re-verifies cleanly post-`rec`.
+- A past SEL event whose authorizing anchor was placed on the archived branch: may *fail* re-verification. The recovery mechanism has reverted that branch in the underlying KEL, and the reversal propagates to dependent SELs.
 
 This is observable, not hidden — the chain mathematics make the post-`rec` state visible. The consumer's runtime trust judgement is: when a participating KEL has `rec` history, re-verify the SEL (and the IEL it binds to) and treat past state with caution proportionate to what survives.
 
-`Cnt` on a participating KEL is distinct in shape: a contested KEL is frozen but no events are archived, so adversary-placed anchors stay in the live chain alongside owner-placed ones. Past SEL evaluations re-verify regardless. But `cnt` is itself evidence that the recovery key was exposed — the KEL is permanently terminal, and a consumer should treat past evaluations participating in such a KEL with comparable caution to (or more than) the rec case.
+**A contested anchoring KEL is whole-chain-suspect.** Once the participating KEL has been contested (any privileged-divergence on it, or explicit Cnt), no anchors anchored under it can ground new trust decisions. Past SEL evaluations that depend on a contested KEL lose their authorization basis; cascade-reincept applies (the dependent IEL and SEL must reincept against a different anchoring KEL).
 
 ## Divergence and Freeze
 
-Divergence is detected when two events share the same `previous` SAID. The chain is frozen at that point: the merge engine rejects all non-repair appends with the existing "Chain is divergent — repair required" path.
+Divergence is detected when two events share the same `previous` SAID. The chain transitions per the privileged-divergence rule:
+- If the divergent set contains a privileged event (`Sea`/`Rpr`/`Cnt`/`Dec`) — directly to **Contested** (terminal).
+- If the divergent set is non-privileged (only `Upd` events) — to **Divergent (non-privileged)**, recoverable via `Rpr`.
 
 v0 divergence is rejected outright (inception is fully deterministic — two distinct v0 events for the same prefix indicate protocol-level corruption, not authority conflict).
 
-Two routes create divergence on a SEL:
+**Race-vs-takeover framing.** Divergence on a SEL — two events at the same version — can arise from a federation race (two parties with valid `auth_policy` submitting concurrent `Upd`s, or two governance-authorized parties submitting concurrent `Sea`/`Rpr`) or a takeover (a second party whose access was acquired via threshold compromise). The chain shape records the divergence in the data; the protocol cannot structurally distinguish race from takeover. The verifier accepts both as structurally valid; the trust model degrades uniformly.
 
-1. **Concurrent extensions** (race, same-batch fork): two events with the same `previous` land at the same version. Divergence is created at the moment of submission. The proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) bounds the post-`d` window to one page.
-2. **Retroactive `Cnt`-from-non-tip** (operator contestation of a previously-clean linear chain): the chain was clean linear; the operator submits `Cnt` whose `previous` points at any event in the chain (versions `0` through `N-1`); `Cnt`'s version `c = previous.version + 1` falls in `(0, N]`. Divergence is created retroactively at version `c`: the pre-existing chain forms one branch (the contested branch, with events at versions ≥ `c`); the Cnt-only branch is terminal at `c`. The contested branch's events stay in storage as forensic record. **Verifier processing is bounded by single-event Cnt verification — the contested branch was already verified during the pre-Cnt walk and is *not re-walked* on Cnt arrival.** **Note**: this mode requires non-tip parent-lookup support in the verifier, which lands in [#174](https://github.com/jasoncolburne/kels/issues/174). Until then current implementation rejects Cnt whose `previous` is a non-tip event; operator's recourse for compromise of a previously-clean linear chain is abandon-and-re-incept under a new prefix.
+**Concurrent extensions** (race, same-batch fork): two events with the same `previous` land at the same version. Divergence is created at the moment of submission. The proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) bounds the post-`d` window for non-privileged-divergent chains to one page.
 
 The divergence invariant guarantees:
-- Exactly 2 events at the divergence version `d`.
-- At most 1 event at each version `> d` (the contested branch's pre-existing events for retroactive `Cnt`; nothing for concurrent-extension divergence beyond pre-divergence pending or optional Cnt-tip-extension).
-- **Bounded verifier processing.** For concurrent-extension divergence the post-`d` window is bounded by the proactive evaluation rule (one page). For retroactive `Cnt` the post-`d` window can include the entire pre-existing contested branch, but those events were already verified pre-Cnt; `Cnt` arrival is processed as a single-event addition (parent-lookup resolves Cnt's `previous` against any known event in the chain, divergence point set to Cnt's version, chain marked contested-terminal). Verifier work for the Cnt-arrival step is bounded by single-event verification cost regardless of contested-branch length.
+- **Non-privileged divergent set** at version `d` (event kinds limited to `Upd`): max 2 events. Recoverable via `Rpr`.
+- **Privileged divergent set** at version `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
+- The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
+- Every event lives at a version at-or-after the chain's last evaluation seal (parent version ≥ seal). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `identity_event` (each event's `identity_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `identity_event`.
 
 ### Why SEL has Rpr (and IEL doesn't)
 
-SEL divergence happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting `Upd` submissions. The legitimate operator's branch is "owner"; the adversarial branch is "adversary." `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the adversary branch.
+SEL divergence on `Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting `Upd` submissions. `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the branch not on `Rpr.previous`'s walkback. The asymmetry `Rpr` exploits is between auth and governance authority, not between protocol-distinguished operator and adversary.
 
 IEL has no analog because every IEL event after Icp is governance-authorized; there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
 
 ## Repair (Rpr)
 
-Repair resolves divergence by archiving adversary-authored events from version `L = first_divergent_version` forward, leaving the owner's authentic chain intact, then appending an `Rpr` that advances the seal.
+Repair resolves a non-privileged-divergent SEL by archiving the events on the branch not extended by `Rpr.previous`, leaving the branch the Rpr extends intact, then appending an `Rpr` that advances the seal. **`Rpr` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch** — it does not join the divergent set at `v_d`. (Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` and Cnt's own version is `v_d`; see [§Contest (Cnt)](#contest-cnt).) The asymmetry between auth-only `Upd`s in the divergent set and the governance-authorized `Rpr` is what lets `Rpr` resolve the divergence.
 
 ### Builder boundary derivation
 
-`SadEventBuilder::repair()` derives the boundary uniformly: `boundary = owner_tip.version`, regardless of whether the chain is divergent or merely behind. The `Rpr` is built as `SadEvent::rpr(boundary)`, producing:
+`SadEventBuilder::repair()` derives the boundary uniformly: `boundary = surviving_tip.version` (the tip the operator's `Rpr` will extend), regardless of whether the chain is divergent or merely behind. The `Rpr` is built as `SadEvent::rpr(boundary)`, producing:
 - `Rpr.previous = boundary.said`
 - `Rpr.version = boundary.version + 1`
 - `Rpr.content = boundary.content` (preservation rule; Rpr does not mutate content)
@@ -103,7 +105,7 @@ Repair resolves divergence by archiving adversary-authored events from version `
 
 ### Pending events bundling
 
-Pending events (events the builder staged but never successfully flushed — typically because the server rejected the batch with "Chain is divergent — repair required") are owner-staged in-progress work. `repair()` bundles pending events into the submission batch:
+Pending events (events the builder staged but never successfully flushed — typically because the server rejected the batch with "Chain is divergent — repair required") are operator-staged in-progress work. `repair()` bundles pending events into the submission batch:
 - The batch ships as `[pending..., Rpr]`.
 - `Rpr` extends the LAST pending event (or the verified tip if pending is empty).
 - The server processes the batch atomically — pending events land first, then `Rpr` adopts them as part of the post-repair chain. Bundled pending events are verified server-side on submit like any other event.
@@ -116,16 +118,16 @@ KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_rec
 
 ### Server-side discriminator
 
-`truncate_and_replace` discriminates owner from adversary events using the `Rpr.previous` walkback pattern (mirrors KEL's `archive_adversary_chain`):
+`truncate_and_replace` discriminates the surviving branch (the one the Rpr extends) from the archived branch using the `Rpr.previous` walkback pattern (mirrors KEL's `archive_adversary_chain`):
 
 1. Detect repair: any new event after dedup has `kind = Rpr`.
 2. Compute archive lower bound `L = first_divergent_version(prefix).unwrap_or(Rpr.version)`.
 3. **Single page fetch**: events at `version >= L` for the prefix, ordered `(version ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`. One round-trip.
 4. **Trust gate**: feed the page through the resume-mode verifier (`SelVerifier::resume(&prefix, &sel_verification).verify_page(&page)`). The verifier checks SAID, prefix, chain linkage, and IEL-resolved authorization (which fetches and verifies the signed `ixn` anchors in the controlling KELs). Verification failure aborts repair — fail-secure on tampered DB rows.
-5. Build a SAID-keyed in-memory map of the verified page (and of the batch's own new events not yet on the chain — owner's bundled pending events may be referenced by `Rpr.previous`).
-6. **Walkback**: starting at `Rpr.previous`, follow `event.previous` links through the map, accumulating `owner_chain_saids` for every event with `version >= L`. Stop when version drops below L or said not in map. Bounded by `MINIMUM_PAGE_SIZE` iterations (governance seal caps the walk well below this).
-7. **Archive**: page events at `version >= L` whose SAID is NOT in `owner_chain_saids`. Insert into `sad_event_archives` and create `SelRepairEvent` link rows.
-8. **Delete** archived events from `sad_events` by SAID (NOT by version range — owner's events at the same versions must remain).
+5. Build a SAID-keyed in-memory map of the verified page (and of the batch's own new events not yet on the chain — bundled pending events may be referenced by `Rpr.previous`).
+6. **Walkback**: starting at `Rpr.previous`, follow `event.previous` links through the map, accumulating the surviving-branch SAIDs for every event with `version >= L`. Stop when version drops below L or said not in map. Bounded by `MINIMUM_PAGE_SIZE` iterations (governance seal caps the walk well below this).
+7. **Archive**: page events at `version >= L` whose SAID is NOT on the surviving-branch walkback. Insert into `sad_event_archives` and create `SelRepairEvent` link rows.
+8. **Delete** archived events from `sad_events` by SAID (NOT by version range — surviving-branch events at the same versions must remain).
 9. Insert the batch's new events: pending first, then `Rpr`.
 
 ### Bounds
@@ -134,30 +136,46 @@ KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_rec
 
 ## Contest (Cnt)
 
-Contest is the terminal state for SEL — the legitimate operator cannot defeat an adversary who has demonstrated `governance_policy` authority on the bound IEL (or the chain is otherwise unrecoverable). `Cnt` freezes the SEL.
+Contest is the terminal state for SEL — the operator cannot defeat a party who has demonstrated `governance_policy` authority on the bound IEL (or the chain is otherwise unrecoverable). `Cnt` freezes the SEL.
 
 ### Algorithmic trigger — `ContestRequired`
 
 The merge engine returns `ContestRequired { reason }` when:
 - The submitted event is non-terminal AND non-Rpr.
-- The event's version is `<=  last_governance_version` (the submitter's view is at-or-before the evaluation seal — someone with governance authority advanced the seal past the submitter's view).
+- The event's version is `<= last_governance_version` (the submitter's view is at-or-before the evaluation seal — someone with governance authority advanced the seal past the submitter's view).
 - The chain is not divergent (divergence routes to `RepairRequired` instead).
 
 This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, governance evaluation) has been used, and safe normal-flow continuation is no longer possible. See [../kel/event-log.md §Contest (Cnt)](../kel/event-log.md#contest-cnt) for the structural parallel.
 
+### Cnt placement
+
+`Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence).
+
+Cnt is privileged (governance-authorized). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal.
+
+**Distinction from Rpr.** `Rpr` extends a branch tip at `v_{d+1}` and resolves divergence by archiving the other branch — it does not join the divergent set at `v_d`. Only `Cnt` joins the divergent set at the divergence version `v_d` — Cnt's `previous = v_{d-1}.said` (the divergence ancestor) and Cnt's own version is `v_d`. Submitting `Cnt` with `previous = v_{d-1}.said` is what creates the contest; submitting `Rpr` with `previous = a-tip-at-v_d` is what creates a repair.
+
+See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+
+Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `identity_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. (The general invariant — any event with failed auth is rejected — applies.) Operator discipline (advancing the live branch's tip `identity_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
+
 ### Server semantics
 
-- Verify `Cnt`'s structure and IEL-resolved governance authorization.
-- Insert `Cnt`. **No archival** — the chain itself is the record (both branches preserved if divergent).
-- Any `Cnt` event in the chain → `is_contested = true`. All future submissions rejected with `ContestedSel`.
+- Verify `Cnt`'s structure and IEL-resolved governance authorization at `v_{tip-1}` (HARD).
+- Insert `Cnt`. **No archival** — the chain itself is the record (existing events preserved alongside Cnt).
+- Cnt is privileged → its presence in the divergent set triggers `is_contested = true` via the privileged-divergence-is-terminal rule. All future submissions rejected with `ContestedSel`.
+- On a linear chain, Cnt's insertion creates fresh divergence at the tip's version (2 events at that version: existing tip + Cnt); privileged-divergence rule fires immediately. On an already-divergent chain, Cnt becomes the 3rd event at `v_d` via the upgrade rule.
 
 ### Builder
 
 `SadEventBuilder::contest()`:
-- Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification). KEL's parallel helper is named `verify_server_chain_pre_repair` (`lib/kels/src/builder.rs:521`); same role, different name. The `_action` suffix is more general (covers contest/decommission/repair); rename of KEL's helper is a candidate for #161's KEL pending-bundling work.
+- Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification).
 - Bundles pending events into the batch.
-- Builds `Cnt` extending the last bundled event (pending tail, or verified tip if pending empty); submits `[pending..., Cnt]`.
+- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — freeze-on-divergence keeps the shorter branch single-event so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). The lower-SAID tip-selection logic is no longer needed — `v_{tip-1}` is well-defined.
+- Resolves authorization via `v_{tip-1}`'s IEL-resolved governance policy and constructs the anchor accordingly.
+- Submits `[pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
+- **No `contest_with_iel_event_said` override.** When the bound IEL has terminated, the SEL stays in its last state — there is no escape hatch to bind `Cnt` against a stale IEL event. Consumers judge the SEL's status via the IEL's terminal status; the operator's response is reincept the SEL under a new IEL.
 
 ## Decommission (Dec)
 
@@ -167,7 +185,7 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 
 - Verify `Dec`'s structure, governance authorization.
 - Insert `Dec`. No archival.
-- Any `Dec` in the chain → `is_decommissioned = true`. Future non-`Cnt` submissions rejected with `DecommissionedSel`. A subsequent `Cnt` is accepted as supersedure (chain becomes contested).
+- Any `Dec` in the chain → `is_decommissioned = true`. All future submissions rejected with `DecommissionedSel` (Dec is privileged → seals immediately → seal-cap forbids any later fork → no Cnt can land after Dec).
 
 ### Builder
 
@@ -184,17 +202,16 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | non-terminal events | Append. Seal advances on `Sea`/`Rpr`. |
-| Linear, overlap (fork) | non-`Rpr`/`Cnt`/`Dec` | Insert single forking event, freeze. `Diverged`. |
-| Linear, post-evaluation-seal | non-terminal/non-`Rpr` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger; excludes `Cnt`/`Dec` — terminal — which append cleanly). |
-| Linear (any) | `Cnt` | Insert, mark contested. |
-| Linear (any) | `Dec` | Insert, mark decommissioned. |
-| Divergent (unsealed) | `Rpr` | Discriminator-driven repair. `Repaired`. |
-| Divergent (unsealed) | `Upd`/`Sea`/`Cnt`/`Dec` | `RepairRequired`. Chain unchanged. (No governance-revealing event yet — `Rpr` is the natural resolver.) |
-| Divergent (sealed) | `Cnt` | Insert (extends lower-SAID branch tip), mark contested. (Only legitimate resolver — `Rpr` cannot truncate behind the seal.) |
-| Divergent (sealed) | `Upd`/`Sea`/`Rpr`/`Dec` | `ContestRequired`. Chain unchanged. |
+| Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
+| Linear, overlap (fork, non-privileged events) | concurrent `Upd` | Insert second event at `v_d`; chain becomes Divergent (non-privileged); recoverable via `Rpr`. |
+| Linear, overlap (fork, includes privileged) | concurrent governance event | Insert second event at `v_d`; privileged-divergence rule fires; chain becomes contested-terminal. |
+| Linear, post-evaluation-seal | non-terminal/non-`Rpr`/non-`Cnt` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger). |
+| Linear (any) | `Dec` | Insert at tip, mark decommissioned. |
+| Divergent (non-privileged), unsealed | `Rpr` | Discriminator-driven repair (Rpr extends a tip at `v_{d+1}` and archives the other branch). `Repaired`. |
+| Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
+| Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | non-`Cnt` | Rejected with `DecommissionedSel`. |
-| Decommissioned | `Cnt` | Insert, mark contested (Dec is superseded). |
+| Decommissioned | any | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Upd`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).
@@ -203,7 +220,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 
 **Code:**
 - `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
-- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds `last_identity_event` (ratchet); authorization policies are not tracked per branch (they resolve through IEL on demand). `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
+- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds the branch tip's `identity_event` for the per-event parent-monotonic check on the next event extending the branch; authorization policies are not tracked per branch (they resolve through IEL on demand). The chain-wide `last_identity_event` is a derived aggregate (max across branches), not a flowing watermark gate. `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
 - `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
@@ -213,7 +230,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - No per-branch tracking of authorization policies on branch state.
 - No SEL-side immunity rule (lives on IEL).
 - New `identity_event` field on every v1+ event.
-- New `last_identity_event` ratchet on branch state.
+- Per-branch `identity_event` tracking (each branch's tip's `identity_event` for the per-event parent-monotonic check on the next event extending that branch); chain-wide `last_identity_event` is a derived aggregate.
 - New `[Icp, Upd]` minimum inception batch rule.
 
 ## References

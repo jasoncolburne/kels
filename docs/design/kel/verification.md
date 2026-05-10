@@ -161,6 +161,31 @@ Verification does NOT fail on divergence. Instead:
 - All branches of a divergent KEL are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler is responsible for resolving divergence
 
+### Terminal-state determination
+
+The verifier's terminal-state-determination rule simplifies to:
+- Divergent at `v_d`?
+  - No → linear (active or terminal-via-Dec).
+  - Yes → divergent set contains a privileged event (`Rec`/`Ror`/`Cnt`/`Dec` — recovery-revealing)?
+    - Yes → contested (terminal).
+    - No → divergent (recoverable via `Rec`).
+
+Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+
+### Cnt parent resolution
+
+Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's serial), or `v_{d-1}` on a divergent chain (the divergence ancestor; freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes).
+
+**Implementation note.** Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotation_hash` and `recovery_hash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
+
+### Upgrade rule
+
+When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a privileged event for that same `v_d` (any of `Rec`, `Ror`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
+
+### Cnt authorization (HARD)
+
+Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state. The general invariant "any event with failed auth is rejected" applies to all event kinds.
+
 ## Event Types and Their Signatures
 
 Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/events/icp`).

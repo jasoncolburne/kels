@@ -20,7 +20,7 @@ All cases below depend on these invariants:
 
 6. **No retroactive poisoning** (lives on IEL): every IEL-tracked policy is immune. Past authorizations stay satisfied by construction. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability).
 
-7. **Monotonic identity ratchet**: each SEL event's `identity_event` is at-or-after the chain's prior `last_identity_event` in IEL chain order. The chain ratchets forward.
+7. **Per-event parent-monotonic on `identity_event`** (SEL-specific; KEL/IEL have no analog because their authorization is intrinsic, not referenced via a separate field): each SEL event's `identity_event` is at-or-after its parent event's `identity_event` (parent via `previous` SAID) in IEL chain order, applied per branch independently. Branches with different parent-chains do not constrain each other; the chain-wide `last_identity_event` is a derived aggregate (max across all events) used by consumers, not a flowing watermark gate. Within-chain policy variation across branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
 
 These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible — and what make cross-chain authorization stable as IEL evolves.
 
@@ -56,7 +56,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` |
 
 Additional rejection cases for v1+ events that don't fit per-state cells:
-- `BadIdentityBinding` — `identity_event` doesn't resolve to a real IEL event with matching prefix, or fails the monotonic ratchet check.
+- `BadIdentityBinding` — `identity_event` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
 - `IelDivergent` — bound IEL event lives on a divergent IEL branch.
 
 ### Batch submissions
@@ -155,11 +155,11 @@ Different nodes may have different event counts for a contested SEL (e.g., one n
 
 ### 6. Adversary races inception with stale identity binding
 
-Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v1. Owner submits `[Icp, Upd_owner]`; Icp dedups; Upd_owner extends as v2 with current IEL binding. Monotonic ratchet check: Upd_owner's `identity_event` ≥ Upd_stale's, satisfied since owner's binding is to a later IEL event. Owner's content takes precedence going forward; consumers reading the chain see Upd_owner's content as the latest. Adversary's stale v1 entry is buried but visible in chain history (forensic).
+Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v1. Owner submits `[Icp, Upd_owner]`; Icp dedups; Upd_owner extends as v2 with current IEL binding. Per-event parent-monotonic check: Upd_owner's parent is Upd_stale (linear extension); Upd_owner's `identity_event` ≥ Upd_stale's `identity_event`, satisfied since owner's binding is to a later IEL event. Owner's content takes precedence going forward; consumers reading the chain see Upd_owner's content as the latest. Adversary's stale v1 entry is buried but visible in chain history (forensic).
 
-### 7. IEL evolves, owner ratchets dependent SEL
+### 7. IEL evolves, owner advances dependent SEL's branch tip
 
-After IEL governance evolves (an Evl on IEL changes governance_policy), owner submits `Sea` on each dependent SEL to ratchet `last_identity_event` forward. After ratcheting, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` fails the monotonic check. See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
+After IEL governance evolves (an Evl on IEL changes governance_policy), owner submits `Sea` on each dependent SEL to advance the live branch's tip `identity_event` forward to the new IEL Evl. After this advancement, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` extending that branch tip fails the per-event parent-monotonic check (the adversary's `identity_event` regresses relative to its parent's). See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
 
 ### 8. SEL bound to an IEL event whose IEL is now divergent
 

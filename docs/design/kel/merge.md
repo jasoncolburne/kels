@@ -20,18 +20,18 @@ The merge function returns a `MergeOutcome`:
 - **`diverged_at`** - Serial at which divergence was detected, if any
 - **`tip_said`** - SAID of the new tip event for linear appends, or `None` for divergent/complex paths
 
-During recovery, adversary events are identified, archived to mirror tables, and removed from the live chain — all synchronously within the merge transaction. A `RecoveryRecord` audit entry is created atomically, and `kels_recovery_events` join records link the recovery to each archived adversary event.
+During recovery, the discriminator identifies the events on the branch not extended by `Rec.previous`, archives them to mirror tables, and removes them from the live chain — all synchronously within the merge transaction. A `RecoveryRecord` audit entry is created atomically, and `kels_recovery_events` join records link the recovery to each archived event.
 
 ### KelMergeResult Variants
 
 | Result | Meaning | KEL State After |
 |--------|---------|-----------------|
 | `Accepted` | Events accepted normally | OK |
-| `Recovered` | Recovery succeeded, adversary events archived | OK |
-| `Diverged` | Divergence first detected, KEL now frozen, owner can submit `rec` | Frozen (divergent) |
-| `Contested` | Both parties revealed recovery keys, KEL permanently frozen | Contested |
-| `RecoverRequired` | KEL already frozen (divergent), only `rec`/`cnt` events accepted | Frozen (divergent) |
-| `ContestRequired` | Recovery key revealed, owner must submit `cnt` to freeze | Unchanged |
+| `Recovered` | Recovery succeeded, non-surviving branch events archived | OK |
+| `Diverged` | Non-privileged divergence first detected, recoverable via `Rec` | Divergent (non-privileged, recoverable) |
+| `Contested` | Privileged-divergence rule fired or explicit `Cnt` landed; chain permanently terminal | Contested |
+| `RecoverRequired` | KEL is non-privileged-divergent; only `Rec`/`Cnt` events accepted | Divergent (non-privileged) |
+| `ContestRequired` | Recovery key revealed in divergent set; the chain must be terminated via `Cnt` | Unchanged |
 
 ## Merge Flow
 
@@ -114,7 +114,7 @@ This handles partial re-submissions (e.g., gossip sending a full KEL including e
 
 #### 5c. Divergent KEL
 
-If the `KelVerification` shows the KEL is already divergent, the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the owner's chain in the fork.
+If the `KelVerification` shows the KEL is already divergent, the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the surviving branch (the chain identified by `Rec.previous` walkback or the operator's intended Cnt extension).
 
 **Contest path** (`cnt` anywhere in batch, must be last):
 ```
@@ -124,7 +124,7 @@ if batch contains a cnt event:
         return RecoverRequired  // No recovery revealed — recover, don't contest
     continue KEL verification with submitted events (from branch tip)
     check proactive ROR compliance
-    append all events (owner's chain + cnt)
+    append all events (surviving branch + cnt)
     return Contested
 ```
 
@@ -135,9 +135,9 @@ if batch contains a rec event:
         return ContestRequired  // Adversary has recovery key, must contest
     continue KEL verification with submitted events (from branch tip)
     check proactive ROR compliance
-    check if adversary revealed recovery key (detailed check via find_adversary_event)
-    archive adversary events
-    append all events (owner's chain + rec + optional rot)
+    check whether the contesting branch reveals recovery key (detailed check via find_adversary_event)
+    archive non-surviving branch events
+    append all events (surviving branch + rec + optional rot)
     create RecoveryRecord + kels_recovery_events links
     return Recovered
 ```
@@ -159,15 +159,15 @@ check proactive ROR compliance
 // Check if existing events from divergence onward reveal recovery key
 if existing events reveal recovery:
     if batch contains cnt (must be last):
-        append all events (owner's chain + cnt)
+        append all events (surviving branch + cnt)
         return Contested
     else:
         return ContestRequired  // Owner must contest, not recover
 
 // Check for recovery in submitted events
 if batch contains rec:
-    archive existing adversary events
-    append all events (owner's chain + rec + optional rot)
+    archive existing non-surviving branch events
+    append all events (surviving branch + rec + optional rot)
     create RecoveryRecord
     return Recovered
 
@@ -235,5 +235,5 @@ All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, dec=5, rec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/kel/v1/events/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `partition_for_submission()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest
 2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
 3. **Recovery key revelation requires contest** - Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (owner must contest instead)
-4. **Contest is the only response to adversary recovery** - If adversary revealed recovery key, owner must contest (not recover)
+4. **Contest is the only response when the recovery key is revealed in divergence** - the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
 5. **Contested KELs are permanently frozen** - No events can be added after contest

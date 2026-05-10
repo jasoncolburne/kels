@@ -41,7 +41,7 @@ What happens when a client submits events to the merge engine on a single node.
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
 | **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
-| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | Overlap: Contest ✓ (`dec` reveals recovery); Append: `KelDecommissioned` | `KelDecommissioned` |
+| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
 
 ### Batch submissions
 

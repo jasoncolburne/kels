@@ -95,7 +95,7 @@ else if event creates a fork (overlap) → insert single forking event, freeze
 else → normal append
 ```
 
-Order matters: `Cnt` always wins (works on divergent and linear chains — it's the only resolution for a divergent IEL). The divergent-rejection branch comes BEFORE `is_decommission` so `Dec` on a divergent chain is rejected with `ContestRequired`. `Dec` is "owner-initiated clean termination," but a divergent chain isn't clean — only `Cnt` honestly resolves divergence.
+Order matters: `Cnt` is accepted on Active and on Divergent states (extending `v_{tip-1}` per the bounded fork-contest rule); rejected on Contested and Decommissioned. On IEL specifically, any divergence is immediately contested by the privileged-divergence rule (every IEL event is governance-authorized → privileged), so the "Divergent" intermediate state is structurally vacuous on IEL — divergence transitions directly to Contested. `Dec` is operator-initiated clean termination and only lands on a non-divergent chain.
 
 Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL accepts only `Cnt`; everything else returns `ContestRequired`.
 

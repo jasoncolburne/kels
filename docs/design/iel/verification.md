@@ -98,15 +98,28 @@ Policy state is **branch-tracked**:
 
 Authorization checks use the *previous tracked* policy values for `Evl` (an Evl evolving auth_policy is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing). This prevents an actor with auth-only authority from elevating themselves.
 
-### Post-Divergence Soft-Fail Propagation
+### Terminal-State Determination and Authorization
 
-The verification cutoff for "valid for downstream binding" is `first_divergent_version`. A `Cnt` structurally creates divergence (it extends an existing tip that isn't the chain's max version), so contested chains always have a divergence point. `Dec` only lands on non-divergent chains (routing rejects Dec on divergent with `ContestRequired`), so decommissioned chains have no cutoff and the Dec event itself is a valid event in the chain.
+All events on IEL require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution, BadIdentityBinding — stay HARD as well.
 
-For events at `version >= first_divergent_version` (post-divergence on a Cnt'd chain): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Pre-divergence events follow the existing soft/hard mapping (Cnt's-own-soft-fail for governance check; Evl/Cnt/Dec auth checks per their respective severity). Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution, BadIdentityBinding — stay HARD regardless of divergence position. Cnt doesn't change whether an event is well-formed.
+The verifier's terminal-state-determination rule simplifies to:
+- Divergent at `v_d`?
+  - No → linear (active or terminal-via-Dec).
+  - Yes → divergent set contains a privileged event (any IEL event kind: `Icp`, `Evl`, `Cnt`, `Dec`)?
+    - Yes → contested (terminal).
+    - No → never reached on IEL (every IEL event is privileged, so any divergent set on IEL is privileged-divergent).
 
-Why preserve rather than reject: `Cnt` semantically means "the governance keys may be compromised; the chain cannot be safely advanced." Hard-rejecting post-divergence events would bounce the entire verification, leaving consumers unable to read pre-divergence state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them.
+In practice on IEL, any divergence is immediately contested. The "divergent-but-not-yet-contested" intermediate state doesn't arise on IEL; it exists for KEL (non-privileged Rot/Ixn divergence, recoverable via Rec) and SEL (non-privileged Upd divergence, recoverable via Rpr).
 
-This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
+**Cnt parent resolution.** Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes).
+
+Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governance_policy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
+
+**Upgrade rule.** When a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.) **This rule does not apply on IEL**: every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist.
+
+See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+
+The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
 
 ### Caller-Bounded SAID Querying (`queried_saids` / `satisfied_saids`)
 

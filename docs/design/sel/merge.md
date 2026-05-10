@@ -9,7 +9,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Normal event appends (`Upd`, `Sea`)
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same version)
-- Repair (`Rpr`) — discriminator-driven archival of adversary events
+- Repair (`Rpr`) — discriminator-driven archival of the events on the branch not extended by `Rpr.previous`
 - Contest (`Cnt`) — terminal authority conflict, no archival
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the seal has advanced past the submitter's view
@@ -35,7 +35,7 @@ Server errors map to:
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Upd`) | unchanged (rejected) |
-| `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails monotonic ratchet | unchanged |
+| `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
 
 ## Submit Flow
@@ -64,9 +64,12 @@ for v1+: cross-chain authorization resolution:
 
     verify event.said is anchored under the resolved policy
 
-    monotonic ratchet check:
-        event.identity_event must be at-or-after branch.last_identity_event
-        in IEL chain order; reject BadIdentityBinding otherwise
+    per-event parent-monotonic check (per branch):
+        event.identity_event must be at-or-after the parent event's identity_event
+        (parent via previous SAID; this is the branch's tip identity_event when
+        extending an existing branch tip) in IEL chain order; reject
+        BadIdentityBinding otherwise. Branches with different parent-chains
+        do not constrain each other.
 ```
 
 The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that version, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
@@ -137,8 +140,8 @@ Detected when any batch event has `kind = Rpr`. Calls `repository::truncate_and_
 1. Computes archive lower bound `L = first_divergent_version(prefix).unwrap_or(Rpr.version)`.
 2. Fetches one page of events at `version >= L`, ordered `(version ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`.
 3. Feeds the page through the resume-mode verifier (`SelVerifier::resume(&prefix, &sel_verification).verify_page(&page)`).
-4. Walks back from `Rpr.previous` through the verified page, accumulating owner SAIDs.
-5. Archives non-owner events; deletes them from `sad_events` by SAID; inserts the new batch (pending events first, then `Rpr`).
+4. Walks back from `Rpr.previous` through the verified page, accumulating the surviving-branch SAIDs.
+5. Archives events on the non-surviving branch; deletes them from `sad_events` by SAID; inserts the new batch (pending events first, then `Rpr`).
 
 Full algorithm: [event-log.md §Server-side discriminator](event-log.md#server-side-discriminator). Mirrors KEL's `archive_adversary_chain`.
 

@@ -22,6 +22,117 @@ Comparing state to decide whether to sync. A wrong answer triggers an unnecessar
 
 Examples: `effective_tail_said` endpoint, anti-entropy comparison, `should_add_rot_with_recover()`
 
+## Compromise is Permanent
+
+The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. A KEL key compromised in 2023 cannot Cnt the chain in 2026 even if the adversary still holds the key material; an IEL `governance_policy` participant who was revoked via `Evl` cannot Cnt the chain after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be Cnt'd by the rotated-out parties (subject to operator-side ratcheting via `Sea`).
+
+This closes the **stale-state kill-switch problem**. Without this rule, every party who ever held authority over a chain would retain protocol-level kill-switch authority over it forever, and any past compromise would become a permanent vulnerability. With this rule, past compromise is structurally a non-event for protocol authority.
+
+### Forks are Seal-Bounded
+
+The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
+
+- **KEL**: `last_recovery_revealing_serial` — the serial of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
+- **IEL**: `last_governance_version` — the version of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
+- **SEL**: `last_governance_version` — the version of the most recent `Sea`/`Rpr` (Cnt/Dec analogous).
+
+A new event's `previous` MUST point to a chain event at version at-or-after the seal (≥ seal). Any submission whose fork-point is strictly before the seal is rejected (`"Cannot fork at version V — sealed by evaluation/recovery at version S"`). This guarantees that any divergent branch's parent is at-or-after the seal, so the auth context resolved at that parent is the chain's currently-tracked policy / key state — not a stale one.
+
+(Note: parent-version = seal is permitted because that's where Cnt must land on chains where every event advances the seal — IEL specifically. Disallowing parent-at-seal would block Cnt on linear IEL chains entirely.)
+
+**Bounds on the post-seal window per primitive**:
+- **KEL**: protocol-bounded. `MAX_NON_REVEALING_EVENTS = 62` proactive-ROR rule caps the chain since the last recovery-revealing event to 62 non-revealing events; after that, the next event MUST be `Rec`/`Ror`/`Dec`/`Cnt`. The window in which past-but-not-yet-revealed keys could create new divergence is therefore bounded by ≤ 62 events.
+- **IEL**: no protocol cap. Every IEL event after `Icp` advances the seal (every `Evl` is governance-authorized and is itself a seal-advancing event), so the seal coincides with the tip — within-window forks structurally don't exist on IEL. The bound on "how stale can authority become before being supplanted" is purely operator-side: governance evolution discipline.
+- **SEL**: protocol-bounded. `MAX_NON_EVALUATION_EVENTS = 63` rule caps the chain since the last `Sea`/`Rpr`/`Cnt`/`Dec` to 63 non-evaluation events. Combined with the **per-event parent-monotonic** check on `identity_event` (each SEL event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order, applied per branch independently), this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding. A new branch's identity_event is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
+
+  **The per-branch parent-monotonic rule is SEL-specific.** SEL is the only primitive where authorization context is referenced via a separate field (`identity_event`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
+
+  **Consequence on divergent SEL chains**: branches may reference different IEL events at the same SEL version, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded structurally by two rules: the seal-cap (no fork at-or-before the seal) caps how far back branches can diverge; privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain) caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation: KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
+
+### Privileged Divergence is Terminal; Cnt Triggers It Uniformly
+
+The protocol's terminal-authority mechanism is built on three composable rules:
+
+**1. Cnt's parent is `v_{tip-1}`** — a unifying structural rule across linear and divergent chains. On a linear chain, `v_{tip-1}` is the parent of the chain's single tip; Cnt extending it creates fresh divergence at `v_{tip}`. On a divergent chain, freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — the divergence ancestor (the unique shared parent of all events at `v_d` by the divergence invariant). The same rule applies in both shapes; the divergent-chain case is the bounded fork-contest shape where Cnt joins the existing diverged events at the divergence version. Across all nodes, `v_{d-1}` is structurally shared (it lands cleanly before any divergence), so Cnt with `previous = v_{d-1}.said` validates uniformly across nodes — solving the cross-node propagation problem that breaks tip-extension and combined-digest approaches.
+
+**2. Privileged-divergence-is-terminal**: divergence at a version where the divergent set contains at least one privileged event makes the chain immediately and terminally contested. Privileged events differ per primitive:
+
+- **KEL privileged**: `Rec`, `Ror`, `Cnt`, `Dec` (all recovery-revealing events).
+- **IEL privileged**: every event kind — `Icp`, `Evl`, `Cnt`, `Dec`. All IEL events are governance-authorized including `Icp`. (The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception.)
+- **SEL privileged**: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized events).
+
+Cnt is one such privileged event; its presence in the divergent set triggers contested via this same rule. There is no "Cnt-specific path" in verifier logic — Cnt is just another privileged event whose presence in the divergent set triggers contested.
+
+**Important distinction**: Rec (KEL) and Rpr (SEL) **extend a branch tip at `v_{d+1}` and resolve divergence by archiving the other branch** — they do not join the divergent set at `v_d`. Only Cnt joins the divergent set at `v_d` via the upgrade rule below. The privileged-divergence rule applies to events whose `previous` is the divergence ancestor `v_{d-1}`; Rec/Rpr's `previous` points to a tip at `v_d`, not the ancestor.
+
+**3. Upgrade rule for cross-node consistency**: when a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states; the upgrade rule eliminates this divergence.
+
+The verifier rule simplifies to:
+- Divergent at `v_d`?
+  - No → linear (active or terminal-via-Dec).
+  - Yes → privileged event in the divergent set?
+    - Yes → contested (terminal).
+    - No → divergent (recoverable via Rec on KEL or Rpr on SEL; no recovery primitive on IEL — divergent IEL is auto-contested because every IEL event is privileged).
+
+**Cnt's authorization** resolves through the same policy/key state required to accept `v_{tip}` — i.e., the commitments made at `v_{tip-1}` for the verifier to accept events that extend it. On a divergent chain, that's the same authorization material the verifier used to accept the existing events at `v_d` that already extend `v_{d-1}`. For KEL specifically, Cnt's dual signature uses the preimages of `v_{tip-1}`'s `rotation_hash` and `recovery_hash` commitments — the same key state any non-Cnt event extending `v_{tip-1}` would need. For IEL, it's the `governance_policy` declared at `v_{tip-1}`. For SEL, it's the IEL-resolved governance policy at the SEL's `identity_event` binding for `v_{tip-1}`.
+
+Cnt's authorization is **HARD**, like every other event's. **General invariant: any event with failed auth is rejected.** A Cnt whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the verifier. The chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally. The same rule applies to Dec.
+
+**Operator recourse against signing-key-only Rot takeover (KEL specifically)**: if an adversary captures only the signing key (recovery key in separate custody) and submits a Rot at `v_N`, today's "Cnt extends tip" model leaves the operator with no recourse — Cnt would require keys committed by `v_N` (adversary-chosen). Under this design, Cnt extends `v_{N-1}`, requiring keys committed by `v_{N-1}` — i.e., the `v_N`-current signing key (revealed by adversary's Rot, both parties have it) AND the `v_N`-current recovery key (NOT revealed by Rot, only the operator has it). Operator's dual-sig succeeds; adversary's does not. Operator can terminate the chain.
+
+`Cnt` cannot supersede `Dec`. Dec is a privileged event that seals immediately; the seal-cap then forbids any fork at or before the seal, so no Cnt can land at any version after Dec. Coerced/forced `Dec` is operationally indistinguishable from legitimate `Dec` and the protocol does not attempt to relitigate it. The adversary-Dec-after-takeover scenario is the same unavoidable case as adversary-rotates-governance: operational defense only, no protocol recourse.
+
+From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
+
+### Trust Model on Contested Chains
+
+A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
+
+The reasoning is structural, not statistical. When Cnt lands, both the legitimate operator and an adversary (if they hold current authority) can submit it — Cnt requires current-state authorization, and "who actually has current authority" is exactly what's in question when compromise is suspected. The signature on an adversarial Cnt satisfies the same policy a legitimate Cnt would; consumers have no protocol-observable way to determine which party submitted it.
+
+After Cnt lands, the only way to identify which events on the chain were authored legitimately would be an out-of-band claim from the owner — "events 1 through N were mine; events N+1 onward were the adversary's." The protocol has no trusted way to bring such a claim into the chain. The chain is terminal: no further events can carry signed attestations from the owner. Verification tokens cannot be augmented with claims that originated outside the chain. Consumers relying on protocol-trusted information have nothing to distinguish "this event was authored legitimately" from "this event may have been adversarial."
+
+The conservative — and only protocol-grounded — response is to treat the entire chain as suspect. Pre-Cnt events stay readable as forensic record but they cannot ground new trust decisions. Consumers may apply out-of-band judgment about specific events if they have it (their own observation history; an external attestation from the owner via a different channel) but the protocol cannot make those judgments for them.
+
+Contrast with **Decommission** (Dec): Dec is the operator's clean-retirement signal — no compromise, the operator intentionally ending the chain. Pre-Dec events retain trust under their original authorization. Future submissions are rejected, but past content keeps its meaning. The asymmetry exists because if Dec also wiped trust, it would just be Cnt by another name; the whole reason for two terminal kinds is that Dec means "clean stop" and Cnt means "compromised."
+
+For a chain that is divergent but not yet contested — divergence has been observed but Cnt hasn't landed — events at versions before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at versions after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by Cnt (chain becomes whole-suspect) or, where applicable, by recovery / repair (KEL Rec, SEL Rpr — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
+
+#### Cases that all look identical to a consumer
+
+A worked enumeration to make the indistinguishability concrete. In each case the resulting chain shape is the same; the consumer can't tell which case actually happened from the chain alone.
+
+1. **Operator detects a second governance party's Evl, submits Cnt to terminate before further damage.** Cnt = legitimate operator action; some prior events may have been adversary-authored.
+2. **Adversary holds current governance, submits Cnt as denial-of-service.** Cnt = adversary action; prior chain may or may not have been tainted.
+3. **Adversary rotates governance away from operator via a legitimate-looking Evl, then submits Cnt under the new authority.** Cnt = adversary action under freshly-rotated authority; operator has no protocol recourse.
+4. **Two legitimate parties race-extend (no compromise), one submits Cnt to terminate the messy state.** Cnt = legitimate; no actual compromise; pre-Cnt events all legitimate.
+5. **Adversary acquires keys briefly, doesn't act, operator detects key exposure and Cnts as a precaution.** Cnt = legitimate; past events may or may not have been compromised during the exposure window.
+
+Same chain shape in every case. The protocol cannot distinguish them. Treating the chain as suspect is the only response that fails secure across all five.
+
+### Limit of the Doctrine
+
+The doctrine closes attacks rooted in **past** state. It does NOT defend against compromise of **current** state.
+
+If an adversary acquires sufficient currently-controlling authority — current KEL signing+recovery keys; current IEL `governance_policy` threshold; current SEL identity binding's authorizing IEL event — they ARE the chain's current state by every protocol-observable measure. They can:
+
+- Submit governance-authorized events (KEL `Rot`/`Ror`, IEL `Evl`, SEL `Sea`) that legitimately rotate authority away from the prior operator.
+- Subsequently submit `Cnt` (or any other governance act) under the new authority.
+- Lock the legitimate prior operator out of all protocol-level recourse.
+
+There is no protocol mechanism to distinguish "legitimately current" from "compromise-acquired-current." There is a narrow detect-and-respond window before the rotation lands: if the legitimate operator detects compromise and submits `Cnt` under the still-current pre-rotation authority before the adversary's rotation event lands, the legitimate `Cnt` wins. After the rotation, no protocol-level recourse remains.
+
+**Defense for current-state compromise is operational**, not structural:
+- High thresholds for governance / recovery — make "controls current authority" hard to achieve.
+- Separation of custody — no single point of compromise grants current-state authority.
+- Monitoring for unexpected governance / rotation events — fire alerts before adversary completes rotation.
+- Fast operator response — cut the detect-to-Cnt latency to within the gossip window.
+- **Abandon-and-reincept** under a new prefix when current-state compromise is suspected — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
+
+The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
+
+**Cascade-reincept honesty**: when a high-stakes identity is contested or current-state-compromised, the operational cost is a cascade. A contested KEL invalidates every IEL whose governance policy anchors in it; each invalidated IEL invalidates every SEL bound to it. An identity hierarchy built with a single root carries the entire dependent tree's reincept cost when the root falls. **Don't anchor everything to one root if root compromise costs you the entire dependent tree.** Identity hierarchies should be designed with the cascade in mind — partition the dependency graph so a single compromise has a bounded blast radius.
+
 ## `KelVerification` as Proof of Verification
 
 Functions that consume KEL data accept `&KelVerification` as a parameter. Having a `KelVerification` proves the KEL was verified. `KelVerification` fields are private with no public constructor — the only way to obtain one is through `KelVerifier`.

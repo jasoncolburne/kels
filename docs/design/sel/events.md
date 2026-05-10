@@ -13,7 +13,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 | `Icp` | `kels/sad/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
 | `Upd` | `kels/sad/v1/events/upd` | Normal update — append content to the chain. |
 | `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_version`. No field evolution (policies live on IEL). |
-| `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves divergence and seals. Discriminator-driven archival of adversary events. |
+| `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Cnt` | `kels/sad/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
 | `Dec` | `kels/sad/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
@@ -85,14 +85,16 @@ For an SEL event at v1+:
 - `identity_event` references an IEL event in the IEL's authentic chain (`prefix == SEL.identity`).
 - That IEL event resolves to a tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`) via the IEL's branch state at that event.
 - **The bound IEL event is acceptable iff** (a) the IEL is non-divergent, OR (b) the IEL is divergent AND `bound_event.version < first_divergent_version` (the bound event lives in the pre-divergence shared portion of the chain, which both branches agree on). A bound IEL event whose version is at-or-after the IEL's `first_divergent_version` is rejected with `IelDivergent` because the IEL doesn't have a single authoritative state at that point.
+
+  Note: chain-validity allowing the binding does not imply consumer trust. A pre-divergence binding to a contested IEL passes here at the verifier layer but is treated as suspect by consumers per the whole-chain-suspect rule (see [../iel/event-log.md §Effect on Bound SELs](../iel/event-log.md#effect-on-bound-sels)).
 - SEL.said is anchored under the resolved policy.
-- **Monotonic on SEL**: `identity_event` is at-or-after the SEL's prior `last_identity_event` in IEL chain order. The chain ratchets forward; no rebinding to stale IEL events.
+- **Per-event parent-monotonic on `identity_event`** (SEL-specific): each event's `identity_event` is at-or-after its parent event's `identity_event` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain).
 
 Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchor (KEL ixn) is timeless.
 
-#### Monotonicity gaps and consumer-side discipline
+#### Parent-monotonic gaps and consumer-side discipline
 
-The full analysis of what monotonic-on-SEL blocks (and the two scenarios it doesn't — brand-new chain races, stale governance termination), the operator-discipline mitigation (ratchet via `Sea` after IEL governance evolution), and the consumer-side stale-binding detection rule lives in [../iel/event-log.md §What monotonicity blocks (and what it doesn't)](../iel/event-log.md#what-monotonicity-blocks-and-what-it-doesnt) and the surrounding sections. That doc is the canonical home for cross-chain validation prose; this section is a pointer to avoid drift.
+The full analysis of what parent-monotonic blocks (and the scenarios it doesn't — brand-new chain races, stale governance termination on an unratcheted branch, Cnt fork-contest with low identity_event), the operator-discipline mitigation (advance the live branch's tip `identity_event` via `Sea` after IEL governance evolution), and the consumer-side stale-binding detection rule lives in [../iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt) and the surrounding sections. That doc is the canonical home for cross-chain validation prose; this section is a pointer to avoid drift.
 
 ### `content` semantics
 

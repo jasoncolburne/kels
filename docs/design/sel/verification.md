@@ -19,7 +19,7 @@ SEL verification ensures:
   - `Upd` → IEL's tracked `auth_policy` at the bound event
   - `Sea` / `Rpr` / `Cnt` / `Dec` → IEL's tracked `governance_policy` at the bound event
 - Anchoring of the SEL event's SAID under the resolved IEL policy
-- Monotonic-on-SEL: each event's `identity_event` is at-or-after the chain's prior `last_identity_event` in IEL chain order
+- Per-event parent-monotonic on `identity_event` (SEL-specific; no analog on KEL/IEL): each event's `identity_event` is at-or-after its parent event's `identity_event` in IEL chain order (parent via `previous` SAID), applied per branch independently. Within-chain policy variation across SEL branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
 
@@ -101,41 +101,68 @@ verify_authorization(event, branch):
     if !checker.is_anchored(event.said, policy):
         return Error("Authorization failed")
 
-    // Monotonic ratchet
-    if event.identity_event ranks before branch.last_identity_event in IEL order:
-        return Error("identity_event regression — non-monotonic")
-    branch.last_identity_event = event.identity_event
+    // Per-event parent-monotonic on identity_event
+    parent_event = lookup_event(event.previous)  // already in branch state
+    if parent_event has identity_event AND
+       event.identity_event ranks before parent_event.identity_event in IEL order:
+        return Error("identity_event regression — parent-monotonic violated")
+    branch.tip_identity_event = event.identity_event  // for the next event extending this branch
 ```
 
-The "ranks before" comparison uses cached IEL chain-order positions: the verifier batches every v1+ event's `identity_event` plus each branch's current `last_identity_event` into a single `IelResolver::iel_chain_positions` call per generation, then compares positions in O(1). The IEL is structurally a linear chain (or divergent — in which case the bound event must be on a single resolvable branch).
+The "ranks before" comparison uses cached IEL chain-order positions: the verifier batches every v1+ event's `identity_event` plus each branch's tip's `identity_event` into a single `IelResolver::iel_chain_positions` call per generation, then compares positions in O(1). The IEL is structurally a linear chain (or divergent — in which case the bound event must be on a single resolvable branch).
+
+The check is **per-branch**: each branch's walk independently compares each event's `identity_event` against its parent's. Branches with different parent-chains do not constrain each other's `identity_event` values. A new branch that forks from `v_{d-1}` (e.g., a Cnt fork-contest forming its own singleton branch at `v_d`) only needs to satisfy `event.identity_event >= v_{d-1}.identity_event` — it is not constrained by `identity_event` values on the other branches at `v_d` or beyond.
+
+The chain-wide `last_identity_event` (the highest `identity_event` across all events in the chain) is a derived aggregate, computed at finish time, used by consumers for queries about how far the chain has bound to. It is not used as a flowing watermark gate during the walk.
 
 ### Soft-fail vs hard-fail policy
 
 Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state). The mapping is per kind:
 
-| Kind | Authorization gate | Anchor failure | Binding failure | Ratchet regression |
-|------|--------------------|----------------|------------------|---------------------|
+| Kind | Authorization gate | Anchor failure | Binding failure | Parent-monotonic regression |
+|------|--------------------|----------------|------------------|------------------------------|
 | `Upd` | `auth_policy` | **HARD** | **HARD** (`BadIdentityBinding`) | **HARD** (`BadIdentityBinding`) |
 | `Sea` | `governance_policy` | **HARD** | **HARD** | **HARD** |
 | `Rpr` | `governance_policy` | **HARD** | **HARD** | **HARD** |
-| `Cnt` | `governance_policy` | **SOFT** (chain becomes Contested with `policy_satisfied=false`) | **HARD** | **HARD** |
-| `Dec` | `governance_policy` | **SOFT** (chain becomes Decommissioned with `policy_satisfied=false`) | **HARD** | **HARD** |
+| `Cnt` | `governance_policy` | **HARD** | **HARD** | **HARD** |
+| `Dec` | `governance_policy` | **HARD** | **HARD** | **HARD** |
 
-Hard fails leave the chain at its prior tip. The verifier does not advance `last_identity_event` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor advance the ratchet.
+Hard fails leave the chain at its prior tip. The verifier does not advance the branch's tip `identity_event` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor / parent-monotonic update the per-branch state.
 
-Soft fails apply only to terminal kinds (`Cnt` / `Dec`) and only on the cross-chain anchor check or on `IelDivergent`. The chain advances to the terminal state but the verifier's content-based terminal flag carries `policy_satisfied=false`, signalling that the terminal action stands but its authorization didn't resolve cleanly. Content-preservation and structural rules remain HARD for terminal kinds — those failures bounce the batch.
+All events require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
 
-The rationale: terminal events (Cnt/Dec) describe an end-state declaration; rejecting them outright when the cross-chain check fails would leave the chain stuck at a tip the owner intends to abandon. Owners need a soft-fail path so a govfailed Cnt/Dec still terminates the chain locally, with the failure surfaced for downstream consumers via the content-based flag rather than an open chain on a defunct identity.
+The rationale for HARD anchor on all events: the DB cannot be trusted (see [../security-invariant.md](../security-invariant.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 #### Post-divergence soft-fail propagation
 
 The verification cutoff for "valid for downstream binding" is `first_divergent_version`. A `Cnt` structurally creates divergence (it extends an existing tip that isn't the chain's max version), so contested chains always have a divergence point. `Dec` only lands on non-divergent chains (routing rejects Dec on divergent with `ContestRequired`), so decommissioned chains have no cutoff and the Dec event itself is a valid event in the chain.
 
-For events at `version >= first_divergent_version` (post-divergence on a Cnt'd chain): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Pre-divergence events follow the existing soft/hard mapping above. Structural integrity rules (SAID, version monotonicity, content preservation, BadIdentityBinding, etc.) stay HARD regardless of position — Cnt doesn't change whether an event is well-formed.
+For events at `version >= first_divergent_version` on a chain that is divergent-but-not-yet-contested (non-privileged-divergent — only `Upd`-`Upd` race scenarios reach this state): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Once the chain is contested (any privileged event in the divergent set), the whole-chain-suspect rule applies and the per-event soft-fail propagation rule's purpose is superseded by the whole-chain framing. Structural integrity rules (SAID, version monotonicity, content preservation, BadIdentityBinding, etc.) stay HARD regardless of position.
 
-Why preserve rather than reject: `Cnt` semantically means "the governance keys may be compromised; I cannot recover this chain." Hard-rejecting post-divergence events would discard the adversary's actions from the forensic record and bounce the entire verification, leaving consumers unable to read pre-divergence state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them.
+Why preserve rather than reject during the divergent-but-not-yet-contested window: hard-rejecting post-divergence-point events would discard them from the forensic record and bounce the entire verification, leaving consumers unable to read pre-divergence state. Soft-fail preserves the events structurally while making clear that verification doesn't bless them. Once the chain transitions to contested (privileged-divergence rule fires), the whole-chain-suspect framing supersedes — consumers don't trust pre-Cnt content for new authorization either way.
 
 This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains (`merge.md §Terminal-State Gate`) is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (concurrent siblings within a batch that introduces the Cnt, gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
+
+#### Terminal-state determination
+
+The verifier's terminal-state-determination rule simplifies to:
+- Divergent at `v_d`?
+  - No → linear (active or terminal-via-Dec).
+  - Yes → divergent set contains a privileged event (`Sea`/`Rpr`/`Cnt`/`Dec`)?
+    - Yes → contested (terminal).
+    - No → divergent (recoverable via `Rpr`).
+
+Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule.
+
+#### Cnt parent resolution
+
+Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; freeze-on-divergence keeps the shorter branch single-event with its tip at `v_d`, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes).
+
+**Implementation note.** Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state's `tip_identity_event` holds `v_{tip-1}.identity_event` (because `v_tip` has not yet been processed). Cnt and the existing tip at `v_d` are processed as siblings of the same generation; both have parent `v_{tip-1}` and both check parent-monotonic against `v_{tip-1}.identity_event` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip identity_event. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by Cnt's own `identity_event`, not via SEL's branch state; cross-chain via `IelResolver`.)
+
+#### Upgrade rule
+
+When a node has a non-privileged divergent set at `v_d` (max 2 events, `Upd`-`Upd` race) and gossip delivers a privileged event for that same `v_d` (any of `Sea`, `Rpr`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
 
 #### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
 
@@ -157,13 +184,13 @@ The inception batch rule `[Icp, Upd]` minimum is a chain-validity rule enforced 
 struct SadBranchTip {
     tip: SadEvent,                        // current tip event
     identity: Digest256,                  // bound IEL prefix (set at Icp)
-    last_identity_event: Option<Digest256>, // ratchet — highest IEL event bound across the branch
+    tip_identity_event: Option<Digest256>, // tip event's identity_event — used for the per-event parent-monotonic check on the next event extending this branch
     events_since_evaluation: u64,
     last_governance_version: Option<u64>,
 }
 ```
 
-SEL branch state does **not** track authorization policies per branch. Those policies live on IEL; SEL branch state holds only the binding (`identity`) and the ratchet (`last_identity_event`).
+SEL branch state does **not** track authorization policies per branch. Those policies live on IEL; SEL branch state holds only the binding (`identity`) and the per-branch tip's `identity_event`. Per-branch state is sufficient for the per-event parent-monotonic check — the verifier compares each new event's `identity_event` against its branch tip's `identity_event` (which equals the parent event's `identity_event`, since the new event extends that tip).
 
 ## Verification Return Value
 
@@ -172,12 +199,12 @@ SEL branch state does **not** track authorization policies per branch. Those pol
 ```
 SelVerification:
     prefix: Digest256
-    branches: Vec<BranchTip>            // 1 = linear, 2 = divergent
+    branches: Vec<BranchTip>            // 1 = linear, 2 = divergent (or 3 with Cnt fork-contest)
     diverged_at_version: Option<u64>
     is_contested: bool
     is_decommissioned: bool
     last_governance_version: Option<u64>  // version of most recent Sea/Rpr
-    last_identity_event: Option<Digest256> // chain's highest-bound IEL event
+    last_identity_event: Option<Digest256> // derived aggregate: max identity_event across all events in the chain
 ```
 
 Accessors:
@@ -185,7 +212,7 @@ Accessors:
 - `current_event()` → `None` if divergent
 - `current_content()` → `None` if divergent
 - `prefix()`, `topic()`, `identity()` → the bound IEL prefix
-- `last_identity_event()` → the chain's highest-bound IEL event (across branches)
+- `last_identity_event()` → derived aggregate; max identity_event across all events in the chain (informational, not used as a gate)
 - `policy_satisfied()` — overall authorization satisfaction across the chain
 - `last_governance_version()`
 - `is_contested()`, `is_decommissioned()`, `diverged_at_version()`
@@ -204,7 +231,7 @@ Accessors:
 | Topic consistency | All events on a branch share the same topic |
 | `identity_event` binding | Resolves to an IEL event with matching prefix |
 | Authorization | `evaluate_anchored_policy(IEL-resolved-policy, event.said)` |
-| Monotonic identity ratchet | `event.identity_event >= branch.last_identity_event` in IEL chain order |
+| Per-event parent-monotonic on `identity_event` | `event.identity_event >= parent_event.identity_event` in IEL chain order; parent via `previous` SAID; checked per branch independently |
 | Content preservation | `event.content == previous.content` for Sea/Rpr/Cnt/Dec |
 | Proactive evaluation | At most `MAX_NON_EVALUATION_EVENTS = 63` non-evaluation events between Sea/Rpr/Cnt/Dec |
 
@@ -273,9 +300,10 @@ trait IelResolver: Send + Sync {
     async fn resolve_governance_policy_at(&self, identity: &Digest256, iel_event_said: &Digest256)
         -> Result<Digest256, KelsError>;
 
-    /// Batch-fetch IEL chain-order positions for the SEL verifier's monotonic-
-    /// ratchet check. Returns BadIdentityBinding for any SAID that doesn't
-    /// resolve in the named IEL — chain-integrity breach, the entire call fails.
+    /// Batch-fetch IEL chain-order positions for the SEL verifier's per-event
+    /// parent-monotonic check on identity_event. Returns BadIdentityBinding for
+    /// any SAID that doesn't resolve in the named IEL — chain-integrity breach,
+    /// the entire call fails.
     async fn iel_chain_positions(&self, identity: &Digest256, saids: &[Digest256])
         -> Result<HashMap<Digest256, IelChainPosition>, KelsError>;
 }
