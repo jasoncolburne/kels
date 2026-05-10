@@ -48,20 +48,25 @@ This subtree has its own `.terminology-forbidden` (empty) so the lint doesn't fi
 
 ## Open
 
-### [Issue #171 → Issue #174] Cnt-supersedes-Dec + Cnt-from-non-tip family deferred
+### [Issue #171 → Resolved by design redesign] Cnt-supersedes-Dec + Cnt-from-non-tip on linear abandoned; bounded fork-contest adopted
 
-The full Cnt operator-contestation surface across all three log primitives (KEL, IEL, SEL) requires verifier-side non-tip parent-lookup so `Cnt.previous` can resolve to any event in the chain (not just current branch tips). Two compromise-recourse modes depend on this primitive:
+Originally tracked as deferred under #174 (verifier-merge unification): the protocol-level operator-recourse modes Cnt-supersedes-Dec, Cnt-from-non-tip on a clean linear chain (KEL Mode 2), and Cnt fork-contest on divergent chains (KEL Mode 3, IEL/SEL fork-contest). Each required verifier-side non-tip parent-lookup so `Cnt.previous` could resolve to a non-tip event.
 
-- **Cnt-supersedes-Dec** — the operator's recourse against forced/coerced `Dec` or post-`Dec` key compromise. `Cnt` forks from a pre-`Dec` ancestor, creating divergence at `Cnt.version` with `Dec` and `Cnt` as competing branches; chain becomes contested-terminal. The naive "Cnt extends Dec tip" linear shape (`[..., Dec@N, Cnt@N+1]`) is structurally invalid: Cnt always creates divergence, so a linear-and-contested chain shape can't exist (per `memory/project_kels_terminal_semantics.md`). Correct shape requires non-tip parent-lookup.
+The design redesign (May 2026, see `.working/kels-cnt-restriction-implications.md`, `.working/kels-cnt-restriction-doc-plan.md`, `.working/kels-cnt-restriction-trust-model-summary.md`) split this family:
 
-- **Cnt-from-non-tip on a clean linear chain** — retroactive contestation of a previously-clean chain after compromise. Operator submits `Cnt` whose `previous` points at any event in the chain at versions `0` through `N-1`; result is a divergent chain at `Cnt.version` with the contested events on one branch. KEL Mode 2 (full-key-compromise recourse where `Rec` is unavailable because the adversary controls the recovery key too) is the same primitive applied to KEL.
+- **Abandoned**: Cnt-supersedes-Dec; Cnt-from-non-tip on a clean linear chain (KEL Mode 2). Both would have allowed Cnt to fork from any past ancestor — the **stale-state kill-switch problem**: any party who once held authority retains protocol-level kill-switch authority over the chain forever.
 
-Both modes are structurally inseparable from #174's unified-walk primitive; the verifier needs a SAID-keyed map of chain events (or its bounded equivalent) to resolve non-tip `previous` targets in O(1) without re-walking. Until #174 lands the current implementation rejects:
+- **Adopted as canonical Cnt parent shape (in a bounded form)**: fork-contest on divergent chains, with the strict bound that `Cnt.previous = v_{d-1}.said` (the divergence ancestor). The `v_{d-1}` constraint keeps Cnt at-or-after the seal — past keys / past policies can't reach back further than the seal because of the seal-cap. The same parent-resolution rule applies on linear chains as `Cnt.previous = v_{N-1}.said` (the parent of the current tip), creating fresh divergence at `v_N`. Combined with privileged-divergence-is-terminal, Cnt is uniformly handled: it's a privileged event whose presence in the divergent set triggers contested via the verifier's divergence rule.
 
-- All post-`Dec` submissions including `Cnt` (extending `Dec` tip linearly is structurally invalid, and the legitimate Cnt-from-pre-Dec-ancestor shape can't be expressed).
-- All `Cnt` whose `previous` is a non-tip event (parent-lookup fails on current branch tips).
+- **Tightened**: Cnt and Dec anchor checks go from SOFT to HARD on SEL/IEL. The general invariant is "any event with failed auth is rejected" — applies to all event kinds.
 
-Operator's recourse for forced/coerced `Dec` or full-key-compromise of a previously-clean chain is **abandon-and-re-incept** under a new prefix until #174 lands. Documented at `docs/design/iel/event-log.md §Decommissioned`, `sel/event-log.md §Decommissioned`, `kel/event-log.md §Cnt §Mode 2`.
+- **Removed**: `contest_with_iel_event_said` and `decommission_with_iel_event_said` overrides. When an IEL terminates, dependent SELs sit in their last state; consumers judge via IEL's terminal status. Operator's response is reincept the SEL under a new IEL.
+
+See `docs/design/security-invariant.md §Compromise is Permanent` for the doctrinal frame.
+
+Operator's recourse for forced/coerced `Dec` or governance takeover that completes before detection: **abandon-and-reincept** under a new prefix. There is no protocol-level recourse against current-state compromise that completes its rotation before detection — this is acknowledged as the operational defense surface (high thresholds, monitoring, custody discipline).
+
+Status: **Resolved (partial abandonment + bounded adoption)**. Code changes are tracked in `.working/kels-174-verify-merge-unification.md` (rescoped).
 
 ### [Issue #171 → standalone] `insert_event` privileged-write bypass cleanup deferred
 
