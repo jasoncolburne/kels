@@ -25,20 +25,20 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 |---|---|---|---|---|---|---|
 | `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) |
 | `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance |
-| `Cnt` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 2 | governance |
-| `Dec` | `>= 1` | required | preserved (must equal previous) | preserved (must equal previous) | 3 | governance |
+| `Cnt` | `>= 1` | required | forbidden | forbidden | 2 | governance |
+| `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance |
 
-`auth_policy` and `governance_policy` are non-`Option` `Digest256` fields on every `IdentityEvent` — the chain's tracked policy state is always present in every event, never absent. "Preserved" means the field's value must equal the value on the predecessor event; "evolved" means it differs (and the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Declared" applies only at `Icp` where there is no predecessor — the inceptor declares both fields directly.
+`auth_policy` and `governance_policy` are `Option<Digest256>` fields on `IdentityEvent`: present (non-`None`) on `Icp` and `Evl`, absent (`None`) on `Cnt` and `Dec`. "Declared" applies at `Icp` where there is no predecessor — the inceptor declares both fields directly. "Preserved or evolved" applies on `Evl` — the field's value either equals the predecessor's value (preserved) or differs (evolved; the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Forbidden" applies on `Cnt` and `Dec`: terminal events have no forward state to declare, so the field is absent and the verifier rejects any Cnt/Dec carrying a value. This mirrors KEL, where `rotation_hash` and `recovery_hash` are likewise forbidden on terminal kinds (`Dec`, `Cnt`) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; terminal events end the chain and have no forward state to declare.
 
 (No `content` field on any kind. IEL events do not carry content.)
 
 ### Per-Kind Policy Field Discipline
 
-Every IEL event carries `auth_policy` and `governance_policy`. The verifier checks the per-kind discipline as part of branch-state validation:
+`Icp` and `Evl` carry `auth_policy` and `governance_policy`; `Cnt` and `Dec` do not. The verifier checks the per-kind discipline as part of branch-state validation:
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
 - **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
-- **`Cnt` / `Dec`**: must carry the same values as the predecessor. The verifier rejects any Cnt/Dec whose `auth_policy` or `governance_policy` differs from the predecessor's as a structural-equivalent error (the design's "forbidden field on terminal kinds" rule, enforced at the verifier rather than at `validate_structure` because the predecessor's values are needed to make the comparison).
+- **`Cnt` / `Dec`**: both fields are absent (forbidden). Terminal events have no forward state to declare — the chain ends with the terminal, and the verifier's tracked policy state is what authorized acceptance of the terminal itself (resolved at the predecessor). The verifier rejects any Cnt/Dec carrying a non-`None` `auth_policy` or `governance_policy` as a structural error. Authorization for the terminal still resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed) — see [§Satisfaction model](#satisfaction-model).
 
 ### Satisfaction model
 
@@ -50,16 +50,16 @@ The "authorization" column names which policy must be satisfied for the verifier
 ### `auth_policy` semantics
 
 - `Icp`: declared as a **field** that seeds the IEL prefix (prefix = Blake3 of v0 template with said+prefix blanked). It does NOT authorize the Icp itself — Icp is governance-authorized (see [governance_policy semantics](#governance_policy-semantics) below). The `auth_policy` declared at Icp is consumed downstream by SEL `Upd` events that bind to this Icp via `identity_event`.
-- `Evl`: present on every event; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`). At least one of `auth_policy` / `governance_policy` must evolve in any given `Evl` — an Evl preserving both is rejected.
-- `Cnt` / `Dec`: present on every event; must be preserved (== previous). Verifier rejects evolution at terminal kinds.
+- `Evl`: present; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`). At least one of `auth_policy` / `governance_policy` must evolve in any given `Evl` — an Evl preserving both is rejected.
+- `Cnt` / `Dec`: **absent (forbidden)**. Terminal events have no forward state to declare; the verifier rejects any Cnt/Dec carrying a value.
 
 The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SEL event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
 
 ### `governance_policy` semantics
 
 - `Icp`: declared. Identity chains always declare governance at v0 (no Est dance). Also serves as the **authorization gate** (Icp.said must be anchored under the declared `governance_policy`) — every IEL event is a governance act.
-- `Evl`: present on every event; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy). At least one of `auth_policy` / `governance_policy` must evolve per Evl.
-- `Cnt` / `Dec`: present on every event; must be preserved.
+- `Evl`: present; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy). At least one of `auth_policy` / `governance_policy` must evolve per Evl.
+- `Cnt` / `Dec`: **absent (forbidden)**. Authorization for the terminal resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed); the terminal itself declares nothing forward.
 
 ### Policy immunity requirement
 
