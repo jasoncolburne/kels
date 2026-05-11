@@ -75,16 +75,21 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 
 The route that creates divergence on an IEL chain:
 
-**Concurrent extensions** (race, same-batch fork): two events land at the same version, each with `previous = v_{d-1}.said`. Valid pairings are `Evl`-`Evl`, `Evl`-`Cnt`, and `Evl`-`Dec` — every IEL divergent set at `v_d` contains at least one `Evl`. `Cnt` is absolute and terminal (at most one `Cnt` per log; the contested-state gate locks after first acceptance), and `Dec` is similarly absolute (at most one `Dec` per log), so `Cnt`-`Cnt`, `Dec`-`Dec`, and `Cnt`-`Dec` cannot form. Divergence is created at the moment of submission; the chain transitions to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving via gossip.
+**Concurrent extensions** (race, same-batch fork): two events land at the same version. Valid pairings on IEL are `Evl`-`Evl` (two governance parties racing from a shared `v_{d-1}` tip) and `Evl`-`Cnt` (a Cnt-submitter's node had its tip advanced to `v_d` via gossip-delivered `Evl`, then submitted Cnt extending `v_{tip-1} = v_{d-1}`). Every IEL divergent set at `v_d` contains at least one `Evl`. `Cnt` is absolute and terminal — at most one `Cnt` per log — so `Cnt`-`Cnt` cannot form. `Dec` extends tip directly (`Dec.previous = tip.said`), so it lands only on linear chains and never appears in a divergent set — a `Dec` landing decommissions the chain. Divergence transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving via gossip.
 
 **Diagrams.** The possible shapes look like:
 
 ```
-Concurrent extension (any 2 of Evl/Cnt at v_d):
+Concurrent extension at v_d:
 
   v0      v1        v2     ← divergent set at v2; chain immediately contested-terminal
-[Icp] → [Evl] ─┬─ [event_A]    one of {Evl, Cnt}
-               └─ [event_B]    the other one (must differ in content)
+[Icp] → [Evl] ─┬─ [event_A]    Evl or Cnt
+               └─ [event_B]    Evl or Cnt (distinct submission from event_A)
+
+At most one of the two events can be Cnt (Cnt is absolute and terminal — at
+most one per log). Dec cannot appear in divergence: Dec extends tip directly
+(Dec.previous = tip.said), so it lands only on linear chains, decommissioning
+the chain on landing.
 
 Both branches preserved as forensic record. The chain is contested as of v2;
 no further events land at v2 — subsequent submissions, including
