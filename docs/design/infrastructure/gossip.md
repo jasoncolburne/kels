@@ -173,7 +173,7 @@ Gossip nodes use persistent HSM-backed identities:
   6. Exchange and verify signatures against peer's KEL public key
   7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
 - Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security
-- See [Secure Registration](design/secure-registration.md) for details on the peer allowlist
+- See [Secure Registration](secure-registration.md) for details on the peer allowlist
 
 ### Delta-based sync with full-fetch fallback
 

@@ -162,7 +162,7 @@ The submit handler runs under a per-prefix advisory lock so concurrent submissio
 3. Insert as the path requires (no archival on IEL — there is no `truncate_and_replace`).
 4. Publish to gossip if any path mutated chain state.
 
-The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../security-invariant.md](../security-invariant.md)).
+The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../security-invariant.md](../../security-invariant.md)).
 
 ## Pagination
 

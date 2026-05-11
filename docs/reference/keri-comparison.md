@@ -150,7 +150,7 @@ KERI's specification defines verification semantics, but implementation rigor va
 
 | Property | KERI | KELS |
 |----------|------|------|
-| Credential framework | ACDC (Authentic Chained Data Containers) | kels-creds (see [design](design/creds.md)) |
+| Credential framework | ACDC (Authentic Chained Data Containers) | kels-creds (see [design](../design/features/creds.md)) |
 | Credential issuance/revocation | TELs (Transaction Event Logs) with registry | Policy-based: endorsers anchor credential SAID per policy; poisoning (anchor poison hash) replaces revocation |
 | Credential exchange | IPEX (Issuance and Presentation Exchange) | kels-exchange: ESSR authenticated encryption + IPEX-style messaging + mail service |
 | Compacted disclosure | Graduated disclosure (compact, partial, full) | Schema-aware path expression DSL (canonical, compacted, expanded) |

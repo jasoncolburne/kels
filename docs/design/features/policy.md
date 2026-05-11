@@ -84,13 +84,13 @@ Edges reference **canonical policy SAIDs**. The edge says "I accept any credenti
 
 ### Threshold Redundancy
 
-A `threshold(N, id_1, ..., id_M)` policy with `M > N` tolerates loss of up to `M − N` identities' authority while remaining satisfiable. If an anchor was originally satisfied by some subset of `N` identities and one of those identities is later contested (per [kel/event-log.md](kel/event-log.md) / [iel/event-log.md](iel/event-log.md)), the original anchor loses authority — but a new anchor under the same policy can be created using a different subset that excludes the contested identity, satisfying the threshold again. The underlying SAID's authorization is re-established without changing the policy itself.
+A `threshold(N, id_1, ..., id_M)` policy with `M > N` tolerates loss of up to `M − N` identities' authority while remaining satisfiable. If an anchor was originally satisfied by some subset of `N` identities and one of those identities is later contested (per [kel/event-log.md](../primitives/kel/event-log.md) / [iel/event-log.md](../primitives/iel/event-log.md)), the original anchor loses authority — but a new anchor under the same policy can be created using a different subset that excludes the contested identity, satisfying the threshold again. The underlying SAID's authorization is re-established without changing the policy itself.
 
 This is a structural feature of anchored policies: threshold satisfaction depends on which identities anchor at any given moment, not which identities ever anchored historically. Policies themselves are immune SADs with fixed content — they don't evolve. Re-anchoring is bounded only by the operator's continued control of enough identities to meet the threshold.
 
 Operators designing governance / authorization policies should set thresholds with `M − N >= expected partial-compromise tolerance`.
 
-For the operator-facing intuition behind redundancy — adversary patience, the cost of accumulating sufficient authority, and the truck-roll cost of reincept-as-default — see [security-invariant.md §Limit of the Doctrine → §Adversary Patience and Policy Redundancy](security-invariant.md#adversary-patience-and-policy-redundancy). The DSL section above covers the mechanics; the doctrine section covers the threat model and operational stakes.
+For the operator-facing intuition behind redundancy — adversary patience, the cost of accumulating sufficient authority, and the truck-roll cost of reincept-as-default — see [security-invariant.md §Limit of the Doctrine → §Adversary Patience and Policy Redundancy](../security-invariant.md#adversary-patience-and-policy-redundancy). The DSL section above covers the mechanics; the doctrine section covers the threat model and operational stakes.
 
 ## AST
 

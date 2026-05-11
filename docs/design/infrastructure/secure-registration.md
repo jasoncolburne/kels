@@ -108,7 +108,7 @@ Each peer is a versioned entity - deactivation creates a new version with `activ
 **Authorizing KEL:**
 The `authorizing_kel` field identifies which registry's KEL contains the cryptographic anchor for this peer record. When verifying a peer, the gossip node fetches the KEL for the `authorizing_kel` prefix and checks that the peer's SAID is anchored in it. This allows federated registries to authorize peers independently while maintaining cryptographic proof of authorization.
 
-For more details on federation, see [Multi-Registry Federation](./federation.md).
+For more details on federation, see [Multi-Registry Federation](federation.md).
 
 ## Signed Request Format
 
@@ -208,7 +208,7 @@ registry-admin peer remove --peer-id 12D3KooWAbc...
 registry-admin peer list
 ```
 
-See [Multi-Registry Federation](./federation.md) for details on the multi-party approval process.
+See [Multi-Registry Federation](federation.md) for details on the multi-party approval process.
 
 ### Getting a Node's PeerPrefix
 

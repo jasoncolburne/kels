@@ -1,6 +1,6 @@
 # SAD Event Log (SEL) — Lifecycle, Repair, Contest, Decommission
 
-> Source-of-truth design doc for the SEL lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing and `truncate_and_replace` discriminator), and [verification.md](verification.md) (SelVerifier algorithm). For the SADStore service architecture (object store, custody, gossip), see [../sadstore.md](../sadstore.md).
+> Source-of-truth design doc for the SEL lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing and `truncate_and_replace` discriminator), and [verification.md](verification.md) (SelVerifier algorithm). For the SADStore service architecture (object store, custody, gossip), see [../sadstore.md](../../infrastructure/sadstore.md).
 
 The SAD Event Log (SEL) is a per-prefix chain of `SadEvent` records describing the evolving state of a SAD object (typically a publication, credential template, custody record, or other governance-managed artifact). SELs are **identity-rooted** — every SEL binds at inception to an Identity Event Log (IEL) and resolves its per-event authorization through specific IEL events. Authority over the chain is asserted by anchoring `ixn` events in KELs identified by the IEL's currently-tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`).
 
@@ -108,7 +108,7 @@ The divergence invariant guarantees:
 - **Non-privileged divergent set** at version `d` (event kinds limited to `Upd`): max 2 events. Recoverable via `Rpr`.
 - **Privileged divergent set** at version `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
-- Every event lives at a version at-or-after the chain's last evaluation seal (`event_version >= seal_version`; see [../security-invariant.md §Forks are Seal-Bounded](../security-invariant.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `identity_event` (each event's `identity_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `identity_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_version = d = seal_version`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
+- Every event lives at a version at-or-after the chain's last evaluation seal (`event_version >= seal_version`; see [../security-invariant.md §Forks are Seal-Bounded](../../security-invariant.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `identity_event` (each event's `identity_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `identity_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_version = d = seal_version`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
 
 ### Why SEL has Rpr (and IEL doesn't)
 
@@ -252,7 +252,7 @@ Cnt is privileged (governance-authorized). Its presence in any divergent set tri
 
 **Distinction from Rpr.** Cnt and the divergence-ancestor-extending Rpr shape (Rpr extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. The divergence-ancestor-extending Rpr archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rpr as the new `v_d` event (repair; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` creates a contest; submitting `Rpr` with `previous = v_{d-1}.said` creates a divergence-ancestor-extending repair.
 
-See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `identity_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. (The general invariant — any event with failed auth is rejected — applies.) Operator discipline (advancing the live branch's tip `identity_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
 
@@ -352,6 +352,6 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../iel/event-log.md](../iel/event-log.md) — IEL counterpart; SELs bind to IEL events.
 - [../iel/events.md](../iel/events.md) — IEL per-kind reference.
-- [../sadstore.md](../sadstore.md) — SADStore service architecture.
-- [../policy.md](../policy.md) — Policy DSL, anchoring model.
+- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
+- [../policy.md](../../features/policy.md) — Policy DSL, anchoring model.
 - [../kel/event-log.md](../kel/event-log.md) — KEL counterpart.

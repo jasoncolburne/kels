@@ -4,7 +4,7 @@ Pure structural reference for SAD Event Log (SEL) event kinds, per-kind field ru
 
 SELs are **identity-rooted**: every SEL binds at inception to an Identity Event Log (IEL) and resolves its authorization policies through that IEL. SEL itself has no `auth_policy` or `governance_policy` fields — those live on the IEL primitive (see [../iel/events.md](../iel/events.md)).
 
-For chain lifecycle (states, divergence, repair, contest, decommission, evaluation seal), see [event-log.md](event-log.md). For storage, API, gossip, and custody, see [../sadstore.md](../sadstore.md).
+For chain lifecycle (states, divergence, repair, contest, decommission, evaluation seal), see [event-log.md](event-log.md). For storage, API, gossip, and custody, see [../sadstore.md](../../infrastructure/sadstore.md).
 
 ## Event Kinds
 
@@ -165,7 +165,7 @@ v4'      kind=cnt  previous=v_3.said, version=4                       ← Cnt jo
                                                                                        §Forks are Seal-Bounded.)
 ```
 
-Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../security-invariant.md §Forks are Seal-Bounded](../security-invariant.md#forks-are-seal-bounded)).
+Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../security-invariant.md §Forks are Seal-Bounded](../../security-invariant.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 
@@ -184,6 +184,6 @@ After `Cnt` or `Dec`, all submissions are rejected. See [event-log.md](event-log
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../iel/events.md](../iel/events.md) — IEL per-kind reference (the chain primitive SEL binds to).
 - [../iel/event-log.md](../iel/event-log.md) — IEL chain lifecycle.
-- [../sadstore.md](../sadstore.md) — SADStore service architecture.
-- [../policy.md](../policy.md) — Policy DSL and anchoring model.
+- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
+- [../policy.md](../../features/policy.md) — Policy DSL and anchoring model.
 - [../kel/events.md](../kel/events.md) — KEL counterpart.

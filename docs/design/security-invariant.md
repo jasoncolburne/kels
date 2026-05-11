@@ -153,7 +153,7 @@ The protocol bounds divergence to **one unresolved generation at a time** on any
 
 Two unresolved generations cannot coexist on the same chain. A second divergent generation at some `v_{d'} > d` would necessarily place 2 events at `v_{d'}` (one per branch on the second divergence), violating the first generation's post-divergence cap. The structural rules forbid stacking.
 
-**Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](sel/merge.md#key-invariants).
+**Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](primitives/kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](primitives/sel/merge.md#key-invariants).
 
 ### Trust Model on Contested Chains
 
@@ -198,7 +198,7 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 - Separation of custody — no single point of compromise grants current-state authority.
 - Monitoring for unexpected governance / rotation events — fire alerts before adversary completes rotation.
 - Fast operator response — cut the detect-to-Cnt latency to within the gossip window.
-- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [policy.md §Threshold Redundancy](policy.md#threshold-redundancy)).
+- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
 - **Abandon-and-reincept** under a new prefix when current-state compromise is suspected — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
@@ -210,7 +210,7 @@ The detect-and-respond window above assumes the adversary acts as soon as they h
 This makes policy design a budget against strategic patience, not a checkbox:
 
 - **High thresholds + custody separation** raise the cost of accumulating sufficient authority. Each additional independently-held key in the policy is an additional independent compromise the adversary must accomplish. Geographic, organizational, and supply-chain separation between key custodians multiplies the cost of accumulation.
-- **Threshold redundancy** (`threshold(N, M)` with `M > N`) tolerates loss of `M − N` identities. The operator who detects partial compromise of a subset ratchets-out the compromised members via `Evl` (declaring a new policy that excludes them); the chain remains under operator authority. See [policy.md §Threshold Redundancy](policy.md#threshold-redundancy).
+- **Threshold redundancy** (`threshold(N, M)` with `M > N`) tolerates loss of `M − N` identities. The operator who detects partial compromise of a subset ratchets-out the compromised members via `Evl` (declaring a new policy that excludes them); the chain remains under operator authority. See [policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy).
 - **Hierarchical scope partitioning** (a root identity governs a fleet of subordinate identities; each subordinate anchors a narrower scope) bounds the blast radius. A compromise at a leaf doesn't compromise the root or its siblings; the operator's response is scoped to the affected leaf.
 
 The operational stakes for getting policy design wrong are concrete. A chain whose policy permits no ratchet-out path — e.g., `threshold(N, N)` (a unanimous policy with no redundancy beyond the threshold) — loses to the first compromise that hits the threshold. The operator's only response is reincept under a new prefix, which propagates to every consumer of the identity: every service config, every anchor allowlist, every KEL-backed binding, every peer registry needs to be updated to the new prefix. At federation scale this is a coordinated, expensive rollout — colloquially the "truck-roll." Every consumer is touched; coordination across operators (especially across organizational boundaries) introduces wall-clock delays measured in days or weeks.
@@ -245,8 +245,8 @@ In each case the timestamp is consumed by a single party using its own clock —
 
 Applications building on KELS may need time-of-creation evidence (audit trails, regulatory reporting, claim validity windows). The recommended pattern is to carry timestamps as application-layer fields on the *content* a chain event anchors, not on the chain event itself. KELS-provided application primitives already follow this pattern:
 
-- **Credentials** carry `issued_at` (required) and `expires_at` (optional). The verifier checks `expires_at` against its own clock at verification time. See [creds.md](creds.md).
-- **Exchange envelopes** carry `created_at`. See [exchange.md](exchange.md).
+- **Credentials** carry `issued_at` (required) and `expires_at` (optional). The verifier checks `expires_at` against its own clock at verification time. See [creds.md](features/creds.md).
+- **Exchange envelopes** carry `created_at`. See [exchange.md](features/exchange.md).
 
 For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
 

@@ -115,7 +115,7 @@ first observation of divergence. Both events stay in storage as forensic
 record. Operator reincepts under a new IEL prefix.
 ```
 
-The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by version + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../security-invariant.md §Ordering Without Timestamps](../security-invariant.md#ordering-without-timestamps). We accept the divergence as data.
+The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by version + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../security-invariant.md §Ordering Without Timestamps](../../security-invariant.md#ordering-without-timestamps). We accept the divergence as data.
 
 ### 2. Adversary submits a conflicting Evl after governance compromise
 

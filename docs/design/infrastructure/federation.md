@@ -236,8 +236,8 @@ After approval, the peer is deactivated and moved from active to inactive in the
 - A periodic anti-entropy loop (every 30s) syncs own KEL from identity, then compares effective SAIDs with each peer and pushes deltas
 - KELs survive registry restarts since they are stored in the local PostgreSQL database
 - Recovery propagates naturally: identity recovers → push/AE loop picks up → each member verifies independently via `save_with_merge`
-- See [Registry Removal](design/registry-removal.md) for decommission procedures
-- See [Recovery Workflow](design/kel/recovery-workflow.md) for the recovery architecture
+- See [Registry Removal](../../operations/registry-removal.md) for decommission procedures
+- See [Recovery Workflow](../primitives/kel/recovery-workflow.md) for the recovery architecture
 
 ## Disaster Recovery
 
@@ -272,7 +272,7 @@ The approval threshold is stored on each proposal at creation time. Verification
 - **Leader handler** (exact match): At proposal submission time, the leader rejects proposals where `threshold != approval_threshold()`. This prevents a proposer from submitting a low threshold in a large federation.
 - **Raft `apply()`** (floor check): During log replay and replication, followers enforce only a minimum threshold floor (`compute_approval_threshold(0)`, currently 3). The exact-match check is deliberately not repeated here because the config may have changed since the entry was committed — a federation that grew from 3 to 10 members would incorrectly reject legitimate historical proposals from when the threshold was 3.
 
-This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](design/federation-state-machine.md#threshold-verification) for details.
+This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](federation-state-machine.md#threshold-verification) for details.
 
 ### Split-Brain Protection
 

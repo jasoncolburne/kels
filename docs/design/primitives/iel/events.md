@@ -155,4 +155,4 @@ See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_ev
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../sel/events.md](../sel/events.md) — SEL per-kind reference (the chain primitive that binds to IEL events).
-- [../policy.md](../policy.md) — Policy DSL and anchoring model (immunity rule).
+- [../policy.md](../../features/policy.md) — Policy DSL and anchoring model (immunity rule).

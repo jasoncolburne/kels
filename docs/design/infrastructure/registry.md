@@ -4,7 +4,7 @@
 
 The registry service (`services/registry`) provides peer discovery for KELS gossip deployments. When new nodes come online, they query the registry for peers, bootstrap sync missing KELs, then begin normal gossip operation. Clients discover nodes via the registry and test latency to select optimal nodes.
 
-For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](./federation.md) for details.
+For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](federation.md) for details.
 
 ## Architecture
 
@@ -45,7 +45,7 @@ For high availability and multi-party operation, multiple registries can form a 
     [nodes a,d]      [node b]         [node c]
 ```
 
-See [Multi-Registry Federation](./federation.md) for detailed documentation.
+See [Multi-Registry Federation](federation.md) for detailed documentation.
 
 ## Data Flow
 
@@ -138,7 +138,7 @@ Admin API (signed requests):
 | `GET` | `/api/v1/federation/proposals/:proposal_prefix` | Get proposal details |
 | `POST` | `/api/v1/admin/proposals/:proposal_prefix/vote` | Vote on a proposal (addition or removal) |
 
-> **Note:** Peer discovery, federation, and admin endpoints are only available when federation is configured. See [Secure Peer Authorization](./design/secure-registration.md) for details.
+> **Note:** Peer discovery, federation, and admin endpoints are only available when federation is configured. See [Secure Peer Authorization](secure-registration.md) for details.
 
 ### KELS Prefix Listing
 

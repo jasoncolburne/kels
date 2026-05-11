@@ -200,7 +200,7 @@ The submit handler runs under a per-prefix advisory lock (Postgres `pg_advisory_
 3. Insert / archive as the path requires.
 4. Publish to Redis (`sel_updates`) for gossip propagation if any path mutated chain state.
 
-The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../security-invariant.md](../security-invariant.md)).
+The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../security-invariant.md](../../security-invariant.md)).
 
 ## Pagination
 
@@ -230,7 +230,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Upd, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.
-9. **Truncate-before-verify on `Rpr`** — when an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` before the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs. This honors the one-divergent-generation-at-a-time invariant (see [../security-invariant.md §One Divergent Generation at a Time](../security-invariant.md#one-divergent-generation-at-a-time)) — SEL achieves the invariant via storage-side normalization, where KEL achieves it via branch-scoped verifier input (see [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6). Different implementation routes; same doctrinal outcome.
+9. **Truncate-before-verify on `Rpr`** — when an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` before the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs. This honors the one-divergent-generation-at-a-time invariant (see [../security-invariant.md §One Divergent Generation at a Time](../../security-invariant.md#one-divergent-generation-at-a-time)) — SEL achieves the invariant via storage-side normalization, where KEL achieves it via branch-scoped verifier input (see [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6). Different implementation routes; same doctrinal outcome.
 
 ## References
 
@@ -240,5 +240,5 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 - [events.md](events.md) — Per-kind reference.
 - [../iel/merge.md](../iel/merge.md) — IEL counterpart.
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../sadstore.md](../sadstore.md) — SADStore service architecture.
+- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
 - [../kel/merge.md](../kel/merge.md) — KEL counterpart.

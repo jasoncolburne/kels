@@ -131,7 +131,7 @@ Hard fails leave the chain at its prior tip. The verifier does not advance the b
 
 All events require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
 
-The rationale for HARD anchor on all events: the DB cannot be trusted (see [../security-invariant.md](../security-invariant.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+The rationale for HARD anchor on all events: the DB cannot be trusted (see [../security-invariant.md](../../security-invariant.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 #### Post-divergence soft-fail propagation
 
@@ -164,7 +164,7 @@ Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's curr
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events, `Upd`-`Upd` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Sea`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
 
-**`Rpr` is the archiving exception.** `Rpr` is privileged but goes through the discriminator's archival path: `Rpr.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rpr.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rpr` never participates in the upgrade rule. The other non-archiving privileged kinds (`Sea`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+**`Rpr` is the archiving exception.** `Rpr` is privileged but goes through the discriminator's archival path: `Rpr.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rpr.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rpr` never participates in the upgrade rule. The other non-archiving privileged kinds (`Sea`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 #### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
 
@@ -335,6 +335,6 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 - [events.md](events.md) — Per-kind structural rules.
 - [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SEL).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle (immunity rule, anchor stability).
-- [../policy.md](../policy.md) — Policy DSL and anchoring model.
-- [../streaming-verification-architecture.md](../streaming-verification-architecture.md) — Cross-side streaming-verification architecture.
+- [../policy.md](../../features/policy.md) — Policy DSL and anchoring model.
+- [../streaming-verification-architecture.md](../../infrastructure/streaming.md) — Cross-side streaming-verification architecture.
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

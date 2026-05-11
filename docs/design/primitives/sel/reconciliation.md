@@ -274,7 +274,7 @@ synchronization. Both nodes' chains stay as forensic record.
 
 ### 6. Adversary races inception with stale identity binding
 
-Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Upd_legit]` where `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence — per [../security-invariant.md §Extension Discipline](../security-invariant.md#extension-discipline), operators never extend adversary events; `Icp` is attested-shared state). `Icp` dedups; `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. Chain becomes the operator's; `Upd_stale` moves to the archive table (forensic-readable; not live).
+Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Upd_legit]` where `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence — per [../security-invariant.md §Extension Discipline](../../security-invariant.md#extension-discipline), operators never extend adversary events; `Icp` is attested-shared state). `Icp` dedups; `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. Chain becomes the operator's; `Upd_stale` moves to the archive table (forensic-readable; not live).
 
 ```
 Step 1 — Adversary submits [Icp, Upd_stale] first; chain born at v_1
@@ -310,7 +310,7 @@ Upd_legit at v_2):
                                        (forensic; not on live chain)
 ```
 
-The operator's response **never extends `Upd_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../security-invariant.md §Extension Discipline](../security-invariant.md#extension-discipline).
+The operator's response **never extends `Upd_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../security-invariant.md §Extension Discipline](../../security-invariant.md#extension-discipline).
 
 ### 7. IEL evolves, owner advances dependent SEL's branch tip
 
@@ -387,5 +387,5 @@ Dependent SEL trying to extend:
 - [verification.md](verification.md) — `SelVerifier` algorithm.
 - [../iel/reconciliation.md](../iel/reconciliation.md) — IEL counterpart (smaller; no Rpr).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../sadstore.md](../sadstore.md) — SADStore service architecture and gossip layer.
+- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
 - [../kel/reconciliation.md](../kel/reconciliation.md) — KEL counterpart; the discriminator and bounds analysis are mirrored on both sides.
