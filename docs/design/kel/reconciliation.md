@@ -119,21 +119,126 @@ The SEL backport replaces per-hop DB queries in both strategies with a single pa
 
 The adversary submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` requires `cnt` (contest) instead of `rec` (recovery). The owner must contest.
 
+```
+Pre-state (linear, owner's chain through s_N):
+  s_0 → s_1 → ... → s_N   (tip at s_N; seal at last rec-revealing event ≤ N)
+
+Adversary submits rec with previous = s_N.said (and dual-sig satisfied):
+  s_0 → ... → s_N → rec_adv  (s_{N+1}; seal advances to N+1)
+
+Effect: chain stays linear; seal advances to N+1; recovery key now spent for
+this chain. Any future divergence at version ≤ N+1 triggers ContestRequired
+because the seal-cap forbids forking at-or-before the seal. Owner's only
+recourse is Cnt extending v_{tip-1} on the post-rec linear chain.
+```
+
 ### 2. Multiple adversary injections across nodes
 
 Adversary injects different events to different nodes. When gossip syncs, divergence is created. Only one adversary event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after recovery propagates via gossip.
+
+```
+Pre-state (linear at s_{d-1}, replicated to nodes A and B):
+
+  Node A:  s_0 → ... → s_{d-1}    (tip)
+  Node B:  s_0 → ... → s_{d-1}    (tip)
+
+Adversary injects different events at s_d on each node:
+
+  Node A receives ixn_a:  s_0 → ... → s_{d-1} → ixn_a @ s_d
+  Node B receives ixn_b:  s_0 → ... → s_{d-1} → ixn_b @ s_d
+
+Gossip propagates ixn_a → B, ixn_b → A. Each node's merge engine
+observes overlap at s_d and writes the second event as the fork
+event (one extra event per overlap, dedup-rejection on subsequent
+adversary submissions at the same version):
+
+  Both nodes:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d   (non-priv divergent)
+                                    └─ ixn_b @ s_d
+
+Owner submits rec to any single node → discriminator archives the
+non-extended branch → recovery propagates via gossip → all nodes
+converge on the post-rec linear state.
+```
 
 ### 3. Owner events archived by adversary's `rec`
 
 If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the adversary's `rec`. The builder resubmits those missing events + `cnt` as an atomic batch.
 
+```
+Pre-state (divergent at s_d; client store holds the owner's branch):
+
+  Server:  s_0 → ... → s_{d-1} ─┬─ owner_a @ s_d → owner_b @ s_{d+1}
+                                └─ adv_a   @ s_d
+
+  Client:  s_0 → ... → s_{d-1} → owner_a → owner_b   (client's local view)
+
+Adversary submits rec extending adv_a (branch-tip-extending shape):
+
+  Discriminator archives owner_a, owner_b; rec_adv lands at s_{d+1}.
+
+  Server (post-archival):  s_0 → ... → s_{d-1} → adv_a → rec_adv
+
+Client detects via find_missing_owner_events that owner_a, owner_b
+no longer exist server-side (event_exists returns false). Owner bundles
+[owner_a, owner_b, cnt] as atomic batch and submits to server. The
+missing events are verified server-side and re-established under the
+batch's atomic transaction; cnt extends v_{tip-1} of the post-batch
+linear chain, joins the existing tip as a 2-event privileged divergent
+set → privileged-divergence-is-terminal fires → chain becomes contested-
+terminal. Owner's lost work is preserved as forensic record.
+```
+
 ### 4. Post-recovery events synced to adversary node
 
 After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the adversary chain), the overlap handler creates a `RecoveryRecord` and archives adversary events synchronously in the merge transaction.
 
+```
+Pre-sync state (post-recovery on A; adversary chain still on B):
+
+  Node A:  s_0 → ... → s_{d-1} → owner_a → rec → ixn_new
+           (clean linear chain after rec archived adv_a)
+
+  Node B:  s_0 → ... → s_{d-1} → adv_a
+           (still has adversary's chain; rec hasn't propagated)
+
+Gossip propagates Node A's chain (including rec) to Node B. Node B's
+merge engine observes overlap at s_d (its adv_a vs incoming owner_a),
+sees rec in the batch, runs the discriminator (rec walkback identifies
+owner_a as the surviving branch), and archives adv_a synchronously.
+
+  Node B (post-sync):  s_0 → ... → s_{d-1} → owner_a → rec → ixn_new
+                       (matches Node A; adv_a in archive table)
+
+All nodes converge on the same effective SAID (tip event SAID).
+```
+
 ### 5. Contested KELs across nodes
 
 Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived; another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+
+```
+Different event sets, same effective SAID:
+
+  Node A:  s_0 → ... → s_{d-1} ─┬─ adv_a @ s_d ┐
+                                ├─ ixn_b @ s_d ├── 3-event set; contested
+                                └─ ror_c @ s_d ┘   (ror upgraded set via
+                                                    upgrade rule on this node)
+
+  Node B:  s_0 → ... → s_{d-1} ─┬─ ixn_b @ s_d ┐
+                                └─ ror_c @ s_d ┴── 2-event set; contested
+                                                   (Node B's local Cnt path
+                                                    closed the gate before
+                                                    adv_a's gossip arrived)
+
+  effective_said(A) = hash_effective_said("contested:{prefix}")
+  effective_said(B) = hash_effective_said("contested:{prefix}")
+                    = effective_said(A)    ✓
+
+Anti-entropy compares SAIDs, sees they match, does not re-queue
+synchronization. Both nodes' chains stay as forensic record; cross-node
+forensic divergence is acceptable (and unavoidable given the gossip-
+window timing).
+```
 
 ## References
 

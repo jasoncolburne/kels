@@ -137,21 +137,140 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governance_policy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at version ≤ the new seal triggers `ContestRequired`.
 
+```
+Pre-state (linear at v_N; seal at last Sea/Rpr/Cnt/Dec ≤ N):
+
+  [Icp] → [Upd_v1] → ... → [Upd_v_N]   (tip)
+
+Adversary submits Sea with previous = v_N.said (governance authorization
+satisfied via bound IEL's current governance_policy):
+
+  [Icp] → ... → [Upd_v_N] → [Sea_v_{N+1}]   (seal advances to N+1)
+
+Effect: chain stays linear; seal advances. Any subsequent submission at
+version ≤ N+1 (any Upd/Sea/Rpr extending pre-Sea state) triggers
+ContestRequired — the seal-cap forbids forking at-or-before the seal.
+Operator's only recourse is Cnt extending v_{tip-1} on the post-Sea
+linear chain.
+```
+
 ### 2. Multiple adversary injections across nodes
 
 Adversary injects different events to different nodes. When gossip syncs, divergence is created at one or more nodes. The first divergent event at each version is stored; subsequent ones are dedup-rejected. Repair (or contest) resolves it. All nodes converge after the resolution propagates.
+
+```
+Pre-state (linear at v_{d-1}, replicated to nodes A and B):
+
+  All nodes:  [Icp] → [Upd] → ... → [Upd_{d-1}]   (tip)
+
+Adversary submits different Upd events to different nodes:
+
+  Node A receives Upd_a   →  tip Upd_a   (linear append)
+  Node B receives Upd_b   →  tip Upd_b   (linear append)
+
+Gossip propagates. Each node observes overlap at v_d and writes the
+incoming event as the second fork event:
+
+  Both nodes:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_a @ v_d   (non-priv divergent)
+                                          └─ Upd_b @ v_d
+
+Operator submits Rpr (governance-authorized via bound IEL) extending
+their preferred surviving branch; discriminator archives the other
+branch; resolution propagates via gossip; all nodes converge on the
+post-Rpr linear state.
+
+  Post-Rpr (linear, repaired):
+    [Icp] → ... → [Upd_{d-1}] → [surviving Upd] → [Rpr]   (tip)
+                                       ↑
+                                       other branch archived
+```
 
 ### 3. Owner pending lost to adversary's `Rpr`
 
 If the adversary submitted `Rpr` first, owner's pre-flush staged events may have been archived along with the rest of the adversary's reading of the chain. Owner's builder bundles pending into the repair batch via `repair()` — `[pending..., Rpr]` — and the submit handler accepts pending atomically with the repair, replaying owner's lost work onto the post-repair chain.
 
+```
+Pre-state (chain divergent at v_d; operator has pending events locally
+staged but never flushed):
+
+  Server:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_d_op   (operator's branch tip)
+                                      └─ Upd_d_adv  (other branch tip)
+
+  Client:  staged pending_1, pending_2 chained from Upd_d_op (not flushed)
+
+Operator's repair() bundles pending into the repair batch:
+
+  Submit:  [pending_1, pending_2, Rpr]
+           where Rpr.previous = pending_2.said   (Rpr extends last pending)
+
+Server processes atomically:
+  1. pending_1, pending_2 land on Upd_d_op's branch (now v_{d+1}, v_{d+2}).
+  2. Rpr lands at v_{d+3}, walks back through pending_2 → pending_1 →
+     Upd_d_op → Upd_{d-1} (surviving-branch walkback).
+  3. Discriminator archives the other branch (Upd_d_adv and any extensions).
+
+Post-state (linear, repaired, pending replayed):
+
+  [Icp] → ... → [Upd_{d-1}] → Upd_d_op → pending_1 → pending_2 → Rpr
+                                                        ↑
+                                                        operator's lost work
+                                                        preserved
+```
+
 ### 4. Post-repair events synced to a node that has the adversary chain
 
 After repair on node A, new events (`Upd`, `Sea`) appended. When gossip propagates the chain to node B (still on the adversary version), node B fetches the full repaired chain and submits to its local handler. The handler observes the `Rpr` in the batch, runs the discriminator, archives node B's adversary events, and inserts the new chain.
 
+```
+Pre-sync state (post-repair on A; adversary chain still on B):
+
+  Node A:  [Icp] → ... → [Upd_{d-1}] → Upd_d_op → Rpr → Upd_new → Sea_new
+           (clean linear chain after Rpr archived adversary branch)
+
+  Node B:  [Icp] → ... → [Upd_{d-1}] → Upd_d_adv
+           (still has adversary's branch; Rpr hasn't propagated)
+
+Gossip propagates Node A's chain (including Rpr and post-Rpr events) to
+Node B. Node B's submit handler observes overlap at v_d (its Upd_d_adv vs
+incoming Upd_d_op), sees Rpr in the batch, runs the discriminator (Rpr
+walkback identifies Upd_d_op as surviving), and archives Upd_d_adv
+synchronously.
+
+  Node B (post-sync):  [Icp] → ... → [Upd_{d-1}] → Upd_d_op → Rpr →
+                                     Upd_new → Sea_new
+                       (matches Node A; Upd_d_adv in archive table)
+
+All nodes converge on the same effective SAID (tip event SAID).
+```
+
 ### 5. Contested chains across nodes
 
 Different nodes may have different event counts for a contested SEL (e.g., one node had owner's `Cnt` lands first; another had adversary `Sea` advance further before contest arrived). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any chain with a `Cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+
+```
+Different event sets across nodes, same effective SAID:
+
+  Node A:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_a @ v_d ┐
+                                      ├─ Upd_b @ v_d ├── 3-event set;
+                                      └─ Sea   @ v_d ┘    contested
+                                                          (Sea upgraded set
+                                                           via upgrade rule
+                                                           on this node)
+
+  Node B:  [Icp] → ... → [Upd_{d-1}] ─┬─ Upd_b @ v_d ┐
+                                      └─ Cnt   @ v_d ┴── 2-event set;
+                                                         contested (B's
+                                                         local Cnt path
+                                                         closed gate before
+                                                         Sea gossip arrived)
+
+  effective_said(A) = hash_effective_said("contested:{prefix}")
+  effective_said(B) = hash_effective_said("contested:{prefix}")
+                    = effective_said(A)    ✓
+
+Anti-entropy compares SAIDs, sees they match, does not re-queue
+synchronization. Both nodes' chains stay as forensic record.
+```
 
 ### 6. Adversary races inception with stale identity binding
 
@@ -161,9 +280,68 @@ Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent
 
 After IEL governance evolves (an Evl on IEL changes governance_policy), owner submits `Sea` on each dependent SEL to advance the live branch's tip `identity_event` forward to the new IEL Evl. After this advancement, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` extending that branch tip fails the per-event parent-monotonic check (the adversary's `identity_event` regresses relative to its parent's). See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
 
+```
+IEL chain evolves governance from gov_old to gov_new:
+
+  IEL:  [Icp] → [Evl_old] → [Evl_new]   (governance evolved; old gov revoked)
+
+Dependent SEL pre-Sea (live branch tip bound to IEL's Evl_old):
+
+  SEL:  [Icp] → [Upd_v1, identity_event=Evl_old.said] → ...
+        → [Upd_v_N, identity_event=Evl_old.said]   (tip)
+
+Operator advances SEL via Sea bound to IEL's current governance event:
+
+  SEL:  ... → [Upd_v_N] → [Sea_v_{N+1}, identity_event=Evl_new.said]   (tip)
+                                  ↑
+                                  tip's identity_event now Evl_new.said
+
+Adversary (holds gov_old preimage only) tries to extend the tip with
+stale-bound Cnt/Dec:
+
+  Cnt_stale.previous       = Sea_v_{N+1}.said    (would extend the Sea tip)
+  Cnt_stale.identity_event = Evl_old.said        (stale binding)
+
+  Per-event parent-monotonic check (per branch):
+    Cnt_stale's parent: Sea_v_{N+1}, identity_event=Evl_new.said
+    Cnt_stale's      : identity_event=Evl_old.said
+    Evl_old < Evl_new in IEL chain order → REGRESS → HARD-fail rejection.
+
+The Sea-advanced tip closes the regression window for adversaries
+extending the live branch. Cnt fork-contest from v_{d-1} (a fresh branch,
+not extending the live branch's tip) is not blocked by this rule (see
+[../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
+```
+
 ### 8. SEL bound to an IEL event whose IEL is now divergent
 
 The submit handler rejects new SEL events with `IelDivergent` (bound IEL is divergent at the bound branch — cannot resolve authorization). Owner's recovery path is to wait for IEL to be contested (terminating it) and then either: (a) decommission the SEL, or (b) incept a new SEL bound to a different (non-divergent) IEL.
+
+```
+IEL chain (now divergent at v_d, immediately contested-terminal):
+
+  IEL:  [Icp] → [Evl_v1] → ... → [Evl_{d-1}] ─┬─ Evl_d_a
+                                              └─ Evl_d_b   ← contested-terminal
+
+Dependent SEL trying to extend:
+
+  SEL:  [Icp] → ... → [Upd_v_N, identity_event=Evl_{d-1}.said]   (tip)
+
+  Submitter tries:
+    [Upd_v_new, identity_event=Evl_d_a.said]   ← bound to a divergent IEL event
+
+  IEL resolver: "bound event lives at v_d ≥ first_divergent_version"
+   → rejects with IelDivergent.
+
+  Submitter tries with pre-divergence binding:
+    [Upd_v_new, identity_event=Evl_{d-1}.said]   ← bound at v_{d-1} (pre-div)
+
+  IEL resolver: "bound event in pre-divergence shared prefix" → chain-validity
+   OK; but consumer trust on a contested IEL is whole-chain-suspect (see
+   ../iel/event-log.md §Effect on Bound SELs). Operator's typical response
+   is to migrate the SEL or decommission it rather than keep advancing under
+   a contested IEL.
+```
 
 ## References
 

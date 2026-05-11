@@ -79,6 +79,31 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 
 **Concurrent extensions** (race, same-batch fork): two events with the same `previous` land at the same version. Divergence is created at the moment of submission. The proactive governance evaluation rule (`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63`) bounds the post-`d` window for non-privileged-divergent chains to one page.
 
+```
+Non-privileged Upd-Upd divergence at v_d:
+
+  v0       v1                 v_{d-1}             v_d  ← non-privileged divergent set
+[Icp] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd_a]   previous = v_{d-1}.said
+                                   └─ [Upd_b]   previous = v_{d-1}.said
+
+Both events auth-authorized; neither privileged. Chain is non-privileged-divergent →
+recoverable via Rpr (governance-authorized; archives one branch via discriminator).
+Post-`d` window capped at MAX_NON_EVALUATION_EVENTS = 63 events on either branch.
+
+
+Privileged divergence at v_d (e.g., Upd-Sea or Sea-Cnt):
+
+  v0       v1                 v_{d-1}             v_d  ← privileged divergent set
+[Icp] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd]            ┐
+                                   └─ [Sea or Cnt]     ┴── contested-terminal
+                                                            (privileged-divergence rule)
+
+Any privileged event in the set fires privileged-divergence-is-terminal at first
+observation. Chain transitions to Contested. No further events accepted at v_d
+or beyond — contested-state gate rejects subsequent submissions including gossip-
+delivered events.
+```
+
 The divergence invariant guarantees:
 - **Non-privileged divergent set** at version `d` (event kinds limited to `Upd`): max 2 events. Recoverable via `Rpr`.
 - **Privileged divergent set** at version `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
@@ -189,6 +214,40 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
 
 `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~63 events per the proactive-evaluation cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence).
 
+```
+Scenario 1 — Cnt on a linear chain (creates fresh divergence at v_d):
+
+  Pre-state:        ... → v_{d-1} → Upd_v_d   (linear tip at v_d)
+                                       ↑
+                                      tip
+
+  Cnt construction: cnt.previous = v_{tip-1}.said = v_{d-1}.said
+                    cnt.version  = d
+
+  Post-state:       ... → v_{d-1} ─┬─ Upd_v_d ┐
+                                   └─ Cnt     ┴── contested-terminal
+                                                  (Cnt privileged →
+                                                   privileged-divergence-
+                                                   is-terminal fires)
+
+
+Scenario 2 — Cnt on an already-divergent SEL (joins via upgrade rule):
+
+  Pre-state (non-priv divergent at v_d, Upd-Upd race):
+                    ... → v_{d-1} ─┬─ Upd_a @ v_d
+                                   └─ Upd_b @ v_d
+
+  Cnt construction: cnt.previous = v_{d-1}.said   (upgrade-rule v_{d-1} parent)
+                    cnt.version  = d
+
+  Post-state:       ... → v_{d-1} ─┬─ Upd_a @ v_d ┐
+                                   ├─ Upd_b @ v_d ├── contested-terminal
+                                   └─ Cnt   @ v_d ┘   (Cnt privileged →
+                                                       upgrade-rule joins +
+                                                       privileged-divergence
+                                                       fires)
+```
+
 Cnt is privileged (governance-authorized). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal.
 
 **Distinction from Rpr.** Cnt and the divergence-ancestor-extending Rpr shape (Rpr extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. The divergence-ancestor-extending Rpr archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rpr as the new `v_d` event (repair; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` creates a contest; submitting `Rpr` with `previous = v_{d-1}.said` creates a divergence-ancestor-extending repair.
@@ -218,6 +277,20 @@ Authorization is the same IEL-resolved `governance_policy` required to accept `v
 ## Decommission (Dec)
 
 Decommission is the clean terminal state for owner-initiated chain abandonment. Same shape as `Cnt` but no authority conflict — owner explicitly ends the chain.
+
+```
+Clean lifecycle terminated by Dec:
+
+  v0       v1                v_N    v_{N+1}
+[Icp] → [Upd] → ... → [Upd_v_N] → [Dec]   ← terminal; chain decommissioned
+
+  Dec.previous = v_N.said   (extends tip directly; no fresh divergence)
+  Dec.version  = N + 1
+
+Dec is privileged → advances the seal to its own version. Seal-cap then
+forbids any fork at-or-before v_{N+1}. No Cnt can land after Dec. No
+archival — Dec is appended to the chain as the terminal event.
+```
 
 ### Server semantics
 

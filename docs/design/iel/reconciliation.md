@@ -90,23 +90,161 @@ All nodes must eventually agree on the effective SAID for each prefix.
 
 Both submit different `Evl` events at v3 within the gossip-propagation window. Each is governance-authorized; neither is "the adversary." Both reach storage at different nodes. Gossip propagates; nodes converge on divergent state. Owner submits `Cnt` to terminate; chain re-incepts under new prefix.
 
+```
+Pre-state (linear at v_2, replicated to nodes A and B):
+
+  Node A:  [Icp] → [Evl_v1] → [Evl_v2]   (tip)
+  Node B:  [Icp] → [Evl_v1] → [Evl_v2]   (tip)
+
+Two governance parties submit Evl concurrently with previous = v_2.said:
+
+  Party 1 → Node A:  Evl_v3a   (lands at v_3 on A; A's tip is now Evl_v3a)
+  Party 2 → Node B:  Evl_v3b   (lands at v_3 on B; B's tip is now Evl_v3b)
+
+Gossip propagates Evl_v3a → B and Evl_v3b → A. Each node observes a
+2-event divergent set at v_3:
+
+  Both nodes:  [Icp] → [Evl_v1] → [Evl_v2] ─┬─ Evl_v3a ┐
+                                            └─ Evl_v3b ┴── contested-terminal
+                                                            (both privileged →
+                                                             privileged-divergence
+                                                             fires)
+
+All IEL events are privileged → chain transitions to contested-terminal at
+first observation of divergence. Both events stay in storage as forensic
+record. Operator reincepts under a new IEL prefix.
+```
+
 The protocol does not pick a winner — picking would mean architecting around "who was 'first,'" which is unknowable globally without timestamps. We accept the divergence as data.
 
 ### 2. Adversary submits a conflicting Evl after governance compromise
 
 Same shape as case 1 — no protocol-level distinction between "innocent race" and "compromise" since both produce the same chain shape. Owner detects via federation status, submits `Cnt`. Chain terminates.
 
+```
+Identical chain shape to case 1:
+
+  [Icp] → [Evl_v1] → [Evl_v2] ─┬─ Evl_v3_operator
+                               └─ Evl_v3_adversary    ← contested-terminal
+
+Race-vs-takeover indistinguishability: the chain mathematics record
+divergence without recording cause. Operator's protocol-level recourse
+is the same in both cases — reincept under a new prefix. The optional
+explicit Cnt below makes intent visible:
+
+  [Icp] → [Evl_v1] → [Evl_v2] ─┬─ Evl_v3_operator    ┐
+                               ├─ Evl_v3_adversary   ├── still contested
+                               └─ Cnt   (rejected by ┘   (gate already closed
+                                        contested-state      at first divergence
+                                        gate)                 observation)
+
+Note: a Cnt submitted post-divergence to a contested IEL is rejected by
+the contested-state gate. Cnt only lands on IEL as a linear-chain
+extension or as one event in the original 2-event divergent set; once
+the chain is contested-terminal, all subsequent submissions are rejected.
+```
+
 ### 3. Cross-chain effect: SELs bound to a divergent IEL event
 
 If an SEL's `identity_event` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
+
+```
+IEL chain (now divergent at v_d):
+
+  [Icp] → [Evl_v1] → ... → [Evl_{d-1}] ─┬─ Evl_d_a
+                                        └─ Evl_d_b    ← contested-terminal
+
+SEL chain bound to the IEL (last good binding pre-divergence):
+
+  [Icp] → [Upd_v1, identity_event=Evl_{d-1}.said] → ...
+
+  Submitter tries:
+    [Upd_v_new, identity_event=Evl_d_a.said]   ← bound to a divergent IEL event
+
+  IEL resolver: "bound event lives at v_d ≥ first_divergent_version"
+   → rejects with IelDivergent.
+
+  Submitter retries with stable pre-divergence binding:
+    [Upd_v_new, identity_event=Evl_{d-1}.said]   ← bound at v_{d-1} < d
+
+  IEL resolver: "bound event is in pre-divergence shared prefix" → OK
+   for chain-validity; consumer trust degraded per whole-chain-suspect rule.
+```
+
+Bindings at versions strictly less than `first_divergent_version` resolve cleanly (pre-divergence portion is unambiguous). Bindings at-or-after the divergent version are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
 
 ### 4. Multiple adversary injections to different nodes
 
 Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain freezes after the first divergence; subsequent injections are dedup-rejected (only one extra event per version is accepted as the divergence marker). Owner submits `Cnt` to terminate.
 
+```
+Pre-state (linear at v_2, replicated to nodes A, B, C):
+
+  All nodes:  [Icp] → [Evl_v1] → [Evl_v2]
+
+Three parties submit different Evl_v3 events to different nodes:
+
+  Node A receives Evl_a   →  tip Evl_a   (linear append at A)
+  Node B receives Evl_b   →  tip Evl_b   (linear append at B)
+  Node C receives Evl_c   →  tip Evl_c   (linear append at C)
+
+Gossip propagates. Suppose Evl_b arrives at A first; A becomes divergent
+at v_3 with {Evl_a, Evl_b}; chain becomes contested-terminal on A
+immediately (privileged-divergence rule). Subsequent gossip of Evl_c to
+A is rejected by A's now-closed contested-state gate.
+
+Final state on each node depends on gossip ordering, but every node ends
+up contested-terminal with effective SAID = hash_effective_said(
+"contested:{prefix}"). Across all nodes:
+
+  Node A:  ... → Evl_v2 ─┬─ Evl_a (first arrived)
+                         └─ Evl_b           ← contested-terminal
+                                              (Evl_c gossip rejected by gate)
+
+  Node B:  ... → Evl_v2 ─┬─ Evl_b (local)
+                         └─ Evl_c (or Evl_a) ← contested-terminal
+
+  Node C:  ... → Evl_v2 ─┬─ Evl_c (local)
+                         └─ Evl_a (or Evl_b) ← contested-terminal
+
+Cross-node forensic divergence is acceptable; all nodes converge on the
+same effective SAID for the contested state.
+```
+
 ### 5. Concurrent Cnt + Evl at v_d
 
 Two governance-authorized parties submit concurrently to different nodes at v_d: party 1 submits `Cnt` with `previous = v_{d-1}.said`; party 2 submits `Evl` with `previous = v_{d-1}.said`. Both land. The 2-event divergent set at v_d is privileged (Cnt is privileged; even without Cnt, Evl–Evl would still be privileged because every IEL event is privileged) → privileged-divergence-is-terminal fires immediately; chain becomes contested-terminal as of v_d. Subsequent submissions arriving at v_d via gossip — including any further `Cnt` — are rejected by the contested-state gate. Both events stay in storage as forensic record; all nodes converge on `hash_effective_said("contested:{prefix}")`.
+
+```
+Pre-state (linear at v_{d-1}):
+
+  [Icp] → [Evl_v1] → ... → [Evl_{d-1}]   (tip)
+
+Two governance parties submit concurrently to different nodes:
+
+  Party 1 (operator) → Node A:
+    Cnt.previous = v_{d-1}.said
+    Cnt.version  = d
+  Party 2 (second governance party) → Node B:
+    Evl_v_d.previous = v_{d-1}.said
+    Evl_v_d.version  = d
+
+Each event lands as a linear-chain extension on its submitting node (no
+divergence visible at submit time on either node). Gossip propagates.
+
+Final state on every node (2-event privileged divergent set at v_d):
+
+  [Icp] → ... → [Evl_{d-1}] ─┬─ Cnt     @ v_d ┐
+                             └─ Evl_v_d @ v_d ┴── contested-terminal
+                                                  (privileged-divergence fires;
+                                                   every IEL event is privileged)
+
+Both events stay as forensic record. Cross-node forensic divergence
+acceptable (Node A's Cnt might also arrive at C via gossip from A
+before Evl_v_d does, or vice versa — final 2-event subset depends on
+gossip ordering). All nodes converge on hash_effective_said(
+"contested:{prefix}").
+```
 
 The same shape applies to concurrent `[Cnt_a, Cnt_b]` (two operators contesting simultaneously) and `[Evl_a, Evl_b]` (two governance parties racing): in every case the 2-event divergent set is contested-terminal and no 3rd event lands. Cnt on a linear chain — operator-initiated termination — is the other scenario in which Cnt lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
 
