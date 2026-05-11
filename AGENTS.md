@@ -25,6 +25,8 @@ Defense against the unavoidable case (adversary captures the ancestor's authorit
 
 **Cascade-reincept honesty.** Contested KEL → reincept every IEL whose governance policy anchors in it → reincept every SEL bound to those IELs. Identity hierarchies built around a single root carry the entire dependent tree's reincept cost when the root falls. Don't anchor everything to one root if root compromise costs you the entire dependent tree.
 
+**Federation convergence.** Gossip propagation + deterministic effective-SAID resolution ensures every chain converges on the same semantic state across all nodes. Load-bearing for several doctrine rules (`Cnt Overrides Dec`, the upgrade rule, end-verifiability over data-from-any-source). Single-node deployments forfeit this property. See [docs/design/security-invariant.md §Federation Convergence](docs/design/security-invariant.md#federation-convergence).
+
 See [docs/design/security-invariant.md §Compromise is Permanent](docs/design/security-invariant.md#compromise-is-permanent) for the full doctrine and per-primitive mechanism.
 
 ## Build & Verify

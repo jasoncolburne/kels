@@ -269,6 +269,28 @@ Applications building on KELS may need time-of-creation evidence (audit trails, 
 
 For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
 
+## Federation Convergence
+
+KELS depends on **eventual cross-node convergence**: gossip propagation, paired with deterministic effective-SAID computation, ensures every chain resolves to the same semantic state on every node in a healthy federation.
+
+The assumption has three components:
+
+- **Gossip propagates events.** Anti-entropy and submission-time fan-out push new events to all nodes within a bounded propagation window. (The bound itself is operational and lives in [infrastructure/gossip.md](infrastructure/gossip.md); the doctrine asserts only the eventual property.)
+- **Semantic state is a function of the events.** Each node's view of a chain (active / divergent / contested / decommissioned, with which events at which versions) is computed deterministically from the events that node holds; identical event sets yield identical state.
+- **Effective-SAID determinism on terminal/divergent chains.** Where chain contents may differ across nodes (different surviving fork events, different forensic snapshots), `hash_effective_said` computes a deterministic SAID that depends only on chain semantic state, not byte-identical content. Anti-entropy compares effective SAIDs and reconciles mismatches.
+
+Doctrine rules that lean on convergence as their cryptographic-soundness argument:
+- [§Cnt Overrides Dec](#cnt-overrides-dec) — restores convergence on `Cnt`/`Dec` races.
+- [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)'s upgrade rule — restores convergence on non-archiving privileged events arriving via gossip into a non-priv divergent set.
+- **End-verifiability over data-from-any-source** — the verifier produces the same answer because the data is semantically the same (or effective-SAID-identical) across nodes.
+- **Single-node-compromise mitigation** — depends on cross-node replication surfacing tampering as divergence.
+
+Convergence is the load-bearing assumption that makes the protocol's cryptographic invariants behave equivalently from any node a consumer queries. **Single-node deployments forfeit this property** — they trade convergence-via-replication for operational simplicity, and accept the structural weakening of DB-tampering surfacing. See [../analysis/protocol-attack-surface.md §DB Compromise + Key Compromise](../analysis/protocol-attack-surface.md#db-compromise--key-compromise) for the carve-out.
+
+Convergence is among gossip-participating nodes. **Permanent node loss before propagation completes** (a node going offline while it still holds events not yet seen by other peers) is a deployment-shape concern — replication factor, node uptime, backup procedures, and clean retirement workflows. It is not a doctrine concern: the protocol asserts what convergence *means* and how it's computed; operators bear responsibility for keeping enough nodes online long enough for it to occur in practice. Operational guidance lives in the operations docs.
+
+Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/kel/reconciliation.md), [primitives/iel/reconciliation.md](primitives/iel/reconciliation.md), and [primitives/sel/reconciliation.md](primitives/sel/reconciliation.md) demonstrate convergence holds for each primitive under all state × submission × gossip combinations.
+
 ## Extension Discipline
 
 The protocol cannot — and does not — prevent any currently-authorized party from chaining a new event onto any existing chain event. `previous` validates against the structural parent (the event whose SAID is named), not against "who authored the parent." A current-authority holder can technically point `previous` at any prior event the verifier would accept as a parent.
