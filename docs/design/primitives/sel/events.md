@@ -41,7 +41,7 @@ The `identity` field lives on `Icp` only; subsequent events inherit it from chai
 Authorization for v1+ SEL events is resolved through `identity_event` — a SAID reference to the specific IEL event whose declared/evolved policy authorizes the SEL event:
 
 - **Icp** is **permissionless**. Anyone can submit it; the prefix derives deterministically from `(identity, topic)` (with said+prefix blanked) and the SAID derives from the full event. Same Icp from any submitter produces the same SAID, so server-side dedup makes "adversary submits first" a no-op. The chain cannot be advanced past Icp without satisfying the IEL's `auth_policy`, so permissionless Icp grants no authority. The dual-policy era's SEL Icp authorization gate (anchored under a declared SEL-side authorization policy) closed a phishing class — under identity rooting, the phishing class evaporates by construction because there are no policy fields on Icp to phish.
-- **Upd** must satisfy the IEL's tracked `auth_policy` resolved through `identity_event`. The Upd's anchor (KEL ixn) must be authorized under the policy that the bound IEL event declared/evolved.
+- **Upd** must satisfy the IEL's tracked `auth_policy` resolved through `identity_event`. The Upd's anchors (KEL ixns) must be authorized under the policy that the bound IEL event declared/evolved.
 - **Sea / Rpr / Cnt / Dec** must satisfy the IEL's tracked `governance_policy` — the higher bar, also resolved through `identity_event`. They do NOT separately need to satisfy `auth_policy`: a properly-crafted `governance_policy` should subsume `auth_policy` (mirrors today's SEL rule).
 
 ### Inception batch rule
@@ -90,7 +90,7 @@ For an SEL event at v1+:
 - SEL.said is anchored under the resolved policy.
 - **Per-event parent-monotonic on `identity_event`** (SEL-specific): each event's `identity_event` is at-or-after its parent event's `identity_event` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain).
 
-Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchor (KEL ixn) is timeless.
+Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchors (KEL ixns) are timeless.
 
 #### Parent-monotonic gaps and consumer-side discipline
 

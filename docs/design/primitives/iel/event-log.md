@@ -183,7 +183,7 @@ A SEL event bound to `IEL_event_X.said` resolves authorization through:
 For this resolution to remain deterministic forever:
 - `IEL_event_X` must remain in IEL's authentic chain (never archived) — guaranteed by chain immutability and the no-`Rpr` rule (we never archive on IEL).
 - The policy declared at `IEL_event_X` must have stable content (anchors don't move) — guaranteed by the IEL immunity rule.
-- The KEL ixn anchoring SEL.said must remain in its KEL — caveat: subject to KEL `rec` / `cnt` (see Trust Caveat).
+- The KEL ixns anchoring SEL.said must remain in their KELs — caveat: subject to KEL `rec` / `cnt` (see Trust Caveat).
 
 The first two are structural. The third is a runtime trust concern that applies to all anchoring in the system.
 
