@@ -90,6 +90,8 @@ This is a structural feature of anchored policies: threshold satisfaction depend
 
 Operators designing governance / authorization policies should set thresholds with `M − N >= expected partial-compromise tolerance`.
 
+For the operator-facing intuition behind redundancy — adversary patience, the cost of accumulating sufficient authority, and the truck-roll cost of reincept-as-default — see [security-invariant.md §Limit of the Doctrine → §Adversary Patience and Policy Redundancy](security-invariant.md#adversary-patience-and-policy-redundancy). The DSL section above covers the mechanics; the doctrine section covers the threat model and operational stakes.
+
 ## AST
 
 ```rust

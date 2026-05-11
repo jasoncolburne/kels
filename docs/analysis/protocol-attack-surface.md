@@ -39,6 +39,12 @@ Attacks that exist *because* of the doctrine's structural decisions — outside 
 - **Outcome:** Operationally indistinguishable from voluntary termination. The protocol has no observable signature for coercion.
 - **Mitigation:** None at the protocol layer. Operational hardening (legal protections, custody policies, application-layer dead-man patterns) is outside protocol scope.
 
+### Strategic Compromise Patience
+
+**Attack:** A strategic adversary doesn't act on first-key compromise — they accumulate quietly until they hold a satisfying combination of the current policy (threshold met, or full policy in single-custodian cases), then act decisively.
+- **Outcome:** The doctrine's "detect-and-respond window" is bounded by the adversary's timeline (when they choose to act), not the operator's observation (when per-key compromise becomes evident). Compromise of individual keys may produce no protocol-observable signal until accumulation completes; by then the adversary's privileged event is already authorized to land.
+- **Mitigation:** None at the protocol layer. Operational defense via policy redundancy: high thresholds + custody separation raise the accumulation cost; `threshold(N, M)` with `M > N` allows the operator to ratchet-out detected-compromised members via `Evl` (IEL) or by re-anchoring under a different subset (KEL/SEL anchors), keeping the prefix stable; hierarchical scope partitioning bounds the blast radius. See [../design/security-invariant.md §Adversary Patience and Policy Redundancy](../design/security-invariant.md#adversary-patience-and-policy-redundancy) for the threat model and operational stakes.
+
 ### Race-vs-Takeover Indistinguishability
 
 **Attack:** Two parties — one legitimate, one adversarial — submit conflicting events that race onto the chain, producing divergence. Alternatively: two legitimate parties race and produce divergence; an external observer interprets the divergence as evidence of compromise.

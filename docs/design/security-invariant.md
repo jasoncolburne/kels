@@ -195,6 +195,22 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
 
+#### Adversary Patience and Policy Redundancy
+
+The detect-and-respond window above assumes the adversary acts as soon as they hold sufficient authority. A strategic adversary doesn't. They accumulate — compromise key 1, wait, compromise key 2, wait, compromise key 3, then act once they hold a satisfying combination of the current policy. The window the operator has to respond is bounded by the adversary's timeline (when they choose to act), not by the operator's observation (when they detect the first compromise). Compromise detection at the per-key level may produce no protocol-observable signal until the adversary's accumulation completes; by then the rotation event is already authorized to land.
+
+This makes policy design a budget against strategic patience, not a checkbox:
+
+- **High thresholds + custody separation** raise the cost of accumulating sufficient authority. Each additional independently-held key in the policy is an additional independent compromise the adversary must accomplish. Geographic, organizational, and supply-chain separation between key custodians multiplies the cost of accumulation.
+- **Threshold redundancy** (`threshold(N, M)` with `M > N`) tolerates loss of `M − N` identities. The operator who detects partial compromise of a subset ratchets-out the compromised members via `Evl` (declaring a new policy that excludes them); the chain remains under operator authority. See [policy.md §Threshold Redundancy](policy.md#threshold-redundancy).
+- **Hierarchical scope partitioning** (a root identity governs a fleet of subordinate identities; each subordinate anchors a narrower scope) bounds the blast radius. A compromise at a leaf doesn't compromise the root or its siblings; the operator's response is scoped to the affected leaf.
+
+The operational stakes for getting policy design wrong are concrete. A chain whose policy permits no ratchet-out path — e.g., `threshold(N, N)` (a unanimous policy with no redundancy beyond the threshold) — loses to the first compromise that hits the threshold. The operator's only response is reincept under a new prefix, which propagates to every consumer of the identity: every service config, every anchor allowlist, every KEL-backed binding, every peer registry needs to be updated to the new prefix. At federation scale this is a coordinated, expensive rollout — colloquially the "truck-roll." Every consumer is touched; coordination across operators (especially across organizational boundaries) introduces wall-clock delays measured in days or weeks.
+
+Policies designed for ratchet-out — high thresholds, redundancy beyond the threshold, hierarchical scope partitioning — keep the prefix stable across compromise events. **Survivable compromise instead of catastrophic reincept.** Design policies to survive compromise without truck-roll; treat reincept as the option of last resort, not the routine response.
+
+The principle applies uniformly across KEL, IEL, and SEL. KEL's recovery key custody benefits from physical separation from the signing key (the privileged-vs-routine asymmetry the dual-signature requirement was designed for). IEL's `governance_policy` benefits from `M > N` thresholds across distinct organizational custodians and from hierarchical structure (root IEL → subordinate IELs scoped narrowly). SEL inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience.
+
 **Cascade-reincept honesty**: when a high-stakes identity is contested or current-state-compromised, the operational cost is a cascade. A contested KEL invalidates every IEL whose governance policy anchors in it; each invalidated IEL invalidates every SEL bound to it. An identity hierarchy built with a single root carries the entire dependent tree's reincept cost when the root falls. **Don't anchor everything to one root if root compromise costs you the entire dependent tree.** Identity hierarchies should be designed with the cascade in mind — partition the dependency graph so a single compromise has a bounded blast radius.
 
 ## Ordering Without Timestamps
