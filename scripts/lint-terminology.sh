@@ -28,7 +28,6 @@ all_files=()
 while IFS= read -r f; do
     all_files+=("$f")
 done < <(git ls-files \
-    ':!:docs/claudit' \
     ':!:Makefile' \
     ':!:.terminology-forbidden' \
     ':!:**/.terminology-forbidden' \
