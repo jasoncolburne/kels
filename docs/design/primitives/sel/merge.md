@@ -33,7 +33,7 @@ Server errors map to:
 | `ContestRequired { reason }` | Normal-event at-or-before `last_governance_event` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
-| `DecommissionedSel` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
+| `DecommissionedSel` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Upd`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
@@ -82,10 +82,18 @@ The rule lives inside the verifier (`SelVerifier::finish_internal`): if any bran
 
 ```
 if chain has any Cnt event → reject ContestedSel
-if chain has any Dec event → reject DecommissionedSel
+if chain has any Dec event:
+    if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
+        // Cnt-overrides-Dec path — see ../../security-invariant.md §Cnt Overrides Dec.
+        // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
+        // chain becomes Contested. Standard divergent-set verification handles
+        // the {Dec, Cnt} set without new walker logic.
+        accept and route to contest path
+    else:
+        reject DecommissionedSel
 ```
 
-Fires before all other routing. Terminal state means no further events of any kind.
+Fires before all other routing. Terminal state means no further events of any kind, with the single exception of an overriding `Cnt` on a Dec'd chain.
 
 ### 4. Deduplication
 
@@ -155,7 +163,7 @@ Contest is governance-authorized via IEL; the verifier confirms `Cnt` satisfies 
 
 ### 8. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. All future submissions return `DecommissionedSel`.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 9. Normal Append
 

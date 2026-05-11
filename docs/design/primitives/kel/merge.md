@@ -68,6 +68,13 @@ Events chain directly from the current tip of a non-divergent KEL.
 
 ```
 if KEL is decommissioned:
+    if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
+        // Cnt-overrides-Dec path — see ../../security-invariant.md §Cnt Overrides Dec.
+        // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
+        // chain becomes Contested.
+        verify Cnt's dual signatures against v_{d-1}'s commitments
+        insert Cnt
+        return Contested
     return Error("KEL decommissioned")
 if batch contains contest:
     return Error("Contest requires divergence")

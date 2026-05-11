@@ -143,7 +143,7 @@ Cnt's authorization is **HARD**, like every other event's. **General invariant: 
 
 **Operator recourse against signing-key-only Rot takeover (KEL specifically)**: if an adversary captures only the signing key (recovery key in separate custody) and submits a Rot at `v_N`, today's "Cnt extends tip" model leaves the operator with no recourse — Cnt would require keys committed by `v_N` (adversary-chosen). Under this design, Cnt extends `v_{N-1}`, requiring keys committed by `v_{N-1}` — i.e., the `v_N`-current signing key (revealed by adversary's Rot, both parties have it) AND the `v_N`-current recovery key (NOT revealed by Rot, only the operator has it). Operator's dual-sig succeeds; adversary's does not. Operator can terminate the chain.
 
-`Cnt` cannot supersede `Dec`. Dec is a privileged event that seals immediately; the seal-cap then forbids any fork at or before the seal, so no Cnt can land at any version after Dec. Coerced/forced `Dec` is operationally indistinguishable from legitimate `Dec` and the protocol does not attempt to relitigate it. The adversary-Dec-after-takeover scenario is the same unavoidable case as adversary-rotates-governance: operational defense only, no protocol recourse.
+`Cnt` and `Dec` are not mutually exclusive — `Cnt` arriving via gossip after `Dec` has landed overrides the decommission and transitions the chain to contested. See [§Cnt Overrides Dec](#cnt-overrides-dec) for the override mechanic. Coerced/forced `Dec` is operationally indistinguishable from legitimate `Dec` and the protocol does not attempt to relitigate it. The adversary-Dec-after-takeover scenario is the same unavoidable case as adversary-rotates-governance: operational defense only, no protocol recourse.
 
 From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
 
@@ -155,6 +155,25 @@ Two unresolved generations cannot coexist on the same chain. A second divergent 
 
 **Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](primitives/kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](primitives/sel/merge.md#key-invariants).
 
+### Cnt Overrides Dec
+
+`Cnt` and `Dec` are both terminal kinds: at most one `Cnt` per log, at most one `Dec` per log. They are **not** mutually exclusive — when both land on the same chain via concurrent submission, `Cnt` overrides `Dec` and the chain converges to contested.
+
+The override is load-bearing for protocol convergence, not a security hardening. Without it, a `Cnt`-`Dec` race produces an unreconcilable cross-node split:
+
+- Some nodes accept `Cnt` first → contested-state gate locks; gossip-delivered `Dec` is rejected.
+- Other nodes accept `Dec` first → decommissioned-state gate locks; gossip-delivered `Cnt` is rejected.
+- Effective-SAID diverges across the federation (`hash("contested:{prefix}")` on contested nodes vs a Dec-based SAID on decommissioned nodes); anti-entropy spins forever finding mismatched SAIDs but cannot fix either side.
+- The chain has two different "authentic" terminal states across the federation under the same prefix — a protocol-completeness failure. There is no single answer to "what is the state of this chain?"
+
+**Override rule.** The decommissioned-state gate accepts a gossip-delivered `Cnt` as a state-transition event. The `Cnt` lands alongside the existing `Dec` at the same version, forming a divergent set `{Dec, Cnt}` at `v_d`; the privileged-divergence-is-terminal rule fires; the chain transitions to contested. Both the `Dec` and the `Cnt` stay in storage as forensic record. The asymmetry is intentional: the contested-state gate does **not** accept incoming `Dec` — `Cnt` always wins on a `Cnt`-`Dec` collision.
+
+**Federation-wide convergence is restored.** Every `Cnt`-`Dec` race ends with all nodes converging on contested via anti-entropy. The cost the protocol pays: a chain that had cleanly decommissioned can be upgraded to contested by a later `Cnt` arrival. The safety side-effect: an adversary's racing `Dec` cannot launder a contested compromise into a clean-retirement appearance — the operator's `Cnt` (or any contesting party's `Cnt`) propagates and forces contested federation-wide.
+
+`Cnt`-`Cnt` and `Dec`-`Dec` collisions are still impossible — the contested-state gate (after `Cnt` lands) and decommissioned-state gate (after `Dec` lands, except for incoming `Cnt`) reject same-kind incoming terminals. The override mechanic is `Cnt`-into-Dec'd-chain specifically.
+
+The rule applies uniformly across KEL, IEL, and SEL — the convergence failure mode is identical on all three primitives, so the override mechanic is identical.
+
 ### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
@@ -165,7 +184,7 @@ After Cnt lands, the only way to identify which events on the chain were authore
 
 The conservative — and only protocol-grounded — response is to treat the entire chain as suspect. Pre-Cnt events stay readable as forensic record but they cannot ground new trust decisions. Consumers may apply out-of-band judgment about specific events if they have it (their own observation history; an external attestation from the owner via a different channel) but the protocol cannot make those judgments for them.
 
-Contrast with **Decommission** (Dec): Dec is the operator's clean-retirement signal — no compromise, the operator intentionally ending the chain. Pre-Dec events retain trust under their original authorization. Future submissions are rejected, but past content keeps its meaning. The asymmetry exists because if Dec also wiped trust, it would just be Cnt by another name; the whole reason for two terminal kinds is that Dec means "clean stop" and Cnt means "compromised."
+Contrast with **Decommission** (Dec): Dec is the operator's clean-retirement signal — no compromise, the operator intentionally ending the chain. Pre-Dec events retain trust under their original authorization. Future submissions are rejected, with one exception: a gossip-delivered `Cnt` overrides Dec and transitions the chain to contested per [§Cnt Overrides Dec](#cnt-overrides-dec); once overridden, the whole-chain-suspect rule applies and pre-Dec trust grounding evaporates. Absent that override, past content keeps its meaning. The asymmetry exists because if Dec also wiped trust, it would just be Cnt by another name; the whole reason for two terminal kinds is that Dec means "clean stop" and Cnt means "compromised."
 
 For a chain that is divergent but not yet contested — divergence has been observed but Cnt hasn't landed — events at versions before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at versions after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by Cnt (chain becomes whole-suspect) or, where applicable, by recovery / repair (KEL Rec, SEL Rpr — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
 

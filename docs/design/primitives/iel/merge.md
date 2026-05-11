@@ -32,7 +32,7 @@ Server errors map to:
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
 | `ContestRequired { reason }` | Submission to a divergent chain (non-Cnt), OR normal-event submission at-or-before `last_governance_event` in chain order | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
-| `IelDecommissioned` | Submission to a chain with a `Dec` event in it | terminal, unchanged |
+| `IelDecommissioned` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
 | `InvalidIel(reason)` | Structural validation failure | unchanged |
 
@@ -74,7 +74,15 @@ if chain is divergent      → reject ContestedIel
                              (every IEL event is privileged; any divergent set on
                               IEL fires the privileged-divergence-is-terminal rule,
                               regardless of whether an explicit Cnt event has landed)
-if chain has any Dec event → reject IelDecommissioned
+if chain has any Dec event:
+    if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
+        // Cnt-overrides-Dec path — see ../../security-invariant.md §Cnt Overrides Dec.
+        // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
+        // chain becomes Contested. Standard divergent-set verification handles
+        // the {Dec, Cnt} set without new walker logic.
+        accept and route to contest path
+    else:
+        reject IelDecommissioned
 ```
 
 These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
@@ -119,7 +127,7 @@ On IEL specifically, Cnt lands only on a linear chain: Cnt's `previous = v_{tip-
 
 ### 6. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. All future submissions return `IelDecommissioned`.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 7. Normal Append (Evl)
 

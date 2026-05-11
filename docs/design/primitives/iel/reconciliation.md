@@ -68,7 +68,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 |--------|-------------|--------------|--------------------------------------|-----------------|-----------------|----------------------|
 | **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ (sink stores both branches) | Duplicates of one branch, no-op for that branch ✓ | `ContestedIel` (sink terminal; gossip ignored) | `IelDecommissioned` (sink terminal; gossip ignored) |
 | **Divergent** | Both fork events appended ✓ (sink becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓; full anti-entropy may reconcile any-missing-branch-events | `ContestedIel` | `IelDecommissioned` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | Effective SAIDs match ✓ | `IelDecommissioned` (sink Dec'd before Cnt arrived; sink stays Dec'd; Cnt rejected) |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ (gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec); effective SAIDs converge on `hash("contested:{prefix}")`) |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch routes to decommission ✓ | Overlap detected, `Dec` in chain → decommission ✓ | `Dec` does not resolve divergence — gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission. | `ContestedIel` | Effective SAIDs match (or both terminal-frozen at the Dec event SAID); no-op |
 
 The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest-or-decommission-or-stay-divergent.
@@ -81,8 +81,8 @@ All nodes must eventually agree on the effective SAID for each prefix.
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ |
-| **Decommissioned** | `Dec` event SAID | ✓ (identical chains) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec)) |
+| **Decommissioned** | `Dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
 
 ## Edge Cases
 
@@ -253,6 +253,39 @@ Two operators may submit `Cnt` concurrently to different nodes — a real operat
 `Dec` cannot appear in a divergent set — `Dec.previous = tip.said` (extends tip directly), so `Dec` only lands on linear chains, decommissioning the chain on landing.
 
 `Cnt` on a linear chain — operator-initiated termination — is the other scenario in which `Cnt` lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
+
+### 6. Cnt-Dec race (override)
+
+Two parties race a terminal event onto a linear IEL chain: the operator submits `Dec` (clean retirement) to one node, while a second governance-authorized party submits `Cnt` (contest) to another. Each lands as a linear-chain extension on its submitting node. Gossip then carries each event to the other node, where the doctrine in [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec) governs the merge:
+
+- The node that received `Dec` first now receives `Cnt` (with `previous = v_{d-1}.said`). The decommissioned-state gate accepts the override; `Cnt` lands at `v_d` alongside `Dec`; privileged-divergence-is-terminal fires; the chain becomes contested.
+- The node that received `Cnt` first now receives `Dec` (with `previous = v_{d-1}.said`). The contested-state gate rejects `Dec` outright — the asymmetry is intentional. The sink's chain stays at `[Cnt]` alone at `v_d`.
+
+```
+Pre-state on both nodes (linear at v_{d-1}):
+
+  [Icp] → ... → [Evl_{d-1}]    (tip)
+
+Concurrent submissions:
+
+  Node A (operator)               → dec.previous = v_{d-1}.said   (lands on A)
+  Node B (other governance party) → cnt.previous = v_{d-1}.said   (lands on B)
+
+After gossip merge:
+
+  Node A receives Cnt → override accepted → divergent set at v_d:
+    [Icp] → ... → [Evl_{d-1}] ─┬─ dec @ v_d ┐
+                               └─ cnt @ v_d ┴── contested-terminal
+
+  Node B receives Dec → contested-state gate rejects → unchanged:
+    [Icp] → ... → [Evl_{d-1}] → cnt @ v_d    contested-terminal
+
+  effective_said(A) = hash_effective_said("contested:{prefix}")
+  effective_said(B) = hash_effective_said("contested:{prefix}")
+                    = effective_said(A)    ✓
+```
+
+Both nodes converge on the contested effective SAID; cross-node forensic divergence at `v_d` is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever.
 
 ## References
 

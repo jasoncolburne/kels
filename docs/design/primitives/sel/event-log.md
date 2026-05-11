@@ -13,7 +13,7 @@ See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` (per IEL-resolved authorization). |
 | **Divergent (non-privileged)** | Two events at some version `d`, both non-privileged (e.g., `Upd`-`Upd` race). Chain is recoverable via `Rpr` (extends one branch tip and archives the other branch). | `Rpr` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
 | **Contested** | Chain has terminated due to a privileged event in a divergent set (privileged-divergence-is-terminal rule), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). SEL privileged events: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized). | None. All submissions rejected. |
-| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `DecommissionedSel`. |
+| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec)); all other submissions rejected with `DecommissionedSel`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `SelVerification` token surfaces:
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
@@ -282,21 +282,24 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 Clean lifecycle terminated by Dec:
 
   v0       v1                v_N    v_{N+1}
-[Icp] → [Upd] → ... → [Upd_v_N] → [Dec]   ← terminal; chain decommissioned
+[Icp] → [Upd] → ... → [Upd_v_N] → [Dec]   ← chain decommissioned at v_{N+1}
 
   Dec.previous = v_N.said   (extends tip directly; no fresh divergence)
   Dec.version  = N + 1
 
-Dec is privileged → advances the seal to its own version. Seal-cap then
-forbids any fork at-or-before v_{N+1}. No Cnt can land after Dec. No
-archival — Dec is appended to the chain as the terminal event.
+Dec is privileged → advances the seal to its own version. Seal-cap forbids
+any fork at versions strictly before v_{N+1}; v_{N+1} itself is the override
+version (a gossip-delivered Cnt with previous = v_N.said lands at v_{N+1}
+alongside Dec, satisfying event_version >= seal_version — see
+../../security-invariant.md §Cnt Overrides Dec). No archival — Dec is
+appended to the chain as the (potentially) terminal event.
 ```
 
 ### Server semantics
 
 - Verify `Dec`'s structure, governance authorization.
 - Insert `Dec`. No archival.
-- Any `Dec` in the chain → `is_decommissioned = true`. All future submissions rejected with `DecommissionedSel` (Dec is privileged → seals immediately → seal-cap forbids any later fork → no Cnt can land after Dec).
+- Any `Dec` in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `DecommissionedSel`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec) and transitions the chain to Contested.
 
 ### Builder
 
@@ -322,7 +325,8 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | any | Rejected with `DecommissionedSel`. |
+| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec). |
+| Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Upd`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).

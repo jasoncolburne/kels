@@ -11,7 +11,7 @@ The Key Event Log (KEL) is a per-prefix chain of `SignedKeyEvent` records descri
 | **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Ixn`, `Rot`, `Ror`, `Rec`, `Dec`, `Cnt` (per signature requirements). |
 | **Divergent (non-privileged)** | Two events at some serial `d`, both non-privileged (e.g., `Rot`-`Rot`, `Rot`-`Ixn`, `Ixn`-`Ixn`). Chain is recoverable via `Rec` (extends one branch tip and archives the other branch). | `Rec` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
 | **Contested** | Chain has terminated due to a privileged event in a divergent set (privileged-divergence-is-terminal rule), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's serial, immediately privileged-divergent → contested). KEL privileged events: `Rec`, `Ror`, `Cnt`, `Dec` (all recovery-revealing). | None. All submissions rejected with `ContestedKel`. |
-| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. Decommission is unconditionally terminal. | None. All submissions rejected with `KelDecommissioned`. |
+| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec)); all other submissions rejected with `KelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `KelVerification` token surfaces:
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
@@ -296,8 +296,8 @@ Owner-initiated. No algorithmic merge-engine trigger — the owner runs `KeyEven
 
 - Verify `Dec`'s structure, dual signatures.
 - Insert `Dec`. No archival.
-- Any `Dec` event in the chain → `is_decommissioned = true`. All future submissions rejected with `KelDecommissioned`.
-- Effective SAID for a decommissioned chain: the `Dec` event's own SAID.
+- Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec) and transitions the chain to Contested.
+- Effective SAID for a decommissioned chain: the `Dec` event's own SAID. (If a `Cnt` overrides Dec, the chain becomes contested and the effective SAID switches to `hash("contested:{prefix}")`.)
 
 ### Builder
 
@@ -322,7 +322,8 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | any submission | Rejected with `KelDecommissioned`. |
+| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec). |
+| Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map
 
