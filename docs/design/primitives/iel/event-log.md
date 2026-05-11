@@ -54,7 +54,7 @@ IEL has only one non-Icp event kind that does ongoing work — `Evl`, governance
 
 **Race-vs-takeover framing.** Divergence on IEL — two events at the same version — can arise from a federation race (two legitimately-current governance-authorized parties submitting concurrently) or a takeover (a party holding currently-authorized governance forking against the other party who also holds it). The chain data records the divergence; the protocol cannot structurally distinguish race from takeover. The verifier accepts both as structurally valid; consumer trust degrades uniformly post-divergence regardless of cause. The operator response in either case is reincept under a new prefix — `Cnt` is available as an explicit termination signal but is not required for IEL because divergence is already terminal.
 
-**`Cnt` on IEL** is the operator's protocol-level explicit-termination event, used when the chain is linear and the operator wants to terminate (compromise detected; voluntary abandonment-via-contest rather than -via-Dec).
+**`Cnt` on IEL** is the operator's protocol-level explicit-termination event, used when the chain is linear and the operator wants to terminate (compromise detected).
 
 As in all cases, `Cnt.previous = v_{tip-1}.said` (parent of current tip on linear, which creates fresh divergence at `v_N` for an IEL). See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
