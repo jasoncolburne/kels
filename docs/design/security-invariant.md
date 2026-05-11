@@ -147,6 +147,14 @@ Cnt's authorization is **HARD**, like every other event's. **General invariant: 
 
 From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
 
+### One Divergent Generation at a Time
+
+The protocol bounds divergence to **one unresolved generation at a time** on any given chain. Within a generation, the divergent set at `v_d` carries 2 events when all non-privileged (recoverable via `Rec` on KEL / `Rpr` on SEL) or 3 events when the upgrade rule has added a non-archiving privileged event (transition to contested-terminal; the 3rd event is the upgrade event). Beyond `v_d`, the divergence invariant caps each branch at 1 event per version (the post-divergence linear-extension cap, applied per branch).
+
+Two unresolved generations cannot coexist on the same chain. A second divergent generation at some `v_{d'} > d` would necessarily place 2 events at `v_{d'}` (one per branch on the second divergence), violating the first generation's post-divergence cap. The structural rules forbid stacking.
+
+**Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](sel/merge.md#key-invariants).
+
 ### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
