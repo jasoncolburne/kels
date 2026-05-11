@@ -11,7 +11,7 @@ The Key Event Log (KEL) is a per-prefix chain of `SignedKeyEvent` records descri
 | **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Ixn`, `Rot`, `Ror`, `Rec`, `Dec`, `Cnt` (per signature requirements). |
 | **Divergent (non-privileged)** | Two events at some serial `d`, both non-privileged (e.g., `Rot`-`Rot`, `Rot`-`Ixn`, `Ixn`-`Ixn`). Chain is recoverable via `Rec` (extends one branch tip and archives the other branch). | `Rec` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
 | **Contested** | Chain has terminated due to a privileged event in a divergent set (privileged-divergence-is-terminal rule), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's serial, immediately privileged-divergent → contested). KEL privileged events: `Rec`, `Ror`, `Cnt`, `Dec` (all recovery-revealing). | None. All submissions rejected with `ContestedKel`. |
-| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec)); all other submissions rejected with `KelDecommissioned`. |
+| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)); all other submissions rejected with `KelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `KelVerification` token surfaces:
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
@@ -45,7 +45,7 @@ This is an accepted security boundary. Without it, a chain's history could be in
 
 KEL's recovery-revelation seal is the structural analog of IEL's and SEL's evaluation seal (see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
 
-The seal-cap rule (`event_version >= seal_version`; see [../security-invariant.md §Forks are Seal-Bounded](../../security-invariant.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Ror-tipped KEL is structurally permitted.
+The seal-cap rule (`event_version >= seal_version`; see [../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Ror-tipped KEL is structurally permitted.
 
 ## Divergence and Freeze
 
@@ -102,7 +102,7 @@ Final state on Node C (2-way mixed at v_d, contested from the moment ror_c joins
                    └─ ror_c @ v_d  ┴── contested
 ```
 
-End state: all nodes have effective SAID `hash_effective_said("contested:{prefix}")`, despite differing chain contents at `v_d` (3 events on A and B; 2 events on C). Cross-node SAID convergence holds without forensic-record convergence — anti-entropy sees matching SAIDs and does not re-queue. This is exactly the property [../../security-invariant.md §Federation Convergence](../../security-invariant.md#federation-convergence) asserts: semantic state agrees across nodes via deterministic effective-SAID even when chain contents diverge forensically. The upgrade rule's structural role is keeping nodes A and B from being stuck in non-privileged-divergent (recoverable) state when other nodes have already observed a contested-triggering privileged event. The same pattern applies on SEL with `Upd-Upd-Sea` (or any non-privileged + non-privileged + non-archiving-privileged sequence): see [../sel/verification.md §Upgrade rule](../sel/verification.md#upgrade-rule).
+End state: all nodes have effective SAID `hash_effective_said("contested:{prefix}")`, despite differing chain contents at `v_d` (3 events on A and B; 2 events on C). Cross-node SAID convergence holds without forensic-record convergence — anti-entropy sees matching SAIDs and does not re-queue. This is exactly the property [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence) asserts: semantic state agrees across nodes via deterministic effective-SAID even when chain contents diverge forensically. The upgrade rule's structural role is keeping nodes A and B from being stuck in non-privileged-divergent (recoverable) state when other nodes have already observed a contested-triggering privileged event. The same pattern applies on SEL with `Upd-Upd-Sea` (or any non-privileged + non-privileged + non-archiving-privileged sequence): see [../sel/verification.md §Upgrade rule](../sel/verification.md#upgrade-rule).
 
 ## Recovery (Rec)
 
@@ -296,7 +296,7 @@ Owner-initiated. No algorithmic merge-engine trigger — the owner runs `KeyEven
 
 - Verify `Dec`'s structure, dual signatures.
 - Insert `Dec`. No archival.
-- Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec) and transitions the chain to Contested.
+- Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
 - Effective SAID for a decommissioned chain: the `Dec` event's own SAID. (If a `Cnt` overrides Dec, the chain becomes contested and the effective SAID switches to `hash("contested:{prefix}")`.)
 
 ### Builder
@@ -322,7 +322,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec). |
+| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
 | Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map

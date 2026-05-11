@@ -171,7 +171,7 @@ The verifier's terminal-state-determination rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 ### Cnt parent resolution
 
@@ -183,7 +183,7 @@ Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's curr
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
 
-**`Rec` is the archiving exception.** `Rec` is privileged but goes through the discriminator's archival path: `Rec.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rec.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rec` never participates in the upgrade rule. The other non-archiving privileged kinds (`Ror`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../security-invariant.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../security-invariant.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+**`Rec` is the archiving exception.** `Rec` is privileged but goes through the discriminator's archival path: `Rec.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rec.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rec` never participates in the upgrade rule. The other non-archiving privileged kinds (`Ror`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 ### Cnt authorization (HARD)
 

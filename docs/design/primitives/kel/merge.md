@@ -69,7 +69,7 @@ Events chain directly from the current tip of a non-divergent KEL.
 ```
 if KEL is decommissioned:
     if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
-        // Cnt-overrides-Dec path — see ../../security-invariant.md §Cnt Overrides Dec.
+        // Cnt-overrides-Dec path — see ../../protocol-doctrine.md §Cnt Overrides Dec.
         // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
         // chain becomes Contested.
         verify Cnt's dual signatures against v_{d-1}'s commitments
@@ -249,4 +249,4 @@ All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 3. **Recovery key revelation requires contest** - Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (owner must contest instead)
 4. **Contest is the only response when the recovery key is revealed in divergence** - the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
 5. **Contested KELs are permanently frozen** - No events can be added after contest
-6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../security-invariant.md §One Divergent Generation at a Time](../../security-invariant.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.
+6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.

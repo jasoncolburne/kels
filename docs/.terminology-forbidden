@@ -150,6 +150,14 @@ kels/sad/v1/events/evl
 \bas_sad_source\b
 \bas_sad_sink\b
 
+# === protocol-doctrine.md rename ===
+# `docs/design/security-invariant.md` was renamed to `protocol-doctrine.md`
+# — the file now contains multiple invariants + doctrines + verification
+# mechanics organized into three parts. Cross-references must use the new
+# filename. Anchors are preserved (level-independent in GFM); only the path
+# changed.
+security-invariant\.md
+
 # ============================================================================
 # §Doc-only — version → SAID surface rename (#174-era)
 # ============================================================================

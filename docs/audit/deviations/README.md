@@ -62,7 +62,7 @@ The design redesign (May 2026, see `.working/kels-cnt-restriction-implications.m
 
 - **Removed**: `contest_with_iel_event_said` and `decommission_with_iel_event_said` overrides. When an IEL terminates, dependent SELs sit in their last state; consumers judge via IEL's terminal status. Operator's response is reincept the SEL under a new IEL.
 
-See `docs/design/security-invariant.md §Compromise is Permanent` for the doctrinal frame.
+See `docs/design/protocol-doctrine.md §Compromise is Permanent` for the doctrinal frame.
 
 Operator's recourse for forced/coerced `Dec` or governance takeover that completes before detection: **abandon-and-reincept** under a new prefix. There is no protocol-level recourse against current-state compromise that completes its rotation before detection — this is acknowledged as the operational defense surface (high thresholds, monitoring, custody discipline).
 

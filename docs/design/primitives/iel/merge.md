@@ -76,7 +76,7 @@ if chain is divergent      → reject ContestedIel
                               regardless of whether an explicit Cnt event has landed)
 if chain has any Dec event:
     if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
-        // Cnt-overrides-Dec path — see ../../security-invariant.md §Cnt Overrides Dec.
+        // Cnt-overrides-Dec path — see ../../protocol-doctrine.md §Cnt Overrides Dec.
         // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
         // chain becomes Contested. Standard divergent-set verification handles
         // the {Dec, Cnt} set without new walker logic.
@@ -127,7 +127,7 @@ On IEL specifically, Cnt lands only on a linear chain: Cnt's `previous = v_{tip-
 
 ### 6. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../security-invariant.md §Cnt Overrides Dec](../../security-invariant.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 7. Normal Append (Evl)
 
@@ -170,7 +170,7 @@ The submit handler runs under a per-prefix advisory lock so concurrent submissio
 3. Insert as the path requires (no archival on IEL — there is no `truncate_and_replace`).
 4. Publish to gossip if any path mutated chain state.
 
-The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../security-invariant.md](../../security-invariant.md)).
+The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../protocol-doctrine.md](../../protocol-doctrine.md)).
 
 ## Pagination
 

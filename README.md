@@ -361,7 +361,7 @@ Best to create an issue and discuss, but PRs are welcome if they are positive ad
 #### Cross-cutting
 
 - [Streaming Verification](docs/design/streaming-verification-architecture.md) — Paginated verification without full chain load
-- [Security Invariant](docs/design/security-invariant.md) — DB trust model and verification categories
+- [Security Invariant](docs/design/protocol-doctrine.md) — DB trust model and verification categories
 
 ### Services and Protocols
 

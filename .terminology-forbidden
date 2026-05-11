@@ -143,3 +143,11 @@ kels/sad/v1/events/evl
 \bsend_divergent_sad_events\b
 \bas_sad_source\b
 \bas_sad_sink\b
+
+# === protocol-doctrine.md rename ===
+# `docs/design/security-invariant.md` was renamed to `protocol-doctrine.md`
+# — the file now contains multiple invariants + doctrines + verification
+# mechanics organized into three parts. Cross-references must use the new
+# filename. Anchors are preserved (level-independent in GFM); only the path
+# changed.
+security-invariant\.md

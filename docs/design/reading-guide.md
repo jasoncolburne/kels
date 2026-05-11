@@ -8,7 +8,7 @@ If you haven't read [AGENTS.md §System Thesis](../../AGENTS.md#system-thesis), 
 
 ## Foundation
 
-[security-invariant.md](security-invariant.md) — the doctrine. Compromise is permanent (past-state authority has zero structural force), forks are seal-bounded, privileged divergence is terminal, Cnt overrides Dec, ordering without timestamps, federation convergence, extension discipline, trust model on contested chains, limit of the doctrine. Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
+[protocol-doctrine.md](protocol-doctrine.md) — the doctrine. Compromise is permanent (past-state authority has zero structural force), forks are seal-bounded, privileged divergence is terminal, Cnt overrides Dec, ordering without timestamps, federation convergence, extension discipline, trust model on contested chains, limit of the doctrine. Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
 
 ## Primitives
 
@@ -20,7 +20,7 @@ The substantive part of the design. Three primitives (KEL, IEL, SEL) implement t
 2. **event-log.md** — chain lifecycle. States (active / divergent / contested / decommissioned), divergence semantics, terminal events, evaluation/recovery seal, trust caveats.
 3. **merge.md** — submit handler routing. What the server does at the submit boundary; the kind-discriminator routing matrix.
 4. **verification.md** — verifier walk algorithm. The single-pass walk that produces the Verification token; chain-validity invariants.
-5. **reconciliation.md** — multi-node correctness matrix. The load-bearing proof that every state × submission × gossip combination terminates correctly and all nodes converge on the same effective SAID. This is the per-primitive proof of [security-invariant.md §Federation Convergence](security-invariant.md#federation-convergence).
+5. **reconciliation.md** — multi-node correctness matrix. The load-bearing proof that every state × submission × gossip combination terminates correctly and all nodes converge on the same effective SAID. This is the per-primitive proof of [protocol-doctrine.md §Federation Convergence](protocol-doctrine.md#federation-convergence).
 
 ### IEL — start here
 

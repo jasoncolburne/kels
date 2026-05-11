@@ -1,34 +1,48 @@
-# Security Invariant
+# Protocol Doctrine
+
+The structural rules that govern KELS — security invariants, cross-cutting doctrines, and verification mechanics. Each part below is load-bearing for protocol correctness; per-primitive design docs cross-reference these as the upstream source rather than re-deriving them.
+
+The document is organized in three parts:
+
+1. **[Security Invariants](#part-1-security-invariants)** — the database-untrusted operation categories, the compromise-is-permanent doctrine and the structural mechanisms that enforce it (seal-cap, privileged divergence, Cnt override, contested-chain trust model, limits).
+2. **[Cross-Cutting Doctrines](#part-2-cross-cutting-doctrines)** — properties that govern how the protocol composes across nodes and across event kinds: ordering without timestamps, federation convergence, extension discipline.
+3. **[Verification Mechanics](#part-3-verification-mechanics)** — the verification-token + advisory-lock pattern that makes the security invariants enforceable in practice.
+
+---
+
+## Part 1: Security Invariants
+
+The invariants below are load-bearing for KELS security. They are stated structurally rather than statistically: the protocol's safety claims hold *by construction*, not by observation. Verifier implementations enforce them on every walk; an event or chain state that violates them is rejected, regardless of source.
+
+### Operation Categories
 
 The database cannot be trusted — it may have been altered. All operations on chain data (KEL, IEL, SEL) fall into three categories:
 
-## Operation Categories
-
-### 1. Serving
+#### 1. Serving
 
 Returning data to a client or peer. **No verification needed** — the receiver is responsible for verifying what they get.
 
 Examples: `GET` endpoints serving event pages (per-primitive: `kels/kel/:prefix`, `kels/iel/:prefix`, `kels/sel/:prefix`), effective-SAID lookups, paginated event reads.
 
-### 2. Consuming
+#### 2. Consuming
 
 Using data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full chain first.** The only way to access consumed data is through the corresponding verification token (`KelVerification`, `IelVerification`, `SelVerification`), which can only be obtained via that primitive's verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`). This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
 
 Examples: peer signature verification on a KEL, anchor checking on a KEL, governance-policy resolution on an IEL at a given version, SEL `identity_event` resolution, submit-handler routing decisions on any primitive.
 
-### 3. Resolving
+#### 3. Resolving
 
 Comparing state to decide whether to sync. A wrong answer triggers an unnecessary sync (which itself verifies), not a security hole. Standalone functions are acceptable here without full verification.
 
 Examples: effective-SAID endpoints (per-primitive), anti-entropy comparison, KEL proactive-rotation prechecks (`should_add_rot_with_recover()`).
 
-## Compromise is Permanent
+### Compromise is Permanent
 
 The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. A KEL key compromised in 2023 cannot Cnt the chain in 2026 even if the adversary still holds the key material; an IEL `governance_policy` participant who was revoked via `Evl` cannot Cnt the chain after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be Cnt'd by the rotated-out parties (subject to operator-side ratcheting via `Sea`).
 
 This closes the **stale-state kill-switch problem**. Without this rule, every party who ever held authority over a chain would retain protocol-level kill-switch authority over it forever, and any past compromise would become a permanent vulnerability. With this rule, past compromise is structurally a non-event for protocol authority.
 
-### Forks are Seal-Bounded
+#### Forks are Seal-Bounded
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
@@ -49,7 +63,7 @@ The land-version framing matters at the parent-at-seal boundary. When the chain'
 
   **Consequence on divergent SEL chains**: branches may reference different IEL events at the same SEL version, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded structurally by two rules: the seal-cap (no fork at-or-before the seal) caps how far back branches can diverge; privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain) caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation: KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
 
-### Privileged Divergence is Terminal; Cnt Triggers It Uniformly
+#### Privileged Divergence is Terminal; Cnt Triggers It Uniformly
 
 The protocol's terminal-authority mechanism is built on three composable rules:
 
@@ -147,7 +161,7 @@ Cnt's authorization is **HARD**, like every other event's. **General invariant: 
 
 From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
 
-### One Divergent Generation at a Time
+#### One Divergent Generation at a Time
 
 The protocol bounds divergence to **one unresolved generation at a time** on any given chain. Within a generation, the divergent set at `v_d` carries 2 events when all non-privileged (recoverable via `Rec` on KEL / `Rpr` on SEL) or 3 events when the upgrade rule has added a non-archiving privileged event (transition to contested-terminal; the 3rd event is the upgrade event). Beyond `v_d`, the divergence invariant caps each branch at 1 event per version (the post-divergence linear-extension cap, applied per branch).
 
@@ -155,7 +169,7 @@ Two unresolved generations cannot coexist on the same chain. A second divergent 
 
 **Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](primitives/kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](primitives/sel/merge.md#key-invariants).
 
-### Cnt Overrides Dec
+#### Cnt Overrides Dec
 
 `Cnt` and `Dec` are both terminal kinds: at most one `Cnt` per log, at most one `Dec` per log. They are **not** mutually exclusive — when both land on the same chain via concurrent submission, `Cnt` overrides `Dec` and the chain converges to contested.
 
@@ -174,7 +188,7 @@ The override is load-bearing for protocol convergence, not a security hardening.
 
 The rule applies uniformly across KEL, IEL, and SEL — the convergence failure mode is identical on all three primitives, so the override mechanic is identical.
 
-### Trust Model on Contested Chains
+#### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
 
@@ -188,7 +202,7 @@ Contrast with **Decommission** (Dec): Dec is the operator's clean-retirement sig
 
 For a chain that is divergent but not yet contested — divergence has been observed but Cnt hasn't landed — events at versions before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at versions after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by Cnt (chain becomes whole-suspect) or, where applicable, by recovery / repair (KEL Rec, SEL Rpr — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
 
-#### Cases that all look identical to a consumer
+##### Cases that all look identical to a consumer
 
 A worked enumeration to make the indistinguishability concrete. In each case the resulting chain shape is the same; the consumer can't tell which case actually happened from the chain alone.
 
@@ -200,7 +214,7 @@ A worked enumeration to make the indistinguishability concrete. In each case the
 
 Same chain shape in every case. The protocol cannot distinguish them. Treating the chain as suspect is the only response that fails secure across all five.
 
-### Limit of the Doctrine
+#### Limit of the Doctrine
 
 The doctrine closes attacks rooted in **past** state. It does NOT defend against compromise of **current** state.
 
@@ -222,7 +236,7 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
 
-#### Adversary Patience and Policy Redundancy
+##### Adversary Patience and Policy Redundancy
 
 The detect-and-respond window above assumes the adversary acts as soon as they hold sufficient authority. A strategic adversary doesn't. They accumulate — compromise key 1, wait, compromise key 2, wait, compromise key 3, then act once they hold a satisfying combination of the current policy. The window the operator has to respond is bounded by the adversary's timeline (when they choose to act), not by the operator's observation (when they detect the first compromise). Compromise detection at the per-key level may produce no protocol-observable signal until the adversary's accumulation completes; by then the rotation event is already authorized to land.
 
@@ -240,11 +254,17 @@ The principle applies uniformly across KEL, IEL, and SEL. KEL's recovery key cus
 
 **Cascade-reincept honesty**: when a high-stakes identity is contested or current-state-compromised, the operational cost is a cascade. A contested KEL invalidates every IEL whose governance policy anchors in it; each invalidated IEL invalidates every SEL bound to it. An identity hierarchy built with a single root carries the entire dependent tree's reincept cost when the root falls. **Don't anchor everything to one root if root compromise costs you the entire dependent tree.** Identity hierarchies should be designed with the cascade in mind — partition the dependency graph so a single compromise has a bounded blast radius.
 
-## Ordering Without Timestamps
+---
+
+## Part 2: Cross-Cutting Doctrines
+
+Properties that hold across all primitives and bind them into a coherent protocol. These are not security invariants in the narrow sense — they constrain how the protocol composes (across nodes, across event kinds, across time) rather than asserting an authorization rule. Doctrine rules in Part 1 lean on these for their cryptographic-soundness argument.
+
+### Ordering Without Timestamps
 
 KELS chain events (KEL, IEL, SEL) carry no wall-clock timestamp field. Ordering is by version number + cryptographic chain linkage (`previous` SAID).
 
-### Why no event-level timestamps
+#### Why no event-level timestamps
 
 Wall-clock timestamps on chain events would not be cryptographically meaningful for ordering or tiebreaking:
 
@@ -260,7 +280,7 @@ Where timestamps DO appear in KELS, they serve narrow roles within a **single pa
 
 In each case the timestamp is consumed by a single party using its own clock — drift across the federation doesn't affect correctness. None of these timestamps appear in chain events, and none influence chain ordering.
 
-### Application-layer time-of-creation evidence
+#### Application-layer time-of-creation evidence
 
 Applications building on KELS may need time-of-creation evidence (audit trails, regulatory reporting, claim validity windows). The recommended pattern is to carry timestamps as application-layer fields on the *content* a chain event anchors, not on the chain event itself. KELS-provided application primitives already follow this pattern:
 
@@ -269,7 +289,7 @@ Applications building on KELS may need time-of-creation evidence (audit trails, 
 
 For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
 
-## Federation Convergence
+### Federation Convergence
 
 KELS depends on **eventual cross-node convergence**: gossip propagation, paired with deterministic effective-SAID computation, ensures every chain resolves to the same semantic state on every node in a healthy federation.
 
@@ -291,13 +311,13 @@ Convergence is among gossip-participating nodes. **Permanent node loss before pr
 
 Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/kel/reconciliation.md), [primitives/iel/reconciliation.md](primitives/iel/reconciliation.md), and [primitives/sel/reconciliation.md](primitives/sel/reconciliation.md) demonstrate convergence holds for each primitive under all state × submission × gossip combinations.
 
-## Extension Discipline
+### Extension Discipline
 
 The protocol cannot — and does not — prevent any currently-authorized party from chaining a new event onto any existing chain event. `previous` validates against the structural parent (the event whose SAID is named), not against "who authored the parent." A current-authority holder can technically point `previous` at any prior event the verifier would accept as a parent.
 
 The operator's design discipline closes the implicit-endorsement gap. The discipline splits by event semantics:
 
-### Endorsement events — extend only attested events
+#### Endorsement events — extend only attested events
 
 All chain events except `Cnt` and `Dec` are **endorsement-class**: signing an event with `previous = parent.said` is a structural attestation that the predecessor is acceptable as the parent state for further chain evolution. Extending an adversary's event with an endorsement-class event would be semantically equivalent to endorsing it — the operator's signed event chains from, and carries forward, the adversary's content. (`Cnt` and `Dec` are termination-class — see below.)
 
@@ -310,7 +330,7 @@ The operator extends only:
 
 The operator never points an endorsement-class event's `previous` at an adversary event. This is an operator-side construction rule applied at the builder layer — the verifier accepts any structurally-valid parent reference; the discipline closes the gap that the verifier structurally cannot.
 
-### Termination events — repudiation, not endorsement
+#### Termination events — repudiation, not endorsement
 
 `Cnt` and `Dec` are **termination-class**. `previous = parent.said` on a termination event structurally means "I observe this chain state and terminate it," not "I accept the parent as a basis for further chain evolution." There is no further chain evolution to endorse; the chain ends with the terminal.
 
@@ -344,7 +364,7 @@ The implication is that **termination events follow the `previous = v_{tip-1}.sa
 
 - **Dec in practice extends only attested state.** `Dec` means clean retirement, which is not the operator's response to an adversary-extended chain. The operator's response to adversary extension is `Cnt`, not `Dec`. So while Dec is termination-class by semantics, in practice an operator's Dec only extends their own attested tip.
 
-### Implications
+#### Implications
 
 - **SEL pre-Icp camping response (endorsement-class).** When an adversary submits `[Icp, Upd_stale]` first, the operator's response is `[Icp, Upd_legit]` with `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Upd_stale.said`. `Upd_legit` is endorsement-class; pointing it at `Upd_stale` would attest to `Upd_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; the operator resolves via `Rpr` extending their `Upd_legit` branch.
 
@@ -354,22 +374,28 @@ The implication is that **termination events follow the `previous = v_{tip-1}.sa
 
 - **Endorsement-class events never extend adversary content.** This rule is structurally absolute. Termination-class events follow the protocol's structural parent rule unconditionally, with the only practical case where `previous` lands on an adversary event being `Cnt` on a multi-event adversary-extended linear chain. When prose anywhere in the design or analysis docs claims an operator's endorsement-class event linearly extends an adversary event, the prose is wrong by construction.
 
-### Cross-primitive symmetry
+#### Cross-primitive symmetry
 
 The discipline is structurally identical across the three primitives. The shapes of "own previous tip" and "attested-shared state" instantiate differently per primitive (KEL: `v_{d-1}` and own-branch tips; IEL: `v_{d-1}` only — every event is governance-authorized so there are no auth-only operator-extension paths; SEL: `v_{d-1}`, `Icp` via dedup, and own-branch tips), but the underlying principle — operators attest only to their own content or to genuinely shared state, with termination events following the structural parent rule unconditionally — applies without primitive-specific exception.
 
-## Verification Tokens as Proof of Verification
+---
+
+## Part 3: Verification Mechanics
+
+The implementation invariants that make Part 1's security invariants enforceable. Verification tokens, advisory locks, and inline reference checking are the patterns by which "the database cannot be trusted" gets converted into safe operations — verification and use happen in the same pass, under the same lock, against the same trusted context.
+
+### Verification Tokens as Proof of Verification
 
 Functions that consume chain data accept a verification token (`&KelVerification`, `&IelVerification`, `&SelVerification`) as a parameter. Holding the token proves the corresponding chain was verified. Token fields are private with no public constructor — the only way to obtain one is through the corresponding verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`).
 
-## Merge Verification
+### Merge Verification
 
 When merging new events into an existing chain (submit handler), first verify the entire existing chain in the DB using the corresponding verifier with paginated reads under an advisory lock. Obtain a trusted verification token from the verifier and use that token's data as the context for verifying the new incoming events — never re-query the DB between verification and use. The pattern applies uniformly across KEL, IEL, and SEL submit paths.
 
-## Inline Reference Checking
+### Inline Reference Checking
 
 Each verifier supports registering SAIDs of interest before the walk so the walk records what it observed without separate DB queries. KEL registers anchor SAIDs (KEL ixns observed at IEL/SEL Icp time and similar binding points); IEL and SEL register caller-cared-about SAIDs for satisfaction tracking. Registration happens before the walk; results are available on the verification token. The pattern eliminates a second DB pass for SAID-presence questions.
 
-## Advisory Locking
+### Advisory Locking
 
 All verify-then-write paths hold PostgreSQL advisory locks for the duration of both verification and write. Per-primitive locked-transaction types implement the corresponding `PageLoader` trait by reading under the advisory lock; the same transaction is then used for the write. This eliminates time-of-check-to-time-of-use vulnerabilities. Applies uniformly across KEL, IEL, and SEL submit paths.
