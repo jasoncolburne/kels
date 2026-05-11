@@ -246,7 +246,11 @@ gossip ordering). All nodes converge on hash_effective_said(
 "contested:{prefix}").
 ```
 
-The same shape applies to concurrent `[Cnt_a, Cnt_b]` (two operators contesting simultaneously) and `[Evl_a, Evl_b]` (two governance parties racing): in every case the 2-event divergent set is contested-terminal and no 3rd event lands. Cnt on a linear chain — operator-initiated termination — is the other scenario in which Cnt lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
+The same shape applies to `[Evl_a, Evl_b]` (two governance parties racing) and `[Evl, Dec]` (governance evolution racing operator retirement): in every case the 2-event divergent set is contested-terminal and no 3rd event lands.
+
+Two operators may submit `Cnt` concurrently to different nodes — a real operational scenario — but the resulting divergent set on each individual log is `[Evl, Cnt]`, where the `Evl` is the chain's prior tip and the `Cnt` is whichever arrived first on that node. Gossip-delivered second `Cnt`s hit the contested-state gate and are rejected. Different nodes may land different winning `Cnt`s across the federation, but `[Cnt_a, Cnt_b]` as a single divergent set in one log cannot form — `Cnt` is absolute and terminal (at most one `Cnt` per log).
+
+`Cnt` on a linear chain — operator-initiated termination — is the other scenario in which `Cnt` lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
 
 ## References
 

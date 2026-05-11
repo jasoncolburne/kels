@@ -75,7 +75,7 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 
 The route that creates divergence on an IEL chain:
 
-**Concurrent extensions** (race, same-batch fork): two events (any combination of `Evl` and `Cnt`, since both kinds extend with `previous = v_{d-1}.said`) land at the same version. Divergence is created at the moment of submission; the chain transitions to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving via gossip.
+**Concurrent extensions** (race, same-batch fork): two events land at the same version, each with `previous = v_{d-1}.said`. Valid pairings are `Evl`-`Evl`, `Evl`-`Cnt`, and `Evl`-`Dec` — every IEL divergent set at `v_d` contains at least one `Evl`. `Cnt` is absolute and terminal (at most one `Cnt` per log; the contested-state gate locks after first acceptance), and `Dec` is similarly absolute (at most one `Dec` per log), so `Cnt`-`Cnt`, `Dec`-`Dec`, and `Cnt`-`Dec` cannot form. Divergence is created at the moment of submission; the chain transitions to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving via gossip.
 
 **Diagrams.** The possible shapes look like:
 
