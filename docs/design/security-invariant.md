@@ -197,6 +197,35 @@ The trade the protocol makes is intentional: a narrow current-state-compromise v
 
 **Cascade-reincept honesty**: when a high-stakes identity is contested or current-state-compromised, the operational cost is a cascade. A contested KEL invalidates every IEL whose governance policy anchors in it; each invalidated IEL invalidates every SEL bound to it. An identity hierarchy built with a single root carries the entire dependent tree's reincept cost when the root falls. **Don't anchor everything to one root if root compromise costs you the entire dependent tree.** Identity hierarchies should be designed with the cascade in mind — partition the dependency graph so a single compromise has a bounded blast radius.
 
+## Ordering Without Timestamps
+
+KELS chain events (KEL, IEL, SEL) carry no wall-clock timestamp field. Ordering is by version number + cryptographic chain linkage (`previous` SAID).
+
+### Why no event-level timestamps
+
+Wall-clock timestamps on chain events would not be cryptographically meaningful for ordering or tiebreaking:
+
+- An event author can write any timestamp they choose. The protocol can only verify that an event was *observed* at-or-before "now"; it cannot verify the event was crafted when its timestamp claims.
+- Clock drift across federation nodes precludes timestamps as a reliable cross-node ordering signal. Different nodes' clocks may disagree; relying on them for "who was first" would let drift, not data, decide chain outcomes.
+- Cryptographically verifiable ordering already exists via version numbers and `previous` SAID linkage. Adding wall-clock timestamps to chain events would be redundant for ordering and unsound for tiebreaking — it would introduce an untrusted input as a protocol decision input.
+
+Where timestamps DO appear in KELS, they serve narrow roles within a **single party's reference frame**, not chain ordering or cross-node consensus:
+
+- **Peer-to-peer signed requests** carry a Unix timestamp + nonce; the receiving party verifies the timestamp against its own clock within a 60-second window and deduplicates via the nonce cache.
+- **Exchange envelopes** carry `created_at` and a per-envelope `nonce`; recipients evaluate freshness against their own clock at decryption time.
+- **Mail nonce expiry** evicts cache entries older than a configured window.
+
+In each case the timestamp is consumed by a single party using its own clock — drift across the federation doesn't affect correctness. None of these timestamps appear in chain events, and none influence chain ordering.
+
+### Application-layer time-of-creation evidence
+
+Applications building on KELS may need time-of-creation evidence (audit trails, regulatory reporting, claim validity windows). The recommended pattern is to carry timestamps as application-layer fields on the *content* a chain event anchors, not on the chain event itself. KELS-provided application primitives already follow this pattern:
+
+- **Credentials** carry `issued_at` (required) and `expires_at` (optional). The verifier checks `expires_at` against its own clock at verification time. See [creds.md](creds.md).
+- **Exchange envelopes** carry `created_at`. See [exchange.md](exchange.md).
+
+For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
+
 ## `KelVerification` as Proof of Verification
 
 Functions that consume KEL data accept `&KelVerification` as a parameter. Having a `KelVerification` proves the KEL was verified. `KelVerification` fields are private with no public constructor — the only way to obtain one is through `KelVerifier`.
