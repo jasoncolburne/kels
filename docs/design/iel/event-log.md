@@ -4,7 +4,7 @@
 
 The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `auth_policy` and `governance_policy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked governance policy.
 
-An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL by prefix at inception and resolves its per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SEL-side binding.
+An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL — SELs in particular by prefix at inception, resolving per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SEL-side binding.
 
 ## Chain States
 
