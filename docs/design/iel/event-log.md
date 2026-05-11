@@ -233,7 +233,36 @@ Parent-monotonic prevents an adversary from extending a branch with a regressed 
 
 Parent-monotonic does NOT prevent:
 
-- **Brand-new SEL chain races.** Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Upd_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Upd_legit]` — Icp dedups (same content, same SAID across submitters); `Upd_legit` lands at v=1 with parent=Icp.said, creating a non-privileged divergent set with `Upd_stale` (both auth-authorized; Upd-Upd race shape). The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Upd_legit` branch; `Rpr` archives `Upd_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain. See [§Application-developer enrollment patterns](#application-developer-enrollment-patterns) below. The SEL inception batch rule (`[Icp, Upd]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+- **Brand-new SEL chain races.** Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Upd_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Upd_legit]` — Icp dedups (same content, same SAID across submitters); `Upd_legit` lands at v=1 with parent=Icp.said (extending `Icp` via dedup-equivalence, per [../security-invariant.md §Extension Discipline](../security-invariant.md#extension-discipline) — operators never extend adversary events), creating a non-privileged divergent set with `Upd_stale` (both auth-authorized; Upd-Upd race shape). The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Upd_legit` branch; `Rpr` archives `Upd_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain. See [§Application-developer enrollment patterns](#application-developer-enrollment-patterns) below. The SEL inception batch rule (`[Icp, Upd]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+
+  ```
+  Step 1 — Adversary submits [Icp, Upd_stale] first; chain born at v_1:
+
+    [Icp_v0] → [Upd_stale @ v_1, identity_event=IEL_v_old]   (chain tip)
+
+  Step 2 — Operator submits [Icp, Upd_legit] with Upd_legit.previous =
+  Icp.said (extending Icp via dedup-equivalence; never extending Upd_stale):
+
+    Icp dedups (deterministic prefix + SAID across submitters).
+    Upd_legit lands at v_1 alongside Upd_stale:
+
+    [Icp_v0] ─┬─ [Upd_stale @ v_1, identity_event=IEL_v_old]
+              └─ [Upd_legit @ v_1, identity_event=IEL_v_current]
+
+    Both auth-authorized; neither privileged → non-privileged divergent.
+
+  Step 3 — Operator submits Rpr extending Upd_legit at v_2 (branch-tip-
+  extending shape):
+
+    Rpr.previous = Upd_legit.said,  Rpr.version = 2
+
+    Discriminator archives Upd_stale's branch:
+
+    [Icp_v0] → [Upd_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
+                                       ↑
+                                       Upd_stale archived (forensic;
+                                                           not on live chain)
+  ```
 - **Stale governance termination on an unratcheted branch.** An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `identity_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `identity_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `identity_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
 
   ```

@@ -274,7 +274,43 @@ synchronization. Both nodes' chains stay as forensic record.
 
 ### 6. Adversary races inception with stale identity binding
 
-Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v1. Owner submits `[Icp, Upd_owner]`; Icp dedups; Upd_owner extends as v2 with current IEL binding. Per-event parent-monotonic check: Upd_owner's parent is Upd_stale (linear extension); Upd_owner's `identity_event` ≥ Upd_stale's `identity_event`, satisfied since owner's binding is to a later IEL event. Owner's content takes precedence going forward; consumers reading the chain see Upd_owner's content as the latest. Adversary's stale v1 entry is buried but visible in chain history (forensic).
+Adversary submits `[Icp, Upd_stale]` — Icp is permissionless (dedup-idempotent across submitters), Upd_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Upd_legit]` where `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence — per [../security-invariant.md §Extension Discipline](../security-invariant.md#extension-discipline), operators never extend adversary events; `Icp` is attested-shared state). `Icp` dedups; `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. Chain becomes the operator's; `Upd_stale` moves to the archive table (forensic-readable; not live).
+
+```
+Step 1 — Adversary submits [Icp, Upd_stale] first; chain born at v_1
+with adversary's content:
+
+  [Icp_v0] → [Upd_stale @ v_1, identity_event=IEL_v_old]   (chain tip)
+
+Step 2 — Operator submits [Icp, Upd_legit] with Upd_legit.previous =
+Icp.said (extending Icp directly, NOT Upd_stale):
+
+  Icp dedups (same content, same SAID across submitters; no second Icp
+  record created).
+  Upd_legit lands at v_1 alongside Upd_stale, creating non-priv divergent
+  set:
+
+  [Icp_v0] ─┬─ [Upd_stale @ v_1, identity_event=IEL_v_old]
+            └─ [Upd_legit @ v_1, identity_event=IEL_v_current]
+
+  Both auth-authorized; neither privileged → non-privileged divergent.
+
+Step 3 — Operator submits Rpr (branch-tip-extending shape, extending
+Upd_legit at v_2):
+
+  Rpr.previous = Upd_legit.said
+  Rpr.version  = 2
+
+  Discriminator's walkback from Rpr.previous reaches Upd_legit at v_1;
+  Upd_stale's branch is archived.
+
+  [Icp_v0] → [Upd_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
+                                       ↑
+                                       Upd_stale moved to sad_event_archives
+                                       (forensic; not on live chain)
+```
+
+The operator's response **never extends `Upd_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../security-invariant.md §Extension Discipline](../security-invariant.md#extension-discipline).
 
 ### 7. IEL evolves, owner advances dependent SEL's branch tip
 

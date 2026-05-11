@@ -226,6 +226,73 @@ Applications building on KELS may need time-of-creation evidence (audit trails, 
 
 For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
 
+## Extension Discipline
+
+The protocol cannot — and does not — prevent any currently-authorized party from chaining a new event onto any existing chain event. `previous` validates against the structural parent (the event whose SAID is named), not against "who authored the parent." A current-authority holder can technically point `previous` at any prior event the verifier would accept as a parent.
+
+The operator's design discipline closes the implicit-endorsement gap. The discipline splits by event semantics:
+
+### Endorsement events — extend only attested events
+
+`Upd`, `Sea`, `Rpr`, `Rec`, `Ror` are **endorsement-class**: signing an event with `previous = parent.said` is a structural attestation that the predecessor is acceptable as the parent state for further chain evolution. Extending an adversary's event with an endorsement-class event would be semantically equivalent to endorsing it — the operator's signed event chains from, and carries forward, the adversary's content.
+
+The operator extends only:
+
+- **Their own previously-signed events.** Any event the operator authored is theirs to extend.
+- **Attested-shared state.** Two structural shapes:
+  - **The divergence ancestor `v_{d-1}`.** On a fork-contest, `v_{d-1}` is the unique shared parent of all events at `v_d`. Every node accepts `v_{d-1}` as authentic; extending it (e.g., a divergence-ancestor-extending `Rec`/`Rpr`) carries no implicit endorsement of either `v_d` branch.
+  - **SEL `Icp` via dedup-equivalence.** SEL `Icp` is permissionless and deterministic — the prefix derives from `(identity, topic)` and `Icp.said` derives from the full event with `said`+`prefix` blanked. Any submitter's `Icp` for the same `(identity, topic)` produces the same SAID. The operator's own `Icp` is therefore structurally indistinguishable from any other submitter's `Icp`; extending it is extending the operator's own attested state, not the adversary's.
+
+The operator never points an endorsement-class event's `previous` at an adversary event. This is an operator-side construction rule applied at the builder layer — the verifier accepts any structurally-valid parent reference; the discipline closes the gap that the verifier structurally cannot.
+
+### Termination events — repudiation, not endorsement
+
+`Cnt` and `Dec` are **termination-class**. `previous = parent.said` on a termination event structurally means "I observe this chain state and terminate it," not "I accept the parent as a basis for further chain evolution." There is no further chain evolution to endorse; the chain ends with the terminal.
+
+The implication is that **termination events follow the `previous = v_{tip-1}.said` parent rule unconditionally**, including the rare case where `v_{tip-1}` is an adversary event:
+
+- **Cnt on an adversary-extended linear chain.** If an adversary captures the operator's signing key (KEL) or `auth_policy` material (SEL) and submits one or more endorsement-class events `v_N`, `v_{N+1}`, …, `v_M` onto the operator's chain (linear extension; no divergence yet), the operator's local tip after gossip is `v_M`. Operator's `Cnt.previous = v_{tip-1}.said = v_{M-1}.said` — which on a multi-event-extended chain is an adversary event. This is intentional. Cnt's repudiation semantic is what makes it coherent to point at an adversary event in this shape: the operator is observing the chain's tampered state and terminating it, not extending the adversary's chain.
+
+  ```
+  Pre-state (adversary-extended linear chain; operator's last attested
+  event is v_{N-1}; v_N..v_M are adversary events):
+
+    ... → v_{N-1} → v_N_adv → v_{N+1}_adv → ... → v_M_adv   (tip)
+            ↑                                          ↑
+            operator's last                            adversary-extended
+            attestation                                tip
+
+  Operator submits Cnt:
+    cnt.previous = v_{tip-1}.said = v_{M-1}_adv.said
+    cnt.version  = M
+
+  Post-state (fresh divergence at v_M; privileged-divergence fires):
+
+    ... → v_{N-1} → ... → v_{M-1}_adv ─┬─ v_M_adv ┐
+                                       └─ Cnt     ┴── contested-terminal
+
+  Cnt's previous points at an adversary event (v_{M-1}_adv). This is
+  the termination exception: Cnt is repudiation, not endorsement; the
+  operator is not attesting to v_{M-1}_adv's acceptability as a parent
+  for further evolution — there is no further evolution after Cnt.
+  ```
+
+- **Dec in practice extends only attested state.** `Dec` means clean retirement, which is not the operator's response to an adversary-extended chain. The operator's response to adversary extension is `Cnt`, not `Dec`. So while Dec is termination-class by semantics, in practice an operator's Dec only extends their own attested tip.
+
+### Implications
+
+- **SEL pre-Icp camping response (endorsement-class).** When an adversary submits `[Icp, Upd_stale]` first, the operator's response is `[Icp, Upd_legit]` with `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Upd_stale.said`. `Upd_legit` is endorsement-class; pointing it at `Upd_stale` would attest to `Upd_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; the operator resolves via `Rpr` extending their `Upd_legit` branch.
+
+- **KEL/SEL divergence resolution (endorsement-class).** The operator's `Rec` (KEL) or `Rpr` (SEL) extends either the divergence ancestor `v_{d-1}` (attested-shared; divergence-ancestor-extending shape, lands at `v_d`) or their own existing branch tip at `v_d` (own attestation; branch-tip-extending shape, lands at `v_{d+1}`). The operator never points an endorsement-class `Rec`/`Rpr` at the other branch's tip. The "whoever holds the recovery/governance key dictates which branch survives" language reduces to "the operator extends their own branch or `v_{d-1}`."
+
+- **Cnt placement (termination-class; exception to the no-extend-adversary rule).** `Cnt.previous = v_{tip-1}.said` resolves uniformly across linear and divergent shapes. On a linear chain with no adversary extension, `v_{tip-1}` is the parent of the operator's own tip. On a divergent chain, `v_{tip-1}` is `v_{d-1}` (the divergence ancestor; attested-shared by the divergence invariant). On an adversary-extended linear chain, `v_{tip-1}` may be an adversary event — Cnt's repudiation semantic makes this coherent, per the diagram above.
+
+- **Endorsement-class events never extend adversary content.** This rule is structurally absolute for `Upd`/`Sea`/`Rpr`/`Rec`/`Ror`. Termination-class events follow the protocol's structural parent rule unconditionally, with the only practical case where `previous` lands on an adversary event being `Cnt` on a multi-event adversary-extended linear chain. When prose anywhere in the design or analysis docs claims an operator's endorsement-class event linearly extends an adversary event, the prose is wrong by construction.
+
+### Cross-primitive symmetry
+
+The discipline is structurally identical across the three primitives. The shapes of "own previous tip" and "attested-shared state" instantiate differently per primitive (KEL: `v_{d-1}` and own-branch tips; IEL: `v_{d-1}` only — every event is governance-authorized so there are no auth-only operator-extension paths; SEL: `v_{d-1}`, `Icp` via dedup, and own-branch tips), but the underlying principle — operators attest only to their own content or to genuinely shared state, with termination events following the structural parent rule unconditionally — applies without primitive-specific exception.
+
 ## `KelVerification` as Proof of Verification
 
 Functions that consume KEL data accept `&KelVerification` as a parameter. Having a `KelVerification` proves the KEL was verified. `KelVerification` fields are private with no public constructor — the only way to obtain one is through `KelVerifier`.

@@ -215,12 +215,12 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
 ### Pre-Icp Camping
 
 **Attack:** Adversary holds a past IEL `auth_policy` preimage. For a `(identity, topic)` pair that the legitimate operator hasn't asserted yet, the adversary submits `[Icp, Upd_stale]` first — `Icp` derives the SEL prefix deterministically from `(identity, topic)` (permissionless); `Upd_stale` binds to a past IEL event whose `auth_policy` the adversary can satisfy.
-- **Mitigation:** Application-layer enrollment-time pattern. When the legitimate operator submits their own `[Icp, Upd_owner]`:
+- **Mitigation:** Application-layer enrollment-time pattern. When the legitimate operator submits their own `[Icp, Upd_legit]`:
   - `Icp` dedups (deterministic prefix derivation; same SAID across submitters).
-  - `Upd_owner` extends as `v_2` with the operator's current `identity_event`, creating a non-privileged divergent set with `Upd_stale` at `v_1` (both auth-authorized).
-  - Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending `Upd_owner`'s branch; `Rpr` archives `Upd_stale`. Chain becomes the operator's.
+  - `Upd_legit.previous = Icp.said` — operator extends `Icp` via dedup-equivalence (an endorsement-class event never extends an adversary event; see [../design/security-invariant.md §Extension Discipline](../design/security-invariant.md#extension-discipline)). `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape).
+  - Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. `Rpr` lands at `v_2`; the chain becomes the operator's.
   - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../design/iel/event-log.md §Application-developer enrollment patterns](../design/iel/event-log.md#application-developer-enrollment-patterns).
-- **Residual visibility cost:** `Upd_stale` stays at `v_1` in the archive as forensic record; visible to a determined inspector but cannot ground authorization.
+- **Residual visibility cost:** `Upd_stale` moves to the archive table as forensic record; visible to a determined inspector but cannot ground authorization.
 - **Structural impossibility of closing further:** The deterministic prefix derivation enables dedup-idempotency, which is what creates the camping window. Closing the window would require breaking dedup-idempotency.
 
 ### Stale-IEL-Binding Upd on Existing SEL (Doctrine Win)
