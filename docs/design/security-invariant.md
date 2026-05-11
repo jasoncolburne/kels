@@ -1,6 +1,6 @@
 # Security Invariant
 
-The database cannot be trusted — it may have been altered. All operations on KEL data fall into three categories:
+The database cannot be trusted — it may have been altered. All operations on chain data (KEL, IEL, SEL) fall into three categories:
 
 ## Operation Categories
 
@@ -8,19 +8,19 @@ The database cannot be trusted — it may have been altered. All operations on K
 
 Returning data to a client or peer. **No verification needed** — the receiver is responsible for verifying what they get.
 
-Examples: `GET /api/v1/kels/kel/:prefix`, `get_effective_said`, `get_key_events`
+Examples: `GET` endpoints serving event pages (per-primitive: `kels/kel/:prefix`, `kels/iel/:prefix`, `kels/sel/:prefix`), effective-SAID lookups, paginated event reads.
 
 ### 2. Consuming
 
-Using data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full KEL first.** The only way to access consumed data is through `KelVerification`, which can only be obtained via `KelVerifier::into_verification()`. This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
+Using data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full chain first.** The only way to access consumed data is through the corresponding verification token (`KelVerification`, `IelVerification`, `SelVerification`), which can only be obtained via that primitive's verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`). This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
 
-Examples: peer signature verification (`verify_signature`), anchor checking, submit handler routing decisions
+Examples: peer signature verification on a KEL, anchor checking on a KEL, governance-policy resolution on an IEL at a given version, SEL `identity_event` resolution, submit-handler routing decisions on any primitive.
 
 ### 3. Resolving
 
 Comparing state to decide whether to sync. A wrong answer triggers an unnecessary sync (which itself verifies), not a security hole. Standalone functions are acceptable here without full verification.
 
-Examples: `effective_tail_said` endpoint, anti-entropy comparison, `should_add_rot_with_recover()`
+Examples: effective-SAID endpoints (per-primitive), anti-entropy comparison, KEL proactive-rotation prechecks (`should_add_rot_with_recover()`).
 
 ## Compromise is Permanent
 
@@ -34,7 +34,7 @@ The structural mechanism that enforces "current-state-only authority" is the cha
 
 - **KEL**: `last_recovery_revealing_event` — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
 - **IEL**: `last_governance_event` — the SAID of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
-- **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec analogous).
+- **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec terminal, don't advance the seal but do enforce it).
 
 A new event's land-version MUST be at-or-after the seal (`event_version >= seal_version`). Any submission whose land-version is strictly before the seal is rejected (`"Cannot land at version V — sealed by evaluation/recovery at version S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
@@ -143,7 +143,7 @@ Cnt's authorization is **HARD**, like every other event's. **General invariant: 
 
 **Operator recourse against signing-key-only Rot takeover (KEL specifically)**: if an adversary captures only the signing key (recovery key in separate custody) and submits a Rot at `v_N`, today's "Cnt extends tip" model leaves the operator with no recourse — Cnt would require keys committed by `v_N` (adversary-chosen). Under this design, Cnt extends `v_{N-1}`, requiring keys committed by `v_{N-1}` — i.e., the `v_N`-current signing key (revealed by adversary's Rot, both parties have it) AND the `v_N`-current recovery key (NOT revealed by Rot, only the operator has it). Operator's dual-sig succeeds; adversary's does not. Operator can terminate the chain.
 
-`Cnt` and `Dec` are not mutually exclusive — `Cnt` arriving via gossip after `Dec` has landed overrides the decommission and transitions the chain to contested. See [§Cnt Overrides Dec](#cnt-overrides-dec) for the override mechanic. Coerced/forced `Dec` is operationally indistinguishable from legitimate `Dec` and the protocol does not attempt to relitigate it. The adversary-Dec-after-takeover scenario is the same unavoidable case as adversary-rotates-governance: operational defense only, no protocol recourse.
+`Cnt` and `Dec` are not mutually exclusive — see [§Cnt Overrides Dec](#cnt-overrides-dec). Coerced/forced `Dec` is operationally indistinguishable from legitimate `Dec` and the protocol does not attempt to relitigate it. The adversary-Dec-after-takeover scenario is the same unavoidable case as adversary-rotates-governance: operational defense only, no protocol recourse.
 
 From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
 
@@ -299,7 +299,7 @@ The operator's design discipline closes the implicit-endorsement gap. The discip
 
 ### Endorsement events — extend only attested events
 
-`Upd`, `Sea`, `Rpr`, `Rec`, `Ror` are **endorsement-class**: signing an event with `previous = parent.said` is a structural attestation that the predecessor is acceptable as the parent state for further chain evolution. Extending an adversary's event with an endorsement-class event would be semantically equivalent to endorsing it — the operator's signed event chains from, and carries forward, the adversary's content.
+All chain events except `Cnt` and `Dec` are **endorsement-class**: signing an event with `previous = parent.said` is a structural attestation that the predecessor is acceptable as the parent state for further chain evolution. Extending an adversary's event with an endorsement-class event would be semantically equivalent to endorsing it — the operator's signed event chains from, and carries forward, the adversary's content. (`Cnt` and `Dec` are termination-class — see below.)
 
 The operator extends only:
 
@@ -352,24 +352,24 @@ The implication is that **termination events follow the `previous = v_{tip-1}.sa
 
 - **Cnt placement (termination-class; exception to the no-extend-adversary rule).** `Cnt.previous = v_{tip-1}.said` resolves uniformly across linear and divergent shapes. On a linear chain with no adversary extension, `v_{tip-1}` is the parent of the operator's own tip. On a divergent chain, `v_{tip-1}` is `v_{d-1}` (the divergence ancestor; attested-shared by the divergence invariant). On an adversary-extended linear chain, `v_{tip-1}` may be an adversary event — Cnt's repudiation semantic makes this coherent, per the diagram above.
 
-- **Endorsement-class events never extend adversary content.** This rule is structurally absolute for `Upd`/`Sea`/`Rpr`/`Rec`/`Ror`. Termination-class events follow the protocol's structural parent rule unconditionally, with the only practical case where `previous` lands on an adversary event being `Cnt` on a multi-event adversary-extended linear chain. When prose anywhere in the design or analysis docs claims an operator's endorsement-class event linearly extends an adversary event, the prose is wrong by construction.
+- **Endorsement-class events never extend adversary content.** This rule is structurally absolute. Termination-class events follow the protocol's structural parent rule unconditionally, with the only practical case where `previous` lands on an adversary event being `Cnt` on a multi-event adversary-extended linear chain. When prose anywhere in the design or analysis docs claims an operator's endorsement-class event linearly extends an adversary event, the prose is wrong by construction.
 
 ### Cross-primitive symmetry
 
 The discipline is structurally identical across the three primitives. The shapes of "own previous tip" and "attested-shared state" instantiate differently per primitive (KEL: `v_{d-1}` and own-branch tips; IEL: `v_{d-1}` only — every event is governance-authorized so there are no auth-only operator-extension paths; SEL: `v_{d-1}`, `Icp` via dedup, and own-branch tips), but the underlying principle — operators attest only to their own content or to genuinely shared state, with termination events following the structural parent rule unconditionally — applies without primitive-specific exception.
 
-## `KelVerification` as Proof of Verification
+## Verification Tokens as Proof of Verification
 
-Functions that consume KEL data accept `&KelVerification` as a parameter. Having a `KelVerification` proves the KEL was verified. `KelVerification` fields are private with no public constructor — the only way to obtain one is through `KelVerifier`.
+Functions that consume chain data accept a verification token (`&KelVerification`, `&IelVerification`, `&SelVerification`) as a parameter. Holding the token proves the corresponding chain was verified. Token fields are private with no public constructor — the only way to obtain one is through the corresponding verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`).
 
 ## Merge Verification
 
-When merging new events into an existing KEL (submit handler), first verify the entire existing KEL in the DB using `KelVerifier` with paginated reads under an advisory lock. Call `into_verification()` to get a trusted context (don't re-query the DB — use the verified data). Then use that context to verify the new incoming events.
+When merging new events into an existing chain (submit handler), first verify the entire existing chain in the DB using the corresponding verifier with paginated reads under an advisory lock. Obtain a trusted verification token from the verifier and use that token's data as the context for verifying the new incoming events — never re-query the DB between verification and use. The pattern applies uniformly across KEL, IEL, and SEL submit paths.
 
-## Inline Anchor Checking
+## Inline Reference Checking
 
-Register SAIDs to check with `KelVerifier::check_anchors()` before the walk. The verifier checks anchors as it iterates through events. Results are available via `KelVerification::anchored_saids()`. No separate DB queries for anchoring.
+Each verifier supports registering SAIDs of interest before the walk so the walk records what it observed without separate DB queries. KEL registers anchor SAIDs (KEL ixns observed at IEL/SEL Icp time and similar binding points); IEL and SEL register caller-cared-about SAIDs for satisfaction tracking. Registration happens before the walk; results are available on the verification token. The pattern eliminates a second DB pass for SAID-presence questions.
 
 ## Advisory Locking
 
-All verify-then-write paths hold PostgreSQL advisory locks for the duration of both verification and write. The `PageLoader` trait enables this — `KelTransaction` and `LockedKelTransaction` implement `PageLoader` by reading under the advisory lock, then the same transaction is used for the write. This eliminates time-of-check-to-time-of-use vulnerabilities.
+All verify-then-write paths hold PostgreSQL advisory locks for the duration of both verification and write. Per-primitive locked-transaction types implement the corresponding `PageLoader` trait by reading under the advisory lock; the same transaction is then used for the write. This eliminates time-of-check-to-time-of-use vulnerabilities. Applies uniformly across KEL, IEL, and SEL submit paths.
