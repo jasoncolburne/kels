@@ -1,6 +1,6 @@
 # IEL Reconciliation: Multi-Node Correctness Matrix
 
-> Exhaustive enumeration of all IEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the IEL design — without it, the submit handler and gossip layer aren't proven sound.
+> Exhaustive enumeration of all IEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the IEL design — without it, the submit handler and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../security-invariant.md §Federation Convergence](../../security-invariant.md#federation-convergence); this doc is its per-primitive proof.
 
 For lifecycle prose (states, divergence-by-Cnt-resolution, evaluation seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For submit-handler routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
@@ -285,7 +285,7 @@ After gossip merge:
                     = effective_said(A)    ✓
 ```
 
-Both nodes converge on the contested effective SAID; cross-node forensic divergence at `v_d` is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever.
+Both nodes converge on the contested effective SAID; cross-node forensic divergence at `v_d` is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../security-invariant.md §Federation Convergence](../../security-invariant.md#federation-convergence).
 
 ## References
 

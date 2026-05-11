@@ -1,6 +1,6 @@
 # KEL Reconciliation: Multi-Node Correctness Matrix
 
-> Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound.
+> Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../security-invariant.md §Federation Convergence](../../security-invariant.md#federation-convergence); this doc is its per-primitive proof.
 
 For lifecycle prose (states, divergence, recovery via discriminator, contest, decommission, the proactive-ROR seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
@@ -273,7 +273,7 @@ After gossip merge:
                     = effective_said(A)    ✓
 ```
 
-Both nodes converge on the contested effective SAID. Cross-node forensic divergence (which events each node holds at `v_d`) is acceptable; anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: A converges on `hash("decommissioned:{prefix}")` = Dec.said while B converges on `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side.
+Both nodes converge on the contested effective SAID. Cross-node forensic divergence (which events each node holds at `v_d`) is acceptable; anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: A converges on `hash("decommissioned:{prefix}")` = Dec.said while B converges on `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../security-invariant.md §Federation Convergence](../../security-invariant.md#federation-convergence).
 
 ## References
 
