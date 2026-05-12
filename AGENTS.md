@@ -126,9 +126,3 @@ The DB cannot be trusted. Three categories:
 ### Storage
 
 PostgreSQL via `verifiable-storage` (`Stored`, `SignedEvents`, `Chained`, `SelfAddressed` derives). Transactional ops use `KelTransaction` (PG transaction + advisory lock). Deterministic pagination: `ORDER BY serial ASC, CASE kind ... END ASC, said ASC`. Min page size 64 (security bound for proactive ROR). Redis cache for single-page KELs; pub/sub for invalidation.
-
-## Getting Started
-
-If you are working in a two-agent flow, ask the user whether you are the **design agent** or the **implementation agent**, then read the corresponding prompt from `prompts/`:
-- Design: `prompts/design-agent-init.md`
-- Implementation: `prompts/implementation-agent-init.md`
