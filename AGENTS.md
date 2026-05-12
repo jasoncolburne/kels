@@ -5,7 +5,7 @@
 Kels is a fail-secure application framework built on **decentralized, tamper-evident, authentic data**. All system state lives in append-only chains of cryptographically-linked events that entities throughout the network hold and verify independently — no central authority, no trust by fiat. Each primitive plays a distinct structural role:
 
 - **KEL** — anchors authenticity to devices. A device's cryptographic chain of custody; signing a SAID under a KEL ixn proves the device produced or endorsed that data. Replicated/served by `services/kels/`.
-- **IEL** — governs identities. Aggregates devices and other identities into logical groupings via `auth_policy` and `governance_policy` declarations on its event chain; immunity rules keep past authorizations stable. Identity is the unit at which credentials are issued. Hosted in `services/sadstore/` alongside SEL.
+- **IEL** — governs identities. Aggregates devices and other identities into logical groupings via `auth_policy` and `governance_policy` declarations on its event chain; immunity rules keep past authorizations stable. Identity is the unit at which credentials are issued. Hosted in `services/sadstore/` alongside SELs.
 - **SEL** — content-addressed application data. Identity-rooted chains (each SEL binds at inception to an IEL prefix) carrying domain payloads — exchange-key publications, custody envelopes, etc. Auth resolves through the bound IEL. Hosted in `services/sadstore/`.
 - **Credentials** — verifiable claims that permit access to resources based on authenticated identity. Issued under policies anchored in KELs/IELs; verified by the resource holder against the issuer's chain state.
 
