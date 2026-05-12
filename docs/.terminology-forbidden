@@ -89,14 +89,16 @@ test_sad_chain_verifier_
 \btracked_write_policy\b
 \bestablishment_version\b
 
-# Round-12 dropped SEL kinds: `Est` removed; `Evl` renamed to `Sea`. The
-# Rust path forms catch new code; the wire-format topic strings catch
-# shell scripts, JSON literals, and design-doc references.
-\bSadEventKind::Est\b
+# Round-12 (#147) dropped two SEL kinds: `Est` removed; `Evl` renamed to
+# `Sea`. The `Evl → Sea` rename is permanent; the rules below catch
+# residual references in code, scripts, JSON literals, and design docs.
+#
+# `Est` was reintroduced post-#147 as the tier-2 binding-establishment
+# event under anchor tier elevation (see protocol-doctrine.md
+# §Anchor Tier Elevation). The `Est` rules previously held here have
+# been removed because `Est` is once again a valid SEL kind.
 \bSadEventKind::Evl\b
-\bSadEvent::est\b
 \bSadEvent::evl\b
-kels/sad/v1/events/est
 kels/sad/v1/events/evl
 
 # === No "round N" labels: cite issue numbers (e.g., #147 / #167) instead ===
