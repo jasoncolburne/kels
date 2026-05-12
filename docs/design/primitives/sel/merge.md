@@ -5,7 +5,7 @@ This document describes the submit / merge protocol used when new events are sub
 ## Overview
 
 The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` integrates new events into an existing SEL while handling:
-- Inception batches (`[Icp, Upd, ...]` minimum — Icp alone is rejected)
+- Inception batches (`[Icp, Est, ...]` minimum — Icp alone is rejected)
 - Normal event appends (`Upd`, `Sea`)
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same version)
@@ -34,7 +34,7 @@ Server errors map to:
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
-| `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Upd`) | unchanged (rejected) |
+| `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Est`) | unchanged (rejected) |
 | `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
 
@@ -59,10 +59,18 @@ for v1+: cross-chain authorization resolution:
     if IEL is divergent at the bound branch → reject IelDivergent
 
     pick the relevant policy:
-        Upd → IEL-resolved auth_policy at identity_event
+        Est, Upd → IEL-resolved auth_policy at identity_event
         Sea/Rpr/Cnt/Dec → IEL-resolved governance_policy at identity_event
 
-    verify event.said is anchored under the resolved policy
+    verify event.said is anchored under the resolved policy with the
+    anchor kind required by the event's tier — see
+    [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+        Upd       → Ixn (tier 1)
+        Est, Sea  → Rot (tier 2)
+        Rpr, Cnt, Dec → Ror (tier 3)
+    Each Endorse / Delegate leaf in the resolved policy must have an
+    anchor of the required kind. Wrong-kind anchor for any leaf
+    contributing to satisfaction → reject.
 
     per-event parent-monotonic check (per branch):
         event.identity_event must be at-or-after the parent event's identity_event
@@ -76,7 +84,7 @@ The `identity_event` resolution may walk back through the IEL chain if the named
 
 ### 2. Inception Batch Rule
 
-The rule lives inside the verifier (`SelVerifier::finish_internal`): if any branch tip is still an `Icp`, finalization returns `IncompleteInception`. Icp is structurally pinned to v=0, so an Icp tip is precisely the "lone-`[Icp]` chain" shape. SEL Icp is permissionless and deterministic — anyone can submit `[Icp]` alone — but the resulting chain has no content and no authorized event, so the verifier rejects it at end-verification. Every consumer's verifier walk applies the same rule; submit handlers do not duplicate it. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+The rule lives inside the verifier (`SelVerifier::finish_internal`): if any branch tip is still an `Icp`, finalization returns `IncompleteInception`. Icp is structurally pinned to v=0, so an Icp tip is precisely the "lone-`[Icp]` chain" shape. SEL Icp is permissionless and deterministic — anyone can submit `[Icp]` alone — but the resulting chain has no content and no authorized event, so the verifier rejects it at end-verification. The minimum inception batch is `[Icp, Est]`. Every consumer's verifier walk applies the same rule; submit handlers do not duplicate it. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ### 3. Terminal-State Gate
 

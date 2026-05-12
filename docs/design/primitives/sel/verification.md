@@ -94,11 +94,20 @@ verify_authorization(event, branch):
     // IEL's IelVerification::policy_history (carry-forward applied at IEL
     // verification time, not at resolve time — no walk-back here).
     policy = match event.kind:
-        Upd                  → resolver.resolve_auth_policy_at(branch.identity, event.identity_event)
+        Est, Upd             → resolver.resolve_auth_policy_at(branch.identity, event.identity_event)
         Sea, Rpr, Cnt, Dec   → resolver.resolve_governance_policy_at(branch.identity, event.identity_event)
 
-    // Verify the SEL event's anchoring under that policy
-    if !checker.is_anchored(event.said, policy):
+    // Verify the SEL event's anchoring under that policy, with the
+    // anchor kind required by the event's tier per
+    // [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+    //   Upd          → Ixn  (tier 1)
+    //   Est, Sea     → Rot  (tier 2)
+    //   Rpr, Cnt, Dec → Ror (tier 3)
+    // Each Endorse / Delegate leaf in the policy must have an anchor
+    // of the required kind in the named KEL. Wrong-kind anchor for a
+    // leaf evaluates as unsatisfied; policy-level satisfaction is
+    // computed against the tier-appropriate leaf checks.
+    if !checker.is_anchored_at_tier(event.said, policy, event.kind.anchor_tier()):
         return Error("Authorization failed")
 
     // Per-event parent-monotonic on identity_event
@@ -119,13 +128,14 @@ The chain-wide `last_identity_event` (the highest `identity_event` across all ev
 
 Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state). The mapping is per kind:
 
-| Kind | Authorization gate | Anchor failure | Binding failure | Parent-monotonic regression |
-|------|--------------------|----------------|------------------|------------------------------|
-| `Upd` | `auth_policy` | **HARD** | **HARD** (`BadIdentityBinding`) | **HARD** (`BadIdentityBinding`) |
-| `Sea` | `governance_policy` | **HARD** | **HARD** | **HARD** |
-| `Rpr` | `governance_policy` | **HARD** | **HARD** | **HARD** |
-| `Cnt` | `governance_policy` | **HARD** | **HARD** | **HARD** |
-| `Dec` | `governance_policy` | **HARD** | **HARD** | **HARD** |
+| Kind | Authorization gate | Anchor failure | Wrong-kind anchor | Binding failure | Parent-monotonic regression |
+|------|--------------------|----------------|-------------------|------------------|------------------------------|
+| `Est` | `auth_policy` (tier 2, `Rot`) | **HARD** | **HARD** | **HARD** (`BadIdentityBinding`) | **HARD** (`BadIdentityBinding`) |
+| `Upd` | `auth_policy` (tier 1, `Ixn`) | **HARD** | **HARD** | **HARD** (`BadIdentityBinding`) | **HARD** (`BadIdentityBinding`) |
+| `Sea` | `governance_policy` (tier 2, `Rot`) | **HARD** | **HARD** | **HARD** | **HARD** |
+| `Rpr` | `governance_policy` (tier 3, `Ror`) | **HARD** | **HARD** | **HARD** | **HARD** |
+| `Cnt` | `governance_policy` (tier 3, `Ror`) | **HARD** | **HARD** | **HARD** | **HARD** |
+| `Dec` | `governance_policy` (tier 3, `Ror`) | **HARD** | **HARD** | **HARD** | **HARD** |
 
 Hard fails leave the chain at its prior tip. The verifier does not advance the branch's tip `identity_event` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor / parent-monotonic update the per-branch state.
 
@@ -178,7 +188,7 @@ The pattern is bounded by what the caller asks about, not by chain size — veri
 
 ### Inception Batch Rule
 
-The inception batch rule `[Icp, Upd]` minimum is a chain-validity rule enforced inside the verifier (#171): `SelVerifier::finish_internal` rejects with `IncompleteInception` whenever any branch tip is still an `Icp` (Icp is structurally pinned to v=0, so an Icp tip identifies the lone-`[Icp]` chain). Every consumer's verifier walk applies the same rule — a tampered DB serving `[Icp]` alone is rejected at end-verification. See [merge.md](merge.md) for the per-batch routing context.
+The inception batch rule `[Icp, Est]` minimum is a chain-validity rule enforced inside the verifier (#171): `SelVerifier::finish_internal` rejects with `IncompleteInception` whenever any branch tip is still an `Icp` (Icp is structurally pinned to v=0, so an Icp tip identifies the lone-`[Icp]` chain). Every consumer's verifier walk applies the same rule — a tampered DB serving `[Icp]` alone is rejected at end-verification. See [merge.md](merge.md) for the per-batch routing context.
 
 ### Branch State
 

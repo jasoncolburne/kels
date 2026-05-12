@@ -10,23 +10,25 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 |---|---|---|
 | `Icp` | `kels/iel/v1/events/icp` | Inception (v0). Declares both `auth_policy` and `governance_policy`. Seeds prefix derivation via `(auth_policy, governance_policy, topic)`. |
 | `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_event`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
+| `Sea` | `kels/iel/v1/events/sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances `last_governance_event`. Carries no policy fields. Closes the post-exclusion window per [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). |
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
-`Evl`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires `governance_policy` satisfaction.
+`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires `governance_policy` satisfaction.
 
-IEL has **no `Upd` kind** — there is no "content" on identity chains. The chain's data is its tracked policy state, mutated only via `Evl`. IEL has **no `Est` kind** — both policies are required at `Icp`, since identity chains are not third-party-discoverable and don't need the optional-governance-at-Icp dance that today's SEL uses. IEL has **no `Rpr` kind** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence-is-terminal rule); there's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
+IEL has **no `Upd` kind** — there is no "content" on identity chains. The chain's data is its tracked policy state, mutated only via `Evl`. IEL has **no `Est` kind** — both policies are required at `Icp`, since identity chains are not third-party-discoverable and don't need the optional-governance-at-Icp dance that SEL uses (SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface). IEL has **no `Rpr` kind** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence-is-terminal rule); there's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
 
 ## Per-Kind Field Rules
 
 `IdentityEvent::validate_structure()` enforces version and `previous` rules. Per-kind policy-field discipline (carry-forward vs. evolution vs. declaration) is enforced by the **verifier** — not by `validate_structure` — because the discipline depends on chain-state context (the previous event's policy values) which structural validation alone cannot see.
 
-| Kind | version | previous | auth_policy | governance_policy | sort_priority | authorization |
-|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) |
-| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance |
-| `Cnt` | `>= 1` | required | forbidden | forbidden | 2 | governance |
-| `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance |
+| Kind | version | previous | auth_policy | governance_policy | sort_priority | authorization | KEL anchor kind |
+|---|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) | `Ixn` (tier 1) |
+| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance | `Rot` (tier 2) |
+| `Sea` | `>= 1` | required | forbidden | forbidden | 2 | governance | `Rot` (tier 2) |
+| `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance | `Ror` (tier 3) |
+| `Cnt` | `>= 1` | required | forbidden | forbidden | 4 | governance | `Ror` (tier 3) |
 
 `auth_policy` and `governance_policy` are `Option<Digest256>` fields on `IdentityEvent`: present (non-`None`) on `Icp` and `Evl`, absent (`None`) on `Cnt` and `Dec`. "Declared" applies at `Icp` where there is no predecessor — the inceptor declares both fields directly. "Preserved or evolved" applies on `Evl` — the field's value either equals the predecessor's value (preserved) or differs (evolved; the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Forbidden" applies on `Cnt` and `Dec`: terminal events have no forward state to declare, so the field is absent and the verifier rejects any Cnt/Dec carrying a value. This mirrors KEL, where `rotation_hash` and `recovery_hash` are likewise forbidden on terminal kinds (`Dec`, `Cnt`) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; terminal events end the chain and have no forward state to declare.
 
@@ -38,6 +40,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
 - **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
+- **`Sea`**: both policy fields are absent (forbidden). `Sea` is the seal-advance event — its purpose is to advance `last_governance_event` without declaring policy evolution. Authorization resolves through the branch's tracked `governance_policy` (resolved at the predecessor). Shape constraints: `Sea`'s parent must not be `Icp` (a seal advance is meaningful only after a policy-evolution event opens a window), another `Sea` (back-to-back seal advances are an invalid shape), or `Cnt`/`Dec` (terminal events do not extend). See [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance).
 - **`Cnt` / `Dec`**: both fields are absent (forbidden). Terminal events have no forward state to declare — the chain ends with the terminal, and the verifier's tracked policy state is what authorized acceptance of the terminal itself (resolved at the predecessor). The verifier rejects any Cnt/Dec carrying a non-`None` `auth_policy` or `governance_policy` as a structural error. Authorization for the terminal still resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed) — see [§Satisfaction model](#satisfaction-model).
 
 ### Satisfaction model

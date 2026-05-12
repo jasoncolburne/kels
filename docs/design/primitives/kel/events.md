@@ -23,16 +23,16 @@ For chain lifecycle (states, divergence, recovery via discriminator, contest, de
 
 `KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., proactive-ROR enforcement; dual-signature verification against prior establishment commitments).
 
-| Kind | serial | previous | public_key | rotation_hash | recovery_key | recovery_hash | anchor | delegating_prefix | authorization |
-|---|---|---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | forbidden | signing |
-| `Dip` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | **required** | signing (+ `Delegated`) |
-| `Rot` | `>= 1` | required | **required** | **required** | forbidden | forbidden | forbidden | forbidden | signing |
-| `Ixn` | `>= 1` | required | forbidden | forbidden | forbidden | forbidden | **required** | forbidden | signing |
-| `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden | forbidden | dual |
-| `Ror` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden | forbidden | dual |
-| `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | dual |
-| `Cnt` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | dual |
+| Kind | serial | previous | public_key | rotation_hash | recovery_key | recovery_hash | anchor | delegating_prefix | sort_priority | authorization |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | forbidden | 0 | signing |
+| `Dip` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | **required** | 1 | signing (+ `Delegated`) |
+| `Ixn` | `>= 1` | required | forbidden | forbidden | forbidden | forbidden | **required** | forbidden | 2 | signing |
+| `Rot` | `>= 1` | required | **required** | **required** | forbidden | forbidden | optional | forbidden | 3 | signing |
+| `Ror` | `>= 1` | required | **required** | **required** | **required** | **required** | optional | forbidden | 4 | dual |
+| `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden | forbidden | 5 | dual |
+| `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | 6 | dual |
+| `Cnt` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | 7 | dual |
 
 ### Authorization model
 
@@ -45,6 +45,10 @@ The "authorization" column names which signature(s) the verifier requires for th
 - **Rot** is signed by the new `public_key` it reveals. The verifier checks `Blake3(public_key) == prev_establishment.rotation_hash`, then verifies the signature against `public_key`. `rotation_hash` on `Rot` commits the *next* rotation key.
 - **Ixn** is signed by the current active signing key — the `public_key` of the most recent establishment event in the chain (Icp / Dip / Rot / Rec / Ror).
 - **Rec / Ror / Dec / Cnt** are dual-signed. The "signing" signature is by the key revealed in `public_key` (preimage of the prior establishment's `rotation_hash`); the "recovery" signature is by the key revealed in `recovery_key` (preimage of the prior establishment's `recovery_hash`). Both signatures must verify, and both digest commitments must match. This is the privileged primitive — exercising both the rotation key and the recovery key together proves dual control.
+
+### Anchor on `Rot` and `Ror`
+
+`Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
 ### Recovery-key revelation
 

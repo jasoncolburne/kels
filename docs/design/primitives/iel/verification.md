@@ -80,13 +80,17 @@ When an event requires policy satisfaction, the verifier resolves the relevant p
 ```
 verify_policy(event, branch):
     match event.kind:
-        Icp           → self_satisfies(event)  // anchored under event.governance_policy
-        Evl           → satisfies(event, branch.tracked_governance_policy)
-        Cnt, Dec      → satisfies(event, branch.tracked_governance_policy)
+        Icp           → self_satisfies(event)  // anchored under event.governance_policy; tier-1 (Ixn anchor)
+        Evl           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
+        Sea           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
+        Cnt, Dec      → satisfies(event, branch.tracked_governance_policy)  // tier-3 (Ror anchor)
 
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
-    each Endorse(KEL_PREFIX) node in the policy must have an ixn anchor
-    in the named KEL anchoring this event's SAID.
+    each Endorse(KEL_PREFIX) and Delegate(KEL_PREFIX) leaf node in the
+    policy must have an anchor of the required kind (Ixn / Rot / Ror per
+    the event's tier — see [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation))
+    in the named KEL anchoring this event's SAID. Wrong-kind anchor for a
+    leaf evaluates as unsatisfied.
 ```
 
 Policy state is **branch-tracked**:
@@ -105,7 +109,7 @@ All events on IEL require HARD anchor — the general invariant is "any event wi
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
   - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a privileged event (any IEL event kind: `Icp`, `Evl`, `Cnt`, `Dec`)?
+  - Yes → divergent set contains a privileged event (any IEL event kind: `Icp`, `Evl`, `Sea`, `Cnt`, `Dec`)?
     - Yes → contested (terminal).
     - No → never reached on IEL (every IEL event is privileged, so any divergent set on IEL is privileged-divergent).
 

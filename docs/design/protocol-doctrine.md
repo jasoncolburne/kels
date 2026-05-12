@@ -195,6 +195,66 @@ The override is load-bearing for protocol convergence, not a security hardening.
 
 The rule applies uniformly across KEL, IEL, and SEL — the convergence failure mode is identical on all three primitives, so the override mechanic is identical.
 
+#### Anchor Tier Elevation
+
+Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The tier required scales with the event's privilege: tier-1 (routine extension) anchors in `Ixn`; tier-2 (governance evolution, binding establishment, or seal advance) anchors in `Rot`; tier-3 (recovery or terminal) anchors in `Ror`. The elevation closes the signing-key-only adversarial pathway to forging governance evolutions, binding establishments, and terminal events on the chains that root other chains' authority.
+
+KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier.
+
+**Three-tier mapping.** Each operation class anchors in the KEL event kind that reveals the required key tier:
+
+| Tier | Operation class | KEL anchor kind | Preimage requirement on each contributing KEL |
+|------|----------------|-----------------|-------------------------------------------------|
+| 1 | Routine extension | `Ixn` | Current signing key (already known/active) |
+| 2 | Governance evolution; binding establishment; seal advance | `Rot` | Rotation-key preimage (committed by prior establishment; otherwise hidden) |
+| 3 | Recovery; terminal | `Ror` | Rotation-key preimage AND recovery-key preimage (both committed by prior establishment; both otherwise hidden) |
+
+**Per-primitive anchor rules.**
+
+| IEL Event | Anchor kind | Tier |
+|-----------|-------------|------|
+| `Icp` | `Ixn` | 1 |
+| `Evl` | `Rot` | 2 |
+| `Sea` | `Rot` | 2 |
+| `Cnt` | `Ror` | 3 |
+| `Dec` | `Ror` | 3 |
+
+| SEL Event | Anchor kind | Tier |
+|-----------|-------------|------|
+| `Icp` | (none) | n/a — permissionless, no authorization, no anchor |
+| `Est` | `Rot` | 2 (binding establishment; camping defense) |
+| `Upd` | `Ixn` | 1 |
+| `Sea` | `Rot` | 2 |
+| `Rpr` | `Ror` | 3 |
+| `Cnt` | `Ror` | 3 |
+| `Dec` | `Ror` | 3 |
+
+**Policy satisfaction under elevation.** The policy DSL has leaf nodes (`Endorse(prefix)`, `Delegate(delegator)`) that test anchor presence and internal nodes (`Weighted`, nested `Policy`) that compose leaf results. Under anchor elevation, the leaf-level anchor check requires the hosting KEL event to be of the kind specified by the event's tier (`Ixn` for tier 1, `Rot` for tier 2, `Ror` for tier 3); a leaf that finds an anchor of the wrong kind evaluates as unsatisfied. DSL composition is unchanged — `Weighted` still sums satisfied-child weights against the minimum; `Policy` still recursively resolves and evaluates; `Delegate` still requires a delegate's anchor on the SAID, where the delegate is in turn delegated by the delegator named in the policy (the specific delegate is discovered at evaluation time, which is what allows operator-side fleet scaling). The verifier accepts the event when the top-level policy evaluates as satisfied, where satisfaction is computed against the tier-appropriate anchor check at every leaf.
+
+This is the same shape as today's policy evaluation, with the anchor-presence leaf check refined to also require the correct hosting event kind.
+
+**Strict event-kind anchor.** The tables name a single anchor kind per tier (`Rot` for tier 2, `Ror` for tier 3), not a tier-membership set. `Rot` reveals only the rotation tier; `Ror` reveals both rotation and recovery in one event. Each is the minimum-burn anchor for its tier. Operators whose KEL is divergent when they need to anchor a tier-3 IEL/SEL event resolve via `Rec` first, then anchor in the next `Ror`. The two-event ceremony costs one extra KEL event; no security cost — pre-rotation makes each revealing event commit a fresh `recovery_hash`, so the v_{N-1} preimage revealed by `Rec` is dead authority once `Rec` lands.
+
+**SEL `Est` and camping defense.** SEL prefix derives from `(identity, topic)` — predictable and well-known. An adversary can race-incept SEL chains for any tuple an operator might use. SEL `Icp` is permissionless and dedup-equivalent: any party's `Icp` for the same tuple produces the same SAID and lands once regardless of who submits it. The actual binding and authorization happen at the next event — `Est` — which carries `identity_event` (binding to an IEL policy state) and is authorized under the IEL-resolved `auth_policy`. Elevating `Est` to tier 2 raises the per-camp cost: each camping attempt requires the camper's policy members to each produce a KEL `Rot` anchor. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. The operator's legitimate `Est` and a camper's `Est` create a divergent set at v1 (different `identity_event` or content → different SAIDs), resolved via `Rpr` as in today's SEL divergence semantics.
+
+IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(auth_policy, governance_policy, topic)` — content-derived from policy SAIDs that are not third-party-discoverable, so the well-known-tuple camping surface doesn't exist. IEL `Icp` stays at tier 1.
+
+**Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotation_hash` and `recovery_hash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Cnt`/`Dec` are unchanged by anchor elevation — they do not anchor in another chain.
+
+**What anchor elevation defends.**
+
+- **Signing-key-only adversarial governance takeover.** An adversary with signing-only compromise of policy members can today forge tier-1-anchored events. Under elevation, `Evl`, `Sea`, and `Est` require `Rot` per contributing member; `Rot` requires the pre-committed rotation-key preimage, which signing-only compromise does not yield. Governance takeover, seal advance, and SEL binding camping via signing-only compromise are closed.
+- **Adversarial terminal events without recovery-key compromise.** `Cnt`/`Dec` require `Ror` per contributing member; `Ror` requires the rotation-key preimage AND the recovery-key preimage (both committed by prior establishment events, neither yet revealed). An adversary lacking the recovery-key preimage for any contributing member cannot forge tier-3-anchored terminal events. Rotation-key compromise alone is insufficient.
+- **Operator-side rotated-out kill-switch.** A rotated-out party who could in principle `Cnt` under `v_{tip-1}`'s policy now needs `Ror` per contributing member — possession of both rotation-key and recovery-key preimages across the contributing policy members, not signing-key access. The structural authority of `v_{tip-1}`'s policy persists; the bar to exploit it is raised from tier 1 to tier 3.
+
+**What anchor elevation does not defend.**
+
+- **Recovery-key compromise.** A party holding both rotation- and recovery-key preimages (the tier-3 preimage pair) for enough policy members to satisfy the threshold can forge any IEL/SEL event class up to and including terminal events. They are structurally indistinguishable from the legitimate operator. Operational defenses (custody separation, threshold redundancy, monitoring) remain the only mitigation.
+- **Fractured governance.** A rotated-out party convincing other policy members to voluntarily participate in a contesting event satisfies anchor checks legitimately. The protocol cannot distinguish "legitimate threshold coalition" from "rotated-out party plus current-state members." This is social, not adversarial.
+- **Custody-degraded members.** Elevation's marginal value scales with per-member key-tier custody separation. A reference implementation that holds all three tiers on a single device gets no marginal protection — full-device compromise yields all three. The protocol is custody-agnostic; trait implementations can provide stronger custody options (HSM separation, geographic split, ceremony-gated reveal). Custody hygiene is a trait/integration concern, not a protocol one.
+
+Anchor tier elevation is a **verifier-side rule**. The verifier walks each IEL/SEL event and checks anchor presence of the required kind in candidate policy members' KELs as part of computing threshold satisfaction. Submit handlers invoke the verifier; consumers reading gossip-received, replicated, or bootstrapped data enforce the same check. No submit-handler-only carve-out exists.
+
 #### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
@@ -260,6 +320,24 @@ Policies designed for ratchet-out — high thresholds, redundancy beyond the thr
 The principle applies uniformly across KEL, IEL, and SEL. KEL's recovery key custody benefits from physical separation from the signing key (the privileged-vs-routine asymmetry the dual-signature requirement was designed for). IEL's `governance_policy` benefits from `M > N` thresholds across distinct organizational custodians and from hierarchical structure (root IEL → subordinate IELs scoped narrowly). SEL inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience.
 
 **Cascade-reincept honesty**: when a high-stakes identity is contested or current-state-compromised, the operational cost is a cascade. A contested KEL invalidates every IEL whose governance policy anchors in it; each invalidated IEL invalidates every SEL bound to it. An identity hierarchy built with a single root carries the entire dependent tree's reincept cost when the root falls. **Don't anchor everything to one root if root compromise costs you the entire dependent tree.** Identity hierarchies should be designed with the cascade in mind — partition the dependency graph so a single compromise has a bounded blast radius.
+
+##### Exclusion Evolutions and the Seal Advance
+
+The kill-switch authority granted by `v_{tip-1}`'s policy is symmetric. It serves the operator against single-event adversarial takeover (the operator's `Cnt` against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. Same mechanism, different actors. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` can `Cnt` the chain at `v_N` within that window — subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
+
+The window is operationally meaningful only on **exclusion evolutions** — where `P_new` strictly removes parties who satisfied `P_old` (a removed member, a raised threshold past someone's contribution, a participant replacement). Pure additions or threshold-decreases that keep the prior membership don't create new "had authority, lost it" positions; anyone who could `Cnt` under `P_old` can also `Cnt` under `P_new`. No new attack surface opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
+
+**`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `identity_event` to a newer IEL state — pure seal advance when `identity_event` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
+
+`Sea` is tier-2 anchored (KEL `Rot` per contributing member) — the same elevation as `Evl`. The cost to forge a `Sea` is exactly the cost to forge an `Evl`; an adversary who could prematurely advance the seal could already perform the original takeover. `Sea`'s value is shape correctness and audit clarity, not lowering the bar.
+
+Shape constraints on `Sea`:
+
+- Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
+- Parent cannot be another `Sea` — back-to-back seal advances are an invalid shape.
+- Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
+
+SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `identity_event` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
 
 ---
 

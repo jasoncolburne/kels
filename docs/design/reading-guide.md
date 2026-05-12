@@ -8,7 +8,7 @@ If you haven't read [AGENTS.md §System Thesis](../../AGENTS.md#system-thesis), 
 
 ## Foundation
 
-[protocol-doctrine.md](protocol-doctrine.md) — the doctrine. Compromise is permanent (past-state authority has zero structural force), forks are seal-bounded, privileged divergence is terminal, Cnt overrides Dec, ordering without timestamps, federation convergence, extension discipline, trust model on contested chains, limit of the doctrine. Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
+[protocol-doctrine.md](protocol-doctrine.md) — the doctrine. Compromise is permanent (past-state authority has zero structural force), forks are seal-bounded, privileged divergence is terminal, Cnt overrides Dec, anchor tier elevation (privileged IEL/SEL events require higher-tier KEL anchors — Rot for tier 2, Ror for tier 3 — closing the signing-only adversarial pathway), ordering without timestamps, federation convergence, extension discipline, trust model on contested chains, limit of the doctrine. Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
 
 ## Primitives
 

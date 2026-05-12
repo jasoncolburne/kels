@@ -39,7 +39,7 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). S
 
 ### Inception batch rule
 
-A submission containing an `Icp` event MUST also contain an `Upd` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 Upd, the chain is born with content, an `identity_event` binding, and the first policy-enforced event. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+A submission containing an `Icp` event MUST also contain an `Est` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 `Est`, the chain is born with content, an `identity_event` binding, and the first policy-enforced event. `Est` is tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), raising per-attempt cost against SEL camping. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ## Authorization via IEL — and Why That's Enough
 
@@ -83,8 +83,8 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 Non-privileged Upd-Upd divergence at v_d:
 
   v0       v1                 v_{d-1}             v_d  ← non-privileged divergent set
-[Icp] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd_a]   previous = v_{d-1}.said
-                                   └─ [Upd_b]   previous = v_{d-1}.said
+[Icp] → [Est] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd_a]   previous = v_{d-1}.said
+                                           └─ [Upd_b]   previous = v_{d-1}.said
 
 Both events auth-authorized; neither privileged. Chain is non-privileged-divergent →
 recoverable via Rpr (governance-authorized; archives one branch via discriminator).
@@ -94,9 +94,9 @@ Post-`d` window capped at MAX_NON_EVALUATION_EVENTS = 63 events on either branch
 Privileged divergence at v_d (e.g., Upd-Sea or Sea-Cnt):
 
   v0       v1                 v_{d-1}             v_d  ← privileged divergent set
-[Icp] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd]            ┐
-                                   └─ [Sea or Cnt]     ┴── contested-terminal
-                                                            (privileged-divergence rule)
+[Icp] → [Est] → [Upd] → ... → [Upd_{d-1}] ─┬─ [Upd]            ┐
+                                           └─ [Sea or Cnt]     ┴── contested-terminal
+                                                                    (privileged-divergence rule)
 
 Any privileged event in the set fires privileged-divergence-is-terminal at first
 observation. Chain transitions to Contested. No further events accepted at v_d
@@ -282,7 +282,7 @@ Decommission is the clean terminal state for owner-initiated chain abandonment. 
 Clean lifecycle terminated by Dec:
 
   v0       v1                v_N    v_{N+1}
-[Icp] → [Upd] → ... → [Upd_v_N] → [Dec]   ← chain decommissioned at v_{N+1}
+[Icp] → [Est] → ... → [Upd_v_N] → [Dec]   ← chain decommissioned at v_{N+1}
 
   Dec.previous = v_N.said   (extends tip directly; no fresh divergence)
   Dec.version  = N + 1
@@ -327,14 +327,14 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Contested | any | Rejected with `ContestedSel`. |
 | Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
 | Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
-| Chain ends at Icp | `[Icp]` alone (no v1 `Upd`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
+| Chain ends at Icp | `[Icp]` alone (no v1 `Est`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
 The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and `IelDivergent` cross-chain rejections) is in [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix).
 
 ## Implementation Map
 
 **Code:**
-- `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
+- `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Est`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
 - `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds the branch tip's `identity_event` for the per-event parent-monotonic check on the next event extending the branch; authorization policies are not tracked per branch (they resolve through IEL on demand). The chain-wide `last_identity_event` is a derived aggregate (max across branches), not a flowing watermark gate. `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
 - `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
@@ -346,7 +346,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - No SEL-side immunity rule (lives on IEL).
 - New `identity_event` field on every v1+ event.
 - Per-branch `identity_event` tracking (each branch's tip's `identity_event` for the per-event parent-monotonic check on the next event extending that branch); chain-wide `last_identity_event` is a derived aggregate.
-- New `[Icp, Upd]` minimum inception batch rule.
+- New `[Icp, Est]` minimum inception batch rule.
 
 ## References
 

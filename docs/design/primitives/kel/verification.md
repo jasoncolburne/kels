@@ -248,6 +248,8 @@ let verification = verifier.into_verification();
 
 Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
 
+Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
+
 ### Paginated Verification Helper
 
 `completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `KelStorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events).
