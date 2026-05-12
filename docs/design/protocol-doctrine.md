@@ -22,7 +22,7 @@ The database cannot be trusted — it may have been altered. All operations on c
 
 Returning data to a client or peer. **No verification needed** — the receiver is responsible for verifying what they get.
 
-Examples: `GET` endpoints serving event pages (per-primitive: `kels/kel/:prefix`, `kels/iel/:prefix`, `kels/sel/:prefix`), effective-SAID lookups, paginated event reads.
+Examples: `GET` endpoints serving event pages (per-primitive: `kel/:prefix`, `iel/:prefix`, `sel/:prefix`), effective-SAID lookups, paginated event reads.
 
 #### 2. Consuming
 
