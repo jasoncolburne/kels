@@ -88,7 +88,7 @@ verify_policy(event, branch):
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
     each Endorse(KEL_PREFIX) and Delegate(KEL_PREFIX) leaf node in the
     policy must have an anchor of the required kind (Ixn / Rot / Ror per
-    the event's tier — see [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation))
+    the event's tier — see [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation))
     in the named KEL anchoring this event's SAID. Wrong-kind anchor for a
     leaf evaluates as unsatisfied.
 ```
@@ -102,7 +102,7 @@ Policy state is **branch-tracked**:
 
 Authorization checks use the *previous tracked* policy values for `Evl` (an Evl evolving auth_policy is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing). This prevents an actor with auth-only authority from elevating themselves.
 
-### Terminal-State Determination and Authorization
+### Terminal-state determination and authorization
 
 All events on IEL require HARD anchor: a Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution — stay HARD as well.
 
@@ -121,11 +121,11 @@ Cnt is processed inline with the chain walk: when the walk reaches the generatio
 
 **Upgrade rule.** When a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.) **This rule does not apply on IEL**: every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist.
 
-See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
 
-### Caller-Bounded SAID Querying (`queried_saids` / `satisfied_saids` / per-event policy snapshots)
+### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids` / per-event policy snapshots)
 
 The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `auth_policy` / `governance_policy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
 
@@ -255,6 +255,6 @@ The IEL verifier produces these accessors as part of its normal verification out
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.
 - [../sel/verification.md](../sel/verification.md) — SEL verification (consumer of IEL verification for binding resolution).
-- [../policy.md](../../features/policy.md) — Policy DSL and anchoring model.
-- [../streaming-verification-architecture.md](../../infrastructure/streaming.md) — Cross-side streaming-verification architecture.
+- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
+- [../../infrastructure/streaming.md](../../infrastructure/streaming.md) — Cross-side streaming-verification architecture.
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

@@ -67,7 +67,7 @@ verify_generation(events_at_serial):
         verify crypto for that branch
 ```
 
-### Establishment Event Processing
+### Establishment event processing
 
 When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec):
 
@@ -94,7 +94,7 @@ process_establishment(event, branch):
     branch.establishment_tip = event
 ```
 
-### Signature Verification
+### Signature verification
 
 ```
 verify_signatures(signed_event, public_key):
@@ -171,7 +171,7 @@ The verifier's terminal-state-determination rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 ### Cnt parent resolution
 
@@ -183,7 +183,7 @@ Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's curr
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
 
-**`Rec` is the archiving exception.** `Rec` is privileged but goes through the discriminator's archival path: `Rec.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rec.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rec` never participates in the upgrade rule. The other non-archiving privileged kinds (`Ror`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+**`Rec` is the archiving exception.** `Rec` is privileged but goes through the discriminator's archival path: `Rec.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rec.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rec` never participates in the upgrade rule. The other non-archiving privileged kinds (`Ror`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 ### Cnt authorization (HARD)
 
@@ -244,17 +244,17 @@ loop {
 let verification = verifier.into_verification();
 ```
 
-### Inline Anchor Checking
+### Inline anchor checking
 
 Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
 
-Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
+Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
 
-### Paginated Verification Helper
+### Paginated verification helper
 
 `completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `KelStorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events).
 
-### Checks Per Event
+### Checks per event
 
 1. SAID integrity (`event.verify()`)
 2. Prefix matches verifier's prefix

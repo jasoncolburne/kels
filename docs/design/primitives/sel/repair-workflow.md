@@ -78,5 +78,5 @@ When a chain divergence is observed:
 - [event-log.md](event-log.md) — Chain lifecycle, the discriminator algorithm, evaluation seal and anchor non-poisonability.
 - [merge.md](merge.md) — Submit handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
-- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
+- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
 - [../kel/recovery-workflow.md](../kel/recovery-workflow.md) — KEL counterpart.

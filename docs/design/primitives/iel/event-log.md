@@ -11,7 +11,7 @@ An IEL is the authorization root for a SEL. Every Credential, SEL, or generally 
 | State | Description | Accepts new events? |
 |---|---|---|
 | **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
-| **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. **On IEL, divergence is always immediately contested** — every IEL event is governance-authorized (Icp/Evl/Sea/Cnt/Dec all privileged), so any divergent set on IEL contains a privileged event by definition, and the privileged-divergence rule fires (see [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)). The "Divergent" state is structurally vacuous on IEL; divergence transitions directly to Contested. | Treated as Contested from the moment divergence is observed. |
+| **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. **On IEL, divergence is always immediately contested** — every IEL event is governance-authorized (Icp/Evl/Sea/Cnt/Dec all privileged), so any divergent set on IEL contains a privileged event by definition, and the privileged-divergence rule fires (see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)). The "Divergent" state is structurally vacuous on IEL; divergence transitions directly to Contested. | Treated as Contested from the moment divergence is observed. |
 | **Contested** | Chain has terminated due to divergence (any divergent set on IEL), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). Once contested, no further events land. | None. All submissions rejected. |
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)); all other submissions rejected with `IelDecommissioned`. |
 
@@ -41,11 +41,11 @@ The `last_governance_event` is the SAID of the most recent `Evl` or `Sea` event.
 
 **Once an IEL event lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on policies introduced or evolved on the chain:
 
-> **Policy immunity rule.** Any policy referenced as a chain's `auth_policy` or `governance_policy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../protocol-doctrine.md](../../protocol-doctrine.md)).
+> **Policy immunity rule.** Any policy referenced as a chain's `auth_policy` or `governance_policy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
 
 Since `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), the rule guarantees that no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past `Evl` / `Cnt` / `Dec` evaluations stay satisfied by construction.
 
-**Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `auth_policy` or `governance_policy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `rec` / `cnt` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
+**Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `auth_policy` or `governance_policy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` / `Cnt` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
 
 ## Divergence and Contest-Only Resolution
 
@@ -57,7 +57,7 @@ IEL has only one non-Icp event kind that does ongoing work — `Evl`, governance
 
 **`Cnt` on IEL** is the operator's protocol-level explicit-termination event, used when the chain is linear and the operator wants to terminate (compromise detected).
 
-As in all cases, `Cnt.previous = v_{tip-1}.said` (parent of current tip on linear, which creates fresh divergence at `v_N` for an IEL). See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+As in all cases, `Cnt.previous = v_{tip-1}.said` (parent of current tip on linear, which creates fresh divergence at `v_N` for an IEL). See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 Cnt is invalid on an already divergent IEL, which is by definition contested.
 
@@ -111,16 +111,16 @@ after:    [Icp] → [Evl_v1] ─┬─ [Evl_v2]
 The divergence invariant guarantees:
 - **Maximum 2 events at the divergence version `d`** — IEL-specific. The general "max 3 at `v_d`" rule that applies to KEL and SEL (where the upgrade rule allows a privileged event to land as a third event after a non-privileged divergent set forms) does not apply on IEL: every IEL event is privileged → no non-privileged divergent set can form on IEL → upgrade-rule path does not exist. The chain transitions to contested-terminal at first observation of 2-event divergence, and the contested-state gate rejects all subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`).
 - No events at versions > `d` — the chain is contested-terminal as of `d`.
-- Every event lives at a version at-or-after the chain's last seal (`event_version >= seal_version` — the seal-cap rejects events landing strictly before the seal; see [../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Combined with the rule that every IEL event advances the seal (`Evl`/`Sea`) or terminates (`Cnt`/`Dec`), the seal coincides with the tip on IEL — within-window forks structurally don't exist on IEL. A linear-chain Cnt on IEL — extending `v_{tip-1}` on a chain where seal coincides with tip — lands at `event_version = d = seal_version`; this is the parent-at-(seal − 1) boundary case the seal-cap explicitly admits (Cnt's parent `v_{d-1}` sits at seal − 1, the new event itself lives at the seal).
+- Every event lives at a version at-or-after the chain's last seal (`event_version >= seal_version` — the seal-cap rejects events landing strictly before the seal; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Combined with the rule that every IEL event advances the seal (`Evl`/`Sea`) or terminates (`Cnt`/`Dec`), the seal coincides with the tip on IEL — within-window forks structurally don't exist on IEL. A linear-chain Cnt on IEL — extending `v_{tip-1}` on a chain where seal coincides with tip — lands at `event_version = d = seal_version`; this is the parent-at-(seal − 1) boundary case the seal-cap explicitly admits (Cnt's parent `v_{d-1}` sits at seal − 1, the new event itself lives at the seal).
 - **Bounded verifier processing at the divergent generation.** When the verifier walks a chain whose v_d generation holds two events (the linear tip and the linear-chain Cnt that extended `v_{tip-1}` on the submitting node, or any 2-event subset observable after gossip-merge with a concurrent submission on another node), it processes them as siblings of the same generation under the inline chain walk: branch state from processing `v_{d-1}` holds the tracked governance_policy, and both events at `v_d` are verified consuming that same `v_{d-1}` governance context. Total verifier work at the v_d generation is bounded by single-event verification cost regardless of chain length.
 
-### Why no `Rpr`
+### Why no Rpr
 
 `Rpr` on SEL exists because:
 - SEL has many auth-authorized events (`Upd`) that a second auth-holder could use to extend a divergent branch.
 - The asymmetry between auth and governance authority is what `Rpr` exploits: governance is the higher-bar authority, so a governance-authorized `Rpr` resolves an auth-authorized fork by archiving the branch not on `Rpr.previous`'s walkback.
 
-On IEL, both branches require governance to exist at all. There's no asymmetry for `Rpr` to exploit. If two governance-authorized events conflict, we don't have grounds to declare one of them the "real" branch and archive the other — both are equally legitimate by the chain's own rules. The honest answer is to let the privileged-divergence rule terminate the chain immediately (admit the conflict, reincept under a new identity).
+On IEL, both branches require governance to exist at all. There's no asymmetry for `Rpr` to exploit. If two governance-authorized events conflict, the protocol has no grounds to declare one of them the "real" branch and archive the other — both are equally legitimate by the chain's own rules. The honest answer is to let the privileged-divergence rule terminate the chain immediately (admit the conflict, reincept under a new identity).
 
 ## Divergence, Contestation, and the Trust Layer
 
@@ -143,7 +143,7 @@ Authorization satisfies the same `governance_policy` required to accept `v_{tip}
 
 **Distinction from KEL Rec / SEL Rpr.** KEL Rec and SEL Rpr resolve divergence by archiving events via the discriminator. They take two parent shapes: branch-tip-extending (`previous = v_d.said` for one of the two branch tips, lands at `v_{d+1}`, archives the other branch) and divergence-ancestor-extending (`previous = v_{d-1}.said`, lands at `v_d`, archives both branches at `v_d`). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d` (parent = `v_{d-1}`), the privileged-divergence-is-terminal rule fires, the chain transitions to contested-terminal. IEL has no Rec/Rpr — there is no recovery primitive on IEL.
 
-See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 In all cases:
 
@@ -152,7 +152,7 @@ In all cases:
 - The chain becomes terminal-contested; no further events can land.
 - IEL has no `Rpr` — divergence is structurally terminal regardless of whether `Cnt` lands.
 
-### Chain Validity vs Consumer Trust
+### Chain validity vs consumer trust
 
 The IEL verifier and downstream consumers operate on different questions:
 
@@ -162,7 +162,7 @@ The IEL verifier and downstream consumers operate on different questions:
 **Trust model split**:
 - **Active linear chain**: events trusted under their original authorization.
 - **Divergent (non-privileged) chain** — does not arise on IEL since every IEL event is privileged; included here for parallel structure with KEL/SEL.
-- **Contested chain** (any divergent set on IEL — always immediately contested — or chain has Cnt): **whole-chain-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. The reasoning is structural: when divergence occurs (or Cnt lands), the protocol cannot determine whether the divergence was race or takeover, and it cannot determine which event in the divergent set (if any) was authored legitimately. Consumers cannot anchor any new authorization on the chain's content; the chain is forensic-readable only. See [../protocol-doctrine.md §Trust Model on Contested Chains](../../protocol-doctrine.md#trust-model-on-contested-chains) for the full reasoning.
+- **Contested chain** (any divergent set on IEL — always immediately contested — or chain has Cnt): **whole-chain-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. The reasoning is structural: when divergence occurs (or Cnt lands), the protocol cannot determine whether the divergence was race or takeover, and it cannot determine which event in the divergent set (if any) was authored legitimately. Consumers cannot anchor any new authorization on the chain's content; the chain is forensic-readable only. See [../../protocol-doctrine.md §Trust Model on Contested Chains](../../protocol-doctrine.md#trust-model-on-contested-chains) for the full reasoning.
 - **Decommissioned chain** (Dec landed, no Cnt): pre-Dec events retain trust under their original authorization. Dec is the operator's clean-retirement signal.
 
 The verifier's job is to make chain authenticity unambiguous; the consumer's job is to apply the trust layer on top of that verified-authentic data.
@@ -187,7 +187,7 @@ A SEL event bound to `IEL_event_X.said` resolves authorization through:
 3. Verify SEL.said is anchored under that policy.
 
 For this resolution to remain deterministic forever:
-- `IEL_event_X` must remain in IEL's authentic chain (never archived) — guaranteed by chain immutability and the no-`Rpr` rule (we never archive on IEL).
+- `IEL_event_X` must remain in IEL's authentic chain (never archived) — guaranteed by chain immutability and the no-`Rpr` rule (no archival on IEL).
 - The policy declared at `IEL_event_X` must have stable content (anchors don't move) — guaranteed by the IEL immunity rule.
 - The KEL ixns anchoring SEL.said must remain in their KELs — caveat: subject to KEL `rec` / `cnt` (see Trust Caveat).
 
@@ -239,7 +239,7 @@ Parent-monotonic prevents an adversary from extending a branch with a regressed 
 
 Parent-monotonic does NOT prevent:
 
-- **Brand-new SEL chain races.** Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — Icp dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with parent=Icp.said (extending `Icp` via dedup-equivalence, per [../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline) — operators never extend adversary events), creating a non-privileged divergent set with `Est_stale` (both auth-authorized; Est-Est race shape). The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Est_legit` branch; `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain. See [§Application-developer enrollment patterns](#application-developer-enrollment-patterns) below. The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+- **Brand-new SEL chain races.** Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — Icp dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with parent=Icp.said (extending `Icp` via dedup-equivalence, per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline) — operators never extend adversary events), creating a non-privileged divergent set with `Est_stale` (both auth-authorized; Est-Est race shape). The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Est_legit` branch; `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain. See [§Application-developer enrollment patterns](#application-developer-enrollment-patterns) below. The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
 
   ```
   Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
@@ -364,13 +364,13 @@ Mitigation is a mechanism that serializes governance submissions so two parties 
 - **Designated submitter**: one party assembles signatures from the other governance parties offline, then submits the assembled event. Other parties don't submit directly.
 - **Leader election among governance parties**: a primary submitter is designated; leadership transfers via out-of-band coordination when needed.
 - **Sequential signing rounds**: parties sign in turn; the final signer submits.
-- **Consensus protocol (e.g., Raft) over the registry**: the KELS reference federation deployment uses the Raft registry for this purpose. The registry's commit log serializes governance submissions to the federation's identity chain, so two operators committing concurrently are serialized by Raft before reaching the chain. See [../../registry.md](../../infrastructure/registry.md) for the registry architecture.
+- **Consensus protocol (e.g., Raft) over the registry**: the KELS reference federation deployment uses the Raft registry for this purpose. The registry's commit log serializes governance submissions to the federation's identity chain, so two operators committing concurrently are serialized by Raft before reaching the chain. See [../../infrastructure/registry.md](../../infrastructure/registry.md) for the registry architecture.
 
 The choice of synchronization mechanism is operational, not protocol-level — the IEL's protocol rules apply uniformly regardless of how submissions are serialized. The pattern is **required for high-stakes IEL identities** and **strongly recommended for any IEL whose governance involves more than a single submitter**.
 
 Note that synchronization protects against **accidental** races, not against **compromise**. A second governance-authorized party who acquired authority via threshold compromise can author submissions regardless of any synchronization mechanism — that threat is the same with or without synchronization. Defense against threshold compromise is operational hardening: high thresholds, geographic and organizational distribution of operators, custody discipline, monitoring for unexpected governance activity.
 
-**Threshold redundancy** is the operator's per-anchor recovery option for partial compromise: an anchored policy with `M > N` identities tolerates loss of `M − N` while remaining satisfiable, and a new anchor using a different threshold-satisfying subset re-establishes authorization without changing the policy itself (see [../policy.md §Threshold Redundancy](../../features/policy.md#threshold-redundancy)).
+**Threshold redundancy** is the operator's per-anchor recovery option for partial compromise: an anchored policy with `M > N` identities tolerates loss of `M − N` while remaining satisfiable, and a new anchor using a different threshold-satisfying subset re-establishes authorization without changing the policy itself (see [../../features/policy.md §Threshold Redundancy](../../features/policy.md#threshold-redundancy)).
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
@@ -393,7 +393,7 @@ The caveat applies to anchors of any kind — IEL events (governance), and trans
 
 Contest is the terminal state for IEL — reachable from divergence (any `Cnt` resolves a divergent chain to contested) or directly from active state (operator chooses to terminate).
 
-### Authorization Asymmetry vs. KEL Cnt
+### Authorization asymmetry vs. KEL Cnt
 
 KEL `Cnt` requires **dual signatures** — both signing key (preimage of prior `rotation_hash`) and recovery key (preimage of prior `recovery_hash`). IEL `Cnt` requires only `governance_policy` satisfaction; it does NOT separately require `auth_policy`. The asymmetry is structural, not arbitrary:
 
@@ -442,7 +442,7 @@ Same as `Cnt`: SELs bound to a decommissioned IEL face frozen authorization. Ope
 
 A `Cnt` with `previous = v_{d-1}.said` lands on a decommissioned IEL alongside the existing `Dec`, transitioning the chain to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). The override is the sole exception to "decommissioned chains accept no further events." Once overridden, the chain is whole-chain-suspect and bound SELs lose their authorization basis as described in [§Effect on Bound SELs](#effect-on-bound-sels).
 
-## Server-Observable Case Taxonomy
+## Merge-Observable Case Taxonomy
 
 When the merge engine processes a submitted batch (full routing logic in [merge.md](merge.md); the exhaustive per-state × per-kind matrix and the multi-node source→sink correctness proof are in [reconciliation.md](reconciliation.md); summarized here for lifecycle correlation):
 
@@ -451,7 +451,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, normal append | `Evl` | Append. Seal advances. |
 | Linear, normal append | `Sea` | Append. Seal advances (no policy evolution). |
 | Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
-| Linear, overlap (fork) | concurrent `Evl` or `Sea` (or `Cnt` extending `v_{d-1}`) | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt` (Sea-Sea cannot form — content-free Sea events dedup at submit). No 3rd event lands at `v_d` (IEL has no upgrade rule per [../protocol-doctrine.md §Privileged Divergence is Terminal](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly); divergent IEL is contested-terminal at first 2-event observation). |
+| Linear, overlap (fork) | concurrent `Evl` or `Sea` (or `Cnt` extending `v_{d-1}`) | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt` (Sea-Sea cannot form — content-free Sea events dedup at submit). No 3rd event lands at `v_d` (IEL has no upgrade rule per [../../protocol-doctrine.md §Privileged Divergence is Terminal](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly); divergent IEL is contested-terminal at first 2-event observation). |
 | Linear, post-evaluation-seal | `Evl` or `Sea` extending pre-seal version | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal | `Dec` | Append at tip; mark decommissioned. |
 | Contested (post-divergence or post-Cnt) | any submission, including further `Evl`/`Sea`/`Cnt`/`Dec` via gossip at `v_d` or beyond | Rejected with `ContestedIel`. |
@@ -483,5 +483,5 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../sel/event-log.md](../sel/event-log.md) — SEL counterpart; SELs bind to IEL events.
 - [../sel/events.md](../sel/events.md) — SEL per-kind reference.
-- [../policy.md](../../features/policy.md) — Policy DSL, anchoring model, immunity rule.
+- [../../features/policy.md](../../features/policy.md) — Policy DSL, anchoring model, immunity rule.
 - [../kel/event-log.md](../kel/event-log.md) — KEL counterpart.

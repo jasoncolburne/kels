@@ -1,4 +1,4 @@
-# IEL Submit Protocol
+# IEL Merge Protocol
 
 This document describes the submit / merge protocol used when new events are submitted to an Identity Event Log (IEL). It is the IEL counterpart to [../sel/merge.md](../sel/merge.md) and [../kel/merge.md](../kel/merge.md). For chain lifecycle, see [event-log.md](event-log.md). For the multi-node correctness proof, see [reconciliation.md](reconciliation.md).
 
@@ -16,7 +16,7 @@ Events are linked by their `previous` SAID. Authority is via the anchoring model
 
 **There is no `Rpr` kind on IEL** (see [event-log.md §Why no `Rpr`](event-log.md#why-no-rpr)). Divergence is preserved as data; only `Cnt` resolves it.
 
-## Submit Outcome
+## Merge Outcome
 
 `submit_identity_events` returns:
 
@@ -54,7 +54,7 @@ for v0 (Icp): verify Icp.said is anchored under the declared governance_policy
                declaring — every IEL event is a governance act)
 for v1+ (Evl/Sea/Cnt/Dec): verifier checks anchoring against branch.tracked_governance_policy
               with the kind required by the event's tier — see
-              [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+              [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
                 Evl, Sea  → Rot (tier 2)
                 Cnt, Dec  → Ror (tier 3)
               Wrong-kind anchor for any contributing leaf rejects the event.
@@ -176,7 +176,7 @@ The submit handler runs under a per-prefix advisory lock so concurrent submissio
 3. Insert as the path requires (no archival on IEL — there is no `truncate_and_replace`).
 4. Publish to gossip if any path mutated chain state.
 
-The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../protocol-doctrine.md](../../protocol-doctrine.md)).
+The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
 
 ## Pagination
 

@@ -63,7 +63,7 @@ Additional rejection cases for v1+ events that don't fit per-state cells:
 
 The submit handler treats a batch atomically:
 
-- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `identity_event` and is anchored under the bound IEL's auth_policy (tier 2 per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
+- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `identity_event` and is anchored under the bound IEL's auth_policy (tier 2 per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
 - **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at version ≥ `first_divergent_version` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
@@ -133,7 +133,7 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 ## Edge Cases
 
-### 1. Adversary `Sea` as normal append
+### 1. Adversary Sea as normal append
 
 The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governance_policy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at version ≤ the new seal triggers `ContestRequired`.
 
@@ -185,7 +185,7 @@ post-Rpr linear state.
                                        other branch archived
 ```
 
-### 3. Owner pending lost to adversary's `Rpr`
+### 3. Owner pending lost to adversary's Rpr
 
 If the adversary submitted `Rpr` first, owner's pre-flush staged events may have been archived along with the rest of the adversary's reading of the chain. Owner's builder bundles pending into the repair batch via `repair()` — `[pending..., Rpr]` — and the submit handler accepts pending atomically with the repair, replaying owner's lost work onto the post-repair chain.
 
@@ -274,7 +274,7 @@ synchronization. Both nodes' chains stay as forensic record.
 
 ### 6. Adversary races inception with stale identity binding
 
-Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence — per [../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline), operators never extend adversary events; `Icp` is attested-shared state). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
+Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence — per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline), operators never extend adversary events; `Icp` is attested-shared state). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
 
 ```
 Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1
@@ -310,7 +310,7 @@ Est_legit at v_2):
                                        (forensic; not on live chain)
 ```
 
-The operator's response **never extends `Est_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline).
+The operator's response **never extends `Est_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline).
 
 ### 7. IEL evolves, owner advances dependent SEL's branch tip
 
@@ -420,5 +420,5 @@ Both nodes converge on the contested effective SAID; cross-node forensic diverge
 - [verification.md](verification.md) — `SelVerifier` algorithm.
 - [../iel/reconciliation.md](../iel/reconciliation.md) — IEL counterpart (smaller; no Rpr).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
+- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
 - [../kel/reconciliation.md](../kel/reconciliation.md) — KEL counterpart; the discriminator and bounds analysis are mirrored on both sides.

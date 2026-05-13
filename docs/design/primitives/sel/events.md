@@ -4,16 +4,16 @@ Pure structural reference for SAD Event Log (SEL) event kinds, per-kind field ru
 
 SELs are **identity-rooted**: every SEL binds at inception to an Identity Event Log (IEL) and resolves its authorization policies through that IEL. SEL itself has no `auth_policy` or `governance_policy` fields — those live on the IEL primitive (see [../iel/events.md](../iel/events.md)).
 
-For chain lifecycle (states, divergence, repair, contest, decommission, evaluation seal), see [event-log.md](event-log.md). For storage, API, gossip, and custody, see [../sadstore.md](../../infrastructure/sadstore.md).
+For chain lifecycle (states, divergence, repair, contest, decommission, evaluation seal), see [event-log.md](event-log.md). For storage, API, gossip, and custody, see [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md).
 
 ## Event Kinds
 
 | Kind | Topic | Purpose |
 |---|---|---|
 | `Icp` | `kels/sad/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
-| `Est` | `kels/sad/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
+| `Est` | `kels/sad/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
 | `Upd` | `kels/sad/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
-| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
+| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
 | `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Cnt` | `kels/sad/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
 | `Dec` | `kels/sad/v1/events/dec` | Decommission — terminal owner-initiated end. |
@@ -41,7 +41,7 @@ The `identity` field lives on `Icp` only; subsequent events inherit it from chai
 Authorization for v1+ SEL events is resolved through `identity_event` — a SAID reference to the specific IEL event whose declared/evolved policy authorizes the SEL event:
 
 - **Icp** is **permissionless** and carries no `identity_event`, no content, and no authorization. Anyone can submit it; the prefix derives deterministically from `(identity, topic)` (with said+prefix blanked) and the SAID derives from the full event. Same Icp from any submitter produces the same SAID, so server-side dedup makes "adversary submits first" a no-op. The chain cannot be advanced past Icp without `Est`, so permissionless Icp grants no authority.
-- **Est** (v1, inception batch's second event) must satisfy the IEL's tracked `auth_policy` resolved through `identity_event`. `Est` is the first authorization-gated event on every SEL — it carries the initial `identity_event` binding plus the chain's first content. Per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), `Est` is tier-2 anchored (KEL `Rot` per contributing policy member) to raise per-attempt cost against SEL camping; SEL prefix is `(identity, topic)`-derived and therefore predictable, and the tier-2 anchor forces a rotation-tier burn on every camp attempt.
+- **Est** (v1, inception batch's second event) must satisfy the IEL's tracked `auth_policy` resolved through `identity_event`. `Est` is the first authorization-gated event on every SEL — it carries the initial `identity_event` binding plus the chain's first content. Per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), `Est` is tier-2 anchored (KEL `Rot` per contributing policy member) to raise per-attempt cost against SEL camping; SEL prefix is `(identity, topic)`-derived and therefore predictable, and the tier-2 anchor forces a rotation-tier burn on every camp attempt.
 - **Upd** (v2+) must satisfy the IEL's tracked `auth_policy` resolved through `identity_event`. The Upd's anchors (KEL ixns) must be authorized under the policy that the bound IEL event declared/evolved. Routine extension; tier-1 anchored.
 - **Sea / Rpr / Cnt / Dec** must satisfy the IEL's tracked `governance_policy` — the higher bar, also resolved through `identity_event`. They do NOT separately need to satisfy `auth_policy`: a properly-crafted `governance_policy` should subsume `auth_policy`. Per anchor elevation: `Sea` is tier-2 anchored; `Rpr` / `Cnt` / `Dec` are tier-3 anchored.
 
@@ -51,7 +51,7 @@ A submission containing an `Icp` event MUST also contain an `Est` event at v1 in
 
 Rationale: SEL Icp is permissionless — by itself, it would land an "exists but unused" chain with no policy enforcement, no binding to IEL, and no content. Forcing an `Est` in the same batch ensures the chain is born with all three: a policy-enforced event, an `identity_event` binding, and content. This eliminates a liminal state the security analysis would otherwise have to reason about.
 
-`Est`'s tier-2 anchoring (KEL `Rot` per contributing policy member) further raises per-attempt cost on SEL camping — see [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The combination of "Icp permissionless + Est tier-2 + inception batch required" is what makes SEL camping expensive without sacrificing dedup-idempotency on the prefix-deterministic `Icp` itself.
+`Est`'s tier-2 anchoring (KEL `Rot` per contributing policy member) further raises per-attempt cost on SEL camping — see [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The combination of "Icp permissionless + Est tier-2 + inception batch required" is what makes SEL camping expensive without sacrificing dedup-idempotency on the prefix-deterministic `Icp` itself.
 
 The rule is enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still an `Icp`) so every consumer's verifier walk applies it — a tampered DB serving `[Icp]` alone is rejected at end-verification, not just at submit. Submit handlers do not duplicate the rule.
 
@@ -176,7 +176,7 @@ v4'      kind=cnt  previous=v_3.said, version=4                       ← Cnt jo
                                                                                        §Forks are Seal-Bounded.)
 ```
 
-Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
+Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 
@@ -195,6 +195,6 @@ After `Cnt`, all submissions are rejected. After `Dec`, all submissions are reje
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../iel/events.md](../iel/events.md) — IEL per-kind reference (the chain primitive SEL binds to).
 - [../iel/event-log.md](../iel/event-log.md) — IEL chain lifecycle.
-- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
-- [../policy.md](../../features/policy.md) — Policy DSL and anchoring model.
+- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
+- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
 - [../kel/events.md](../kel/events.md) — KEL counterpart.

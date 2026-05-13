@@ -4,7 +4,7 @@ A table of contents for `docs/design/` organized by the order knowledge builds. 
 
 ## Prerequisite
 
-If you haven't read [AGENTS.md §System Thesis](../../AGENTS.md#system-thesis), start there. The Thesis is the high-level framing that everything below assumes (KEL/IEL/SEL roles, the evaluation lens for design decisions, compromise-is-permanent doctrine, federation convergence as a foundational property).
+If you haven't read [../../AGENTS.md §System Thesis](../../AGENTS.md#system-thesis), start there. The Thesis is the high-level framing that everything below assumes (KEL/IEL/SEL roles, the evaluation lens for design decisions, compromise-is-permanent doctrine, federation convergence as a foundational property).
 
 ## Foundation
 
@@ -30,7 +30,7 @@ Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitiv
 
 ### KEL — second
 
-Adds device-level cryptography. Signing key, rotation key (pre-committed via `rotation_hash`), recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Dual-signature requirement on recovery-revealing events. Recovery via `Rec` with its two parent shapes — branch-tip-extending and divergence-ancestor-extending — and the discriminator + archival mechanic that IEL doesn't have. KEL is the authenticity primitive that anchors everything else: IEL `Icp` anchors in a KEL `Ixn`, SEL post-inception events anchor in KELs at tiers per [§Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation) (SEL `Icp` itself is permissionless and unanchored).
+Adds device-level cryptography. Signing key, rotation key (pre-committed via `rotation_hash`), recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Dual-signature requirement on recovery-revealing events. Recovery via `Rec` with its two parent shapes — branch-tip-extending and divergence-ancestor-extending — and the discriminator + archival mechanic that IEL doesn't have. KEL is the authenticity primitive that anchors everything else: IEL `Icp` anchors in a KEL `Ixn`, SEL post-inception events anchor in KELs at tiers per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation) (SEL `Icp` itself is permissionless and unanchored).
 
 New concepts to internalize after IEL: forward-key commitments (`rotation_hash`, `recovery_hash`), the recovery-revealing event class, dual-sig authorization, the `Rec` discriminator's two shapes, proactive-ROR bound, and the upgrade rule (non-privileged divergent set + gossip-delivered non-archiving privileged event upgrades the chain to contested). The upgrade rule applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
 

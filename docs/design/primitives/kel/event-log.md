@@ -45,7 +45,7 @@ This is an accepted security boundary. Without it, a chain's history could be in
 
 KEL's recovery-revelation seal is the structural analog of IEL's and SEL's evaluation seal (see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
 
-The seal-cap rule (`event_version >= seal_version`; see [../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Ror-tipped KEL is structurally permitted.
+The seal-cap rule (`event_version >= seal_version`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Ror-tipped KEL is structurally permitted.
 
 ## Divergence and Freeze
 
@@ -156,7 +156,7 @@ Pending events are NOT a pre-flight failure. They're operator-staged unflushed e
 
 Whenever pending is non-empty, the application SHOULD display it to the user. Human inspection is the only way to decide what should happen with in-progress work — the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." The library bundles pending into the lifecycle batch by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level and requires inspection.
 
-### Conditional rot follow-up
+### Conditional Rot follow-up
 
 `Rec` only rotates the signing key if it itself is not enough to escape key material that may be known to the other party. Mapping (the "extending branch" is the branch the Rec extends; the "archived branch" is the branch the discriminator removes):
 
@@ -209,7 +209,7 @@ Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX
 
 Contest is the terminal state for authority conflict — the recovery key has been revealed by another party, the operator has detected key compromise, or the chain is otherwise unrecoverable. `Cnt` is dual-signed and freezes the chain.
 
-### `Cnt`
+### Cnt
 
 `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_N`), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~62 events per the proactive-ROR cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence) — Cnt with `previous = v_{d-1}.said` validates uniformly across nodes regardless of which divergent contents each node received.
 
@@ -248,7 +248,7 @@ A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequi
 
 `KeyEvent::create_contest(previous, public_key, recovery_key)` mirrors `create_decommission`. No future-key commitments — KEL ends.
 
-#### Authorization symmetry vs. SEL `Cnt`
+#### Authorization symmetry vs. SEL Cnt
 
 Both KEL and SEL `Cnt` require the chain's privileged primitive. The asymmetry of *mechanism* derives from the difference in primitives:
 
@@ -339,10 +339,10 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 ## References
 
-- [docs/design/kel/events.md](events.md) — Per-kind reference: event kinds, field rules, typical chain shapes.
-- [docs/design/kel/reconciliation.md](reconciliation.md) — Multi-node correctness matrix. Exhaustive enumeration of state × submission × gossip combinations proving the design terminates correctly and converges across nodes.
-- [docs/design/kel/merge.md](merge.md) — KEL merge engine; full routing taxonomy and `MergeTransaction` API.
-- [docs/design/sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator algorithm and pending-bundling shape are mirrored on both sides.
-- [docs/design/sel/events.md](../sel/events.md) — SEL per-kind reference.
-- [docs/design/kel/recovery-workflow.md](recovery-workflow.md) — Operator-facing recovery workflow (federation context).
-- [docs/design/policy.md](../../features/policy.md) — `Delegate(delegator)` resolution for `Dip` events (single-arg open form per `events.md`).
+- [events.md](events.md) — Per-kind reference: event kinds, field rules, typical chain shapes.
+- [reconciliation.md](reconciliation.md) — Multi-node correctness matrix. Exhaustive enumeration of state × submission × gossip combinations proving the design terminates correctly and converges across nodes.
+- [merge.md](merge.md) — KEL merge engine; full routing taxonomy and `MergeTransaction` API.
+- [../sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator algorithm and pending-bundling shape are mirrored on both sides.
+- [../sel/events.md](../sel/events.md) — SEL per-kind reference.
+- [recovery-workflow.md](recovery-workflow.md) — Operator-facing recovery workflow (federation context).
+- [../../features/policy.md](../../features/policy.md) — `Delegate(delegator)` resolution for `Dip` events (single-arg open form per `events.md`).

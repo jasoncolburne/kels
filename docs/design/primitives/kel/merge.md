@@ -9,11 +9,11 @@ The merge operation integrates new events into an existing KEL while handling:
 - Idempotent resubmissions
 - Divergence detection (conflicting events at the same generation)
 - Recovery from divergence (via `Rec`)
-- Contest (`Cnt`) — extends `v_{tip-1}` with the dual signature against the keys committed at `v_{tip-1}` (rotation-key preimage AND recovery-key preimage). See [../protocol-doctrine.md §Operator recourse against signing-key-only Rot takeover](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+- Contest (`Cnt`) — extends `v_{tip-1}` with the dual signature against the keys committed at `v_{tip-1}` (rotation-key preimage AND recovery-key preimage). See [../../protocol-doctrine.md §Operator recourse against signing-key-only Rot takeover](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
-## Return Values
+## Merge Outcome
 
 The merge function returns a `MergeOutcome`:
 - **`result`** - A `KelMergeResult` variant (see below)
@@ -248,4 +248,4 @@ All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 3. **Recovery key revelation requires contest** - Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (owner must contest instead)
 4. **Contest is the only response when the recovery key is revealed in divergence** - the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
 5. **Contested KELs are permanently frozen** - No events can be added after contest
-6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.
+6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.

@@ -39,16 +39,16 @@ For chain lifecycle (states, divergence, recovery via discriminator, contest, de
 The "authorization" column names which signature(s) the verifier requires for the event to be accepted:
 
 - **Icp** must be signed by the private counterpart of the `public_key` it declares. The verifier recomputes the prefix from the inception template (which includes `public_key`, `rotation_hash`, `recovery_hash`), confirms it matches `event.prefix`, then verifies the event's "signing" signature against `public_key`. Icp's SAID + prefix derivation provides chain identity; the signature against the declared key is the authorization. Subsequent v1+ events satisfy what Icp committed (`rotation_hash` for the next signing key, `recovery_hash` for the recovery key).
-- **Dip** has the same submit-time authorization as Icp (signed by the declared `public_key`). Dip additionally declares a `delegating_prefix`, captured into the verification token but not checked at submit time. The delegation relationship is verified at *policy-evaluation time* via the `Delegated(delegator)` policy node: any KEL with `delegating_prefix == delegator` that the delegator anchors (via an `ixn` in the delegator's KEL) satisfies the node. The single-arg open form is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../policy.md](../../features/policy.md) for `Delegated(delegator)` resolution.
+- **Dip** has the same submit-time authorization as Icp (signed by the declared `public_key`). Dip additionally declares a `delegating_prefix`, captured into the verification token but not checked at submit time. The delegation relationship is verified at *policy-evaluation time* via the `Delegated(delegator)` policy node: any KEL with `delegating_prefix == delegator` that the delegator anchors (via an `ixn` in the delegator's KEL) satisfies the node. The single-arg open form is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../../features/policy.md](../../features/policy.md) for `Delegated(delegator)` resolution.
 
   > **Note on current implementation:** `lib/policy/src/evaluator.rs:185` and `lib/policy/src/parser.rs:167` use a closed two-arg form `Delegate(delegator, delegate)`. That form pins a specific delegate in the policy SAID and defeats the indirection (replacing a delegate requires a new policy). It's stale; the target shape is tracked in [#77](https://github.com/jasoncolburne/kels/issues/77).
 - **Rot** is signed by the new `public_key` it reveals. The verifier checks `Blake3(public_key) == prev_establishment.rotation_hash`, then verifies the signature against `public_key`. `rotation_hash` on `Rot` commits the *next* rotation key.
 - **Ixn** is signed by the current active signing key — the `public_key` of the most recent establishment event in the chain (Icp / Dip / Rot / Rec / Ror).
 - **Rec / Ror / Dec / Cnt** are dual-signed. The "signing" signature is by the key revealed in `public_key` (preimage of the prior establishment's `rotation_hash`); the "recovery" signature is by the key revealed in `recovery_key` (preimage of the prior establishment's `recovery_hash`). Both signatures must verify, and both digest commitments must match. This is the privileged primitive — exercising both the rotation key and the recovery key together proves dual control.
 
-### Anchor on `Rot` and `Ror`
+### Anchor on Rot and Ror
 
-`Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
+`Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
 ### Recovery-key revelation
 
@@ -61,7 +61,7 @@ The "authorization" column names which signature(s) the verifier requires for th
 Establishment events (every kind except `Ixn`) commit one or both forward-key digests:
 
 - **`rotation_hash`**: required on `Icp`, `Dip`, `Rot`, `Rec`, `Ror`. Forbidden on `Dec`, `Cnt` (KEL ends — no future signing key).
-- **`recovery_hash`**: required on `Icp`, `Dip`, `Rec`, `Ror`. Forbidden on `Rot` (rot doesn't change recovery commitment), `Dec`, `Cnt` (KEL ends).
+- **`recovery_hash`**: required on `Icp`, `Dip`, `Rec`, `Ror`. Forbidden on `Rot` (Rot doesn't change recovery commitment), `Dec`, `Cnt` (KEL ends).
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 

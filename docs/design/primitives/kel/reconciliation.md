@@ -103,7 +103,7 @@ The merge engine identifies owner events via two strategies depending on the div
 
 Everything not in the owner's chain is archived to mirror tables.
 
-Both strategies use a single page fetch + resume-mode verifier trust gate + in-memory walkback. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
+Both strategies use a single page fetch + resume-mode verifier trust gate + in-memory walkback. See [event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
 
 ### Archival bounds
 
@@ -115,7 +115,7 @@ Both strategies use a single page fetch + resume-mode verifier trust gate + in-m
 
 ## Edge Cases
 
-### 1. Adversary `rec` as normal append
+### 1. Adversary Rec as normal append
 
 The adversary submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` requires `cnt` (contest) instead of `rec` (recovery). The owner must contest.
 

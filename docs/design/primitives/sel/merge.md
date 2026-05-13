@@ -1,4 +1,4 @@
-# SEL Submit Protocol
+# SEL Merge Protocol
 
 This document describes the submit / merge protocol used when new events are submitted to a SAD Event Log (SEL). It is the SEL counterpart to [../iel/merge.md](../iel/merge.md) and [../kel/merge.md](../kel/merge.md). For chain lifecycle and the discriminator algorithm in detail, see [event-log.md](event-log.md). For the multi-node correctness proof, see [reconciliation.md](reconciliation.md).
 
@@ -16,7 +16,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `identity_event` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel--and-why-thats-enough).
 
-## Submit Outcome
+## Merge Outcome
 
 `submit_sad_events` returns:
 
@@ -64,7 +64,7 @@ for v1+: cross-chain authorization resolution:
 
     verify event.said is anchored under the resolved policy with the
     anchor kind required by the event's tier — see
-    [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+    [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
         Upd       → Ixn (tier 1)
         Est, Sea  → Rot (tier 2)
         Rpr, Cnt, Dec → Ror (tier 3)
@@ -216,7 +216,7 @@ The submit handler runs under a per-prefix advisory lock (Postgres `pg_advisory_
 3. Insert / archive as the path requires.
 4. Publish to Redis (`sel_updates`) for gossip propagation if any path mutated chain state.
 
-The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../protocol-doctrine.md](../../protocol-doctrine.md)).
+The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
 
 ## Pagination
 
@@ -246,7 +246,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.
-9. **Truncate-before-verify on `Rpr`** — when an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` before the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs. This honors the one-divergent-generation-at-a-time invariant (see [../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — SEL achieves the invariant via storage-side normalization, where KEL achieves it via branch-scoped verifier input (see [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6). Different implementation routes; same doctrinal outcome.
+9. **Truncate-before-verify on `Rpr`** — when an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` before the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs. This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — SEL achieves the invariant via storage-side normalization, where KEL achieves it via branch-scoped verifier input (see [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6). Different implementation routes; same doctrinal outcome.
 
 ## References
 
@@ -256,5 +256,5 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 - [events.md](events.md) — Per-kind reference.
 - [../iel/merge.md](../iel/merge.md) — IEL counterpart.
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
+- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
 - [../kel/merge.md](../kel/merge.md) — KEL counterpart.

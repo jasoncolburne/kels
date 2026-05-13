@@ -174,7 +174,7 @@ The protocol bounds divergence to **one unresolved generation at a time** on any
 
 Two unresolved generations cannot coexist on the same chain. A second divergent generation at some `v_{d'} > d` would necessarily place 2 events at `v_{d'}` (one per branch on the second divergence), violating the first generation's post-divergence cap. The structural rules forbid stacking.
 
-**Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [kel/merge.md §Key Invariants](primitives/kel/merge.md#key-invariants) and [sel/merge.md §Key Invariants](primitives/sel/merge.md#key-invariants).
+**Implication for the verifier walker.** An archiving privileged event (`Rec` on KEL, `Rpr` on SEL) resolves a divergent generation; its archival must be applied to the walker's running state before any subsequent walk step that could introduce a new divergence. Without inline normalization, the chain would carry a stale divergent set into post-resolution state, structurally forbidding any further divergence even after semantic resolution. Per-primitive implementation invariants in [primitives/kel/merge.md §Key Invariants](primitives/kel/merge.md#key-invariants) and [primitives/sel/merge.md §Key Invariants](primitives/sel/merge.md#key-invariants).
 
 #### Cnt Overrides Dec
 
@@ -296,7 +296,7 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 - Separation of custody — no single point of compromise grants current-state authority.
 - Monitoring for unexpected governance / rotation events — fire alerts before adversary completes rotation.
 - Fast operator response — cut the detect-to-Cnt latency to within the gossip window.
-- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
+- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [features/policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
 - **Abandon-and-reincept** under a new prefix when current-state compromise is suspected — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
@@ -308,7 +308,7 @@ The detect-and-respond window above assumes the adversary acts as soon as they h
 This makes policy design a budget against strategic patience, not a checkbox:
 
 - **High thresholds + custody separation** raise the cost of accumulating sufficient authority. Each additional independently-held key in the policy is an additional independent compromise the adversary must accomplish. Geographic, organizational, and supply-chain separation between key custodians multiplies the cost of accumulation.
-- **Threshold redundancy** (`threshold(N, M)` with `M > N`) tolerates loss of `M − N` identities. The operator who detects partial compromise of a subset ratchets-out the compromised members via `Evl` (declaring a new policy that excludes them); the chain remains under operator authority. See [policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy).
+- **Threshold redundancy** (`threshold(N, M)` with `M > N`) tolerates loss of `M − N` identities. The operator who detects partial compromise of a subset ratchets-out the compromised members via `Evl` (declaring a new policy that excludes them); the chain remains under operator authority. See [features/policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy).
 - **Hierarchical scope partitioning** (a root identity governs a fleet of subordinate identities; each subordinate anchors a narrower scope) bounds the blast radius. A compromise at a leaf doesn't compromise the root or its siblings; the operator's response is scoped to the affected leaf.
 
 The operational stakes for getting policy design wrong are concrete. A chain whose policy permits no ratchet-out path — e.g., `threshold(N, N)` (a unanimous policy with no redundancy beyond the threshold) — loses to the first compromise that hits the threshold. The operator's only response is reincept under a new prefix, which propagates to every consumer of the identity: every service config, every anchor allowlist, every KEL-backed binding, every peer registry needs to be updated to the new prefix. At federation scale this is a coordinated, expensive rollout — colloquially the "truck-roll." Every consumer is touched; coordination across operators (especially across organizational boundaries) introduces wall-clock delays measured in days or weeks.
@@ -469,7 +469,7 @@ The discipline is structurally identical across the three primitives. The shapes
 
 The implementation invariants that make Part 1's security invariants enforceable. Verification tokens, advisory locks, and inline reference checking are the patterns by which "the database cannot be trusted" gets converted into safe operations — verification and use happen in the same pass, under the same lock, against the same trusted context.
 
-### Verification Tokens as Proof of Verification
+### Verification tokens as proof of verification
 
 Functions that consume chain data accept a verification token (`&KelVerification`, `&IelVerification`, `&SelVerification`) as a parameter. Holding the token proves the corresponding chain was verified. Token fields are private with no public constructor — the only way to obtain one is through the corresponding verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`).
 
@@ -477,7 +477,7 @@ Functions that consume chain data accept a verification token (`&KelVerification
 
 When merging new events into an existing chain (submit handler), first verify the entire existing chain in the DB using the corresponding verifier with paginated reads under an advisory lock. Obtain a trusted verification token from the verifier and use that token's data as the context for verifying the new incoming events — never re-query the DB between verification and use. The pattern applies uniformly across KEL, IEL, and SEL submit paths.
 
-### Inline Reference Checking
+### Inline reference checking
 
 Each verifier supports registering SAIDs of interest before the walk so the walk records what it observed without separate DB queries. KEL registers anchor SAIDs (KEL ixns observed at IEL/SEL Icp time and similar binding points); IEL and SEL register caller-cared-about SAIDs for satisfaction tracking. Registration happens before the walk; results are available on the verification token. The pattern eliminates a second DB pass for SAID-presence questions.
 
