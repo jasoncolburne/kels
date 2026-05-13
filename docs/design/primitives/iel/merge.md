@@ -180,7 +180,7 @@ The `IelVerification` token is the trusted context for routing decisions. The DB
 
 ## Pagination
 
-All IEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. The `CASE` expression uses `IdentityEventKind::sort_priority()` to ensure state-determining events (Cnt, Dec) sort after `Evl` at the same version. `MINIMUM_PAGE_SIZE = 64` controls page size.
+All IEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same version: `Icp` (0) → `Evl` (1) → `Sea` (2) → `Dec` (3) → `Cnt` (4). `MINIMUM_PAGE_SIZE = 64` controls page size.
 
 ## Gossip Send-Side Partitioning (divergent IELs)
 

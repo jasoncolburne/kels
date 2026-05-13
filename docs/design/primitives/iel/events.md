@@ -26,7 +26,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 |---|---|---|---|---|---|---|---|
 | `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) | `Ixn` (tier 1) |
 | `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance | `Rot` (tier 2) |
-| `Sea` | `>= 1` | required | forbidden | forbidden | 2 | governance | `Rot` (tier 2) |
+| `Sea` | `>= 2` | required | forbidden | forbidden | 2 | governance | `Rot` (tier 2) |
 | `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance | `Ror` (tier 3) |
 | `Cnt` | `>= 1` | required | forbidden | forbidden | 4 | governance | `Ror` (tier 3) |
 

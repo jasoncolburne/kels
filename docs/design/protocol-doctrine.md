@@ -203,11 +203,11 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 
 **Three-tier mapping.** Each operation class anchors in the KEL event kind that reveals the required key tier:
 
-| Tier | Operation class | KEL anchor kind | Preimage requirement on each contributing KEL |
-|------|----------------|-----------------|-------------------------------------------------|
-| 1 | Routine extension | `Ixn` | Current signing key (already known/active) |
-| 2 | Governance evolution; binding establishment; seal advance | `Rot` | Rotation-key preimage (committed by prior establishment; otherwise hidden) |
-| 3 | Recovery; terminal | `Ror` | Rotation-key preimage AND recovery-key preimage (both committed by prior establishment; both otherwise hidden) |
+| Tier | Operation class | KEL anchor kind | Key material required per contributing KEL |
+|------|----------------|-----------------|-----------------------------------------------|
+| 1 | Routine extension | `Ixn` | Current signing key (already known/active; 0 hidden preimages) |
+| 2 | Governance evolution; binding establishment; seal advance | `Rot` | Rotation-key preimage (1 hidden preimage; committed by prior establishment) |
+| 3 | Recovery; terminal | `Ror` | Rotation-key preimage AND recovery-key preimage (2 hidden preimages; both committed by prior establishment) |
 
 **Per-primitive anchor rules.**
 
