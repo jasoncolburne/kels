@@ -323,7 +323,7 @@ IEL chain evolves governance from gov_old to gov_new:
 
 Dependent SEL pre-Sea (live branch tip bound to IEL's Evl_old):
 
-  SEL:  [Icp] → [Upd_v1, identity_event=Evl_old.said] → ...
+  SEL:  [Icp] → [Est_v1, identity_event=Evl_old.said] → ...
         → [Upd_v_N, identity_event=Evl_old.said]   (tip)
 
 Operator advances SEL via Sea bound to IEL's current governance event:
