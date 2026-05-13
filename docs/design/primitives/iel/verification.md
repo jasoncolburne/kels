@@ -104,7 +104,7 @@ Authorization checks use the *previous tracked* policy values for `Evl` (an Evl 
 
 ### Terminal-State Determination and Authorization
 
-All events on IEL require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution, BadIdentityBinding — stay HARD as well.
+All events on IEL require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?

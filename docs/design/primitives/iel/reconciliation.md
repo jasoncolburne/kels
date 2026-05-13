@@ -24,7 +24,7 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Divergent** | Fork detected. Both branches preserved as forensic record. Only `Cnt` resolves; everything else returns `ContestRequired`. |
+| **Divergent** | Structurally vacuous on IEL — every IEL event is privileged, so any divergent set fires privileged-divergence-is-terminal and the chain collapses immediately to Contested. Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 

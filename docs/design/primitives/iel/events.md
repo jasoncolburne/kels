@@ -108,8 +108,10 @@ Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserve
 ```
 v0  kind=icp  auth_policy=A0, governance_policy=G0
 v1  kind=evl  auth_policy=A1
-v2  kind=evl  previous=v1.said, auth_policy=A2_a            ← concurrent submission #1
-v2' kind=cnt  previous=v1.said                              ← concurrent submission #2 (lands at v_2 alongside v_2)
+v2  kind=evl  previous=v1.said, auth_policy=A2_a            ← submission #1 (linear extension of tip v_1)
+v2' kind=cnt  previous=v1.said                              ← submission #2 (operator's Cnt extending v_{tip-1}=v_1
+                                                              on a node whose tip is already v_2 via gossip; lands
+                                                              at v_2 alongside the existing v_2 event)
     — 2-event divergent set at v_2, both with previous = v_1.said.
       Every IEL event is privileged → privileged-divergence-is-terminal fires
       immediately; chain becomes contested-terminal as of v_2. —
@@ -121,7 +123,7 @@ Both events stay in storage forever as forensic record. Operator re-incepts unde
 
 This is intentional: history is encoded in the data. We accept divergence and treat it as the chain's structural admission that governance is no longer single-authoritative. Termination is the honest answer; there is no `Rpr` to archive one branch in favor of the other (every branch is governance-authorized; the protocol has no grounds to declare one "the" branch).
 
-### Contest after concurrent Cnt and Evl submissions
+### Contest after Cnt and Evl land in the same generation
 
 ```
 v0..v3   normal linear chain (across the federation)

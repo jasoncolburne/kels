@@ -30,7 +30,7 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Submission to a divergent chain (non-Cnt), OR normal-event submission at-or-before `last_governance_event` in chain order | unchanged |
+| `ContestRequired { reason }` | Normal-event submission at-or-before `last_governance_event` in chain order on a linear chain (divergent IEL is contested-terminal — rejected with `ContestedIel`, not `ContestRequired`) | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `IelDecommissioned` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
