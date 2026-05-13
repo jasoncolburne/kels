@@ -211,7 +211,7 @@ The merge engine returns `ContestRequired { reason }` when:
 
 This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, governance evaluation) has been used, and safe normal-flow continuation is no longer possible. See [../kel/event-log.md §Contest (Cnt)](../kel/event-log.md#contest-cnt) for the structural parallel.
 
-### Cnt placement
+### Cnt mechanics
 
 `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~63 events per the proactive-evaluation cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence).
 
@@ -269,7 +269,7 @@ Authorization is the same IEL-resolved `governance_policy` required to accept `v
 `SadEventBuilder::contest()`:
 - Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification).
 - Bundles pending events into the batch.
-- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). `v_{tip-1}` is well-defined: one parent of the linear-chain tip; one shared ancestor of any divergent set.
+- Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
 - Resolves authorization via `v_{tip-1}`'s IEL-resolved governance policy and constructs the anchor accordingly.
 - Submits `[pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.

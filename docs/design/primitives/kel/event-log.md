@@ -209,7 +209,7 @@ Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX
 
 Contest is the terminal state for authority conflict — the recovery key has been revealed by another party, the operator has detected key compromise, or the chain is otherwise unrecoverable. `Cnt` is dual-signed and freezes the chain.
 
-### Cnt
+### Cnt mechanics
 
 `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_N`), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~62 events per the proactive-ROR cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence) — Cnt with `previous = v_{d-1}.said` validates uniformly across nodes regardless of which divergent contents each node received.
 
@@ -242,11 +242,9 @@ A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequi
 
 `KeyEventKind::Cnt`:
 - `reveals_recovery_key() = true` (same gate as `Rec`/`Ror`/`Dec`).
-- `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain, or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same rule applied to different chain shapes; the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap, but Cnt's parent rule selects `v_{d-1}` for cross-node uniformity).
-- `Cnt.serial = tip.serial` (linear case) or `d` (divergent case).
 - Dual-signed against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`).
 
-`KeyEvent::create_contest(previous, public_key, recovery_key)` mirrors `create_decommission`. No future-key commitments — KEL ends.
+`KeyEvent::create_contest(previous, public_key, recovery_key)` mirrors `create_decommission`. No future-key commitments — KEL ends. See [§Cnt mechanics](#cnt-mechanics) above for `previous` rule and divergence semantics.
 
 #### Authorization symmetry vs. SEL Cnt
 
@@ -270,7 +268,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 `KeyEventBuilder::contest()`:
 - Pre-flight: pre-flight server-chain re-verification.
 - Bundles any missing events (events the local store has but the server lost — typically because a prior `Rec` archived them server-side) AND any pending events left in flight.
-- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). `v_{tip-1}` is well-defined: one parent of the linear-chain tip; one shared ancestor of any divergent set.
+- Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
 - Resolves authorization via `v_{tip-1}`'s commitments and constructs the dual signature accordingly.
 - Submits `[missing..., pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.

@@ -55,9 +55,7 @@ IEL has only one non-Icp event kind that does ongoing work — `Evl`, governance
 
 **Race-vs-takeover framing.** Divergence on IEL — two events at the same version — can arise from a federation race (two legitimately-current governance-authorized parties submitting concurrently) or a takeover (a party holding currently-authorized governance forking against the other party who also holds it). The chain data records the divergence; the protocol cannot structurally distinguish race from takeover. The verifier accepts both as structurally valid; consumer trust degrades uniformly post-divergence regardless of cause. The operator response in either case is reincept under a new prefix — `Cnt` is available as an explicit termination signal but is not required for IEL because divergence is already terminal.
 
-**`Cnt` on IEL** is the operator's protocol-level explicit-termination event, used when the chain is linear and the operator wants to terminate (compromise detected).
-
-As in all cases, `Cnt.previous = v_{tip-1}.said` (parent of current tip on linear, which creates fresh divergence at `v_N` for an IEL). See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+**`Cnt` on IEL** is the operator's protocol-level explicit-termination event, used when the chain is linear and the operator wants to terminate (compromise detected). See [§Cnt mechanics](#cnt-mechanics) below.
 
 Cnt is invalid on an already divergent IEL, which is by definition contested.
 
@@ -133,7 +131,7 @@ The verifier accepts the divergent chain shape as structurally valid in either c
 
 The security dials differ by cause: against compromise, threshold height (high enough that controlling the threshold is hard-to-impossible) is the operator's mechanism. Against race, application-layer coordination above the protocol bounds the window — see [§Multi-Party Governance Synchronization](#multi-party-governance-synchronization). The protocol-level response is the same regardless of cause: divergence in the data → chain becomes contested-terminal → operator reincepts under a new identity.
 
-### Cnt: Operator Contestation Primitive
+### Cnt mechanics
 
 `Cnt` is the operator's protocol-level explicit-termination event. On IEL specifically, `Cnt` is rarely strictly required for chain state — every IEL event is governance-authorized, so any divergence is immediately terminal by the privileged-divergence rule. `Cnt` exists for the linear case (no divergence yet, but operator wants to terminate proactively because they've detected compromise).
 
@@ -416,7 +414,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 `IdentityEventBuilder::contest()`:
 - Pre-flight: full chain re-verification.
 - Bundles pending events into the batch (mirrors SEL).
-- Builds `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_N`), or `v_{d-1}` on a divergent chain (the divergence ancestor; on IEL both divergent branches are single-event at `v_d` by construction, so each branch's `v_{tip-1}` is `v_{d-1}`; same rule, different chain shape). `v_{tip-1}` is well-defined: one parent of the linear-chain tip; one shared ancestor of any divergent set.
+- Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
 - Resolves authorization via `v_{tip-1}`'s `governance_policy` and constructs the anchor accordingly.
 
 ### Cascading effect on dependent SELs
