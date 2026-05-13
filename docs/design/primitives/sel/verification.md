@@ -153,7 +153,7 @@ Why preserve rather than reject during the divergent-but-not-yet-contested windo
 
 This rule is path-agnostic: it fires identically on submit, gossip-receipt, and resume verification paths. The handler-level rejection on contested/decommissioned chains (`merge.md §Terminal-State Gate`) is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (concurrent siblings within a batch that introduces the Cnt, gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
-#### Terminal-state determination
+### Terminal-state determination
 
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
@@ -164,19 +164,19 @@ The verifier's terminal-state-determination rule simplifies to:
 
 Cnt is a privileged event whose presence in the divergent set triggers contested via this rule.
 
-#### Cnt parent resolution
+### Cnt parent resolution
 
-Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes; the pre-existing branch may have extended past `v_d` up to the proactive-evaluation cap, but Cnt's parent rule selects `v_{d-1}` for cross-node uniformity).
+Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. SEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-evaluation cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
 
 **Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state's `tip_identity_event` holds `v_{tip-1}.identity_event` (because `v_tip` has not yet been processed). Cnt and the existing tip at `v_d` are processed as siblings of the same generation; both have parent `v_{tip-1}` and both check parent-monotonic against `v_{tip-1}.identity_event` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip identity_event. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by Cnt's own `identity_event`, not via SEL's branch state; cross-chain via `IelResolver`.)
 
-#### Upgrade rule
+### Upgrade rule
 
-When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Upd` race at v ≥ 2; `Est`-`Est` at v = 1 is non-privileged-divergent but unreachable by the upgrade-rule path since all privileged kinds have `version >= 2` — Est-Est resolves only via `Rpr`) and gossip delivers a non-archiving privileged event for that same `v_d` (`Sea`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.)
+When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Upd` race at v ≥ 2; `Est`-`Est` at v = 1 is non-privileged-divergent but unreachable by the upgrade-rule path since all privileged kinds have `version >= 2` — Est-Est resolves only via `Rpr`) and gossip delivers a non-archiving privileged event for that same `v_d` (`Sea`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
 **`Rpr` is the archiving exception.** `Rpr` is privileged but goes through the discriminator's archival path: `Rpr.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rpr.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rpr` never participates in the upgrade rule. The other non-archiving privileged kinds (`Sea`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
-#### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
+### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
 
 The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers (notably the SEL verifier when resolving `identity_event` bindings into IEL) need to ask about specific events: "is THIS IEL event valid for binding?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
 

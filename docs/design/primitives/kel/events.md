@@ -75,10 +75,7 @@ KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal (see
 
 ### Cnt overrides Dec
 
-`Cnt` and `Dec` are both terminal kinds (at most one of each per log), but they are not mutually exclusive. When a `Cnt`-`Dec` race delivers each event to a different node, the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) is accepted on a decommissioned chain and lands at `v_d` alongside the existing `Dec`, forming a `{Dec, Cnt}` divergent set; privileged-divergence-is-terminal fires; the chain becomes contested. The asymmetry is intentional — a gossip-delivered `Dec` is rejected on a contested chain. Per-kind implications:
-
-- **`Cnt`** can extend a Dec'd chain via this override path. `Cnt`'s parent shape (`v_{tip-1}.said`, resolving to `v_{d-1}.said` when the submitting node's tip is `Dec`) and dual-signature requirement are unchanged.
-- **`Dec`** can be followed by a single gossip-delivered `Cnt`. No other event kind extends a Dec'd chain.
+See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) for the doctrinal mechanic (a gossip-delivered `Cnt` with `previous = v_{d-1}.said` lands alongside an existing `Dec` at `v_d`; the chain transitions to contested). On KEL, the auth check for the overriding `Cnt` is the dual-signature requirement against `v_{d-1}`'s `rotation_hash` and `recovery_hash` commitments.
 
 ## Typical Chain Shapes
 
