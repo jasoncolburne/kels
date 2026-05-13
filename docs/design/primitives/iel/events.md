@@ -14,7 +14,7 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
-`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires `governance_policy` satisfaction.
+`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governance_policy` satisfaction. `Icp` is also governance-authorized but against the policy *declared at that event* (self-governance-endorsement), not against a previously-tracked policy; see [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
 
 IEL has **no `Upd` kind** — there is no "content" on identity chains. The chain's data is its tracked policy state, mutated only via `Evl`. IEL has **no `Est` kind** — both policies are required at `Icp`, since identity chains are not third-party-discoverable and don't need the optional-governance-at-Icp dance that SEL uses (SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface). IEL has **no `Rpr` kind** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence-is-terminal rule); there's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
 
@@ -30,13 +30,13 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 | `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance | `Ror` (tier 3) |
 | `Cnt` | `>= 1` | required | forbidden | forbidden | 4 | governance | `Ror` (tier 3) |
 
-`auth_policy` and `governance_policy` are `Option<Digest256>` fields on `IdentityEvent`: present (non-`None`) on `Icp` and `Evl`, absent (`None`) on `Cnt` and `Dec`. "Declared" applies at `Icp` where there is no predecessor — the inceptor declares both fields directly. "Preserved or evolved" applies on `Evl` — the field's value either equals the predecessor's value (preserved) or differs (evolved; the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Forbidden" applies on `Cnt` and `Dec`: terminal events have no forward state to declare, so the field is absent and the verifier rejects any Cnt/Dec carrying a value. This mirrors KEL, where `rotation_hash` and `recovery_hash` are likewise forbidden on terminal kinds (`Dec`, `Cnt`) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; terminal events end the chain and have no forward state to declare.
+`auth_policy` and `governance_policy` are `Option<Digest256>` fields on `IdentityEvent`: present (non-`None`) on `Icp` and `Evl`, absent (`None`) on `Sea`, `Cnt`, and `Dec`. "Declared" applies at `Icp` where there is no predecessor — the inceptor declares both fields directly. "Preserved or evolved" applies on `Evl` — the field's value either equals the predecessor's value (preserved) or differs (evolved; the difference is what the verifier interprets as a policy evolution requiring governance authorization). "Forbidden" applies on `Sea`, `Cnt`, and `Dec`: `Sea` is the seal-advance-without-evolution event, and terminal events have no forward state to declare, so the field is absent and the verifier rejects any `Sea`/`Cnt`/`Dec` carrying a value. This mirrors KEL, where `rotation_hash` and `recovery_hash` are likewise forbidden on terminal kinds (`Dec`, `Cnt`) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; `Sea` advances the seal without changing policy; terminal events end the chain and have no forward state to declare.
 
 (No `content` field on any kind. IEL events do not carry content.)
 
 ### Per-Kind Policy Field Discipline
 
-`Icp` and `Evl` carry `auth_policy` and `governance_policy`; `Cnt` and `Dec` do not. The verifier checks the per-kind discipline as part of branch-state validation:
+`Icp` and `Evl` carry `auth_policy` and `governance_policy`; `Sea`, `Cnt`, and `Dec` do not. The verifier checks the per-kind discipline as part of branch-state validation:
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
 - **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
@@ -48,13 +48,13 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 The "authorization" column names which policy must be satisfied for the verifier to accept the event. **Every IEL event is governance-authorized**: IEL is the governance primitive, so even inception — the act of declaring the chain's policies — is itself a governance act. The chain's `auth_policy` is reserved for application-facing per-event authorization, consumed by SEL `Upd` events via `identity_event` binding (see [../sel/events.md](../sel/events.md)); it is never the gate that authorizes IEL events themselves.
 
 - **Icp** must satisfy the `governance_policy` it declares. The inceptor proves membership in the governance policy they're naming by anchoring `Icp.said` under that policy. Identity chains aren't third-party-discoverable, so the prefix derivation `(auth_policy, governance_policy, topic) → prefix` is private to the inceptor — there's no phishing class equivalent to today's SEL Icp gate. The anchoring requirement is the structural authentication of the inceptor against the governance policy they declare.
-- **Evl / Cnt / Dec** must satisfy the branch's tracked `governance_policy`. Same gate as Icp; same rule across the chain. They do NOT separately need to satisfy `auth_policy`: `auth_policy` is reserved for SEL Upd authorization through the bound IEL event.
+- **Evl / Sea / Cnt / Dec** must satisfy the branch's tracked `governance_policy`. Same gate as Icp; same rule across the chain. They do NOT separately need to satisfy `auth_policy`: `auth_policy` is reserved for SEL `Est`/`Upd` authorization through the bound IEL event.
 
 ### `auth_policy` semantics
 
 - `Icp`: declared as a **field** that seeds the IEL prefix (prefix = Blake3 of v0 template with said+prefix blanked). It does NOT authorize the Icp itself — Icp is governance-authorized (see [governance_policy semantics](#governance_policy-semantics) below). The `auth_policy` declared at Icp is consumed downstream by SEL `Upd` events that bind to this Icp via `identity_event`.
 - `Evl`: present; preserved (== previous) or evolved (differs from previous; evaluated against the previous tracked `governance_policy`). At least one of `auth_policy` / `governance_policy` must evolve in any given `Evl` — an Evl preserving both is rejected.
-- `Cnt` / `Dec`: **absent (forbidden)**. Terminal events have no forward state to declare; the verifier rejects any Cnt/Dec carrying a value.
+- `Sea` / `Cnt` / `Dec`: **absent (forbidden)**. `Sea` is the seal-advance event; terminal events have no forward state to declare. The verifier rejects any `Sea`/`Cnt`/`Dec` carrying a value.
 
 The verifier's branch state tracks the effective `auth_policy` — seeded from `Icp` and updated whenever an `Evl` carries a new value. Authorization for an SEL event that points at a specific IEL event SAID resolves through the tracked `auth_policy` at that IEL event's branch state.
 
@@ -62,7 +62,7 @@ The verifier's branch state tracks the effective `auth_policy` — seeded from `
 
 - `Icp`: declared. Identity chains always declare governance at v0 (no Est dance). Also serves as the **authorization gate** (Icp.said must be anchored under the declared `governance_policy`) — every IEL event is a governance act.
 - `Evl`: present; preserved or evolved (the latter evaluated against the *previous* tracked governance_policy). At least one of `auth_policy` / `governance_policy` must evolve per Evl.
-- `Cnt` / `Dec`: **absent (forbidden)**. Authorization for the terminal resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed); the terminal itself declares nothing forward.
+- `Sea` / `Cnt` / `Dec`: **absent (forbidden)**. Authorization for these kinds resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed); the kind itself declares nothing forward.
 
 ### Policy immunity requirement
 
@@ -80,9 +80,9 @@ IEL events do not carry content. The chain's "data" is its tracked policy state,
 
 ### Evaluation bound — not applicable
 
-Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
+Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
 
-(`last_governance_event` advances only on `Evl` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
+(`last_governance_event` advances on `Evl` and `Sea` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
 
 ### Cnt overrides Dec
 
@@ -115,7 +115,7 @@ v2' kind=cnt  previous=v1.said                              ← concurrent submi
       immediately; chain becomes contested-terminal as of v_2. —
 ```
 
-The two events at `v_2` carry the same `previous = v_1.said` — each was accepted as a linear-chain extension on its submitting node at submission time, with the two extensions independently landing at `v_2`. Valid 2-event pairings on IEL are `Evl`-`Evl` and `Evl`-`Cnt` — every divergent set at `v_d` contains at least one `Evl`. `Cnt` is absolute and terminal (at most one per log; the contested-state gate locks after first acceptance), so `Cnt`-`Cnt` cannot form. `Dec` extends tip directly (`Dec.previous = tip.said`), so it lands only on linear chains and never appears in a divergent set — a `Dec` landing decommissions the chain. Every IEL event is privileged, so the divergent set transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving at v_2 via gossip. **Once divergence is observed, no Cnt is accepted on a divergent IEL** — Cnt acceptance is always a linear-chain extension on the submitting node's local chain; the 2-event divergent set is emergent (observed via gossip-merge of two independently-submitted linear-chain extensions, or as the post-acceptance state on a node whose tip is the gossip-delivered concurrent event when Cnt lands — see next example).
+The two events at `v_2` carry the same `previous = v_1.said` — each was accepted as a linear-chain extension on its submitting node at submission time, with the two extensions independently landing at `v_2`. Valid 2-event pairings on IEL are `Evl`-`Evl`, `Evl`-`Sea`, `Sea`-`Sea`, `Evl`-`Cnt`, and `Sea`-`Cnt` — every divergent set at `v_d` contains at least one seal-advancing event (`Evl` or `Sea`). `Cnt` is absolute and terminal (at most one per log; the contested-state gate locks after first acceptance), so `Cnt`-`Cnt` cannot form. `Dec` extends tip directly (`Dec.previous = tip.said`), so it lands only on linear chains and never appears in a divergent set — a `Dec` landing decommissions the chain. Every IEL event is privileged, so the divergent set transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule. **No 3rd event lands at `v_2`** — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving at v_2 via gossip. **Once divergence is observed, no Cnt is accepted on a divergent IEL** — Cnt acceptance is always a linear-chain extension on the submitting node's local chain; the 2-event divergent set is emergent (observed via gossip-merge of two independently-submitted linear-chain extensions, or as the post-acceptance state on a node whose tip is the gossip-delivered concurrent event when Cnt lands — see next example).
 
 Both events stay in storage forever as forensic record. Operator re-incepts under a different prefix (different topic, or new IEL identity).
 
@@ -149,7 +149,7 @@ After `Cnt`, all submissions are rejected. After `Dec`, all submissions are reje
 
 Every SEL event at v1+ carries `identity_event: Digest256` — the SAID of the IEL event whose declared/evolved policy authorizes the SEL event. Per-kind binding:
 
-- SEL `Upd` → binds to an IEL `Icp` or `Evl`-with-auth-policy event whose declared/evolved `auth_policy` authorizes the Upd's anchor.
+- SEL `Est` / `Upd` → binds to an IEL `Icp` or `Evl`-with-auth-policy event whose declared/evolved `auth_policy` authorizes the event's anchor.
 - SEL `Sea` / `Rpr` / `Cnt` / `Dec` → binds to an IEL `Icp` or `Evl`-with-governance-policy event whose declared/evolved `governance_policy` authorizes the lifecycle event's anchor. (SEL retains its own `Sea` and `Rpr` kinds; the asymmetry is intentional — see [../sel/events.md](../sel/events.md) for the SEL kind set.)
 
 Binding by SAID (not version) is unambiguous under IEL divergence, robust against re-tracked-same-policy patterns, and enables a fast-eval shortcut: one IEL event fetch + one anchor check, without paginating the full IEL chain.

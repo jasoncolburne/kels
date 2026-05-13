@@ -19,7 +19,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_contested: bool`
 - `is_decommissioned: bool`
-- `last_governance_event: Option<Digest256>` — SAID of the most recent `Evl` (the "evaluation seal").
+- `last_governance_event: Option<Digest256>` — SAID of the most recent `Evl` or `Sea` (the "evaluation seal"; advances on both kinds).
 
 ## Event Kinds
 
@@ -35,9 +35,9 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). *
 
 ## Evaluation Seal and Anchor Non-Poisonability
 
-The `last_governance_event` is the SAID of the most recent `Evl` event. It is the chain's **evaluation seal**.
+The `last_governance_event` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
 
-**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error. This keeps `last_governance_event` meaningful as the evaluation seal — it advances only when the auth/governance state actually moves, not on heartbeat extensions. There is no use case for a periodic re-attestation: IEL has no repair primitive that would need governance "exercise," and key rotation lives at the KEL layer below (anchoring KELs rotate independently; IEL doesn't need to mirror them).
+**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
 
 **Once an IEL event lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on policies introduced or evolved on the chain:
 
@@ -220,7 +220,7 @@ KELS data is path-agnostic: an event accepted at one node should be acceptable a
 For an SEL event at v1+, all paths (submit, gossip ingestion, bootstrap, re-verification) check:
 
 - `identity_event` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
-- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SEL `Upd`, `governance_policy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
+- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SEL `Est`/`Upd`, `governance_policy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
 - IEL is not divergent at the bound event's branch.
 - SEL.said is anchored under the resolved policy.
 - **Per-event parent-monotonic on `identity_event`** (SEL-specific): each SEL event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order, where "parent" is the event referenced by `previous` SAID. The check is applied per branch — the verifier walks each branch independently, comparing each event's `identity_event` against the previous event's on the same branch. Branches with different parent-chains do not constrain each other's `identity_event` values.
@@ -348,7 +348,7 @@ This is an operator best practice, not a protocol-enforced rule. Future automati
 Operationally, the brand-new SEL chain race (above, under §What parent-monotonic blocks) is bounded by enrollment: until a user has finished registering all required well-known SEL topics for their identity, the system treats them as inactive, and no consumers honor authorizations rooted in their in-progress chains. Application developers must structure enrollment to take advantage of this:
 
 - **Register all required well-known SEL topics atomically.** Submit one batch per topic, with all topics together within the enrollment flow; do not partially-enroll a user.
-- **For each topic, detect and resolve prior chain content.** If the chain at the derived prefix already exists with content the operator didn't author (a competing party with `auth_policy` authority on the bound IEL submitted `[Icp, Upd_stale]` first), enrollment submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the operator's legitimate `Upd`. `Rpr` archives the competing branch and the chain becomes the operator's. `Rpr` resolves the divergence cleanly because `governance_policy` is structurally a higher bar than `auth_policy` — the operator's current governance authority outranks any auth-only competing submission.
+- **For each topic, detect and resolve prior chain content.** If the chain at the derived prefix already exists with content the operator didn't author (a competing party with `auth_policy` authority on the bound IEL submitted `[Icp, Est_stale]` first), enrollment submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the operator's legitimate `Est`. `Rpr` archives the competing branch and the chain becomes the operator's. `Rpr` resolves the divergence cleanly because `governance_policy` is structurally a higher bar than `auth_policy` — the operator's current governance authority outranks any auth-only competing submission.
 - **Treat the user as inactive until enrollment completes** (including any `Rpr` cleanup). During the inactive enrollment window, no consumers honor authorizations rooted in the in-progress chains; the user's chains gain trust grounding only after enrollment finishes.
 
 This pattern eliminates the brand-new chain race as an authorization-bearing concern: a competing party's race-won v1 has no consumers honoring it during the inactive window, and `Rpr` archives it before the user becomes active.

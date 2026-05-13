@@ -46,7 +46,7 @@ A submission containing an `Icp` event MUST also contain an `Est` event at v1 in
 
 SELs do not declare or evolve their own authorization policies. Every authorization decision routes through the IEL the chain is bound to:
 
-- **`Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `identity_event`.
+- **`Est` / `Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `identity_event`. (`Est` is the v=1 binding-establishment event and is tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation); `Upd` is the routine extension at v=2+ and is tier-1 anchored.)
 - **`Sea` / `Rpr` / `Cnt` / `Dec`** is authorized iff anchored under the IEL's tracked `governance_policy` resolved through `identity_event`.
 
 The IEL primitive is responsible for the immunity rule and the anchor-non-poisonability guarantees that today's SEL spent considerable design effort on. SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
@@ -113,7 +113,7 @@ The divergence invariant guarantees:
 
 ### Why SEL has Rpr (and IEL doesn't)
 
-SEL divergence on `Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting `Upd` submissions. `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the branch not on `Rpr.previous`'s walkback. The asymmetry `Rpr` exploits is between auth and governance authority, not between protocol-distinguished operator and adversary.
+SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting submissions — `Est`-`Est` at v=1 (the brand-new-chain race) or `Upd`-`Upd` at v ≥ 2. `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the branch not on `Rpr.previous`'s walkback. The asymmetry `Rpr` exploits is between auth and governance authority, not between protocol-distinguished operator and adversary.
 
 IEL has no analog because every IEL event after Icp is governance-authorized; there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
 
@@ -318,7 +318,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 |---|---|---|
 | Linear, normal append | non-terminal events | Append. Seal advances on `Sea`/`Rpr`. |
 | Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
-| Linear, overlap (fork, non-privileged events) | concurrent `Upd` | Insert second event at `v_d`; chain becomes Divergent (non-privileged); recoverable via `Rpr`. |
+| Linear, overlap (fork, non-privileged events) | concurrent `Upd` (v ≥ 2) or concurrent `Est` (v = 1, brand-new-chain race) | Insert second event at `v_d`; chain becomes Divergent (non-privileged); recoverable via `Rpr`. |
 | Linear, overlap (fork, includes privileged) | concurrent governance event | Insert second event at `v_d`; privileged-divergence rule fires; chain becomes contested-terminal. |
 | Linear, post-evaluation-seal | non-terminal/non-`Rpr`/non-`Cnt` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger). |
 | Linear (any) | `Dec` | Insert at tip, mark decommissioned. |

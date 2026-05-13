@@ -47,7 +47,7 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
 - **KEL**: `last_recovery_revealing_event` — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
-- **IEL**: `last_governance_event` — the SAID of the most recent `Evl` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
+- **IEL**: `last_governance_event` — the SAID of the most recent `Evl`/`Sea` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
 - **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec terminal, don't advance the seal but do enforce it).
 
 A new event's land-version MUST be at-or-after the seal (`event_version >= seal_version`). Any submission whose land-version is strictly before the seal is rejected (`"Cannot land at version V — sealed by evaluation/recovery at version S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
