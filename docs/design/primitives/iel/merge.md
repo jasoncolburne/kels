@@ -45,7 +45,7 @@ Server errors map to:
 ```
 for each event:
     IdentityEvent::validate_structure()  // per-kind field rules per [events.md]
-    verify event.prefix derives from declared (auth_policy, governance_policy, topic) for v0
+    verify event.prefix derives from declared (auth_policy, governance_policy, nonce) for v0
     verify each batch event shares the same prefix
 
 for v0 (Icp): verify Icp.said is anchored under the declared governance_policy
@@ -66,7 +66,7 @@ for events introducing or evolving auth_policy or governance_policy
               (policy immunity rule — see events.md)
 ```
 
-The Icp authorization requirement is structural authentication of the inceptor against their own declared `governance_policy`. Unlike SEL's Icp, there is no phishing class to defend against (identity chains are not third-party-discoverable; the prefix is private to the inceptor).
+The Icp authorization requirement is structural authentication of the inceptor against their own declared `governance_policy`. Unlike SEL's Icp, there is no phishing class to defend against — the prefix is structurally unpredictable from outside (the inception `nonce` makes it unguessable).
 
 The policy-immunity gate makes chain stability structural: a non-immune policy can never be referenced as `auth_policy` or `governance_policy`, so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past authorizations stay satisfied by construction. To revoke an endorser's authority going forward, evolve the policy via `Evl` rather than poisoning past anchors.
 

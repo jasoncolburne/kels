@@ -7,7 +7,7 @@ Source-of-truth for the algorithm that validates Identity Event Log (IEL) chains
 IEL verification ensures:
 - Events match their explicit per-kind schemas (`IdentityEvent::validate_structure`)
 - Versions start at 0 and increment by 1 with no gaps
-- The inception event has a valid prefix (derives from `(auth_policy, governance_policy, topic)`)
+- The inception event has a valid prefix (derives from `(auth_policy, governance_policy, nonce)`)
 - All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
@@ -49,10 +49,6 @@ verify_event(event):
     match event to a branch via event.previous
     if no matching branch:
         return Error("Previous SAID not found")
-
-    // 6. Topic consistency
-    if event.topic != branch.topic:
-        return Error("Topic mismatch")
 ```
 
 ### Generation Processing
@@ -159,7 +155,7 @@ IelVerification:
 Accessors:
 
 - `current_event()` → `None` if divergent
-- `prefix()`, `topic()`
+- `prefix()`
 - `auth_policy_at(event_said)` — SAID of the `auth_policy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `identity_event` bindings.
 - `governance_policy_at(event_said)` — same, for governance_policy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
@@ -172,13 +168,12 @@ Accessors:
 | Property | Verification Method |
 |----------|---------------------|
 | SAID integrity | Recompute and compare |
-| Prefix derivation | Inception prefix recomputed from `(auth_policy, governance_policy, topic)` and compared |
+| Prefix derivation | Inception prefix recomputed from `(auth_policy, governance_policy, nonce)` and compared |
 | Prefix consistency | All events have same prefix |
 | Event chaining | `previous` field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
 | Version monotonicity | Each event's version equals predecessor's version + 1 |
 | Inception version | Inception (no `previous`) must have version 0 |
-| Topic consistency | All events on a branch share the same topic |
 | `governance_policy` satisfaction at Icp | `evaluate_anchored_policy(event.governance_policy, event.said)` (self-governance-endorsement) |
 | `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Sea/Cnt/Dec |
 | Policy immunity | Every introduced/evolved auth_policy or governance_policy must have `immune: true` |
