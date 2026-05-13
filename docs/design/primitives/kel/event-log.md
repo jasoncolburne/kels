@@ -258,10 +258,10 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 ### Server semantics
 
 - Verify `Cnt`'s structure, dual signatures against `v_{tip-1}`'s commitments (HARD).
-- Insert `Cnt`. **No archival** — the chain itself is the record (existing events preserved alongside Cnt).
+- Insert `Cnt`. **No archival** — the KEL itself is the record (existing events preserved alongside Cnt).
 - Cnt's `previous = v_{tip-1}.said` always creates or contributes to a divergent set at the tip's version. The privileged-divergence rule (Cnt is recovery-revealing → privileged) makes the chain contested-terminal at that point. Both branches' events (and Cnt) remain in storage as forensic record.
 - Any `Cnt` event in the chain → `is_contested = true`. All future submissions rejected with `ContestedKel`.
-- Effective SAID for a contested chain: `hash_effective_said("contested:{prefix}")` — deterministic, cross-node consistent.
+- Effective SAID for a contested KEL: `hash_effective_said("contested:{prefix}")` — deterministic, cross-node consistent.
 
 ### Builder
 
@@ -293,7 +293,7 @@ Owner-initiated. No algorithmic merge-engine trigger — the owner runs `KeyEven
 - Verify `Dec`'s structure, dual signatures.
 - Insert `Dec`. No archival.
 - Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
-- Effective SAID for a decommissioned chain: the `Dec` event's own SAID. (If a `Cnt` overrides Dec, the chain becomes contested and the effective SAID switches to `hash("contested:{prefix}")`.)
+- Effective SAID for a decommissioned KEL: the `Dec` event's own SAID. (If a `Cnt` overrides Dec, the KEL becomes contested and the effective SAID switches to `hash("contested:{prefix}")`.)
 
 ### Builder
 

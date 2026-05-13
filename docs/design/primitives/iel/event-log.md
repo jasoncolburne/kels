@@ -407,7 +407,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 - Verify `Cnt`'s structure, governance authorization.
 - Insert `Cnt`. **No archival** — both branches preserved if divergent; single branch preserved if linear.
 - Any `Cnt` event in the chain → `is_contested = true`. All future submissions rejected with `ContestedIel`.
-- Effective SAID for a contested chain: deterministic, cross-node consistent.
+- Effective SAID for a contested IEL: deterministic, cross-node consistent.
 
 ### Builder
 

@@ -260,7 +260,7 @@ Authorization is the same IEL-resolved `governance_policy` required to accept `v
 ### Server semantics
 
 - Verify `Cnt`'s structure and IEL-resolved governance authorization at `v_{tip-1}` (HARD).
-- Insert `Cnt`. **No archival** — the chain itself is the record (existing events preserved alongside Cnt).
+- Insert `Cnt`. **No archival** — the SEL itself is the record (existing events preserved alongside Cnt).
 - Cnt is privileged → its presence in the divergent set triggers `is_contested = true` via the privileged-divergence-is-terminal rule. All future submissions rejected with `ContestedSel`.
 - On a linear chain, Cnt's insertion creates fresh divergence at the tip's version (2 events at that version: existing tip + Cnt); privileged-divergence rule fires immediately. On an already-divergent chain, Cnt becomes the 3rd event at `v_d` via the upgrade rule.
 
