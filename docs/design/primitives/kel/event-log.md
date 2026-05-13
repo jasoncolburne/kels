@@ -255,7 +255,7 @@ Both KEL and SEL `Cnt` require the chain's privileged primitive. The asymmetry o
 - KEL's signing key and recovery key are independent cryptographic primitives. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual signature.
 - SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to subsume the matching `auth_policy`. Hence SEL `Cnt` requires only governance satisfaction.
 
-The symmetry of *intent* — terminal authority assertion — is preserved on both sides. Both also satisfy the general invariant: any event with failed auth is rejected (HARD anchor).
+The symmetry of *intent* — terminal authority assertion — is preserved on both sides.
 
 ### Server semantics
 

@@ -139,7 +139,7 @@ Authorization failures in step 4 (cross-chain authorization) are mapped to eithe
 
 Hard fails leave the chain at its prior tip. The verifier does not advance the branch's tip `identity_event` on a hard-failing event — only events that hard-pass *all* of fetch / divergence / policy-pick / anchor / parent-monotonic update the per-branch state.
 
-All events require HARD anchor — the general invariant is "any event with failed auth is rejected." A Cnt or Dec whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
+All events require HARD anchor: a Cnt or Dec whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
 
 The rationale for HARD anchor on all events: the DB cannot be trusted (see [../protocol-doctrine.md](../../protocol-doctrine.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 

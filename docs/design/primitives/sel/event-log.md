@@ -255,7 +255,7 @@ Cnt is privileged (governance-authorized). Its presence in any divergent set tri
 
 See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
-Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `identity_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. (The general invariant — any event with failed auth is rejected — applies.) Operator discipline (advancing the live branch's tip `identity_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
+Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `identity_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `identity_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
 
 ### Server semantics
 

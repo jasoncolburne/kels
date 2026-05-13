@@ -34,11 +34,7 @@ When a member KEL needs recovery:
 
 ### Verification Invariant
 
-The DB cannot be trusted. All operations fall into three categories:
-
-1. **Serving** - returning data to a client/peer. No verification needed.
-2. **Consuming** - using data for security decisions. Requires a `KelVerification` token.
-3. **Resolving** - comparing state to decide sync. Wrong answers trigger unnecessary syncs, not security holes.
+See [../../protocol-doctrine.md §Operation Categories](../../protocol-doctrine.md#operation-categories) for the structural framing.
 
 ## Operator Recovery Workflow
 

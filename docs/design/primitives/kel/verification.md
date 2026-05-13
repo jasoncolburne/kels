@@ -187,7 +187,7 @@ When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Ro
 
 ### Cnt authorization (HARD)
 
-Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state. The general invariant "any event with failed auth is rejected" applies to all event kinds.
+Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
 
 ## Event Types and Their Signatures
 

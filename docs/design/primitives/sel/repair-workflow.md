@@ -57,11 +57,7 @@ If a peer misses the gossip announcement (e.g., it was offline), the owner can s
 
 ## Verification Invariant
 
-The DB cannot be trusted. All SEL operations fall into three categories (mirrors KEL):
-
-1. **Serving** — returning chain data to a client/peer. No verification needed (the consumer verifies).
-2. **Consuming** — using chain data for security decisions. Requires a `SelVerification` token.
-3. **Resolving** — comparing state to decide whether to sync. Wrong answers trigger unnecessary syncs, not security holes.
+See [../../protocol-doctrine.md §Operation Categories](../../protocol-doctrine.md#operation-categories) for the structural framing.
 
 Owner's `repair`/`contest`/`decommission` builders run `verify_sel_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
 
