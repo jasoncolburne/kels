@@ -76,7 +76,7 @@ When an event requires policy satisfaction, the verifier resolves the relevant p
 ```
 verify_policy(event, branch):
     match event.kind:
-        Icp           → self_satisfies(event)  // anchored under event.governance_policy; tier-1 (Ixn anchor)
+        Icp           → self_satisfies(event)  // anchored under event.governance_policy; tier-2 (Rot anchor)
         Evl           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
         Sea           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
         Cnt, Dec      → satisfies(event, branch.tracked_governance_policy)  // tier-3 (Ror anchor)

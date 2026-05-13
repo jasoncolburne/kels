@@ -201,7 +201,7 @@ The rule applies uniformly across KEL, IEL, and SEL — the convergence failure 
 
 #### Anchor Tier Elevation
 
-Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The tier required scales with the event's privilege: tier-1 (routine extension) anchors in `Ixn`; tier-2 (governance evolution, binding establishment, or seal advance) anchors in `Rot`; tier-3 (recovery or terminal) anchors in `Ror`. The elevation closes the signing-key-only adversarial pathway to forging governance evolutions, binding establishments, and terminal events on the chains that root other chains' authority.
+Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The tier required scales with the event's privilege: tier-1 (routine extension) anchors in `Ixn`; tier-2 (governance act — declaration, evolution, or seal advance — or binding establishment) anchors in `Rot`; tier-3 (recovery or terminal) anchors in `Ror`. The elevation closes the signing-key-only adversarial pathway to forging governance acts, binding establishments, and terminal events on the chains that root other chains' authority.
 
 KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier.
 
@@ -210,14 +210,14 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 | Tier | Operation class | KEL anchor kind | Key material required per contributing KEL |
 |------|----------------|-----------------|-----------------------------------------------|
 | 1 | Routine extension | `Ixn` | Current signing key (already known/active; 0 hidden preimages) |
-| 2 | Governance evolution; binding establishment; seal advance | `Rot` | Rotation-key preimage (1 hidden preimage; committed by prior establishment) |
+| 2 | Governance declaration or evolution; binding establishment; seal advance | `Rot` | Rotation-key preimage (1 hidden preimage; committed by prior establishment) |
 | 3 | Recovery; terminal | `Ror` | Rotation-key preimage AND recovery-key preimage (2 hidden preimages; both committed by prior establishment) |
 
 **Per-primitive anchor rules.**
 
 | IEL Event | Anchor kind | Tier |
 |-----------|-------------|------|
-| `Icp` | `Ixn` | 1 |
+| `Icp` | `Rot` | 2 |
 | `Evl` | `Rot` | 2 |
 | `Sea` | `Rot` | 2 |
 | `Cnt` | `Ror` | 3 |
@@ -239,13 +239,13 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 
 **SEL `Est` and camping defense.** SEL prefix derives from `(identity, topic)` — predictable and well-known. An adversary can race-incept SEL chains for any tuple an operator might use. SEL `Icp` is permissionless and dedup-equivalent: any party's `Icp` for the same tuple produces the same SAID and lands once regardless of who submits it. The actual binding and authorization happen at the next event — `Est` — which carries `identity_event` (binding to an IEL policy state) and is authorized under the IEL-resolved `auth_policy`. Elevating `Est` to tier 2 raises the per-camp cost: each camping attempt requires the camper's policy members to each produce a KEL `Rot` anchor. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. The operator's legitimate `Est` and a camper's `Est` create a divergent set at v1 (different `identity_event` or content → different SAIDs), resolved via `Rpr`.
 
-IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(auth_policy, governance_policy, nonce)` where `nonce` is opaque random bytes chosen by the inceptor; the resulting prefix is structurally unpredictable from outside, so the well-known-tuple camping surface doesn't exist. IEL `Icp` stays at tier 1.
+IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(auth_policy, governance_policy, nonce)` where `nonce` is opaque random bytes chosen by the inceptor; the resulting prefix is structurally unpredictable from outside, so the well-known-tuple camping surface doesn't exist. IEL `Icp` is tier-2 anchored: the founding governance act is the same kind of act as `Evl`/`Sea`, and tier-2 (rotation-key preimage per contributing member) prevents signing-only compromise from creating fake-but-validly-governed IELs under stolen policy membership.
 
 **Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotation_hash` and `recovery_hash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Cnt`/`Dec` are unchanged by anchor elevation — they do not anchor in another chain.
 
 **What anchor elevation defends.**
 
-- **Signing-key-only adversarial governance takeover.** Without elevation, an adversary with signing-only compromise of policy members could forge tier-1-anchored events. Under elevation, `Evl`, `Sea`, and `Est` require `Rot` per contributing member; `Rot` requires the pre-committed rotation-key preimage, which signing-only compromise does not yield. Governance takeover, seal advance, and SEL binding camping via signing-only compromise are closed.
+- **Signing-key-only adversarial governance takeover.** Without elevation, an adversary with signing-only compromise of policy members could forge tier-1-anchored events. Under elevation, IEL `Icp`/`Evl`/`Sea` and SEL `Est` require `Rot` per contributing member; `Rot` requires the pre-committed rotation-key preimage, which signing-only compromise does not yield. Governance acts (declaration, evolution, seal advance), SEL binding camping, and fake-IEL creation via signing-only compromise are all closed.
 - **Adversarial terminal events without recovery-key compromise.** `Cnt`/`Dec` require `Ror` per contributing member; `Ror` requires the rotation-key preimage AND the recovery-key preimage (both committed by prior establishment events, neither yet revealed). An adversary lacking the recovery-key preimage for any contributing member cannot forge tier-3-anchored terminal events. Rotation-key compromise alone is insufficient.
 - **Operator-side rotated-out kill-switch.** A rotated-out party who could in principle `Cnt` under `v_{tip-1}`'s policy now needs `Ror` per contributing member — possession of both rotation-key and recovery-key preimages across the contributing policy members, not signing-key access. The structural authority of `v_{tip-1}`'s policy persists; the bar to exploit it is raised from tier 1 to tier 3.
 

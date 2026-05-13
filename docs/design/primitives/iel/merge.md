@@ -49,9 +49,10 @@ for each event:
     verify each batch event shares the same prefix
 
 for v0 (Icp): verify Icp.said is anchored under the declared governance_policy
-              with tier-1 (Ixn) anchor per contributing policy member
+              with tier-2 (Rot) anchor per contributing policy member
               (the inceptor proves membership in the governance policy they're
-               declaring — every IEL event is a governance act)
+               declaring — every IEL event is a governance act; the founding
+               declaration is tier-2 like Evl/Sea)
 for v1+ (Evl/Sea/Cnt/Dec): verifier checks anchoring against branch.tracked_governance_policy
               with the kind required by the event's tier — see
               [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):

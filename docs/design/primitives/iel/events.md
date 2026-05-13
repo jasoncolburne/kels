@@ -24,7 +24,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 | Kind | version | previous | auth_policy | governance_policy | sort_priority | authorization | KEL anchor kind |
 |---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) | `Ixn` (tier 1) |
+| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | 0 | self (governance_policy) | `Rot` (tier 2) |
 | `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | 1 | governance | `Rot` (tier 2) |
 | `Sea` | `>= 2` | required | forbidden | forbidden | 2 | governance | `Rot` (tier 2) |
 | `Dec` | `>= 1` | required | forbidden | forbidden | 3 | governance | `Ror` (tier 3) |
@@ -34,7 +34,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 (No `content` field on any kind. IEL events do not carry content.)
 
-The "KEL anchor kind" column reflects [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation): tier-1 (`Ixn`) for `Icp`; tier-2 (`Rot`) for `Evl` and `Sea`; tier-3 (`Ror`) for `Cnt` and `Dec`. Each contributing KEL member's `governance_policy` leaf must produce an anchor of the required kind on the IEL event's SAID.
+The "KEL anchor kind" column reflects [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation): tier-2 (`Rot`) for `Icp`/`Evl`/`Sea` (governance acts — declaration, evolution, seal advance); tier-3 (`Ror`) for `Cnt` and `Dec` (terminals). Each contributing KEL member's `governance_policy` leaf must produce an anchor of the required kind on the IEL event's SAID.
 
 ### Per-Kind Policy Field Discipline
 
