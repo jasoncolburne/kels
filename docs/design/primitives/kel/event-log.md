@@ -347,4 +347,4 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - [docs/design/sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator algorithm and pending-bundling shape are mirrored on both sides.
 - [docs/design/sel/events.md](../sel/events.md) — SEL per-kind reference.
 - [docs/design/kel/recovery-workflow.md](recovery-workflow.md) — Operator-facing recovery workflow (federation context).
-- [docs/design/policy.md](../../features/policy.md) — `Delegate(delegator, delegate)` resolution for `Dip` events.
+- [docs/design/policy.md](../../features/policy.md) — `Delegate(delegator)` resolution for `Dip` events (single-arg open form per `events.md`).

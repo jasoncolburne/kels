@@ -12,7 +12,7 @@ IEL verification ensures:
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
 - `Icp` is anchored under its declared `governance_policy` (self-governance-endorsement — every IEL event is a governance act)
-- `Evl` / `Cnt` / `Dec` are anchored under the branch's tracked `governance_policy`
+- `Evl` / `Sea` / `Cnt` / `Dec` are anchored under the branch's tracked `governance_policy`
 - Any policy referenced as `auth_policy` or `governance_policy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
@@ -119,7 +119,7 @@ In practice on IEL, any divergence is immediately contested. The "divergent-but-
 
 Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governance_policy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
 
-**Upgrade rule.** When a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.) **This rule does not apply on IEL**: every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist.
+**Upgrade rule.** When a node has a non-privileged divergent set at `v_d` and gossip delivers a privileged event for that same `v_d`, the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. (3 events with 2+ privileged is structurally unreachable: any privileged event in the original 2-event divergent set transitions the chain to contested-terminal immediately (privileged-divergence-is-terminal), and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open up to add a 3rd privileged event.) **This rule does not apply on IEL**: every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist.
 
 See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
@@ -148,7 +148,7 @@ IelVerification:
     divergence_ancestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
     is_contested: bool
     is_decommissioned: bool
-    last_governance_event: Option<Digest256> // SAID of most recent Evl
+    last_governance_event: Option<Digest256> // SAID of most recent Evl or Sea
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
     satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, pre-divergence)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
@@ -161,7 +161,7 @@ Accessors:
 - `auth_policy_at(event_said)` — SAID of the `auth_policy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `identity_event` bindings.
 - `governance_policy_at(event_said)` — same, for governance_policy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
-- `last_governance_event()` — SAID of the most recent `Evl` (the evaluation seal).
+- `last_governance_event()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
 - `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_contested()`, `is_decommissioned()`
 
@@ -178,7 +178,7 @@ Accessors:
 | Inception version | Inception (no `previous`) must have version 0 |
 | Topic consistency | All events on a branch share the same topic |
 | `governance_policy` satisfaction at Icp | `evaluate_anchored_policy(event.governance_policy, event.said)` (self-governance-endorsement) |
-| `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Cnt/Dec |
+| `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Sea/Cnt/Dec |
 | Policy immunity | Every introduced/evolved auth_policy or governance_policy must have `immune: true` |
 
 Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
@@ -233,7 +233,7 @@ let verification = verifier.finish().await?;
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency
-7. Policy satisfaction via `PolicyChecker` (`governance_policy` for every kind — Icp anchored under its declared `governance_policy`; Evl/Cnt/Dec anchored under the branch's tracked `governance_policy`)
+7. Policy satisfaction via `PolicyChecker` (`governance_policy` for every kind — Icp anchored under its declared `governance_policy`; Evl/Sea/Cnt/Dec anchored under the branch's tracked `governance_policy`)
 8. Immunity check on policy seed/update
 
 ## Cross-Chain Use: SEL Authorization Resolution

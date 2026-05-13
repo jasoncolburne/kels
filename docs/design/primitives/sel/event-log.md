@@ -10,8 +10,8 @@ See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event
 
 | State | Description | Accepts new events? |
 |---|---|---|
-| **Active** | Linear chain, latest tip extends cleanly. | Yes — `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` (per IEL-resolved authorization). |
-| **Divergent (non-privileged)** | Two events at some version `d`, both non-privileged (e.g., `Upd`-`Upd` race). Chain is recoverable via `Rpr` (extends one branch tip and archives the other branch). | `Rpr` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
+| **Active** | Linear chain, latest tip extends cleanly. | Yes — at v=1 `Est`; at v=2+ `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec` (per IEL-resolved authorization). |
+| **Divergent (non-privileged)** | Two events at some version `d`, both non-privileged (e.g., `Upd`-`Upd` race at v ≥ 2, or `Est`-`Est` race at v = 1). Chain is recoverable via `Rpr` (extends one branch tip and archives the other branch). | `Rpr` (resolves divergence by extending a tip at `v_{d+1}` and archiving the other branch); `Cnt` (joins divergent set at `v_d` via the upgrade rule, transitioning to Contested). Bundled pending events permitted in the same batch. |
 | **Contested** | Chain has terminated due to a privileged event in a divergent set (privileged-divergence-is-terminal rule), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). SEL privileged events: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized). | None. All submissions rejected. |
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or privileged divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)); all other submissions rejected with `DecommissionedSel`. |
 
@@ -27,7 +27,8 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
 | `Icp` | Inception (v0). Declares `identity` (IEL prefix). Permissionless — deterministic prefix derivation; no auth gate. | None at v0; chain advances require IEL-resolved authorization at v1+. | No |
-| `Upd` | Normal update — append content. | `auth_policy` resolved through `identity_event`. | No |
+| `Est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. | `auth_policy` resolved through `identity_event`. | No |
+| `Upd` | Normal update (v2+) — append content. | `auth_policy` resolved through `identity_event`. | No |
 | `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `identity_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `identity_event`. | No |
 | `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Branch-tip-extending shape: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending shape: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). | `governance_policy` resolved through `identity_event`. | No |
 | `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `identity_event`. | **Yes** |
@@ -71,7 +72,7 @@ This is observable, not hidden — the chain mathematics make the post-`rec` sta
 
 Divergence is detected when two events share the same `previous` SAID. The chain transitions per the privileged-divergence rule:
 - If the divergent set contains a privileged event (`Sea`/`Rpr`/`Cnt`/`Dec`) — directly to **Contested** (terminal).
-- If the divergent set is non-privileged (only `Upd` events) — to **Divergent (non-privileged)**, recoverable via `Rpr`.
+- If the divergent set is non-privileged (only `Upd` events at v ≥ 2, or only `Est` events at v = 1) — to **Divergent (non-privileged)**, recoverable via `Rpr`.
 
 v0 divergence is rejected outright (inception is fully deterministic — two distinct v0 events for the same prefix indicate protocol-level corruption, not authority conflict).
 
@@ -105,7 +106,7 @@ delivered events.
 ```
 
 The divergence invariant guarantees:
-- **Non-privileged divergent set** at version `d` (event kinds limited to `Upd`): max 2 events. Recoverable via `Rpr`.
+- **Non-privileged divergent set** at version `d` (event kinds limited to `Upd` at v ≥ 2, or `Est` at v = 1): max 2 events. Recoverable via `Rpr`.
 - **Privileged divergent set** at version `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
 - Every event lives at a version at-or-after the chain's last evaluation seal (`event_version >= seal_version`; see [../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `identity_event` (each event's `identity_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `identity_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_version = d = seal_version`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).

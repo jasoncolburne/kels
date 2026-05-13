@@ -69,7 +69,7 @@ verify_generation(events_at_serial):
 
 ### Establishment Event Processing
 
-When an establishment event is encountered (icp, rot, rec, ror, cnt, dec):
+When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec):
 
 ```
 process_establishment(event, branch):

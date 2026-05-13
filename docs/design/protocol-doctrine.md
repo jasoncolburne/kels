@@ -79,7 +79,7 @@ The protocol's terminal-authority mechanism is built on three composable rules:
 **2. Privileged-divergence-is-terminal**: divergence at a version where the divergent set contains at least one privileged event makes the chain immediately and terminally contested. Privileged events differ per primitive:
 
 - **KEL privileged**: `Rec`, `Ror`, `Cnt`, `Dec` (all recovery-revealing events).
-- **IEL privileged**: every event kind — `Icp`, `Evl`, `Cnt`, `Dec`. All IEL events are governance-authorized including `Icp`. (The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception.)
+- **IEL privileged**: every event kind — `Icp`, `Evl`, `Sea`, `Cnt`, `Dec`. All IEL events are governance-authorized including `Icp`. (The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception.)
 - **SEL privileged**: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized events).
 
 Cnt is one such privileged event; its presence in the divergent set triggers contested via this same rule. There is no "Cnt-specific path" in verifier logic — Cnt is just another privileged event whose presence in the divergent set triggers contested.

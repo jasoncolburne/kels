@@ -8,8 +8,8 @@ The merge operation integrates new events into an existing KEL while handling:
 - Normal event appends
 - Idempotent resubmissions
 - Divergence detection (conflicting events at the same generation)
-- Recovery from divergence
-- Contest when both parties have the recovery key
+- Recovery from divergence (via `Rec`)
+- Contest (`Cnt`) — extends `v_{tip-1}` with the dual signature against the keys committed at `v_{tip-1}` (rotation-key preimage AND recovery-key preimage). See [../protocol-doctrine.md §Operator recourse against signing-key-only Rot takeover](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
