@@ -41,7 +41,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | `ContestRequired` (Sea at-or-before seal would re-evaluate; only Cnt admitted at land-version = seal_version) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; on linear IEL the seal coincides with the tip, so land-version v_tip = seal_version, admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` (divergent IEL is structurally contested-terminal) | `ContestedIel` | `ContestedIel` (divergent IEL is structurally contested-terminal — no further events including Cnt accepted; Cnt only lands as one of the events in the original 2-event divergent set, or on a linear chain) | `ContestedIel` (divergent IEL is structurally contested-terminal) |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → contest per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); other `Cnt` parent shapes → `IelDecommissioned` | `IelDecommissioned` |
 
 ### Batch submissions
 

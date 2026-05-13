@@ -288,10 +288,11 @@ Clean lifecycle terminated by Dec:
   Dec.previous = v_N.said   (extends tip directly; no fresh divergence)
   Dec.version  = N + 1
 
-Dec is privileged → advances the seal to its own version. Seal-cap forbids
-any fork at versions strictly before v_{N+1}; v_{N+1} itself is the override
-version (a gossip-delivered Cnt with previous = v_N.said lands at v_{N+1}
-alongside Dec, satisfying event_version >= seal_version — see
+Dec is privileged but terminal — it does not advance the seal on SEL
+(`last_governance_event` advances only on Sea/Rpr; see protocol-doctrine.md
+§Forks are Seal-Bounded). A Cnt with previous = v_N.said lands at v_{N+1}
+alongside Dec under the override rule (event_version >= seal_version is
+satisfied because the seal sits at-or-before v_N — Dec didn't move it; see
 ../../protocol-doctrine.md §Cnt Overrides Dec). No archival — Dec is
 appended to the chain as the (potentially) terminal event.
 ```

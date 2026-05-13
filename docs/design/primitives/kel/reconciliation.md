@@ -41,7 +41,7 @@ What happens when a client submits events to the merge engine on a single node.
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ | `ContestRequired` |
 | **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
-| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
+| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → contest per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); other `Cnt` parent shapes → `KelDecommissioned` | `KelDecommissioned` |
 
 ### Batch submissions
 

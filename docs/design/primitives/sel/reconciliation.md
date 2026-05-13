@@ -53,7 +53,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` (seal already advanced; can't repair, must contest) | Contest ✓ | `ContestRequired` |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` |
-| **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` |
+| **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `Cnt` with `previous = v_{d-1}.said` → override → contest per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); other `Cnt` parent shapes → `DecommissionedSel` | `DecommissionedSel` |
 
 Additional rejection cases for v1+ events that don't fit per-state cells:
 - `BadIdentityBinding` — `identity_event` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
