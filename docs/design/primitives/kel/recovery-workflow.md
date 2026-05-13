@@ -1,36 +1,10 @@
 # Recovery Workflow
 
-## Historical Context
+## Architecture
 
-The original architecture stored member KEL events through Raft consensus: each node submitted its identity KEL events to Raft, which verified them in `apply_submit_key_events` and maintained a `member_contexts` HashMap of `KelVerification` tokens in the replicated state machine. This created several issues that motivated the current decoupled design:
+### Direct Push
 
-### Issue 1: Composite SAID Cursor
-
-`sync_own_kel` and `ensure_own_kel_synced` use `effective_tail_said()` as a `since` cursor when fetching delta events from the identity service. For divergent KELs, this returns a composite hash (Blake3 of sorted tip SAIDs) that doesn't correspond to any real event SAID. The identity service returns "not found," silently breaking sync.
-
-### Issue 2: Raft Cannot Handle Recovery
-
-The Raft state machine's `apply_submit_key_events` stores full key events, verifies them, and maintains `KelVerification` in `member_contexts`. But it has no recovery merge logic:
-
-1. **Verifier can't rewind:** `KelVerifier::resume()` continues from a `KelVerification` context. If the underlying KEL needs to be re-verified from scratch (e.g., after recovery resolves divergence), the verifier can't "go back."
-
-2. **Snapshot compaction loses events:** After Raft snapshot compaction, the original clean events are gone from the log; only the (possibly corrupted) `KelVerification` survives in the snapshot.
-
-3. **No recovery path:** If a member KEL becomes divergent or is maliciously extended (via DB attack with key compromise), the registry can't accept a recovered KEL from identity because the verifier can't process recovery events that resolve divergence it didn't observe.
-
-### Attack Scenarios
-
-- **DB tamper with key compromise:** Attacker gains DB access and has compromised the signing key. They inject a divergent event into `MemberKelRepository`. The Raft integrity check (DB SAID vs Raft SAID) catches this, but recovery requires re-verifying from scratch, which the Raft-embedded verifier can't do.
-
-- **Identity DB tamper:** Attacker modifies the identity service's KEL. The sync loop picks up corrupted events and submits them to Raft. After Raft applies them, the `member_contexts` contains a corrupted `KelVerification`. Recovery requires identity to issue a recovery event, but Raft can't process it against the corrupted context.
-
-- **Malicious KEL extension:** An insider extends a member KEL with unauthorized events. These pass verification (valid signatures) but shouldn't be trusted. Recovery requires the identity operator to issue a contest or recovery event, which again needs the full chain context.
-
-## Current Architecture
-
-### Principle: Direct Push, No Raft Involvement
-
-Raft has no role in member KEL synchronization. The submit handler eagerly fans out all KEL appends to other registries. If fan-out fails, each node's background sync loop fills in gaps by comparing effective SAIDs and pushing deltas to stale members. Recovery events from identity propagate through this same mechanism.
+The submit handler eagerly fans out all KEL appends to other registries. If fan-out fails, each node's background sync loop fills in gaps by comparing effective SAIDs and pushing deltas to stale members. Recovery events from identity propagate through this same mechanism.
 
 ### Data Flow
 
@@ -58,9 +32,7 @@ When a member KEL needs recovery:
 4. **Sync loop** detects stale members and pushes delta events directly via HTTP
 5. **Other nodes** receive and store the recovered KEL events
 
-No special recovery logic needed in Raft. The existing verification infrastructure handles all cases.
-
-### Verification Invariant (Unchanged)
+### Verification Invariant
 
 The DB cannot be trusted. All operations fall into three categories:
 

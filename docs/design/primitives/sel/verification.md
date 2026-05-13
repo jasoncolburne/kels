@@ -23,7 +23,7 @@ SEL verification ensures:
 
 Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
 
-Like IEL and today's SEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SEL event's SAID. The verifier uses two traits — `PolicyChecker` for anchor-and-immunity checks (the same trait IEL/KEL use), and `IelResolver` for cross-chain navigation into the bound IEL.
+Like IEL, authorization is via the *anchoring model*: policies resolve to KEL prefixes whose `ixn` events anchor the SEL event's SAID. The verifier uses two traits — `PolicyChecker` for anchor-and-immunity checks (the same trait IEL/KEL use), and `IelResolver` for cross-chain navigation into the bound IEL.
 
 ## Verification Algorithm
 
@@ -162,13 +162,13 @@ The verifier's terminal-state-determination rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rpr`).
 
-Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule.
+Cnt is a privileged event whose presence in the divergent set triggers contested via this rule.
 
 #### Cnt parent resolution
 
 Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's version), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes; the pre-existing branch may have extended past `v_d` up to the proactive-evaluation cap, but Cnt's parent rule selects `v_{d-1}` for cross-node uniformity).
 
-**Implementation note.** Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state's `tip_identity_event` holds `v_{tip-1}.identity_event` (because `v_tip` has not yet been processed). Cnt and the existing tip at `v_d` are processed as siblings of the same generation; both have parent `v_{tip-1}` and both check parent-monotonic against `v_{tip-1}.identity_event` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip identity_event. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by Cnt's own `identity_event`, not via SEL's branch state; cross-chain via `IelResolver`.)
+**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state's `tip_identity_event` holds `v_{tip-1}.identity_event` (because `v_tip` has not yet been processed). Cnt and the existing tip at `v_d` are processed as siblings of the same generation; both have parent `v_{tip-1}` and both check parent-monotonic against `v_{tip-1}.identity_event` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip identity_event. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by Cnt's own `identity_event`, not via SEL's branch state; cross-chain via `IelResolver`.)
 
 #### Upgrade rule
 

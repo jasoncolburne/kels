@@ -171,13 +171,13 @@ The verifier's terminal-state-determination rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-Cnt is no longer a special case in verifier logic. It's a privileged event whose presence in the divergent set triggers contested via this rule. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 ### Cnt parent resolution
 
 Cnt's `previous` always points to `v_{tip-1}` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's serial), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule applied to different chain shapes; the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap, but Cnt's parent rule selects `v_{d-1}` for cross-node uniformity).
 
-**Implementation note.** Under the verifier-merge unification ([#181](https://github.com/jasoncolburne/kels/issues/181)), Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotation_hash` and `recovery_hash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
+**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotation_hash` and `recovery_hash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
 
 ### Upgrade rule
 

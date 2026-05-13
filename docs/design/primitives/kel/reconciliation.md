@@ -103,7 +103,7 @@ The merge engine identifies owner events via two strategies depending on the div
 
 Everything not in the owner's chain is archived to mirror tables.
 
-The SEL backport replaces per-hop DB queries in both strategies with a single page fetch + resume-mode verifier trust gate + in-memory walkback. The case enumeration in this doc is unchanged; only the implementation efficiency changes. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
+Both strategies use a single page fetch + resume-mode verifier trust gate + in-memory walkback. See [key-event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
 
 ### Archival bounds
 

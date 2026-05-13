@@ -223,8 +223,6 @@ Cnt's authorization is dual-signed against `v_{tip-1}`'s commitments: signing-ke
 
 This authorization choice gives the operator a recourse against signing-key-only Rot takeover. If a second signing-key holder (whose access was acquired via signing-key-only compromise) submits a Rot at `v_N` to take over, the keys committed by `v_{N-1}` are: signing key revealed by the Rot at `v_N` (both parties have it) + recovery key NOT revealed by Rot (only the original holder, who prepared it, has it; recovery is revealed only by `Rec`/`Ror`/`Cnt`/`Dec`). The original holder's dual-sig succeeds; the second signing-key holder's does not. The original holder can submit Cnt, terminate the chain, and reincept under a new prefix.
 
-Today's "Cnt extends tip" model leaves the original holder with no recourse in this scenario; this design restores it.
-
 ### Algorithmic trigger — `ContestRequired`
 
 The merge engine returns `ContestRequired` when:
@@ -272,7 +270,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 `KeyEventBuilder::contest()`:
 - Pre-flight: pre-flight server-chain re-verification.
 - Bundles any missing events (events the local store has but the server lost — typically because a prior `Rec` archived them server-side) AND any pending events left in flight.
-- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). The lower-SAID tip-selection logic is no longer needed — `v_{tip-1}` is well-defined.
+- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). `v_{tip-1}` is well-defined: one parent of the linear-chain tip; one shared ancestor of any divergent set.
 - Resolves authorization via `v_{tip-1}`'s commitments and constructs the dual signature accordingly.
 - Submits `[missing..., pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
@@ -331,7 +329,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
 - `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergence_ancestor`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_event`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
 - `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
-- `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. The SEL backport replaces per-hop DB queries with a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
+- `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. Archival uses a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.
 
 **Tests:**

@@ -49,7 +49,7 @@ The "KEL anchor kind" column reflects [../../protocol-doctrine.md §Anchor Tier 
 
 The "authorization" column names which policy must be satisfied for the verifier to accept the event. **Every IEL event is governance-authorized**: IEL is the governance primitive, so even inception — the act of declaring the chain's policies — is itself a governance act. The chain's `auth_policy` is reserved for application-facing per-event authorization, consumed by SEL `Upd` events via `identity_event` binding (see [../sel/events.md](../sel/events.md)); it is never the gate that authorizes IEL events themselves.
 
-- **Icp** must satisfy the `governance_policy` it declares. The inceptor proves membership in the governance policy they're naming by anchoring `Icp.said` under that policy. Identity chains aren't third-party-discoverable, so the prefix derivation `(auth_policy, governance_policy, topic) → prefix` is private to the inceptor — there's no phishing class equivalent to today's SEL Icp gate. The anchoring requirement is the structural authentication of the inceptor against the governance policy they declare.
+- **Icp** must satisfy the `governance_policy` it declares. The inceptor proves membership in the governance policy they're naming by anchoring `Icp.said` under that policy. Identity chains aren't third-party-discoverable, so the prefix derivation `(auth_policy, governance_policy, topic) → prefix` is private to the inceptor — there's no phishing class equivalent to SEL Icp. The anchoring requirement is the structural authentication of the inceptor against the governance policy they declare.
 - **Evl / Sea / Cnt / Dec** must satisfy the branch's tracked `governance_policy`. Same gate as Icp; same rule across the chain. They do NOT separately need to satisfy `auth_policy`: `auth_policy` is reserved for SEL `Est`/`Upd` authorization through the bound IEL event.
 
 ### `auth_policy` semantics
@@ -72,7 +72,7 @@ Any policy referenced as a chain's `auth_policy` OR `governance_policy` — whet
 
 To revoke an endorser's authority, evolve the policy via `Evl` (issuing a new auth_policy or governance_policy SAID that excludes the endorser); do not attempt to poison past events. `Evl`-driven evolution is the canonical correction path.
 
-This rule mirrors today's SEL immunity rule and serves the same purpose. With IEL, it becomes the cornerstone of cross-chain consistency: every SEL event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains verifiable for the lifetime of any dependent SEL.
+This rule mirrors SEL's immunity rule and serves the same purpose. With IEL, it becomes the cornerstone of cross-chain consistency: every SEL event binds to a specific IEL event SAID, and that IEL event's policy SAIDs must be immune so the binding remains verifiable for the lifetime of any dependent SEL.
 
 See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability) for the SEL-side implications.
 
@@ -82,7 +82,7 @@ IEL events do not carry content. The chain's "data" is its tracked policy state,
 
 ### Evaluation bound — not applicable
 
-Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
+SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
 
 (`last_governance_event` advances on `Evl` and `Sea` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
 

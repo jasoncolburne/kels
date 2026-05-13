@@ -135,9 +135,8 @@ if batch contains a cnt event:
     insert cnt as the 3rd event at v_d
     return Contested
         (privileged-divergence-is-terminal fires; cnt is privileged → chain contested-terminal.
-         No "must reveal recovery first" gate — under the new design, Cnt always joins the
-         divergent set via the upgrade rule, regardless of whether recovery has been revealed
-         on either branch.)
+         Cnt always joins the divergent set via the upgrade rule, regardless of whether
+         recovery has been revealed on either branch.)
 ```
 
 **Recovery path** (`rec` anywhere in batch):

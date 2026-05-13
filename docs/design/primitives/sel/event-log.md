@@ -49,7 +49,7 @@ SELs do not declare or evolve their own authorization policies. Every authorizat
 - **`Est` / `Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `identity_event`. (`Est` is the v=1 binding-establishment event and is tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation); `Upd` is the routine extension at v=2+ and is tier-1 anchored.)
 - **`Sea` / `Rpr` / `Cnt` / `Dec`** is authorized iff anchored under the IEL's tracked `governance_policy` resolved through `identity_event`.
 
-The IEL primitive is responsible for the immunity rule and the anchor-non-poisonability guarantees that today's SEL spent considerable design effort on. SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
+The IEL primitive carries the immunity rule and the anchor-non-poisonability guarantees SEL depends on; SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
 The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include per-event parent-monotonic on `identity_event` applied per branch (each event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order; branches with different parent-chains do not constrain each other). This rule is SEL-specific — KEL and IEL have no separate field referencing another chain's authorization context, so no analog rule applies to them.
 
@@ -269,7 +269,7 @@ Authorization is the same IEL-resolved `governance_policy` required to accept `v
 `SadEventBuilder::contest()`:
 - Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification).
 - Bundles pending events into the batch.
-- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). The lower-SAID tip-selection logic is no longer needed — `v_{tip-1}` is well-defined.
+- Builds `Cnt.previous = v_{tip-1}.said` (parent of linear tip; or `v_{d-1}` on a divergent chain — the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}`, the divergence ancestor; same rule, different chain shape). `v_{tip-1}` is well-defined: one parent of the linear-chain tip; one shared ancestor of any divergent set.
 - Resolves authorization via `v_{tip-1}`'s IEL-resolved governance policy and constructs the anchor accordingly.
 - Submits `[pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
@@ -341,14 +341,6 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
 - `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
-
-**Notable changes from the dual-policy era:**
-- SEL events carry no first-class authorization-policy fields (policies live on the bound IEL).
-- No per-branch tracking of authorization policies on branch state.
-- No SEL-side immunity rule (lives on IEL).
-- New `identity_event` field on every v1+ event.
-- Per-branch `identity_event` tracking (each branch's tip's `identity_event` for the per-event parent-monotonic check on the next event extending that branch); chain-wide `last_identity_event` is a derived aggregate.
-- New `[Icp, Est]` minimum inception batch rule (`Est` reintroduced as the tier-2 binding-establishment event under [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), distinct from its pre-dual-policy role).
 
 ## References
 
