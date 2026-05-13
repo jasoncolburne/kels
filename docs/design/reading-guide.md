@@ -24,7 +24,7 @@ The substantive part of the design. Three primitives (KEL, IEL, SEL) implement t
 
 ### IEL — start here
 
-The simplest primitive. Every IEL event is governance-authorized (no auth-vs-governance asymmetry), there is no recovery primitive (Rpr is absent — divergence is immediately terminal), no content payload (the chain's data is its tracked policy state), and the smallest kind set (`Icp`, `Evl`, `Cnt`, `Dec`). The cleanest place to internalize the core protocol concepts: cryptographically-linked event chains, divergence semantics, terminal events, evaluation seals, authorization via anchored policy.
+The simplest primitive. Every IEL event is governance-authorized (no auth-vs-governance asymmetry), there is no recovery primitive (Rpr is absent — divergence is immediately terminal), no content payload (the chain's data is its tracked policy state), and a small kind set (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). The cleanest place to internalize the core protocol concepts: cryptographically-linked event chains, divergence semantics, terminal events, evaluation seals, authorization via anchored policy.
 
 Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitives/iel/event-log.md) → [merge.md](primitives/iel/merge.md) → [verification.md](primitives/iel/verification.md) → [reconciliation.md](primitives/iel/reconciliation.md).
 
