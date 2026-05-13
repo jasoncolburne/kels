@@ -14,7 +14,7 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
-`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governance_policy` satisfaction. `Icp` is also governance-authorized but against the policy *declared at that event* (self-governance-endorsement), not against a previously-tracked policy; see [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
+`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governance_policy` satisfaction (the authorization gate). Of these, only `Evl` and `Sea` advance `last_governance_event` (the evaluation seal); `Cnt` and `Dec` enforce the gate but do not advance the seal. `Icp` is also governance-authorized but against the policy *declared at that event* (self-governance-endorsement), not against a previously-tracked policy; see [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
 
 IEL has **no `Upd` kind** — there is no "content" on identity chains. The chain's data is its tracked policy state, mutated only via `Evl`. IEL has **no `Est` kind** — both policies are required at `Icp`, since identity chains are not third-party-discoverable and don't need the optional-governance-at-Icp dance that SEL uses (SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface). IEL has **no `Rpr` kind** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence-is-terminal rule); there's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
 
@@ -144,7 +144,7 @@ v0..vN   normal chain
 vN+1     kind=dec                                            ← owner ends the chain cleanly
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
+After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## Cross-chain binding from SEL to IEL
 

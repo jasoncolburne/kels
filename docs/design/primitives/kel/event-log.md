@@ -144,7 +144,7 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
 
 Whoever holds the recovery key dictates which shape, and (in the branch-tip-extending shape) which branch the Rec extends. Both shapes are handled uniformly by `archive_adversary_chain` — the walkback structure determines which events get archived without a separate code path per shape.
 
-Cnt shares the divergence-ancestor-extending parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the existing divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec vs Cnt) determines whether the chain recovers (archival) or terminates (no archival). See [§Cnt](#cnt).
+Cnt shares the divergence-ancestor-extending parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the existing divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec vs Cnt) determines whether the chain recovers (archival) or terminates (no archival). See [§Cnt mechanics](#cnt-mechanics).
 
 ### Builder pre-flight
 
@@ -251,7 +251,7 @@ A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequi
 Both KEL and SEL `Cnt` require the chain's privileged primitive. The asymmetry of *mechanism* derives from the difference in primitives:
 
 - KEL's signing key and recovery key are independent cryptographic primitives. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual signature.
-- SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to subsume the matching `auth_policy`. Hence SEL `Cnt` requires only governance satisfaction.
+- SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to subsume the matching `auth_policy`. SEL `Cnt` requires governance_policy satisfaction at tier-3 anchor (KEL `Ror` per contributing member) per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), not bare governance.
 
 The symmetry of *intent* — terminal authority assertion — is preserved on both sides.
 

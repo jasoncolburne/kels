@@ -127,7 +127,7 @@ Does not apply on IEL: every IEL event is privileged, so no non-privileged diver
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
 
-### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids` / per-event policy snapshots)
+### Caller-bounded SAID querying
 
 The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `auth_policy` / `governance_policy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
 

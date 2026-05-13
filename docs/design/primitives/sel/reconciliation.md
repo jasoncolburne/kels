@@ -36,7 +36,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 
-"Divergent (sealed)" is a sub-state of **Divergent** where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`.
+"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_governance_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Upd`/`Sea` submissions return `ContestRequired`. "Divergent (sealed)" is a sub-state of **Divergent** where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`.
 
 ## Local Submissions Matrix
 

@@ -176,7 +176,7 @@ When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Up
 
 **`Rpr` is the archiving exception.** `Rpr` is privileged but goes through the discriminator's archival path: `Rpr.previous = v_d.said` (branch-tip-extending shape) lands at `v_{d+1}` and archives the other branch; `Rpr.previous = v_{d-1}.said` (divergence-ancestor-extending shape) lands at `v_d` and archives both v_d branches. Either shape removes the divergent set before any divergent-set check fires, so `Rpr` never participates in the upgrade rule. The other non-archiving privileged kinds (`Sea`, `Cnt`, `Dec`) do participate when their parent is `v_{d-1}.said`. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
-### Caller-bounded SAID querying (`queried_saids` / `satisfied_saids`)
+### Caller-bounded SAID querying
 
 The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers (notably the SEL verifier when resolving `identity_event` bindings into IEL) need to ask about specific events: "is THIS IEL event valid for binding?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification` (`lib/kels/src/types/kel/verification.rs:50-51`):
 

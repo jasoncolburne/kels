@@ -24,11 +24,13 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Divergent** | Structurally vacuous on IEL — every IEL event is privileged, so any divergent set fires privileged-divergence-is-terminal and the chain collapses immediately to Contested. Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
+| **Divergent** | Chain shape with 2 events at version `d`; treated as Contested per privileged-divergence (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 
 There is **no Repaired state** — IEL has no Rpr.
+
+"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_governance_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Evl`/`Sea` submissions return `ContestRequired`. Only `Cnt` (repudiation) and `Dec` (clean termination) are admissible at the boundary.
 
 ## Local Submissions Matrix
 
@@ -75,7 +77,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 | Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|--------------|--------------------------------------|-----------------|-----------------|----------------------|
 | **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ | Duplicates of one branch, no-op ✓ | `ContestedIel` | `IelDecommissioned` |
-| **Divergent** | Both fork events appended ✓ | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedIel` | `IelDecommissioned` |
+| **Divergent** | Both fork events appended ✓ | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `IelDecommissioned` |
 | **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `ContestRequired` | `ContestedIel` | Effective SAIDs match; no-op |
 
@@ -84,9 +86,9 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
 - **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 - **Decommissioned → Divergent sink** — `Dec` does not resolve divergence; gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission.
-- **Divergent → Divergent sink** — effective SAIDs match by construction (both produce `hash("divergent:{prefix}")`); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
+- **Divergent → Divergent sink** — effective SAIDs match by construction (both produce `hash("contested:{prefix}")` since IEL divergent-shape sets is_contested = true); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
-The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest-or-decommission-or-stay-divergent.
+The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest or decommission (divergent-shape always resolves as Contested).
 
 ### Effective SAID convergence
 
@@ -95,8 +97,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | State | Effective SAID | Converges? |
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
-| **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (covers all divergent-shape chains, with or without explicit `Cnt`, since IEL sets `is_contested = true` via privileged-divergence; same value regardless of which fork events each node has. Also covers a chain carrying both `Dec` and `Cnt` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).) |
 | **Decommissioned** | `Dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
 
 ## Edge Cases
@@ -267,7 +268,7 @@ Two operators may submit `Cnt` concurrently to different nodes — a real operat
 
 `Dec` cannot appear in a divergent set — `Dec.previous = tip.said` (extends tip directly), so `Dec` only lands on linear chains, decommissioning the chain on landing.
 
-`Cnt` on a linear chain — operator-initiated termination — is the other scenario in which `Cnt` lands; see [event-log.md §Cnt: Operator Contestation Primitive](event-log.md#cnt-operator-contestation-primitive).
+`Cnt` on a linear chain — operator-initiated termination — is the other scenario in which `Cnt` lands; see [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics) for the linear-chain Cnt acceptance shape.
 
 ### 6. Cnt-Dec race (override)
 

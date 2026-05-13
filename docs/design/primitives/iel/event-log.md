@@ -11,7 +11,7 @@ An IEL is the authorization root for a SEL. Every Credential, SEL, or generally 
 | State | Description | Accepts new events? |
 |---|---|---|
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
-| **Divergent** | Two events at version `d`. Structurally vacuous on IEL — divergence transitions immediately to Contested (see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)). | Treated as Contested. |
+| **Divergent** | Chain shape with 2 events at version `d`; treated as Contested per privileged-divergence (every IEL event is privileged → see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)). Persists in storage as forensic record. | Treated as Contested. |
 | **Contested** | Chain terminated — divergence (any divergent set on IEL), or explicit `Cnt` on a linear chain (see [§Cnt mechanics](#cnt-mechanics)). | None. All submissions rejected. |
 | **Decommissioned** | Chain terminated cleanly by operator — at least one `Dec`, no Cnt or divergence. | Gossip-delivered `Cnt` → Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); all other submissions rejected with `IelDecommissioned`. |
 
@@ -419,7 +419,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 
 ### Cascading effect on dependent SELs
 
-A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so SEL's tracked `auth_policy` and tracked `governance_policy` are effectively frozen at whatever was current when IEL contested.
+A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so the SEL's IEL-resolved `auth_policy` and `governance_policy` (resolved through each SEL event's `identity_event` binding) are effectively frozen at whatever IEL state was current when contestation occurred.
 
 Operator response per SEL:
 - **Migrate**: incept a new SEL bound to a different IEL.

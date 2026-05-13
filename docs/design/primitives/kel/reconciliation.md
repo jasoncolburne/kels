@@ -21,7 +21,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | State | Description |
 |-------|-------------|
 | **Empty** | No events for this prefix |
-| **Normal** | Non-divergent, active |
+| **Active** | Linear chain, latest tip extends cleanly |
 | **Divergent** | Fork detected, no `rec`/`cnt` yet |
 | **Recovered** | Clean chain after synchronous archival in the merge transaction |
 | **Contested** | `cnt` present, permanently frozen |
@@ -36,16 +36,16 @@ What happens when a client submits events to the merge engine on a single node.
 | KEL State | ixn/rot | ror | rec / rec+rot | cnt / events+cnt | dec |
 |-----------|---------|-----|---------------|------------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Normal** | Append ✓ | Append ✓ | Append ✓ (gossip-sync of recovered KELs) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active** | Append ✓ | Append ✓ | Append ✓ (gossip-sync of recovered KELs) | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | Contest ✓ → Contested (joins set via upgrade rule) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
-| **Recovered** | Same as Normal | Same as Normal | Same as Normal | Same as Normal | Same as Normal |
+| **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
 | **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `KelDecommissioned` | `KelDecommissioned` |
 
 ### Notes on cell routing
 
-- **`Cnt` on Normal** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip` with the existing tip; privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Active** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip` with the existing tip; privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent / Divergent (recovery revealed)** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Divergent (recovery revealed)` → `ContestRequired` for non-Cnt** — once the recovery key is revealed in a divergent branch (via `Rec`/`Ror`/`Dec`/`Cnt`), only Cnt is admissible. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
 - **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `KelDecommissioned`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
@@ -75,11 +75,11 @@ For divergent source KELs, `send_divergent_events` reorders events to ensure the
 
 Each cell describes what happens when gossip syncs a KEL from a source node (row) to a sink node (column). The source's `transfer_key_events` reads its local KEL and sends events via `store_page` to the sink. The sink's merge engine processes the incoming events against whatever state it already has for that prefix.
 
-"Normal (owner)" means the sink has the legitimate owner's non-divergent chain. "Normal (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
+"Active (owner)" means the sink has the legitimate owner's non-divergent chain. "Active (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
 
-| Source | Sink: Empty | Sink: Normal (owner) | Sink: Normal (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
+| Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|---------------------|-------------------------|----------------|----------------|----------------------|
-| **Normal** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` | `KelDecommissioned` |
+| **Active** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` | `KelDecommissioned` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (sink awaiting recovery) | `ContestedKel` | `KelDecommissioned` |
 | **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedKel` | `KelDecommissioned` |
 | **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `cnt` batch → override → contest ✓ |
@@ -98,7 +98,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 
 | State | Effective SAID computation | Converges? |
 |-------|---------------------------|------------|
-| **Normal** | Tip event SAID | ✓ (identical chains after gossip) |
+| **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
 | **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes; a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)) |

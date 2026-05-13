@@ -80,6 +80,8 @@ The chain's identity cannot be changed after Icp. To migrate an SEL to a differe
 - **Robust against re-tracked policies.** If IEL evolves `A → B → A` (same policy SAID re-tracked), version-binding would have to disambiguate which span you're claiming; SAID-binding pins the specific event.
 - **Fast-eval shortcut.** Resolution is one IEL event fetch + one anchor check; no paginated walk required.
 
+Given the SAID-binding rule, the validation rules below apply uniformly across submit, gossip, bootstrap, and re-verification:
+
 #### Validation rules (path-agnostic — submit, gossip, bootstrap, re-verification)
 
 The same rules apply across all ingestion paths. KELS data is path-agnostic: an event accepted at one node should be acceptable at every other node, and pulling data from one instance into another should not change its validity. The submit handler and the verifier enforce identical rules.
@@ -118,7 +120,7 @@ This makes content evolution legible at a glance: scanning the chain, every cont
 
 SEL events do not declare policies, so the immunity rule has no SEL-side fields to gate. The structural guarantee that protects past SEL authorizations comes from the IEL: every policy SAID that any IEL ever tracks must be `immune: true`, enforced both at IEL submit time and at IEL verification time. See [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement).
 
-The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves through that IEL event's policy SAID. As long as that policy SAID is immune (which IEL guarantees), the policy's content is fixed and the SEL event's anchor verification produces the same answer forever. See [event-log.md §Cross-Chain Anchor Stability](event-log.md#cross-chain-anchor-stability).
+The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves through that IEL event's policy SAID. As long as that policy SAID is immune (which IEL guarantees), the policy's content is fixed and the SEL event's anchor verification produces the same answer forever. See [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
 ### Cnt overrides Dec
 
@@ -182,7 +184,7 @@ v0..vN   normal chain
 vN+1     kind=dec   identity_event=current_IEL_governance_event_said    ← owner ends the chain cleanly
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
+After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
