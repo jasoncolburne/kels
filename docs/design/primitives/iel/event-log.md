@@ -10,8 +10,8 @@ An IEL is the authorization root for a SEL. Every Credential, SEL, or generally 
 
 | State | Description | Accepts new events? |
 |---|---|---|
-| **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Evl`, `Cnt`, `Dec` (per `governance_policy`). |
-| **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. **On IEL, divergence is always immediately contested** — every IEL event is governance-authorized (Icp/Evl/Cnt/Dec all privileged), so any divergent set on IEL contains a privileged event by definition, and the privileged-divergence rule fires (see [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)). The "Divergent" state is structurally vacuous on IEL; divergence transitions directly to Contested. | Treated as Contested from the moment divergence is observed. |
+| **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
+| **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. **On IEL, divergence is always immediately contested** — every IEL event is governance-authorized (Icp/Evl/Sea/Cnt/Dec all privileged), so any divergent set on IEL contains a privileged event by definition, and the privileged-divergence rule fires (see [../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)). The "Divergent" state is structurally vacuous on IEL; divergence transitions directly to Contested. | Treated as Contested from the moment divergence is observed. |
 | **Contested** | Chain has terminated due to divergence (any divergent set on IEL), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). Once contested, no further events land. | None. All submissions rejected. |
 | **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)); all other submissions rejected with `IelDecommissioned`. |
 
@@ -440,7 +440,7 @@ Same as `Cnt`: SELs bound to a decommissioned IEL face frozen authorization. Ope
 
 ### Cnt override
 
-A gossip-delivered `Cnt` lands on a decommissioned IEL alongside the existing `Dec`, transitioning the chain to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). The override is the sole exception to "decommissioned chains accept no further events." Once overridden, the chain is whole-chain-suspect and bound SELs lose their authorization basis as described in [§Effect on Bound SELs](#effect-on-bound-sels).
+A `Cnt` with `previous = v_{d-1}.said` lands on a decommissioned IEL alongside the existing `Dec`, transitioning the chain to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). The override is the sole exception to "decommissioned chains accept no further events." Once overridden, the chain is whole-chain-suspect and bound SELs lose their authorization basis as described in [§Effect on Bound SELs](#effect-on-bound-sels).
 
 ## Server-Observable Case Taxonomy
 
@@ -451,13 +451,11 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, normal append | `Evl` | Append. Seal advances. |
 | Linear, normal append | `Sea` | Append. Seal advances (no policy evolution). |
 | Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
-| Linear, overlap (fork) | concurrent `Evl` or `Sea` | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Sea`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt`. |
-| Divergent | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain stays contested-terminal. |
-| Divergent | any other event | Rejected; chain is contested-terminal. |
+| Linear, overlap (fork) | concurrent `Evl` or `Sea` (or `Cnt` extending `v_{d-1}`) | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Sea`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt`. No 3rd event lands at `v_d` (IEL has no upgrade rule per [../protocol-doctrine.md §Privileged Divergence is Terminal](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly); divergent IEL is contested-terminal at first 2-event observation). |
 | Linear, post-evaluation-seal | `Evl` or `Sea` extending pre-seal version | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal | `Dec` | Append at tip; mark decommissioned. |
-| Contested | any | Rejected with `ContestedIel`. |
-| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
+| Contested (post-divergence or post-Cnt) | any submission, including further `Evl`/`Sea`/`Cnt`/`Dec` via gossip at `v_d` or beyond | Rejected with `ContestedIel`. |
+| Decommissioned | `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
 | Decommissioned | any other submission | Rejected with `IelDecommissioned`. |
 
 ## Implementation Map

@@ -171,7 +171,7 @@ Contest is governance-authorized via IEL; the verifier confirms `Cnt` satisfies 
 
 ### 8. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 9. Normal Append
 

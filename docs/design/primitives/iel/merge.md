@@ -133,7 +133,7 @@ On IEL specifically, Cnt lands only on a linear chain: Cnt's `previous = v_{tip-
 
 ### 6. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 7. Normal Append (Evl / Sea)
 

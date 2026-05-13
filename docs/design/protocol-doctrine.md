@@ -336,7 +336,7 @@ The window is operationally meaningful only on **exclusion evolutions** — wher
 Shape constraints on `Sea`:
 
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
-- Parent cannot be another `Sea` — back-to-back seal advances are an invalid shape.
+- Parent cannot be another `Sea` *with identical content* — back-to-back seal advances with no semantic difference are an invalid shape. (On IEL, `Sea` carries no content fields, so any back-to-back Sea is forbidden. On SEL, `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves again.)
 - Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
 
 SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `identity_event` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
@@ -453,7 +453,7 @@ The implication is that **termination events follow the `previous = v_{tip-1}.sa
 
 #### Implications
 
-- **SEL pre-Icp camping response (endorsement-class).** When an adversary submits `[Icp, Upd_stale]` first, the operator's response is `[Icp, Upd_legit]` with `Upd_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Upd_stale.said`. `Upd_legit` is endorsement-class; pointing it at `Upd_stale` would attest to `Upd_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; the operator resolves via `Rpr` extending their `Upd_legit` branch.
+- **SEL pre-Icp camping response (endorsement-class).** When an adversary submits `[Icp, Est_stale]` first, the operator's response is `[Icp, Est_legit]` with `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Est_stale.said`. `Est_legit` is endorsement-class; pointing it at `Est_stale` would attest to `Est_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; the operator resolves via `Rpr` extending their `Est_legit` branch.
 
 - **KEL/SEL divergence resolution (endorsement-class).** The operator's `Rec` (KEL) or `Rpr` (SEL) extends either the divergence ancestor `v_{d-1}` (attested-shared; divergence-ancestor-extending shape, lands at `v_d`) or their own existing branch tip at `v_d` (own attestation; branch-tip-extending shape, lands at `v_{d+1}`). The operator never points an endorsement-class `Rec`/`Rpr` at the other branch's tip. The "whoever holds the recovery/governance key dictates which branch survives" language reduces to "the operator extends their own branch or `v_{d-1}`."
 

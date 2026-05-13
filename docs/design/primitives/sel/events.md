@@ -13,7 +13,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 | `Icp` | `kels/sad/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
 | `Est` | `kels/sad/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
 | `Upd` | `kels/sad/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
-| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No field evolution (policies live on IEL). |
+| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
 | `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Cnt` | `kels/sad/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
 | `Dec` | `kels/sad/v1/events/dec` | Decommission — terminal owner-initiated end. |
@@ -122,10 +122,10 @@ The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves throug
 
 ### Cnt overrides Dec
 
-`Cnt` and `Dec` are both terminal kinds (at most one of each per log), but they are not mutually exclusive. When a `Cnt`-`Dec` race delivers each event to a different node, the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) is accepted on a decommissioned chain and lands at `v_d` alongside the existing `Dec`, forming a `{Dec, Cnt}` divergent set; privileged-divergence-is-terminal fires; the chain becomes contested. The asymmetry is intentional — a gossip-delivered `Dec` is rejected on a contested chain. Per-kind implications:
+`Cnt` and `Dec` are both terminal kinds (at most one of each per log), but they are not mutually exclusive. When a `Cnt`-`Dec` race delivers each event to a different node, the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge: a `Cnt` with `previous = v_{d-1}.said` is accepted on a decommissioned chain and lands at `v_d` alongside the existing `Dec`, forming a `{Dec, Cnt}` divergent set; privileged-divergence-is-terminal fires; the chain becomes contested. The asymmetry is intentional — `Dec` is rejected on a contested chain. Per-kind implications:
 
 - **`Cnt`** can extend a Dec'd chain via this override path. Its parent shape (`v_{tip-1}.said`, resolving to `v_{d-1}.said` when the submitting node's tip is `Dec`) and IEL-resolved governance-authorization requirement are unchanged.
-- **`Dec`** can be followed by a single gossip-delivered `Cnt`. No other event kind extends a Dec'd chain.
+- **`Dec`** can be followed by a single `Cnt` (with `previous = v_{d-1}.said`). No other event kind extends a Dec'd chain.
 
 ## Typical Chain Shapes
 
@@ -185,7 +185,7 @@ v0..vN   normal chain
 vN+1     kind=dec   identity_event=current_IEL_governance_event_said    ← owner ends the chain cleanly
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
+After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
 
 ## References
 

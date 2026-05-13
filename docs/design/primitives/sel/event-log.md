@@ -300,7 +300,7 @@ appended to the chain as the (potentially) terminal event.
 
 - Verify `Dec`'s structure, governance authorization.
 - Insert `Dec`. No archival.
-- Any `Dec` in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `DecommissionedSel`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
+- Any `Dec` in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `DecommissionedSel`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
 
 ### Builder
 
@@ -326,7 +326,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
+| Decommissioned | `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
 | Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Est`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 

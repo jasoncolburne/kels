@@ -296,7 +296,7 @@ Owner-initiated. No algorithmic merge-engine trigger — the owner runs `KeyEven
 
 - Verify `Dec`'s structure, dual signatures.
 - Insert `Dec`. No archival.
-- Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a gossip-delivered `Cnt` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
+- Any `Dec` event in the chain → `is_decommissioned = true`. Subsequent submissions rejected with `KelDecommissioned`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) and transitions the chain to Contested.
 - Effective SAID for a decommissioned chain: the `Dec` event's own SAID. (If a `Cnt` overrides Dec, the chain becomes contested and the effective SAID switches to `hash("contested:{prefix}")`.)
 
 ### Builder
@@ -322,7 +322,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
+| Decommissioned | `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
 | Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map

@@ -40,7 +40,7 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
 - **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
-- **`Sea`**: both policy fields are absent (forbidden). `Sea` is the seal-advance event — its purpose is to advance `last_governance_event` without declaring policy evolution. Authorization resolves through the branch's tracked `governance_policy` (resolved at the predecessor). Shape constraints: `Sea`'s parent must not be `Icp` (a seal advance is meaningful only after a policy-evolution event opens a window), another `Sea` (back-to-back seal advances are an invalid shape), or `Cnt`/`Dec` (terminal events do not extend). See [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance).
+- **`Sea`**: both policy fields are absent (forbidden). `Sea` is the seal-advance event — its purpose is to advance `last_governance_event` without declaring policy evolution. Authorization resolves through the branch's tracked `governance_policy` (resolved at the predecessor). Shape constraints: `Sea`'s parent must not be `Icp` (a seal advance is meaningful only after a policy-evolution event opens a window), another `Sea` (IEL `Sea` carries no content fields, so back-to-back `Sea` is by definition identical-content — invalid per the doctrine's "no identical-content `Sea`-`Sea`" rule; SEL `Sea`-`Sea` with advancing `identity_event` is allowed there but not here), or `Cnt`/`Dec` (terminal events do not extend). See [§Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance).
 - **`Cnt` / `Dec`**: both fields are absent (forbidden). Terminal events have no forward state to declare — the chain ends with the terminal, and the verifier's tracked policy state is what authorized acceptance of the terminal itself (resolved at the predecessor). The verifier rejects any Cnt/Dec carrying a non-`None` `auth_policy` or `governance_policy` as a structural error. Authorization for the terminal still resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed) — see [§Satisfaction model](#satisfaction-model).
 
 ### Satisfaction model
@@ -86,10 +86,10 @@ Today's SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary 
 
 ### Cnt overrides Dec
 
-`Cnt` and `Dec` are both terminal kinds (at most one of each per log), but they are not mutually exclusive. When a `Cnt`-`Dec` race delivers each event to a different node, the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`) is accepted on a decommissioned chain and lands at `v_d` alongside the existing `Dec`, forming a `{Dec, Cnt}` divergent set; privileged-divergence-is-terminal fires; the chain becomes contested. The asymmetry is intentional — a gossip-delivered `Dec` is rejected on a contested chain. Per-kind implications:
+`Cnt` and `Dec` are both terminal kinds (at most one of each per log), but they are not mutually exclusive. When a `Cnt`-`Dec` race delivers each event to a different node, the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge: a `Cnt` with `previous = v_{d-1}.said` is accepted on a decommissioned chain and lands at `v_d` alongside the existing `Dec`, forming a `{Dec, Cnt}` divergent set; privileged-divergence-is-terminal fires; the chain becomes contested. The asymmetry is intentional — `Dec` is rejected on a contested chain. Per-kind implications:
 
 - **`Cnt`** can extend a Dec'd chain via this override path. Its parent shape (`v_{tip-1}.said`, resolving to `v_{d-1}.said` when the submitting node's tip is `Dec`) and governance-authorization requirement are unchanged.
-- **`Dec`** can be followed by a single gossip-delivered `Cnt`. No other event kind extends a Dec'd chain.
+- **`Dec`** can be followed by a single `Cnt` (with `previous = v_{d-1}.said`). No other event kind extends a Dec'd chain.
 
 ## Typical Chain Shapes
 
@@ -143,7 +143,7 @@ v0..vN   normal chain
 vN+1     kind=dec                                            ← owner ends the chain cleanly
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
+After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a `Cnt` with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and server-observable case taxonomy.
 
 ## Cross-chain binding from SEL to IEL
 
