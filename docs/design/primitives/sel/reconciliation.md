@@ -46,7 +46,7 @@ What happens when a client submits events to the submit handler on a single node
 |-----------|-----|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
 | **Empty** (`[Icp]` alone) | n/a | n/a | n/a | n/a | n/a — rejected as `IncompleteInception` |
-| **Empty** (`[Icp, Upd]` minimum) | Append ✓ if Upd's `identity_event` resolves to bound IEL and anchor satisfies IEL-resolved auth_policy; reject `BadIdentityBinding` otherwise | n/a | n/a | n/a | n/a |
+| **Empty** (`[Icp, Est]` minimum) | Append ✓ if Est's `identity_event` resolves to bound IEL and anchor satisfies IEL-resolved auth_policy; reject `BadIdentityBinding` otherwise | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (auth_policy gated via IEL) | Append ✓ (governance_policy gated via IEL) | **Active (clean)**: builder pre-flights with `NothingToRepair`; if submitted, `truncate_and_replace` archives nothing and inserts the Rpr. **Active (adversary linear extension)**: discriminator-driven repair archives the adversary chain. ✓ | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ |
 | **Active, sealed** (Upd at-or-before `last_governance_event` in chain order) | `ContestRequired` | `ContestRequired` (Sea is non-terminal; algorithmic trigger fires for any non-terminal, non-Rpr event at-or-before the seal) | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; land-version v_tip = seal_version is admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec is terminal; algorithmic trigger excludes terminal kinds; chain terminates cleanly) |
 | **Divergent** | Reject `RepairRequired` | Reject `RepairRequired` | Discriminator-driven repair ✓ | Contest ✓ (Cnt with `previous = v_{d-1}.said` joins divergent set as 3rd event via upgrade rule; privileged-divergence-is-terminal fires; chain becomes Contested) | Reject `RepairRequired` |
@@ -63,12 +63,12 @@ Additional rejection cases for v1+ events that don't fit per-state cells:
 
 The submit handler treats a batch atomically:
 
-- **`[Icp, Upd]`** — minimum legal inception batch. Icp permissionless and deterministic; Upd at v1 carries `identity_event` and is anchored under the bound IEL's auth_policy. Inception batches without v1 Upd are rejected.
+- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `identity_event` and is anchored under the bound IEL's auth_policy (tier 2 per [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
 - **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at version ≥ `first_divergent_version` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
 
-There is no standalone `[Est]` or `[Icp]` batch (Est doesn't exist; Icp alone is rejected).
+There is no standalone `[Icp]` batch (Icp alone is rejected). `Est` is structurally pinned to v1 and only appears as the v1 event of an inception batch.
 
 ## Gossip Sync
 
@@ -82,7 +82,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 
 | Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|----------------------|--------------------------|-----------------|-----------------|----------------------|
-| **Active** | Full chain appended ✓ (incl. mandatory `[Icp, Upd]` opening) | Duplicates, no-op ✓ | Overlap → divergence ✓ | `RepairRequired` | `ContestedSel` | `DecommissionedSel` |
+| **Active** | Full chain appended ✓ (incl. mandatory `[Icp, Est]` opening) | Duplicates, no-op ✓ | Overlap → divergence ✓ | `RepairRequired` | `ContestedSel` | `DecommissionedSel` |
 | **Repaired** | Full clean chain ✓ | `Rpr` batch detected → discriminator-driven repair ✓ | `Rpr` batch → repair archives sink's adversary chain ✓ | `Rpr` batch → repair ✓ | `ContestedSel` | `DecommissionedSel` |
 | **Divergent** | Both fork events appended ✓ (chain becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedSel` | `DecommissionedSel` |
 | **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `Cnt` batch → override → contest ✓ (gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); effective SAIDs converge on `hash("contested:{prefix}")`) |

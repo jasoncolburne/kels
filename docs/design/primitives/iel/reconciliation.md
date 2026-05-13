@@ -34,14 +34,14 @@ There is **no Repaired state** — IEL has no Rpr.
 
 What happens when a client submits events to the submit handler on a single node.
 
-| IEL State | Icp | Evl | Cnt / pending+Cnt | Dec |
-|-----------|-----|-----|-------------------|-----|
-| **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject | Reject |
-| **Active** | Reject (already incepted) | Append ✓ (governance-authorized) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ (terminates the chain) |
-| **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; on linear IEL the seal coincides with the tip, so land-version v_tip = seal_version, admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
-| **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` (divergent IEL is structurally contested-terminal) | `ContestedIel` (divergent IEL is structurally contested-terminal — no further events including Cnt accepted; Cnt only lands as one of the events in the original 2-event divergent set, or on a linear chain) | `ContestedIel` (divergent IEL is structurally contested-terminal) |
-| **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
+| IEL State | Icp | Evl | Sea | Cnt / pending+Cnt | Dec |
+|-----------|-----|-----|-----|-------------------|-----|
+| **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject (no chain) | Reject | Reject |
+| **Active** | Reject (already incepted) | Append ✓ (governance-authorized; advances seal) | Append ✓ (governance-authorized; advances seal without policy evolution; parent must not be Icp/Sea/Cnt/Dec) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ (terminates the chain) |
+| **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | `ContestRequired` (Sea at-or-before seal would re-evaluate; only Cnt admitted at land-version = seal_version) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; on linear IEL the seal coincides with the tip, so land-version v_tip = seal_version, admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
+| **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` (divergent IEL is structurally contested-terminal) | `ContestedIel` | `ContestedIel` (divergent IEL is structurally contested-terminal — no further events including Cnt accepted; Cnt only lands as one of the events in the original 2-event divergent set, or on a linear chain) | `ContestedIel` (divergent IEL is structurally contested-terminal) |
+| **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
 
 ### Batch submissions
 

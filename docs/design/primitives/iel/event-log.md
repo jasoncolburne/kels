@@ -75,7 +75,7 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 
 The route that creates divergence on an IEL chain:
 
-**Concurrent extensions** (race, same-batch fork): two events land at the same version. Valid pairings on IEL are `Evl`-`Evl` (two governance parties racing from a shared `v_{d-1}` tip) and `Evl`-`Cnt` (a Cnt-submitter's node had its tip advanced to `v_d` via gossip-delivered `Evl`, then submitted Cnt extending `v_{tip-1} = v_{d-1}`). Every IEL divergent set at `v_d` contains at least one `Evl`. `Cnt` is absolute and terminal — at most one `Cnt` per log — so `Cnt`-`Cnt` cannot form. `Dec` extends tip directly (`Dec.previous = tip.said`), so it lands only on linear chains and never appears in a divergent set — a `Dec` landing decommissions the chain. Divergence transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Cnt`, or `Dec` arriving via gossip.
+**Concurrent extensions** (race, same-batch fork): two events land at the same version. Valid pairings on IEL involve `Evl` and `Sea` (both seal-advancing, governance-authorized, parent = tip directly) and `Cnt` (governance-authorized, parent = `v_{tip-1}` per the Cnt parent rule). Possible pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Sea`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt`. `Cnt`-`Cnt` cannot form (Cnt is absolute and terminal — at most one per log). `Dec` extends tip directly and lands only on linear chains, never in a divergent set — a `Dec` landing decommissions the chain. Every IEL divergent set at `v_d` contains at least one seal-advancing event (`Evl` or `Sea`). Divergence transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip.
 
 **Diagrams.** The possible shapes look like:
 
@@ -83,8 +83,8 @@ The route that creates divergence on an IEL chain:
 Concurrent extension at v_d:
 
   v0      v1        v2     ← divergent set at v2; chain immediately contested-terminal
-[Icp] → [Evl] ─┬─ [event_A]    Evl or Cnt
-               └─ [event_B]    Evl or Cnt (distinct submission from event_A)
+[Icp] → [Evl] ─┬─ [event_A]    Evl, Sea, or Cnt
+               └─ [event_B]    Evl, Sea, or Cnt (distinct submission from event_A)
 
 At most one of the two events can be Cnt (Cnt is absolute and terminal — at
 most one per log). Dec cannot appear in divergence: Dec extends tip directly
@@ -384,7 +384,7 @@ Implications for IEL consumers (and transitively SEL consumers, since SEL binds 
 
 This is observable, not hidden — the chain mathematics make the post-rec state visible. The consumer's runtime trust judgement is: when an anchoring KEL has `rec` history, re-verify the IEL and any SELs bound to it; treat past state with caution proportionate to what survives.
 
-**A contested KEL is whole-chain-suspect.** Once a KEL has been contested (any privileged-divergence on it, or explicit Cnt), no anchors anchored under it can ground new trust decisions. This is stronger than the recovery case: under recovery, anchors on the surviving branch remain authoritative; under contest, the chain mathematics cannot tell which side is the rightful operator and consumers must treat all anchors on the chain as suspect. Past IEL and SEL evaluations that depend on a contested KEL lose their authorization basis. Cascade-reincept applies: the dependent IEL (and its dependent SELs) must reincept against a different anchoring KEL.
+**A contested KEL is whole-chain-suspect.** Once a KEL has been contested (any privileged-divergence on it, or explicit Cnt), the anchors it produced cease to ground trust decisions. This is stronger than the recovery case: under recovery, anchors on the surviving branch remain authoritative; under contest, the chain mathematics cannot tell which side is the rightful operator and consumers must treat all anchors the contested KEL produced as suspect. Whether dependent IEL/SEL events lose their authorization basis depends on (a) whether the contested KEL actually anchored events on those chains, and (b) whether the resolving policy has threshold redundancy that lets it evaluate as satisfied without the contested KEL's contribution. Threshold-redundant policies (`M > N` across distinct custodians) absorb single-member contest — past events stay satisfied via the surviving members, and the operator's forward response is governance evolution (`Evl`) to rotate the contested KEL out of the policy. Cascade-reincept of the IEL or its dependent SELs is required only when the chain *itself* is contested, not transitively from a contested anchoring KEL. See [../../protocol-doctrine.md §Adversary Patience and Policy Redundancy](../../protocol-doctrine.md#adversary-patience-and-policy-redundancy).
 
 The caveat applies to anchors of any kind — IEL events (governance), and transitively SEL events that bind to them.
 
@@ -448,11 +448,12 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | `Evl` | Append. Seal advances. |
+| Linear, normal append | `Sea` | Append. Seal advances (no policy evolution). |
 | Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
-| Linear, overlap (fork) | concurrent `Evl` | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). |
+| Linear, overlap (fork) | concurrent `Evl` or `Sea` | Insert second event at `v_d`; chain becomes contested-terminal (every IEL event is privileged → privileged-divergence rule fires). Valid divergent pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Sea`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt`. |
 | Divergent | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain stays contested-terminal. |
 | Divergent | any other event | Rejected; chain is contested-terminal. |
-| Linear, post-evaluation-seal | `Evl` extending pre-seal version | Rejected by seal-cap (cannot fork at or before the seal). |
+| Linear, post-evaluation-seal | `Evl` or `Sea` extending pre-seal version | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal | `Dec` | Append at tip; mark decommissioned. |
 | Contested | any | Rejected with `ContestedIel`. |
 | Decommissioned | gossip-delivered `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
@@ -461,7 +462,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 ## Implementation Map
 
 **Code:**
-- `lib/kels/src/types/iel/event.rs` — `IdentityEventKind` enum (`Icp`/`Evl`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules.
+- `lib/kels/src/types/iel/event.rs` — `IdentityEventKind` enum (`Icp`/`Evl`/`Sea`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules.
 - `lib/kels/src/types/iel/verification.rs` — `IelVerifier`, `IelVerification`, branch state with tracked `auth_policy` and tracked `governance_policy`.
 - `lib/kels/src/identity_builder.rs` — `IdentityEventBuilder` with `evolve()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification.
 - Server submit handler — terminal gate, immunity gate, divergent-rejection routing (returns `ContestRequired` for non-`Cnt` events on divergent chains), algorithmic `ContestRequired` trigger for events at-or-before evaluation seal.

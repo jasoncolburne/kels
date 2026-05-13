@@ -35,7 +35,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 `Sea`, `Rpr`, `Cnt`, `Dec` all return `evaluates_governance() = true`.
 
-For per-kind field rules and typical chain shapes, see [events.md](events.md). SEL has no `Est` kind — identity rooting eliminates the optional-governance-at-Icp dance.
+For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 ### Inception batch rule
 
@@ -65,7 +65,7 @@ Implications for SEL consumers:
 
 This is observable, not hidden — the chain mathematics make the post-`rec` state visible. The consumer's runtime trust judgement is: when a participating KEL has `rec` history, re-verify the SEL (and the IEL it binds to) and treat past state with caution proportionate to what survives.
 
-**A contested anchoring KEL is whole-chain-suspect.** Once the participating KEL has been contested (any privileged-divergence on it, or explicit Cnt), no anchors anchored under it can ground new trust decisions. Past SEL evaluations that depend on a contested KEL lose their authorization basis; cascade-reincept applies (the dependent IEL and SEL must reincept against a different anchoring KEL).
+**A contested anchoring KEL is whole-chain-suspect.** Once a participating KEL has been contested (any privileged-divergence on it, or explicit Cnt), the anchors it produced cease to ground trust decisions. Whether dependent IEL/SEL events lose their authorization basis depends on (a) whether the contested KEL actually anchored events on those chains, and (b) whether the resolving policy has threshold redundancy that lets it evaluate as satisfied without the contested KEL's contribution. Threshold-redundant policies (`M > N` across distinct custodians) absorb single-member contest — past anchored events stay satisfied via the surviving members; the operator's forward response is governance evolution (`Evl` on the bound IEL) to rotate the contested KEL out of the policy. Cascade-reincept of the IEL or SEL is required only when the chain *itself* is contested, not transitively from a contested anchoring KEL. See [../../protocol-doctrine.md §Adversary Patience and Policy Redundancy](../../protocol-doctrine.md#adversary-patience-and-policy-redundancy).
 
 ## Divergence and Freeze
 
@@ -341,12 +341,12 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).
 
 **Notable changes from the dual-policy era:**
-- No `Est` kind. SEL events carry no first-class authorization-policy fields.
+- SEL events carry no first-class authorization-policy fields (policies live on the bound IEL).
 - No per-branch tracking of authorization policies on branch state.
 - No SEL-side immunity rule (lives on IEL).
 - New `identity_event` field on every v1+ event.
 - Per-branch `identity_event` tracking (each branch's tip's `identity_event` for the per-event parent-monotonic check on the next event extending that branch); chain-wide `last_identity_event` is a derived aggregate.
-- New `[Icp, Est]` minimum inception batch rule.
+- New `[Icp, Est]` minimum inception batch rule (`Est` reintroduced as the tier-2 binding-establishment event under [§Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), distinct from its pre-dual-policy role).
 
 ## References
 
