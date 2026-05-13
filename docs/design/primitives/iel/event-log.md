@@ -10,10 +10,10 @@ An IEL is the authorization root for a SEL. Every Credential, SEL, or generally 
 
 | State | Description | Accepts new events? |
 |---|---|---|
-| **Active** | Linear chain of events, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
-| **Divergent** | Two events exist at some version `d`. Both branches preserved as forensic record. **On IEL, divergence is always immediately contested** — every IEL event is governance-authorized (Icp/Evl/Sea/Cnt/Dec all privileged), so any divergent set on IEL contains a privileged event by definition, and the privileged-divergence rule fires (see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)). The "Divergent" state is structurally vacuous on IEL; divergence transitions directly to Contested. | Treated as Contested from the moment divergence is observed. |
-| **Contested** | Chain has terminated due to divergence (any divergent set on IEL), or via an explicit `Cnt` extending `v_{tip-1}` on a linear chain (which creates fresh divergence at the tip's version, immediately privileged-divergent → contested). Once contested, no further events land. | None. All submissions rejected. |
-| **Decommissioned** | Chain has terminated cleanly by operator action — at least one `Dec` event in the chain, no Cnt or divergence. | Gossip-delivered `Cnt` accepted (chain transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)); all other submissions rejected with `IelDecommissioned`. |
+| **Active** | Linear chain, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
+| **Divergent** | Two events at version `d`. Structurally vacuous on IEL — divergence transitions immediately to Contested (see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)). | Treated as Contested. |
+| **Contested** | Chain terminated — divergence (any divergent set on IEL), or explicit `Cnt` on a linear chain (see [§Cnt mechanics](#cnt-mechanics)). | None. All submissions rejected. |
+| **Decommissioned** | Chain terminated cleanly by operator — at least one `Dec`, no Cnt or divergence. | Gossip-delivered `Cnt` → Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); all other submissions rejected with `IelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `IelVerification` token surfaces:
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)

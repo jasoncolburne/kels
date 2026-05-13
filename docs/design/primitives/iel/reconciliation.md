@@ -36,12 +36,20 @@ What happens when a client submits events to the submit handler on a single node
 
 | IEL State | Icp | Evl | Sea | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-----|-------------------|-----|
-| **Empty** | Append ✓ if `governance_policy` satisfied (Icp.said anchored under declared governance_policy — every IEL event is governance-authorized); reject otherwise | Reject (no chain) | Reject (no chain) | Reject | Reject |
-| **Active** | Reject (already incepted) | Append ✓ (governance-authorized; advances seal) | Append ✓ (governance-authorized; advances seal without policy evolution; parent must not be Icp/Sea/Cnt/Dec) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ (terminates the chain) |
-| **Active, sealed** (governance event at-or-before `last_governance_event` in chain order would re-evaluate the seal) | n/a | `ContestRequired` | `ContestRequired` (Sea at-or-before seal would re-evaluate; only Cnt admitted at land-version = seal_version) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; on linear IEL the seal coincides with the tip, so land-version v_tip = seal_version, admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec on a non-divergent chain routes to decommission regardless of seal position; chain terminates cleanly) |
-| **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` (divergent IEL is structurally contested-terminal) | `ContestedIel` | `ContestedIel` (divergent IEL is structurally contested-terminal — no further events including Cnt accepted; Cnt only lands as one of the events in the original 2-event divergent set, or on a linear chain) | `ContestedIel` (divergent IEL is structurally contested-terminal) |
+| **Empty** | Append ✓ if `governance_policy` satisfied; else reject | Reject (no chain) | Reject (no chain) | Reject | Reject |
+| **Active** | Reject (already incepted) | Append ✓ | Append ✓ | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Evl`/`Sea` would land at-or-before `last_governance_event` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → contest per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); other `Cnt` parent shapes → `IelDecommissioned` | `IelDecommissioned` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` | `IelDecommissioned` |
+
+### Notes on cell routing
+
+- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates a 2-event divergent set at `v_tip` with the existing tip; privileged-divergence-is-terminal fires immediately. On linear IEL the seal coincides with the tip, so `Cnt`'s land-version equals `seal_version` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Sea` shape constraints** — parent must not be `Icp`/`Sea`/`Cnt`/`Dec`. See [events.md §Sea](events.md).
+- **`Dec` on Active or Active, sealed** — Dec terminates the chain rather than extending it; routes to decommission regardless of seal position.
+- **Divergent IEL → `ContestedIel` everywhere** — divergent IEL is structurally contested-terminal (every IEL event is governance-authorized → privileged), so no further events including Cnt land in the divergent state. The Cnt-as-third-event upgrade path doesn't exist on IEL. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
+- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds (Evl/Sea/Dec) on a Decommissioned chain → `IelDecommissioned`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 
 ### Batch submissions
 
@@ -66,10 +74,17 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 
 | Source | Sink: Empty | Sink: Active | Sink: Active (other branch authored) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|--------------|--------------------------------------|-----------------|-----------------|----------------------|
-| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ (sink stores both branches) | Duplicates of one branch, no-op for that branch ✓ | `ContestedIel` (sink terminal; gossip ignored) | `IelDecommissioned` (sink terminal; gossip ignored) |
-| **Divergent** | Both fork events appended ✓ (sink becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓; full anti-entropy may reconcile any-missing-branch-events | `ContestedIel` | `IelDecommissioned` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | `Cnt` batch routes to contest path ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ (gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); effective SAIDs converge on `hash("contested:{prefix}")`) |
-| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch routes to decommission ✓ | Overlap detected, `Dec` in chain → decommission ✓ | `Dec` does not resolve divergence — gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission. | `ContestedIel` | Effective SAIDs match (or both terminal-frozen at the Dec event SAID); no-op |
+| **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ | Duplicates of one branch, no-op ✓ | `ContestedIel` | `IelDecommissioned` |
+| **Divergent** | Both fork events appended ✓ | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedIel` | `IelDecommissioned` |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ |
+| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `ContestRequired` | `ContestedIel` | Effective SAIDs match; no-op |
+
+### Notes on cell routing
+
+- **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
+- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Decommissioned → Divergent sink** — `Dec` does not resolve divergence; gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission.
+- **Divergent → Divergent sink** — effective SAIDs match by construction (both produce `hash("divergent:{prefix}")`); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
 The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest-or-decommission-or-stay-divergent.
 

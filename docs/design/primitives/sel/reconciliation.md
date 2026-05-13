@@ -46,18 +46,26 @@ What happens when a client submits events to the submit handler on a single node
 |-----------|-----|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
 | **Empty** (`[Icp]` alone) | n/a | n/a | n/a | n/a | n/a — rejected as `IncompleteInception` |
-| **Empty** (`[Icp, Est]` minimum) | Append ✓ if Est's `identity_event` resolves to bound IEL and anchor satisfies IEL-resolved auth_policy; reject `BadIdentityBinding` otherwise | n/a | n/a | n/a | n/a |
-| **Active** | Append ✓ (auth_policy gated via IEL) | Append ✓ (governance_policy gated via IEL) | **Active (clean)**: builder pre-flights with `NothingToRepair`; if submitted, `truncate_and_replace` archives nothing and inserts the Rpr. **Active (adversary linear extension)**: discriminator-driven repair archives the adversary chain. ✓ | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip with the existing tip; privileged-divergence-is-terminal fires; chain becomes Contested) | Append ✓ |
-| **Active, sealed** (Upd at-or-before `last_governance_event` in chain order) | `ContestRequired` | `ContestRequired` (Sea is non-terminal; algorithmic trigger fires for any non-terminal, non-Rpr event at-or-before the seal) | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ (Cnt with `previous = v_{tip-1}.said` creates fresh divergence at v_tip; land-version v_tip = seal_version is admitted by the seal-cap's parent-at-(seal − 1) boundary; chain becomes Contested) | Append ✓ (Dec is terminal; algorithmic trigger excludes terminal kinds; chain terminates cleanly) |
-| **Divergent** | Reject `RepairRequired` | Reject `RepairRequired` | Discriminator-driven repair ✓ | Contest ✓ (Cnt with `previous = v_{d-1}.said` joins divergent set as 3rd event via upgrade rule; privileged-divergence-is-terminal fires; chain becomes Contested) | Reject `RepairRequired` |
-| **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` (seal already advanced; can't repair, must contest) | Contest ✓ | `ContestRequired` |
+| **Empty** (`[Icp, Est]` minimum) | Append ✓ if `identity_event` binding + anchor satisfy IEL auth_policy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
+| **Active** | Append ✓ (auth_policy via IEL) | Append ✓ (governance_policy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Upd` at-or-before `last_governance_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Divergent** | `RepairRequired` | `RepairRequired` | Discriminator-driven repair ✓ | Contest ✓ → Contested (joins set via upgrade rule) | `RepairRequired` |
+| **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` |
-| **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `Cnt` with `previous = v_{d-1}.said` → override → contest per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); other `Cnt` parent shapes → `DecommissionedSel` | `DecommissionedSel` |
+| **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `DecommissionedSel` | `DecommissionedSel` |
 
 Additional rejection cases for v1+ events that don't fit per-state cells:
 - `BadIdentityBinding` — `identity_event` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
 - `IelDivergent` — bound IEL event lives on a divergent IEL branch.
+
+### Notes on cell routing
+
+- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-version equals `seal_version` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `last_governance_event` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
+- **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded).
+- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `DecommissionedSel`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 
 ### Batch submissions
 
@@ -83,10 +91,18 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 | Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|----------------------|--------------------------|-----------------|-----------------|----------------------|
 | **Active** | Full chain appended ✓ (incl. mandatory `[Icp, Est]` opening) | Duplicates, no-op ✓ | Overlap → divergence ✓ | `RepairRequired` | `ContestedSel` | `DecommissionedSel` |
-| **Repaired** | Full clean chain ✓ | `Rpr` batch detected → discriminator-driven repair ✓ | `Rpr` batch → repair archives sink's adversary chain ✓ | `Rpr` batch → repair ✓ | `ContestedSel` | `DecommissionedSel` |
-| **Divergent** | Both fork events appended ✓ (chain becomes divergent) | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedSel` | `DecommissionedSel` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `Cnt` batch → override → contest ✓ (gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); effective SAIDs converge on `hash("contested:{prefix}")`) |
+| **Repaired** | Full clean chain ✓ | `Rpr` batch → discriminator-driven repair ✓ | `Rpr` batch → repair archives sink's adversary chain ✓ | `Rpr` batch → repair ✓ | `ContestedSel` | `DecommissionedSel` |
+| **Divergent** | Both fork events appended ✓ | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedSel` | `DecommissionedSel` |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `Cnt` batch → override → contest ✓ |
 | **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `RepairRequired` (until repair lands) | `ContestedSel` | Effective SAIDs match (Dec.said) ✓ |
+
+### Notes on cell routing
+
+- **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
+- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Send-side partitioning** (Source: Divergent, Source: Contested, Source: Repaired) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels).
+- **Decommissioned → Divergent sink** — `Dec` cannot resolve divergence; sink stays divergent until `Rpr` or `Cnt` arrives.
+- **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
 The matrix is smaller than KEL's because SEL's discriminator handles repair-driven archival inline; the source-side partitioning (`send_divergent_sel_events`) ensures each sub-batch routes through a single discriminator predicate at the sink, so the matrix collapses around the source's terminal state rather than expanding into per-sub-batch cases.
 
