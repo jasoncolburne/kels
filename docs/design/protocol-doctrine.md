@@ -52,6 +52,8 @@ The structural mechanism that enforces "current-state-only authority" is the cha
 
 A new event's land-version MUST be at-or-after the seal (`event_version >= seal_version`). Any submission whose land-version is strictly before the seal is rejected (`"Cannot land at version V — sealed by evaluation/recovery at version S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
+##### Parent-at-seal boundary case
+
 The land-version framing matters at the parent-at-seal boundary. When the chain's tip is itself the most recent privileged event (always-true on linear IEL chains where every event advances the seal; sometimes-true on KEL when the tip is a `Ror` and on SEL when the tip is a `Sea`), a Cnt with `previous = v_{tip-1}.said` lands at v_tip = seal_version with `parent_version = seal_version − 1`. `event_version = seal_version` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal. Disallowing this boundary case would block Cnt on linear chains whose tip is a privileged event entirely — including all linear IEL chains.
 
 **Only `Cnt` is admitted at `event_version = seal_version`.** The boundary carve-out is `Cnt`-specific by construction. Per-primitive reconciliation matrices show all other kinds either route to `ContestRequired` or are structurally `n/a`:

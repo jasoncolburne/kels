@@ -241,6 +241,14 @@ The merge engine (`merge_events`) handles all routing internally. The KELS servi
 
 All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The CASE expression uses `KeyEventKind::sort_priority()` to ensure state-determining events (recovery, contest) sort after normal events at the same serial. `MINIMUM_PAGE_SIZE` (64) / `page_size()` controls the page size for both reads and the submit handler's full path. Responses include `has_more` to indicate truncation.
 
+## Gossip Send-Side Partitioning (divergent KELs)
+
+Propagating a divergent KEL chain to a remote node requires more than ordering events by canonical chain order. The receiver's submit handler routes batches by content predicates (`is_contest`, divergent-rejection); a single batch that contains both pre-divergence events and a post-divergence non-`Cnt` extension would route through "normal append (overlap creates fork)" and the second branch's events get rejected. To make propagation succeed, the SENDER partitions the chain into sub-batches the receiver will accept under its routing rules and sends them in sequence.
+
+`send_divergent_events` (`lib/kels/src/types/kel/sync.rs:517`) handles the partitioning: longer chain first as paged non-divergent appends, then the contesting / fork event as an atomic batch. See [reconciliation.md §Transfer ordering](reconciliation.md#transfer-ordering) for the per-state matrix and case-handling.
+
+**Why send-side, not receive-side:** receive-side ordering can sort what arrived but cannot fix structural composition problems where the receiver's submit handler will reject a particular batch composition. The sender has full chain visibility and can produce sequences that compose correctly given the receiver's routing rules. Relying on the receiver's submit handler to "figure out" complex batches is invariant-protection reasoning; the cryptographic-soundness argument is that the sender produces sequences that the routing rules accept by construction.
+
 ## Key Invariants
 
 1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, rec=5, dec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/kel/v1/events/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `partition_for_submission()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest
@@ -249,3 +257,12 @@ All KEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for d
 4. **Contest is the only response when the recovery key is revealed in divergence** - the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
 5. **Contested KELs are permanently frozen** - No events can be added after contest
 6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.
+
+## References
+
+- [event-log.md](event-log.md) — Chain lifecycle, recovery, contest, decommission.
+- [reconciliation.md](reconciliation.md) — Multi-node correctness proof matrix.
+- [verification.md](verification.md) — `KelVerifier` algorithm.
+- [events.md](events.md) — Per-kind reference.
+- [../iel/merge.md](../iel/merge.md) — IEL counterpart.
+- [../sel/merge.md](../sel/merge.md) — SEL counterpart (which has `Rpr` and the discriminator).

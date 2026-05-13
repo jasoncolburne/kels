@@ -147,3 +147,13 @@ sN+1     kind=dec   ← owner ends the KEL cleanly; dual-signed (kN + recovery k
 ```
 
 After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+
+## References
+
+- [event-log.md](event-log.md) — Chain lifecycle, recovery, contest, decommission.
+- [verification.md](verification.md) — `KelVerifier` algorithm.
+- [merge.md](merge.md) — Submit-handler routing.
+- [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
+- [../iel/events.md](../iel/events.md) — IEL per-kind reference.
+- [../sel/events.md](../sel/events.md) — SEL per-kind reference.
+- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model (`Delegate(delegator)` resolution for `Dip`).
