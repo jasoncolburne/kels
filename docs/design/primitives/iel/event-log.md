@@ -237,101 +237,112 @@ There is no separate "most recent at submit time" rule. Such a rule would create
 
 Parent-monotonic prevents an adversary from extending a branch with a regressed `iel_event` — once a branch's tip is bound to IEL_v5, no further event extending that same branch can bind to anything earlier than v5. On actively-maintained chains, the legitimate operator's recent events on the live branch have advanced `iel_event` forward; an adversary with stale (revoked-since) authority cannot insert new events on that same branch bound to their old IEL state.
 
-Parent-monotonic does NOT prevent:
+Parent-monotonic does NOT prevent three scenarios. None breaks the system: each has an operator-side defense covered in [§Consumer-side discipline](#consumer-side-discipline), [§Operator-discipline corollary for governance evolution](#operator-discipline-corollary-for-governance-evolution), or [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The three are worth understanding when designing enrollment flows and operator routines.
 
-- **Brand-new SEL chain races.** Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — Icp dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with parent=Icp.said (extending `Icp` via dedup-equivalence, per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline) — operators never extend adversary events), creating a non-privileged divergent set with `Est_stale` (both auth-authorized; Est-Est race shape). The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Est_legit` branch; `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain. See [§Application-developer enrollment patterns](#application-developer-enrollment-patterns) below. The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+#### Brand-new chain races (not blocked)
 
-  ```
-  Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
+Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — `Icp` dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with `parent = Icp.said` (extending `Icp` via dedup-equivalence per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline); operators never extend adversary events). This creates a non-privileged divergent set with `Est_stale` — both auth-authorized; Est-Est race shape.
 
-    [Icp_v0] → [Est_stale @ v_1, iel_event=IEL_v_old]   (chain tip)
+The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Est_legit` branch. `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain — see [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
 
-  Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
-  Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
+```
+Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
 
-    Icp dedups (deterministic prefix + SAID across submitters).
-    Est_legit lands at v_1 alongside Est_stale:
+  [Icp_v0] → [Est_stale @ v_1, iel_event=IEL_v_old]   (chain tip)
 
-    [Icp_v0] ─┬─ [Est_stale @ v_1, iel_event=IEL_v_old]
-              └─ [Est_legit @ v_1, iel_event=IEL_v_current]
+Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
+Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
 
-    Both auth-authorized; neither privileged → non-privileged divergent.
+  Icp dedups (deterministic prefix + SAID across submitters).
+  Est_legit lands at v_1 alongside Est_stale:
 
-  Step 3 — Operator submits Rpr extending Est_legit at v_2 (branch-tip-
-  extending shape):
+  [Icp_v0] ─┬─ [Est_stale @ v_1, iel_event=IEL_v_old]
+            └─ [Est_legit @ v_1, iel_event=IEL_v_current]
 
-    Rpr.previous = Est_legit.said,  Rpr.serial = 2
+  Both auth-authorized; neither privileged → non-privileged divergent.
 
-    Discriminator archives Est_stale's branch:
+Step 3 — Operator submits Rpr extending Est_legit at v_2 (branch-tip-
+extending shape):
 
-    [Icp_v0] → [Est_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
-                                       ↑
-                                       Est_stale archived (forensic;
-                                                           not on live chain)
-  ```
-- **Stale governance termination on an unratcheted branch.** An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `iel_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `iel_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `iel_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
+  Rpr.previous = Est_legit.said,  Rpr.serial = 2
 
-  ```
-  IEL evolves governance:
-    IEL: [Icp] → [Evl_old] → [Evl_new]
+  Discriminator archives Est_stale's branch:
 
-  Vulnerable window (SEL tip not yet ratcheted):
-    SEL: [Icp] → ... → [Upd_v_N, iel_event=Evl_old.said]   (tip)
-                                            ↑
-                                      adversary with stale gov_old
-                                      authority can submit:
+  [Icp_v0] → [Est_legit @ v_1] → [Rpr @ v_2]   (linear, repaired)
+                                     ↑
+                                     Est_stale archived (forensic;
+                                                         not on live chain)
+```
 
-      Cnt_stale.previous       = Upd_v_N.said       (extends tip)
-      Cnt_stale.iel_event = Evl_old.said       (stale binding)
+#### Stale governance termination on unratcheted branches (not blocked)
 
-      Per-event parent-monotonic check:
-        parent's iel_event = Evl_old.said
-        Cnt_stale's             = Evl_old.said
-        Evl_old ≥ Evl_old → SATISFIED → accepted; chain terminates.
+An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `iel_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `iel_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `iel_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
 
-  After operator-discipline Sea ratchet (post-Sea state):
-    SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, iel_event=Evl_new.said]  (tip)
+```
+IEL evolves governance:
+  IEL: [Icp] → [Evl_old] → [Evl_new]
 
-  Same adversary tries again:
-      Cnt_stale.previous       = Sea_v_{N+1}.said
-      Cnt_stale.iel_event = Evl_old.said
+Vulnerable window (SEL tip not yet ratcheted):
+  SEL: [Icp] → ... → [Upd_v_N, iel_event=Evl_old.said]   (tip)
+                                          ↑
+                                    adversary with stale gov_old
+                                    authority can submit:
 
-      Per-event parent-monotonic check:
-        parent's iel_event = Evl_new.said
-        Cnt_stale's             = Evl_old.said
-        Evl_old < Evl_new → REGRESS → HARD-fail rejection.
-  ```
+    Cnt_stale.previous       = Upd_v_N.said       (extends tip)
+    Cnt_stale.iel_event = Evl_old.said       (stale binding)
 
-- **Cnt fork-contest with low iel_event.** A Cnt that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.iel_event >= v_{d-1}.iel_event`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch. This is intentional: chain-wide watermark would otherwise reject Cnt fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `iel_event`s than the Cnt's binding.
+    Per-event parent-monotonic check:
+      parent's iel_event = Evl_old.said
+      Cnt_stale's             = Evl_old.said
+      Evl_old ≥ Evl_old → SATISFIED → accepted; chain terminates.
 
-  ```
-  Pre-state (existing non-priv divergent at v_d with high SEL serials but
-  low iel_event on the diverged branches):
+After operator-discipline Sea ratchet (post-Sea state):
+  SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, iel_event=Evl_new.said]  (tip)
 
-    SEL: [Icp] → ... → [Upd_{d-1}, iel_event=IEL_v3] ─┬─ Upd_a @ v_d  ┐
-                                                          └─ Upd_b @ v_d  ┘
-                                                          (both bound to IEL_v3)
+Same adversary tries again:
+    Cnt_stale.previous       = Sea_v_{N+1}.said
+    Cnt_stale.iel_event = Evl_old.said
 
-  Operator (with current governance, bound to IEL_v5) submits Cnt that
-  forks from v_{d-1} as a new singleton branch at v_d:
+    Per-event parent-monotonic check:
+      parent's iel_event = Evl_new.said
+      Cnt_stale's             = Evl_old.said
+      Evl_old < Evl_new → REGRESS → HARD-fail rejection.
+```
 
-    Cnt.previous       = v_{d-1}.said      (parent is divergence ancestor)
-    Cnt.serial        = d
-    Cnt.iel_event = IEL_v5.said       (operator's current binding)
+#### Cnt fork-contest with low iel_event (not blocked)
 
-  Per-event parent-monotonic check (per branch, against THIS branch's
-  parent — v_{d-1}, NOT against Upd_a/Upd_b which are on independent
-  branches):
-    parent's iel_event = IEL_v3.said
-    Cnt's                   = IEL_v5.said
-    IEL_v5 ≥ IEL_v3 → SATISFIED → Cnt joins the divergent set as a
-    3rd event at v_d via upgrade rule → privileged-divergence-is-terminal
-    fires → chain becomes contested-terminal.
+A `Cnt` that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.iel_event >= v_{d-1}.iel_event`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch.
 
-  Cnt's binding is unrelated to Upd_a/Upd_b's `iel_event` because
-  they're on structurally independent branches from Cnt's. Chain-wide
-  watermark would block this — rightly understood as overconstraining.
-  ```
+This is intentional. Chain-wide watermark would otherwise reject `Cnt` fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `iel_event`s than the Cnt's binding. The per-branch framing is what makes operator contest viable when the live branches are stale.
+
+```
+Pre-state (existing non-priv divergent at v_d with high SEL serials but
+low iel_event on the diverged branches):
+
+  SEL: [Icp] → ... → [Upd_{d-1}, iel_event=IEL_v3] ─┬─ Upd_a @ v_d  ┐
+                                                    └─ Upd_b @ v_d  ┘
+                                                    (both bound to IEL_v3)
+
+Operator (with current governance, bound to IEL_v5) submits Cnt that
+forks from v_{d-1} as a new singleton branch at v_d:
+
+  Cnt.previous       = v_{d-1}.said      (parent is divergence ancestor)
+  Cnt.serial         = d
+  Cnt.iel_event      = IEL_v5.said       (operator's current binding)
+
+Per-event parent-monotonic check (per branch, against THIS branch's
+parent — v_{d-1}, NOT against Upd_a/Upd_b which are on independent
+branches):
+  parent's iel_event = IEL_v3.said
+  Cnt's              = IEL_v5.said
+  IEL_v5 ≥ IEL_v3 → SATISFIED → Cnt joins the divergent set as a
+  3rd event at v_d via upgrade rule → privileged-divergence-is-terminal
+  fires → chain becomes contested-terminal.
+
+Cnt's binding is unrelated to Upd_a/Upd_b's `iel_event` because
+they're on structurally independent branches from Cnt's. Chain-wide
+watermark would block this — rightly understood as overconstraining.
+```
 
 ### Consumer-side discipline
 
