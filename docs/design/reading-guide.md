@@ -32,17 +32,28 @@ Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitiv
 
 ### KEL — second
 
-Adds device-level cryptography. Signing key, rotation key (pre-committed via `rotation_hash`), recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Dual-signature requirement on recovery-revealing events. Within the recovery-revealing class, `Rec` is the discriminator-based recovery primitive (the only kind that archives) — it has two parent shapes, branch-tip-extending and divergence-ancestor-extending. `Ror`, `Cnt`, `Dec` are recovery-revealing but non-archiving. KEL is the authenticity primitive that anchors everything else: IEL events anchor in KELs at tier 2 (`Rot`, governance acts) or tier 3 (`Ror`, terminals) per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation); SEL post-inception events anchor at the same tiers (SEL `Icp` itself is permissionless and unanchored).
+KEL adds device-level cryptography to the chain model you learned from IEL. A KEL carries three key roles — a signing key, a rotation key (pre-committed via `rotation_hash`), and a recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Recovery-revealing events require a dual signature. KEL is the authenticity primitive that anchors everything else: IEL events anchor in KELs at tier 2 (`Rot`, governance acts) or tier 3 (`Ror`, terminals) per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation); SEL post-inception events anchor at the same tiers (SEL `Icp` itself is permissionless and unanchored).
 
-New concepts to internalize after IEL: forward-key commitments (`rotation_hash`, `recovery_hash`), the recovery-revealing event class, dual-sig authorization, the `Rec` discriminator's two shapes, proactive-ROR bound, and the upgrade rule (non-privileged divergent set + gossip-delivered non-archiving privileged event upgrades the chain to contested). The upgrade rule applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
+New concepts you'll meet:
+
+- Forward-key commitments — `rotation_hash` and `recovery_hash` pre-commit the next pair of keys; the revealing event must produce a matching preimage.
+- The recovery-revealing event class — `Rec`/`Ror`/`Cnt`/`Dec` each reveal the recovery key; all four are dual-signed.
+- Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Cnt`/`Dec` are recovery-revealing but non-archiving.
+- Proactive-ROR bound — a protocol-level cap on how many non-revealing events can sit between recovery-revealing events.
+- The upgrade rule — a non-privileged divergent set plus a gossip-delivered non-archiving privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
 
 Read in order: [events.md](primitives/kel/events.md) → [event-log.md](primitives/kel/event-log.md) → [merge.md](primitives/kel/merge.md) → [verification.md](primitives/kel/verification.md) → [reconciliation.md](primitives/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
 
 ### SEL — third
 
-The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Adds a `content` field (the per-event payload — KELS application data), an `iel_event` field (the SAID of the IEL event whose policy authorizes this SEL event), and the SEL-specific per-event parent-monotonic ratchet on `iel_event`. Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and the upgrade rule (already introduced in KEL).
+The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `iel_event` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the upgrade rule.
 
-New concepts to internalize after KEL + IEL: identity-rooting (every SEL binds to an IEL prefix at inception), the per-event parent-monotonic ratchet, `Rpr` as SEL's discriminator-based recovery, cross-chain binding stability under IEL governance evolution.
+New concepts you'll meet:
+
+- Identity-rooting — every SEL binds at inception to an IEL prefix and resolves per-event authorization through the IEL.
+- Per-event parent-monotonic ratchet on `iel_event` — each SEL event's binding must be at-or-after its parent's (per branch), preventing same-branch regression to stale IEL state.
+- `Rpr` — SEL's discriminator-based recovery, analogous in shape to KEL's `Rec` but governance-authorized (a higher-bar resolution of auth-policy-level divergence).
+- Cross-chain binding stability — how SEL's `iel_event` resolution stays deterministic across IEL governance evolution.
 
 Read in order: [events.md](primitives/sel/events.md) → [event-log.md](primitives/sel/event-log.md) → [merge.md](primitives/sel/merge.md) → [verification.md](primitives/sel/verification.md) → [reconciliation.md](primitives/sel/reconciliation.md). Supplemental: [repair-workflow.md](primitives/sel/repair-workflow.md) for the operational walkthrough of `Rpr` ceremonies.
 
