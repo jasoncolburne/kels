@@ -208,7 +208,9 @@ SEL→IEL authorization resolution for a SEL Upd at v1+:
                                                 └─►  NO  → SEL Upd rejected
 
 The same shape applies for SEL Sea/Rpr/Cnt/Dec — they resolve through
-governance_policy rather than auth_policy at the same IEL event.
+governance_policy rather than auth_policy at the same IEL event. See
+[../sel/events.md §Validation rules](../sel/events.md#validation-rules-path-agnostic--submit-gossip-bootstrap-re-verification)
+for the canonical per-kind binding rule.
 ```
 
 ### Path-agnostic validation rules

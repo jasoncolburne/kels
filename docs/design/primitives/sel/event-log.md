@@ -196,7 +196,7 @@ KEL bundles symmetrically — its lifecycle ops (`recover`/`contest`/`rotate_rec
 
 ### Bounds
 
-`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63` caps the chain since the last `Sea`/`Rpr`/`Cnt`/`Dec` to 63 non-evaluation events. Repair cannot truncate at or before the evaluation seal (a fork-point at-or-before `last_seal_advancing_event` in IEL chain order is rejected). One page (limit 64) covers both branches and the bundled `[pending..., Rpr]`.
+`MAX_NON_EVALUATION_EVENTS = MINIMUM_PAGE_SIZE - 1 = 63` caps the chain since `last_seal_advancing_event` to 63 non-evaluation events. `Cnt`/`Dec` satisfy the cap by terminating the chain (no further events admitted; cap-counter rendered moot). Repair cannot truncate at or before the seal (a fork-point at-or-before `last_seal_advancing_event` in IEL chain order is rejected). One page (limit 64) covers both branches and the bundled `[pending..., Rpr]`.
 
 ## Contest (Cnt)
 

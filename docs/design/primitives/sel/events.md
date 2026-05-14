@@ -27,8 +27,8 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 | Kind | version | previous | identity | identity_event | content | sort_priority | authorization | KEL anchor kind |
 |---|---|---|---|---|---|---|---|---|
 | `Icp` | `== 0` | forbidden | **required** | forbidden | forbidden | 0 | none (permissionless) | none |
-| `Upd` | `>= 2` | required | forbidden | **required** | **required** | 1 | auth (via IEL) | `Ixn` (tier 1) |
-| `Est` | `== 1` | required | forbidden | **required** | **required** | 2 | auth (via IEL) | `Rot` (tier 2) |
+| `Est` | `== 1` | required | forbidden | **required** | **required** | 1 | auth (via IEL) | `Rot` (tier 2) |
+| `Upd` | `>= 2` | required | forbidden | **required** | **required** | 2 | auth (via IEL) | `Ixn` (tier 1) |
 | `Sea` | `>= 2` | required | forbidden | **required** | preserved | 3 | governance (via IEL) | `Rot` (tier 2) |
 | `Rpr` | `>= 2` | required | forbidden | **required** | preserved | 4 | governance (via IEL) | `Ror` (tier 3) |
 | `Dec` | `>= 2` | required | forbidden | **required** | preserved | 5 | governance (via IEL) | `Ror` (tier 3) |
