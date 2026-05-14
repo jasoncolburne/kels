@@ -343,6 +343,8 @@ The window is operationally meaningful only on **exclusion evolutions** — wher
 
 `Sea` is tier-2 anchored (KEL `Rot` per contributing member) — the same elevation as `Evl`. The cost to forge a `Sea` is exactly the cost to forge an `Evl`; an adversary who could prematurely advance the seal could already perform the original takeover. `Sea`'s value is shape correctness and audit clarity, not lowering the bar.
 
+**Operator-discipline recommendation: batch `[Evl, Sea]` on exclusion evolutions.** Submit the exclusion `Evl` and the seal-advancing `Sea` as a single batch. The `Sea` lands at `v_{N+1}` immediately after the `Evl` at `v_N`, advancing the seal past the exclusion point in the same submission. This closes the operator-side window where forgetting to follow up would leave `v_{N-1}`'s policy as the parent-at-(seal − 1) basis indefinitely. The `Sea` is authorized under the new (post-`Evl`) policy, which the operator now controls.
+
 Shape constraints on `Sea`:
 
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
