@@ -198,7 +198,7 @@ struct SadBranchTip {
     identity: Digest256,                  // bound IEL prefix (set at Icp)
     tip_identity_event: Option<Digest256>, // tip event's identity_event — used for the per-event parent-monotonic check on the next event extending this branch
     events_since_evaluation: u64,
-    last_governance_event: Option<Digest256>, // SAID of most recent Sea/Rpr on this branch
+    last_seal_advancing_event: Option<Digest256>, // SAID of most recent Sea/Rpr on this branch
 }
 ```
 
@@ -215,7 +215,7 @@ SelVerification:
     divergence_ancestor: Option<Digest256>    // SAID of v_{d-1} on a divergent chain (None on linear)
     is_contested: bool
     is_decommissioned: bool
-    last_governance_event: Option<Digest256>  // SAID of most recent Sea/Rpr
+    last_seal_advancing_event: Option<Digest256>  // SAID of most recent Sea/Rpr
     last_identity_event: Option<Digest256>    // derived aggregate: max identity_event across all events in the chain
 ```
 
@@ -226,7 +226,7 @@ Accessors:
 - `prefix()`, `topic()`, `identity()` → the bound IEL prefix
 - `last_identity_event()` → derived aggregate; max identity_event across all events in the chain (informational, not used as a gate)
 - `policy_satisfied()` — overall authorization satisfaction across the chain
-- `last_governance_event()` — SAID of the most recent `Sea`/`Rpr`
+- `last_seal_advancing_event()` — SAID of the most recent `Sea`/`Rpr`
 - `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_contested()`, `is_decommissioned()`
 

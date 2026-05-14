@@ -30,7 +30,7 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 
 There is **no Repaired state** — IEL has no Rpr.
 
-"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_governance_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Evl`/`Sea` submissions return `ContestRequired`. Only `Cnt` (repudiation) and `Dec` (clean termination) are admissible at the boundary.
+"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Evl`/`Sea` submissions return `ContestRequired`. Only `Cnt` (repudiation) and `Dec` (clean termination) are admissible at the boundary.
 
 ## Local Submissions Matrix
 
@@ -40,7 +40,7 @@ What happens when a client submits events to the submit handler on a single node
 |-----------|-----|-----|-----|-------------------|-----|
 | **Empty** | Append ✓ if `governance_policy` satisfied; else reject | Reject (no chain) | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ | Append ✓ | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`Evl`/`Sea` would land at-or-before `last_governance_event` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Evl`/`Sea` would land at-or-before `last_seal_advancing_event` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` | `IelDecommissioned` |

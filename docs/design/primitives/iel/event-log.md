@@ -19,7 +19,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_contested: bool`
 - `is_decommissioned: bool`
-- `last_governance_event: Option<Digest256>` — SAID of the most recent `Evl` or `Sea` (the "evaluation seal"; advances on both kinds).
+- `last_seal_advancing_event: Option<Digest256>` — SAID of the most recent `Evl` or `Sea` (the "evaluation seal"; advances on both kinds).
 
 ## Event Kinds
 
@@ -35,7 +35,7 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). *
 
 ## Evaluation Seal and Anchor Non-Poisonability
 
-The `last_governance_event` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
+The `last_seal_advancing_event` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
 
 **Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
 

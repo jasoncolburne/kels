@@ -36,7 +36,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 
-"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_governance_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Upd`/`Sea` submissions return `ContestRequired`. "Divergent (sealed)" is a sub-state of **Divergent** where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`.
+"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Upd`/`Sea` submissions return `ContestRequired`. "Divergent (sealed)" is a sub-state of **Divergent** where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`.
 
 ## Local Submissions Matrix
 
@@ -48,7 +48,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Empty** (`[Icp]` alone) | n/a | n/a | n/a | n/a | n/a — rejected as `IncompleteInception` |
 | **Empty** (`[Icp, Est]` minimum) | Append ✓ if `identity_event` binding + anchor satisfy IEL auth_policy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (auth_policy via IEL) | Append ✓ (governance_policy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`Upd` at-or-before `last_governance_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Upd` at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | `RepairRequired` | `RepairRequired` | Discriminator-driven repair ✓ | Contest ✓ → Contested (joins set via upgrade rule) | `RepairRequired` |
 | **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
@@ -63,7 +63,7 @@ Additional rejection cases for v1+ events that don't fit per-state cells:
 
 - **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-version equals `seal_version` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
-- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `last_governance_event` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
+- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `last_seal_advancing_event` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
 - **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded).
 - **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `DecommissionedSel`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 

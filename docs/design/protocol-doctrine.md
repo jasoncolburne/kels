@@ -46,11 +46,11 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
-- **KEL**: `last_recovery_revealing_event` — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`.
-- **IEL**: `last_governance_event` — the SAID of the most recent `Evl`/`Sea` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
-- **SEL**: `last_governance_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec terminal, don't advance the seal but do enforce it).
+- **KEL**: `last_seal_advancing_event` — the SAID of the most recent `Rec`/`Ror` (Cnt/Dec are terminal and don't advance the seal but do enforce it). KEL separately tracks `last_recovery_revealing_event` (Rec/Ror/Cnt/Dec) for the spent-key / non-poisonability rule — a distinct concept; see [primitives/kel/event-log.md §Seal and Key Non-Poisonability](primitives/kel/event-log.md#seal-and-key-non-poisonability).
+- **IEL**: `last_seal_advancing_event` — the SAID of the most recent `Evl`/`Sea` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
+- **SEL**: `last_seal_advancing_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec terminal, don't advance the seal but do enforce it).
 
-**Same concept, different per-primitive advance rules.** `last_recovery_revealing_event` (KEL) and `last_governance_event` (IEL, SEL) all express the same structural concept — the SAID of the chain's most recent privileged-but-non-terminal event, beyond which the chain cannot fork. The kinds that advance the seal differ because each primitive's privileged-non-terminal set differs: KEL on `Rec`/`Ror`, IEL on `Evl`/`Sea`, SEL on `Sea`/`Rpr`. Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
+**Same field across primitives.** Each primitive's `last_seal_advancing_event` is the SAID of the chain's most recent privileged-but-non-terminal event — the watermark beyond which the chain cannot fork. The kinds that advance the seal differ because each primitive's privileged-non-terminal set differs: KEL on `Rec`/`Ror`, IEL on `Evl`/`Sea`, SEL on `Sea`/`Rpr`. Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
 
 A new event's land-version MUST be at-or-after the seal (`event_version >= seal_version`). Any submission whose land-version is strictly before the seal is rejected (`"Cannot land at version V — sealed by evaluation/recovery at version S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
@@ -206,7 +206,7 @@ The override is load-bearing for protocol convergence, not a security hardening.
 The Cnt's landing version depends on the submitter's tip at construction time:
 
 - **Post-Dec construction** (Cnt submitter observed `Dec` via gossip first; tip = `Dec` at `v_d`): `cnt.previous = v_{tip-1}.said = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec; divergent set `{Dec, Cnt}` at `v_d`.
-- **Pre-Dec construction** (Cnt submitter's tip is the chain's pre-Dec tip at `v_{d-1}`; true-concurrent with `Dec`): `cnt.previous = v_{tip-1}.said = v_{d-2}.said`; Cnt lands at `v_{d-1}` as sibling of the pre-Dec tip event; divergent set `{pre-Dec-tip-event, Cnt}` at `v_{d-1}`. Dec sits at `v_d` on the pre-Dec-tip-extending branch (forensic record on Dec'd nodes; rejected by the contested-state gate on Cnt-first nodes).
+- **Pre-Dec construction** (Cnt submitter's tip is the chain's pre-Dec tip at `v_d`; true-concurrent with `Dec`): `cnt.previous = v_{tip-1}.said = v_{d-1}.said`; Cnt lands at `v_d` as sibling of the pre-Dec tip event; divergent set `{pre-Dec-tip-event, Cnt}` at `v_d`. Dec sits at `v_{d+1}` on the pre-Dec-tip-extending branch (forensic record on Dec'd nodes; rejected by the contested-state gate on Cnt-first nodes).
 
 Both shapes terminate at contested and converge on `hash("contested:{prefix}")`.
 

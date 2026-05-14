@@ -17,7 +17,8 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
-- `last_recovery_revealing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Dec`/`Cnt` (the recovery-key revelation seal).
+- `last_seal_advancing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`. The chain's seal-cap watermark (see §Seal and Key Non-Poisonability).
+- `last_recovery_revealing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`. Tracks recovery-key revelation for the spent-key / non-poisonability rule (distinct from the seal).
 
 ## Event Kinds
 
@@ -35,17 +36,19 @@ State is computed from the chain's events, never tracked as a separate flag. The
 
 For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
-## Recovery-Revelation Seal and Key Non-Poisonability
+## Seal and Key Non-Poisonability
 
-The `last_recovery_revealing_event` is the SAID of the most recent `Rec`/`Ror`/`Dec`/`Cnt` event. It is the chain's **recovery-revelation seal** — recovery cannot truncate at or before it (handlers reject attempts to displace any prior recovery-revealing event).
+Two distinct concepts share the SAID-of-recent-event pattern on KEL:
 
-**Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization. The seal locks in the key state at that serial.
+**`last_seal_advancing_event`** — the SAID of the most recent `Rec`/`Ror` event. This is the chain's **seal**: the watermark beyond which no fork can land (`event_version >= seal_version`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Recovery cannot truncate at or before it (handlers reject attempts to displace any prior seal-advancing event). `Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
 
-This is an accepted security boundary. Without it, a chain's history could be invalidated retroactively by anyone who later comes to control the revealed key material — making the chain's terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward effect (the recovery key is now spent — future divergent events must be resolved by `Cnt`) applies.
+**`last_recovery_revealing_event`** — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec` event. This tracks recovery-key revelation (all four kinds expose the recovery key via dual-signature). The spent-key rule and the proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`) both read off this concept: once any recovery-revealing event lands, the recovery key is publicly known, and future divergent events must be resolved by `Cnt`, not `Rec`.
 
-KEL's recovery-revelation seal is the structural analog of IEL's and SEL's evaluation seal (see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)): in both, a privileged primitive (recovery-key revelation / governance evaluation) defines a forward-only watermark, with prior advancements immutable.
+**Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization — the chain's history at that serial is locked. Without this, history could be invalidated retroactively by anyone who later comes to control the revealed key material, making terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward spent-key effect applies.
 
-The seal-cap rule (`event_version >= seal_version`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)) admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent recovery-revealing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted. (`Cnt`/`Dec`-tipped chains are terminal, so the boundary case is mooted by the contested/decommissioned gates — the Cnt-overrides-Dec case is covered separately in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).)
+`last_seal_advancing_event` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
+
+The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted. (`Cnt`/`Dec`-tipped chains are terminal, so the boundary case is mooted by the contested/decommissioned gates — the Cnt-overrides-Dec case is covered separately in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).)
 
 ## Divergence and Freeze
 
@@ -203,7 +206,7 @@ The page+resume-verify pattern is the SEL backport: prior to it, the discriminat
 
 ### Bounds
 
-Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Dec`/`Cnt` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before any prior recovery-revealing event, so the divergence ancestor is strictly after `last_recovery_revealing_event` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
+Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Cnt`/`Dec` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before the chain's seal, so the divergence ancestor is strictly after `last_seal_advancing_event` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
 
 ## Contest (Cnt)
 
@@ -325,7 +328,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 **Code:**
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
-- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergence_ancestor`, `is_contested`, `is_decommissioned`, `last_recovery_revealing_event`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
+- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergence_ancestor`, `is_contested`, `is_decommissioned`, `last_seal_advancing_event`, `last_recovery_revealing_event`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
 - `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
 - `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. Archival uses a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.

@@ -9,12 +9,12 @@ For chain lifecycle (states, divergence, contest, decommission, evaluation seal)
 | Kind | Topic | Purpose |
 |---|---|---|
 | `Icp` | `kels/iel/v1/events/icp` | Inception (v0). Declares both `auth_policy` and `governance_policy`. Seeds prefix derivation via `(auth_policy, governance_policy, nonce)`. |
-| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_governance_event`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
-| `Sea` | `kels/iel/v1/events/sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances `last_governance_event`. Carries no policy fields. Closes the post-exclusion window per [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). |
+| `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `last_seal_advancing_event`. MUST evolve at least one of `auth_policy` / `governance_policy`; a no-op Evl is rejected as a structural error. |
+| `Sea` | `kels/iel/v1/events/sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances `last_seal_advancing_event`. Carries no policy fields. Closes the post-exclusion window per [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). |
 | `Cnt` | `kels/iel/v1/events/cnt` | Contest — terminal due to authority conflict (or divergence). No archival — both branches preserved as forensic record. |
 | `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
-`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governance_policy` satisfaction (the authorization gate). Of these, only `Evl` and `Sea` advance `last_governance_event` (the evaluation seal); `Cnt` and `Dec` enforce the gate but do not advance the seal. `Icp` is also governance-authorized but against the policy *declared at that event* (self-governance-endorsement), not against a previously-tracked policy; see [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
+`Evl`, `Sea`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governance_policy` satisfaction (the authorization gate). Of these, only `Evl` and `Sea` advance `last_seal_advancing_event` (the evaluation seal); `Cnt` and `Dec` enforce the gate but do not advance the seal. `Icp` is also governance-authorized but against the policy *declared at that event* (self-governance-endorsement), not against a previously-tracked policy; see [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
 
 IEL has **no `Upd` kind** — there is no "content" on identity chains. The chain's data is its tracked policy state, mutated only via `Evl`. IEL has **no `Est` kind** — both policies are required at `Icp`, since identity chains have structurally unpredictable prefixes (the inception `nonce` makes the derived prefix unguessable from outside) and don't need the optional-governance-at-Icp dance that SEL uses (SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface). IEL has **no `Rpr` kind** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence-is-terminal rule); there's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
 
@@ -41,8 +41,8 @@ The "KEL anchor kind" column reflects [../../protocol-doctrine.md §Anchor Tier 
 `Icp` and `Evl` carry `auth_policy` and `governance_policy`; `Sea`, `Cnt`, and `Dec` do not. The verifier checks the per-kind discipline as part of branch-state validation:
 
 - **`Icp`**: declares both policies. The verifier records them as the chain's initial tracked auth and governance policies after confirming both are immune and Icp.said is anchored under the declared `governance_policy` (every IEL event is governance-authorized — see [§Satisfaction model](#satisfaction-model)).
-- **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_governance_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
-- **`Sea`**: both policy fields are absent (forbidden). `Sea` is the seal-advance event — its purpose is to advance `last_governance_event` without declaring policy evolution. Authorization resolves through the branch's tracked `governance_policy` (resolved at the predecessor). Shape constraints: `Sea`'s parent must not be `Icp` (a seal advance is meaningful only after a policy-evolution event opens a window), another `Sea` (IEL `Sea` carries no content fields, so back-to-back `Sea` is by definition identical-content — invalid per the doctrine's "no identical-content `Sea`-`Sea`" rule; SEL `Sea`-`Sea` with advancing `identity_event` is allowed there but not here), or `Cnt`/`Dec` (terminal events do not extend). See [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance).
+- **`Evl`**: MUST evolve at least one of `auth_policy` / `governance_policy`. Either field can evolve independently; both can evolve in the same `Evl`. A no-op `Evl` (both fields identical to the predecessor) is rejected — `last_seal_advancing_event` is the chain's evaluation seal, not a heartbeat counter, so every `Evl` must be a real governance act. The verifier records the new tracked policies after confirming any new policy is immune and the Evl is anchored under the *previous* tracked governance_policy.
+- **`Sea`**: both policy fields are absent (forbidden). `Sea` is the seal-advance event — its purpose is to advance `last_seal_advancing_event` without declaring policy evolution. Authorization resolves through the branch's tracked `governance_policy` (resolved at the predecessor). Shape constraints: `Sea`'s parent must not be `Icp` (a seal advance is meaningful only after a policy-evolution event opens a window), another `Sea` (IEL `Sea` carries no content fields, so back-to-back `Sea` is by definition identical-content — invalid per the doctrine's "no identical-content `Sea`-`Sea`" rule; SEL `Sea`-`Sea` with advancing `identity_event` is allowed there but not here), or `Cnt`/`Dec` (terminal events do not extend). See [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance).
 - **`Cnt` / `Dec`**: both fields are absent (forbidden). Terminal events have no forward state to declare — the chain ends with the terminal, and the verifier's tracked policy state is what authorized acceptance of the terminal itself (resolved at the predecessor). The verifier rejects any Cnt/Dec carrying a non-`None` `auth_policy` or `governance_policy` as a structural error. Authorization for the terminal still resolves through the branch's `tracked_governance_policy` (set when the predecessor was processed) — see [§Satisfaction model](#satisfaction-model).
 
 ### Satisfaction model
@@ -84,7 +84,7 @@ IEL events do not carry content. The chain's "data" is its tracked policy state,
 
 SEL has `MAX_NON_EVALUATION_EVENTS = 63` to bound how long an adversary can fork before satisfying governance_policy. On IEL, **every event is governance-authorized** (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). There are no "non-evaluation events" between governance evaluations — every event IS governance-authorized at submission time. The bound is implicit and need not be enforced.
 
-(`last_governance_event` advances on `Evl` and `Sea` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
+(`last_seal_advancing_event` advances on `Evl` and `Sea` — Icp/Cnt/Dec do not advance the seal — but the governance authorization gate applies uniformly at all kinds. Only one Icp can land per chain, so the chain has at most one pre-Evl event.)
 
 ### Cnt overrides Dec
 
@@ -100,7 +100,7 @@ v1  kind=evl  auth_policy=A1                              ← auth_policy evolve
 v2  kind=evl  governance_policy=G1                        ← governance_policy evolved; auth_policy unchanged
 ```
 
-Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_governance_event` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
+Each `Evl` must evolve at least one policy — a no-op Evl (both fields preserved) is rejected as a structural error. There is no "pure-attestation" mode: `last_seal_advancing_event` is the evaluation seal, not a heartbeat counter, and key rotation on anchoring KELs is a layer-below concern that doesn't surface as IEL events.
 
 ### Divergence is contested-terminal
 
@@ -126,7 +126,7 @@ This is intentional: history is encoded in the data. Divergence is accepted as t
 
 ```
 v0..v3   normal linear chain (across the federation)
-v4       kind=evl   advances last_governance_event to Evl_v4.said
+v4       kind=evl   advances last_seal_advancing_event to Evl_v4.said
 v5       kind=evl   previous=v_4.said       ← compromised party's Evl_v5
 v5'      kind=cnt   previous=v_4.said       ← operator's Cnt
     — 2-event divergent set at v_5: {Evl_v5, Cnt}. Privileged-divergence-

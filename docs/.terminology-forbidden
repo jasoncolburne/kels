@@ -166,13 +166,15 @@ security-invariant\.md
 # The verifier surface across KEL/IEL/SEL is moving from version-based
 # (u64) to SAID-based (Digest256) for `divergence_ancestor` (was
 # `diverged_at_version` / `diverged_at_serial`) and the seal field
-# (`last_governance_event` / `last_recovery_revealing_event`, was
-# `last_governance_version` / `last_recovery_revealing_serial`). The
-# code still uses the old names; docs are renamed first to express the
-# intent. These patterns block doc regression without forbidding the
-# old names in code.
+# (`last_seal_advancing_event`, was `last_governance_event` on IEL/SEL
+# and conflated with `last_recovery_revealing_event` on KEL; was
+# `last_governance_version` / `last_recovery_revealing_serial` before
+# the SAID rename). The code still uses the old names; docs are renamed
+# first to express the intent. These patterns block doc regression
+# without forbidding the old names in code.
 
 \bdiverged_at_version\b
 \bdiverged_at_serial\b
 \blast_governance_version\b
 \blast_recovery_revealing_serial\b
+\blast_governance_event\b

@@ -30,7 +30,7 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event submission at-or-before `last_governance_event` in chain order on a linear chain (divergent IEL is contested-terminal — rejected with `ContestedIel`, not `ContestRequired`) | unchanged |
+| `ContestRequired { reason }` | Normal-event submission at-or-before `last_seal_advancing_event` in chain order on a linear chain (divergent IEL is contested-terminal — rejected with `ContestedIel`, not `ContestRequired`) | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `IelDecommissioned` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
@@ -70,7 +70,7 @@ for Sea events: verify parent-kind constraint — parent must be Evl
                 (Sea is forbidden after Icp, Sea, Cnt, or Dec on IEL).
                 Sea-Sea is forbidden on IEL because Sea carries no content
                 field, so consecutive Seas have no semantic difference.
-                See [events.md §Satisfaction model](events.md#satisfaction-model).
+                See [events.md §Per-Kind Policy Field Discipline](events.md#per-kind-policy-field-discipline).
                 Chain-state check enforced in the verifier walk — validate_structure
                 sees only the event in isolation; parent-kind requires chain context.
 ```
@@ -122,7 +122,7 @@ if is_contest        → contest path (insert; Cnt's previous = v_{tip-1}.said c
                        2-event divergent set is privileged → chain transitions to
                        contested-terminal at this moment)
 else if is_decommission → decommission path (insert + mark decommissioned)
-else if event is at-or-before `last_governance_event` in chain order AND policy satisfied AND non-terminal → reject ContestRequired
+else if event is at-or-before `last_seal_advancing_event` in chain order AND policy satisfied AND non-terminal → reject ContestRequired
 else if event creates a fork (overlap) → insert single concurrent event at v_d;
                                          the new 2-event divergent set is
                                          privileged → chain transitions to
@@ -153,7 +153,7 @@ Events chain from the current tip, no divergence, no terminal kind in batch. Ins
 Before inserting a non-terminal event, the handler checks:
 
 ```
-if event is at-or-before `last_governance_event` in chain order
+if event is at-or-before `last_seal_advancing_event` in chain order
    AND policy is satisfied
    AND event.kind is non-terminal
    AND chain is not divergent:

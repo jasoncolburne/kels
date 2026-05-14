@@ -30,7 +30,7 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event at-or-before `last_governance_event` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
+| `ContestRequired { reason }` | Normal-event at-or-before `last_seal_advancing_event` in chain order (write-authorized but seal advanced past submitter's view) | unchanged |
 | `RepairRequired` | Non-Rpr submission to a divergent chain | unchanged |
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
@@ -80,12 +80,15 @@ for v1+: cross-chain authorization resolution:
         do not constrain each other.
 
 for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
-                when the new Sea's identity_event advances over the parent
-                Sea's identity_event (the per-event parent-monotonic ratchet
-                above strictly enforces this). Sea forbidden after Cnt/Dec
-                (terminal). See [events.md](events.md) for the per-kind table.
-                Chain-state check enforced in the verifier walk — validate_structure
-                sees only the event in isolation; parent-kind requires chain context.
+                only when the new Sea's identity_event strictly advances
+                beyond the parent Sea's identity_event in IEL chain order
+                (a stricter check than the parent-monotonic ratchet above,
+                which admits equality; equal identity_event between
+                consecutive Seas is semantically redundant and rejected).
+                Sea forbidden after Cnt/Dec (terminal). See [events.md](events.md)
+                for the per-kind table. Chain-state check enforced in the
+                verifier walk — validate_structure sees only the event in
+                isolation; parent-kind requires chain context.
 ```
 
 The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that version, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
@@ -125,7 +128,7 @@ let is_contest      = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
 let is_divergent    = first_divergent_version.is_some();
 let is_sealed       =
-    divergence_ancestor.is_some() && last_governance_event_is_at_or_after(divergence_ancestor);
+    divergence_ancestor.is_some() && last_seal_advancing_event_is_at_or_after(divergence_ancestor);
 
 if is_repair:
     if is_divergent and is_sealed → reject ContestRequired
@@ -143,7 +146,7 @@ elif is_divergent:
     if is_sealed                  → reject ContestRequired (Upd/Sea on sealed-divergent)
     else                          → reject RepairRequired
 elif normal-event
-       AND event is at-or-before `last_governance_event` in chain order
+       AND event is at-or-before `last_seal_advancing_event` in chain order
        AND kind-relevant authorization satisfied
        AND event.kind is non-terminal:
                                     → reject ContestRequired (algorithmic trigger)
@@ -155,7 +158,7 @@ else:
 
 The repair / contest / decommission discriminators bind to predicate methods on `SadEventKind`. Any of these kinds at any position in the batch routes to its dedicated path.
 
-The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `divergence_ancestor` and `last_governance_event`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
+The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `divergence_ancestor` and `last_seal_advancing_event`; the verifier's run on the new batch doesn't shift the predicate mid-flow. This matches the canonical [reconciliation.md §Local Submissions Matrix](reconciliation.md#local-submissions-matrix), which is the source-of-truth for cell-by-cell expected outcomes.
 
 ### 6. Repair Path
 
@@ -190,7 +193,7 @@ Events chain from the current tip, no divergence, no terminal kind in batch. Ins
 Before inserting a non-terminal event, the handler checks:
 
 ```
-if event is at-or-before `last_governance_event` in chain order
+if event is at-or-before `last_seal_advancing_event` in chain order
    AND kind-relevant authorization was satisfied (from §1)
    AND event.kind is non-terminal
    AND chain is not divergent:
@@ -249,7 +252,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Cnt`/`Dec`.
-4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `last_governance_event` in chain order.
+4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `last_seal_advancing_event` in chain order.
 5. **Terminal states are permanent** — any `Cnt` or `Dec` in the chain freezes it.
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
