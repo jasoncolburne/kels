@@ -85,8 +85,13 @@ The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, dele
 
 Establishment events (every kind except `Ixn`) commit one or both forward-key digests:
 
-- **`rotation_hash`**: required on `Icp`, `Dip`, `Rot`, `Rec`, `Ror`. Forbidden on `Dec`, `Cnt` (KEL ends — no future signing key).
-- **`recovery_hash`**: required on `Icp`, `Dip`, `Rec`, `Ror`. Forbidden on `Rot` (Rot doesn't change recovery commitment), `Dec`, `Cnt` (KEL ends).
+| Kind | `rotation_hash` | `recovery_hash` |
+|---|---|---|
+| `Icp`, `Dip` | required | required |
+| `Rot` | required | forbidden (Rot doesn't change recovery commitment) |
+| `Rec`, `Ror` | required | required |
+| `Dec`, `Cnt` | forbidden (KEL ends) | forbidden (KEL ends) |
+| `Ixn` | forbidden | forbidden |
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 

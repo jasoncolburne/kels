@@ -24,13 +24,12 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. |
 | **Divergent** | Chain shape with 2 events at serial `d`; treated as Contested per privileged-divergence (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 
 There is **no Repaired state** — IEL has no Rpr.
-
-"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Evl`/`Sea` submissions return `ContestRequired`. Only `Cnt` (repudiation) and `Dec` (clean termination) are admissible at the boundary.
 
 ## Local Submissions Matrix
 

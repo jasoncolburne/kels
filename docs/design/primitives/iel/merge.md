@@ -10,7 +10,7 @@ The submit handler integrates new events into an existing IEL while handling:
 - Divergence detection (conflicting events at the same serial)
 - Contest (`Cnt`) — terminal authority conflict OR divergence resolution (the only divergence-resolver on IEL)
 - Decommission (`Dec`) — terminal owner-initiated end
-- Algorithmic `ContestRequired` for normal-event submissions when the chain is divergent or post-evaluation-seal
+- Algorithmic `ContestRequired` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governance_policy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `auth_policy` is reserved for SEL Upd authorization through `iel_event` binding (see [../sel/events.md](../sel/events.md)).
 
@@ -30,11 +30,13 @@ Server errors map to:
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event submission at-or-before `last_seal_advancing_event` in chain order on a linear chain (divergent IEL is contested-terminal — rejected with `ContestedIel`, not `ContestRequired`) | unchanged |
+| `ContestRequired { reason }` | Normal-event submission at-or-before `last_seal_advancing_event` in chain order on a linear chain | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `IelDecommissioned` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
 | `InvalidIel(reason)` | Structural validation failure | unchanged |
+
+**Note on `ContestRequired` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal (every IEL event is privileged → privileged-divergence-is-terminal fires at first 2-event divergence), so a submission to a divergent IEL is rejected with `ContestedIel`, not `ContestRequired`. `ContestRequired` is only for the seal-cap case on a linear chain.
 
 ## Submit Flow
 
@@ -138,7 +140,11 @@ else if event creates a fork (overlap) → insert single concurrent event at v_d
 else → normal append
 ```
 
-`Cnt` lands on IEL in exactly one scenario: extending `v_{tip-1}` on a linear chain. Acceptance creates fresh 2-event divergence at v_tip (existing linear tip + Cnt, both with `previous = v_{tip-1}.said`); the privileged-divergence-is-terminal rule fires immediately. After divergence is observed the chain is contested-terminal and the §2 gate rejects any further submission with `ContestedIel` — including any further `Evl`/`Sea`/`Cnt`/`Dec` arriving via gossip (no 3rd event lands at v_d). The 2-event divergent shape can also be observed when two concurrent linear-chain submissions on different nodes (each accepted as a linear-chain extension on its own node — e.g., an `Evl` on one node and a `Cnt` on another, two `Evl`s, an `Evl` and a `Sea`, two `Sea`s, or a `Sea` and a `Cnt`) merge via gossip; that's an emergent gossip-merge observation, not a separate acceptance scenario. `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
+`Cnt` lands on IEL in exactly one scenario: extending `v_{tip-1}` on a linear chain. Acceptance creates fresh 2-event divergence at `v_tip` (existing linear tip + Cnt, both with `previous = v_{tip-1}.said`); the privileged-divergence-is-terminal rule fires immediately. After divergence is observed the chain is contested-terminal and the §2 gate rejects any further submission with `ContestedIel` — no 3rd event lands at `v_d`.
+
+The 2-event divergent shape can also be observed when two concurrent linear-chain submissions on different nodes merge via gossip — see [event-log.md §How divergence is detected and why it's terminal on IEL](event-log.md#how-divergence-is-detected-and-why-its-terminal-on-iel) for the valid pairings. That's an emergent gossip-merge observation, not a separate acceptance scenario.
+
+`Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
 
 Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly; there is no recoverable intermediate state.
 
