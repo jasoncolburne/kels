@@ -127,7 +127,9 @@ A divergent IEL chain — two governance-authorized events at the same serial �
 1. **Federation race.** Two parties with valid governance authority submit `Evl` events near-concurrently to different nodes. Both land legitimately; gossip propagates; both nodes eventually see both events at the same serial. The chain shape records the race in the data.
 2. **Threshold compromise.** A second governance-authorized party (one whose authority was acquired via threshold compromise) submits a competing `Evl`. The chain shape records the compromise in the data; the structural signature is identical to the federation-race case.
 
-The verifier accepts the divergent chain shape as structurally valid in either case — the events landed under valid auth checks at the time they were processed. **The trust layer (not the verifier) decides the consumer response.** Note: race and threshold-compromise are not chain-distinguishable; only out-of-band context separates them.
+The verifier accepts the divergent chain shape as structurally valid in either case — the events landed under valid auth checks at the time they were processed. The trust layer (not the verifier) decides the consumer response.
+
+> **Race and threshold-compromise are not chain-distinguishable.** The chain shape produced by a federation race is identical to the chain shape produced by threshold compromise — same events, same SAIDs, same divergent set. Only out-of-band context (operator intent, monitoring signals, who held what keys when) lets consumers separate the two. The protocol cannot — and does not try.
 
 The security dials differ by cause: against compromise, threshold height (high enough that controlling the threshold is hard-to-impossible) is the operator's mechanism. Against race, application-layer coordination above the protocol bounds the window — see [§Multi-Party Governance Synchronization](#multi-party-governance-synchronization). The protocol-level response is the same regardless of cause: divergence in the data → chain becomes contested-terminal → operator reincepts under a new identity.
 
