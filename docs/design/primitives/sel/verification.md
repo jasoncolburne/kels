@@ -4,22 +4,31 @@ This document describes the verification protocol used to validate the integrity
 
 ## Overview
 
-SEL verification ensures:
-- Events match their explicit per-kind schemas (`SadEvent::validate_structure`)
-- Versions start at 0 and increment by 1 with no gaps
-- The inception event has a valid prefix (derives from `(identity, topic)`)
-- All event prefixes match
-- All events have valid self-addressing identifiers (SAIDs)
-- Events chain correctly from current state to inception via `previous` links
-- Topic is consistent across the chain
-- The content-preservation rule holds (Sea/Rpr/Cnt/Dec must carry forward `previous.content`)
-- The proactive-evaluation rule holds (`MAX_NON_EVALUATION_EVENTS = 63`)
-- Every v1+ event's `iel_event` references a real IEL event in the chain bound at inception (`prefix == identity`)
+SEL verification ensures the following, grouped by concern:
+
+**Structural rules:**
+
+- Events match their explicit per-kind schemas (`SadEvent::validate_structure`).
+- Serials start at 0 and increment by 1 with no gaps.
+- The inception event has a valid prefix (derives from `(identity, topic)`).
+- All event prefixes match.
+- All events have valid self-addressing identifiers (SAIDs).
+- Events chain correctly from current state to inception via `previous` links.
+- Topic is consistent across the chain.
+
+**Content rules:**
+
+- The content-preservation rule holds (`Sea`/`Rpr`/`Cnt`/`Dec` must carry forward `previous.content`).
+- The proactive-evaluation rule holds (`MAX_NON_EVALUATION_EVENTS = 63`).
+
+**Cross-chain authorization rules:**
+
+- Every v1+ event's `iel_event` references a real IEL event in the chain bound at inception (`prefix == identity`).
 - Authorization for v1+ events resolves through the bound IEL event's declared/evolved policy:
   - `Est` / `Upd` → IEL's tracked `auth_policy` at the bound event
   - `Sea` / `Rpr` / `Cnt` / `Dec` → IEL's tracked `governance_policy` at the bound event
-- Anchoring of the SEL event's SAID under the resolved IEL policy
-- Per-event parent-monotonic on `iel_event` (SEL-specific; no analog on KEL/IEL): each event's `iel_event` is at-or-after its parent event's `iel_event` in IEL chain order (parent via `previous` SAID), applied per branch independently. Within-chain policy variation across SEL branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
+- The SEL event's SAID is anchored under the resolved IEL policy.
+- Per-event parent-monotonic on `iel_event` (SEL-specific; no analog on KEL/IEL): each event's `iel_event` is at-or-after its parent event's `iel_event` in IEL chain order, applied per branch independently. Within-chain policy variation across SEL branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 
@@ -140,7 +149,9 @@ The chain-wide `last_iel_event` (the highest `iel_event` across all events in th
 
 ### Soft-fail vs hard-fail policy
 
-Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state). The mapping is per kind:
+Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state).
+
+**Default: all authorization gates are HARD.** The table below shows that every kind × failure-mode combination is HARD in the normal case. The only exception — soft-fail propagation in the divergent-but-not-yet-contested window — is described in §Post-divergence soft-fail propagation below.
 
 | Kind | Authorization gate | Anchor failure | Wrong-kind anchor | Binding failure | Parent-monotonic regression |
 |------|--------------------|----------------|-------------------|------------------|------------------------------|
@@ -295,7 +306,7 @@ struct SelVerifier {
 
 ### Two-trait split: `PolicyChecker` and `IelResolver`
 
-#147 splits SEL-verifier dependencies into two orthogonal traits so that policy evaluation and IEL chain navigation don't muddle inside one surface.
+SEL verification depends on two orthogonal abstractions: **policy evaluation** (anchor checks, immunity) and **IEL chain navigation** (binding resolution, divergence checks, chain-order lookups). These are split into separate traits so neither surface muddles the other.
 
 `PolicyChecker` is unchanged from KEL/IEL — anchor-and-immunity only:
 
@@ -339,7 +350,9 @@ trait IelResolver: Send + Sync {
 
 The SEL merge handler does NOT separately re-check `is_immune` on IEL-resolved policies. The IEL primitive's submit and verification gates are the canonical immunity enforcement; calling it again at SEL-side would be defense-in-depth that drifts. SEL trusts the IEL gate. `is_immune` remains on `PolicyChecker` for IEL's own use (both IEL submit and IEL verification).
 
-The production resolver (`AnchoredIelResolver`, `lib/kels/src/iel_resolver.rs`) re-verifies the named IEL on each call to obtain a fresh `IelVerification` token; layered caching lives above the trait so the impl stays simple and the divergence gate is exercised cleanly per call.
+#### Implementation notes
+
+The production resolver (`AnchoredIelResolver`, `lib/kels/src/iel_resolver.rs`) re-verifies the named IEL on each call to obtain a fresh `IelVerification` token. Layered caching lives above the trait so the impl stays simple and the divergence gate is exercised cleanly per call.
 
 ### Paginated Verification Helpers
 

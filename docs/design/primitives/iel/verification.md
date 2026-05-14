@@ -98,14 +98,21 @@ verify_policy(event, branch):
     leaf evaluates as unsatisfied.
 ```
 
-Policy state is **branch-tracked**:
+Policy state is **branch-tracked**. Two fields:
 
-- `tracked_auth_policy` — seeded from v0's `auth_policy` declaration *after* the verifier confirms the policy is immune (see Immunity check below). The Icp anchor check is against `governance_policy`, not `auth_policy`; tracked_auth_policy is the per-event policy declaration consumed downstream by SEL `Upd` via `iel_event` binding. Updated whenever an authorized `Evl` carries a new `auth_policy` (subject to the same immunity check on the new policy).
-- `tracked_governance_policy` — seeded from v0's `governance_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it (the IEL Icp self-governance-endorsement check). Updated whenever an authorized `Evl` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
+- `tracked_auth_policy`
+  - *Seeded by* `Icp.auth_policy` after the immunity check (below).
+  - *Updated by* any authorized `Evl` carrying a new `auth_policy`, subject to the immunity check.
+  - *Consumed by* SEL `Upd` / `Est` via `iel_event` binding; never authorizes IEL events themselves.
 
-**Immunity check.** Whenever `tracked_auth_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
+- `tracked_governance_policy`
+  - *Seeded by* `Icp.governance_policy` after the immunity check AND after the verifier confirms `Icp.said` is anchored under the declared policy (the self-endorsement check).
+  - *Updated by* any authorized `Evl` carrying a new `governance_policy`, subject to the immunity check.
+  - *Consumed by* every IEL event's authorization gate plus SEL `Sea`/`Rpr`/`Cnt`/`Dec` via `iel_event` binding.
 
-Authorization checks use the *previous tracked* policy values for `Evl` (an Evl evolving auth_policy is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing). This prevents an actor with auth-only authority from elevating themselves.
+**Immunity check.** Whenever `tracked_auth_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error; the chain is rejected. Mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)); both layers enforce because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
+
+> **Evolution authorization uses the *previous* tracked policy.** An `Evl` evolving `auth_policy` is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing. This prevents an actor with auth-only authority from elevating themselves to governance authority.
 
 ### Terminal-state determination and authorization
 
@@ -126,9 +133,9 @@ Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear
 
 Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governance_policy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
 
-### Upgrade rule
+### Upgrade rule: not applicable on IEL
 
-Does not apply on IEL: every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist; see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-primitive rule and the unreachability proof for 3 events with 2+ privileged.
+Every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist; see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-primitive rule and the unreachability proof for 3 events with 2+ privileged.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
 

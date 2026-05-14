@@ -29,7 +29,9 @@ These invariants are what make synchronous archival, single-page discriminator w
 
 "Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only `cnt` is accepted; non-`cnt` submissions return `ContestRequired`.
 
-**Active, sealed** — KEL's analog of IEL/SEL's "Active, sealed" sub-state. When a submitter's local tip lands at-or-before `last_seal_advancing_event` (the seal has advanced past the submitter's view via a `Rec` or `Ror` they haven't observed), non-terminal submissions return `ContestRequired` via §6c Overlap (`existing events reveal recovery → non-Cnt batch → ContestRequired`). `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)). On KEL the rule is expressed via the Overlap routing branch rather than as a distinct matrix sub-state, but the structural behavior matches IEL/SEL.
+**Active, sealed** — KEL's analog of IEL/SEL's "Active, sealed" sub-state. The sub-state applies when a submitter's local tip lands at-or-before `last_seal_advancing_event` (the seal has advanced past the submitter's view via a `Rec` or `Ror` they haven't observed). Non-terminal submissions return `ContestRequired`; `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
+
+On KEL the rule is expressed via §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than as a distinct matrix sub-state. The structural behavior matches IEL/SEL.
 
 ## Local Submissions Matrix
 

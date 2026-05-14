@@ -31,12 +31,12 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Empty** | No events for this prefix. |
 | **Incepted, no v1** | Reachable transient state: someone submitted just `[Icp]`. **The verifier rejects this** (`SelVerifier::finish_internal` → `IncompleteInception` whenever any branch tip is `Icp`), so this state should never persist in storage; included here for completeness. |
 | **Active** | Linear, non-divergent, no terminal event. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Upd`/`Sea` submissions return `ContestRequired`. |
 | **Divergent** | Fork detected, no `Rpr`/`Cnt`/`Dec` yet. |
+| **Divergent, sealed** | Sub-state of Divergent where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`. |
 | **Repaired** | Clean chain after `Rpr` archived adversary events. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
-
-"Active, sealed" is a sub-state of **Active** where the submitter's view of the tip lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter); non-terminal `Upd`/`Sea` submissions return `ContestRequired`. "Divergent (sealed)" is a sub-state of **Divergent** where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`.
 
 ## Local Submissions Matrix
 

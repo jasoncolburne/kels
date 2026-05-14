@@ -210,7 +210,9 @@ if event is at-or-before `last_seal_advancing_event` in chain order
 
 This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
 
-The "kind-relevant authorization" wording matters: an `Upd` that passed its `auth_policy` check but lands at-or-before the seal triggers `ContestRequired`; a `Sea` that passed its `governance_policy` check at the same serial triggers it too. Both kinds use the same algorithmic gate — what differs is which IEL-resolved policy the §1 check ran against. By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger here is the existing-chain sanity floor (the chain wasn't already broken), combined with the serial-vs-seal arithmetic.
+"Kind-relevant authorization" means each kind's gate uses the appropriate IEL-resolved policy: `Upd` checks `auth_policy`; `Sea` checks `governance_policy`. Both kinds use the same algorithmic `ContestRequired` gate here — what differs is which policy the §1 check ran against.
+
+By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger combines two things: the existing-chain sanity floor (chain wasn't already broken) and the serial-vs-seal arithmetic (the new event's serial lands at-or-before the seal).
 
 This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. See [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
 
@@ -265,7 +267,16 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.
-9. **Truncate-before-verify on `Rpr`** — when an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` before the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs. This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — SEL achieves the invariant via storage-side normalization, where KEL achieves it via branch-scoped verifier input (see [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6). Different implementation routes; same doctrinal outcome.
+9. **Truncate-before-verify on `Rpr`** — `Rpr`'s discriminator archives the to-be-archived branch from `sad_events` before the post-truncation verifier walks the surviving chain. See §How SEL and KEL discriminators differ below.
+
+### How SEL and KEL discriminators differ
+
+Both KEL and SEL honor the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)), but via different implementation routes:
+
+- **SEL — storage-side normalization (truncate-before-verify).** When an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` *before* the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs.
+- **KEL — branch-scoped verifier input.** Verification is seeded from `Rec.previous`; the walker only sees the surviving branch + the pending batch. The divergent set is in storage but never in the walker's input stream. See [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6.
+
+Different routes; same doctrinal outcome — the walker's running state never carries the divergent set across the archival boundary.
 
 ## References
 

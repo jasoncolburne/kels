@@ -1,6 +1,13 @@
 # Recovery Workflow
 
-This doc describes the operator-side CLI workflow for KEL `Rec` / `Ror` / `Cnt` / `Dec` ceremonies and their propagation through the registry. For the chain-state semantics each ceremony reaches — what `Rec` archives, how `Cnt` overrides `Dec`, the parent-at-(seal − 1) carve-out, and the spent-key rule — see [event-log.md §Recovery (Rec)](event-log.md#recovery-rec), [event-log.md §Contest (Cnt)](event-log.md#contest-cnt), [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability), and [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+This doc describes the operator-side CLI workflow for KEL `Rec` / `Ror` / `Cnt` / `Dec` ceremonies and their propagation through the registry.
+
+For the chain-state semantics each ceremony reaches, see the design docs:
+
+- What `Rec` archives → [event-log.md §Recovery (Rec)](event-log.md#recovery-rec).
+- How `Cnt` works on KEL → [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
+- The parent-at-(seal − 1) carve-out and the spent-key rule → [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability).
+- How `Cnt` overrides `Dec` on a decommissioned chain → [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 
 ## Architecture
 

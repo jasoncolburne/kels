@@ -69,7 +69,7 @@ verify_generation(events_at_serial):
 
 ### Establishment event processing
 
-When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec):
+When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec), the verifier checks the forward-key commitments made by the previous establishment event. `branch.pending_rotation_hash` and `branch.pending_recovery_hash` are the digests committed by the prior establishment; the current event must reveal a public key whose digest matches.
 
 ```
 process_establishment(event, branch):

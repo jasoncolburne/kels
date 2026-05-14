@@ -44,10 +44,12 @@ validate all events belong to this prefix
 validate all signatures (format, dual-sig for recovery events)
 verify entire existing KEL via completed_verification → KelVerification token
 validate event structure (SAID, required fields)
-reject batches containing both rec and cnt (contradictory intent)
+reject batches containing both rec and cnt
 ```
 
 The `KelVerification` token is the trusted context for all routing decisions. The DB cannot be trusted directly (verification invariant).
+
+**On the rec-and-cnt rejection.** A batch containing both `Rec` and `Cnt` is structurally contradictory: `Rec` means "preserve the chain via recovery," `Cnt` means "terminate the chain." No operator-intent shape lands both in one batch, so the merge engine rejects up front rather than working out which semantic to apply.
 
 ### 2. Terminal-State Gate
 
@@ -263,12 +265,24 @@ Propagating a divergent KEL chain to a remote node requires more than ordering e
 
 ## Key Invariants
 
-1. **Events are sorted deterministically** - Events are sorted by `(serial, kind_priority, said)` where kind priority is: icp=0, dip=1, ixn=2, rot=3, ror=4, rec=5, dec=6, cnt=7 (event kind values are version-qualified in serialized form, e.g. `kels/kel/v1/events/icp`). The SAID tiebreaker is purely for determinism — it has no semantic meaning, but ensures identical ordering across all nodes when two events share the same serial and kind (e.g., two competing `ixn` events in a divergent fork). This sort order is critical for gossip propagation: when fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `partition_for_submission()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest
-2. **Only one divergent event added** - When divergence is detected, only the first conflicting event is stored
-3. **Recovery key revelation requires contest** - Once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired` (owner must contest instead)
-4. **Contest is the only response when the recovery key is revealed in divergence** - the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
-5. **Contested KELs are permanently frozen** - No events can be added after contest
-6. **Branch-scoped verifier input on `Rec`** — when verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds. This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)) — the walker's running state never carries the divergent set across the archival boundary.
+1. **Events are sorted deterministically** by `(serial, kind_priority, said)`. Kind priority: `icp=0, dip=1, ixn=2, rot=3, ror=4, rec=5, dec=6, cnt=7`. The SAID tiebreaker is for determinism only; it has no semantic meaning. See §Why sort priority matters below.
+2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
+3. **Recovery key revelation requires contest** — once a recovery-revealing event exists in a divergent branch, non-contest submissions return `ContestRequired`.
+4. **Contest is the only response when the recovery key is revealed in divergence** — the chain must be terminated via `Cnt`; no further `Rec` is possible because the recovery key is no longer secret.
+5. **Contested KELs are permanently frozen** — no events can be added after contest.
+6. **Branch-scoped verifier input on `Rec`** — Rec verification is branch-scoped, not chain-scoped. The walker's running state never carries the divergent set across the archival boundary. See §Branch-scoped Rec verification below.
+
+### Why sort priority matters
+
+The sort order is critical for gossip propagation. When fork siblings (e.g., `dec` + `cnt`) are submitted as a single batch, `partition_for_submission()` sorts them so non-contest events come before contest events, ensuring the merge processes the divergence-establishing event before the contest. Two competing `ixn` events in a divergent fork get the same priority and break the tie by SAID — identical ordering across all nodes.
+
+(Event kind values are version-qualified in serialized form — e.g., `kels/kel/v1/events/icp` — but the version qualifier is separate from the chain-event serial used elsewhere in this doc.)
+
+### Branch-scoped Rec verification
+
+When verifying a `Rec` batch, `KelVerifier::from_branch_tip(prefix, anchor_tip, ...)` (`lib/kels/src/merge.rs:902`) seeds the verifier from `Rec.previous` (the operator's chosen anchor — branch tip in branch-tip-extending shape, or `v_{d-1}` in divergence-ancestor-extending shape). `verify_page(new_events)` (`merge.rs:911`) walks only that branch plus the pending batch; the to-be-archived branch is in storage but never in the walker's input stream. `archive_adversary_chain(...)` (`merge.rs:942`) runs only after verification succeeds.
+
+This honors the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)).
 
 ## References
 
