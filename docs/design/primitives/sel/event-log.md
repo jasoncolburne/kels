@@ -4,7 +4,7 @@
 
 The SAD Event Log (SEL) is a per-prefix chain of `SadEvent` records describing the evolving state of a SAD object (typically a publication, credential template, custody record, or other governance-managed artifact). SELs are **identity-rooted** — every SEL binds at inception to an Identity Event Log (IEL) and resolves its per-event authorization through specific IEL events. Authority over the chain is asserted by anchoring `ixn` events in KELs identified by the IEL's currently-tracked `auth_policy` (for `Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`).
 
-See [../iel/events.md](../iel/events.md) for the IEL primitive and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability) for the unified validation rules that govern the binding.
+> **Read first.** SEL is identity-rooted, so the IEL-side rules govern much of its behavior. Before this doc, read [../iel/events.md](../iel/events.md) (IEL primitive) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability) (the unified validation rules governing the binding).
 
 ## Chain States
 
@@ -30,7 +30,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | `Est` | Establishment (v1). The first authorization-gated event; carries `iel_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. | `auth_policy` resolved through `iel_event`. | No |
 | `Upd` | Normal update (v2+) — append content. | `auth_policy` resolved through `iel_event`. | No |
 | `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `iel_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `iel_event`. | No |
-| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Branch-tip-extending shape: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending shape: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). | `governance_policy` resolved through `iel_event`. | No |
+| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Two parent shapes (branch-tip-extending, divergence-ancestor-extending); see [§Repair (Rpr)](#repair-rpr) for the full algorithm. | `governance_policy` resolved through `iel_event`. | No |
 | `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `iel_event`. | **Yes** |
 | `Dec` | Decommission — terminal owner-initiated end. | `governance_policy` resolved through `iel_event`. | **Yes** |
 
@@ -42,7 +42,7 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 A submission containing an `Icp` event MUST also contain an `Est` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 `Est`, the chain is born with content, an `iel_event` binding, and the first policy-enforced event. `Est` is tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), raising per-attempt cost against SEL camping. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
-## Authorization via IEL — and Why That's Enough
+## Authorization via IEL
 
 SELs do not declare or evolve their own authorization policies. Every authorization decision routes through the IEL the chain is bound to:
 
@@ -111,11 +111,13 @@ The divergence invariant guarantees:
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
 - Every event lives at a serial at-or-after the chain's last evaluation seal (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `iel_event` (each event's `iel_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `iel_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_serial = d = seal_serial`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
 
-### Why SEL has Rpr (and IEL doesn't)
+### The asymmetry exploited by Rpr
 
-SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting submissions — `Est`-`Est` at v=1 (the brand-new-chain race) or `Upd`-`Upd` at v ≥ 2. **`Rpr`'s asymmetry is purely auth-vs-governance** — a higher-bar authority (governance) resolves a lower-bar fork (auth) via archival of the branch not on `Rpr.previous`'s walkback. The protocol does not distinguish "the legitimate operator" from "the adversary": both branches were authorized under `auth_policy` when they landed, and the discriminator is which branch the governance-authorized `Rpr` chose to preserve.
+SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting submissions — `Est`-`Est` at v=1 (the brand-new-chain race) or `Upd`-`Upd` at v ≥ 2.
 
-IEL has no analog because every IEL event after Icp is governance-authorized; there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
+`Rpr`'s asymmetry is purely auth-vs-governance: a higher-bar authority (governance) resolves a lower-bar fork (auth) via archival of the branch not on `Rpr.previous`'s walkback. The protocol does not distinguish "the legitimate operator" from "the adversary" — both branches were authorized under `auth_policy` when they landed; the discriminator is which branch the governance-authorized `Rpr` chose to preserve.
+
+IEL has no analog. Every IEL event is governance-authorized (`Icp` is self-endorsed; `Evl`/`Sea`/`Cnt`/`Dec` resolve against the tracked `governance_policy`), so there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
 
 ## Repair (Rpr)
 
@@ -299,7 +301,7 @@ Dec is privileged but terminal — it does not advance the seal on SEL (`last_se
 
 When the merge engine processes a submitted batch (full routing logic in [merge.md](merge.md); the exhaustive matrix and multi-node correctness proof are in [reconciliation.md](reconciliation.md); summarized here for lifecycle correlation):
 
-Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** iff `last_seal_advancing_event` is at-or-after the divergence point in chain order (i.e., a Sea/Rpr landed at-or-after `v_d`); otherwise **unsealed**.
+> **Sealed vs unsealed (used in the divergent rows of the table below):** a chain is **sealed** iff `last_seal_advancing_event` is at-or-after the divergence point in chain order (i.e., a `Sea`/`Rpr` landed at-or-after `v_d`); otherwise **unsealed**.
 
 | State observed | Batch content | Outcome |
 |---|---|---|

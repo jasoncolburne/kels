@@ -37,15 +37,13 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md). *
 
 The `last_seal_advancing_event` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
 
-**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
-
-**Once an IEL event lands, the governance satisfaction it proves is final.** This is enforced *structurally* via a constraint on policies introduced or evolved on the chain:
-
 > **Policy immunity rule.** Any policy referenced as a chain's `auth_policy` or `governance_policy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
 
-Since `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), the rule guarantees that no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past `Evl` / `Cnt` / `Dec` evaluations stay satisfied by construction.
+**Why this matters: once an IEL event lands, the governance satisfaction it proves is final.** `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past `Evl` / `Cnt` / `Dec` evaluations stay satisfied by construction.
 
 **Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `auth_policy` or `governance_policy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` / `Cnt` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
+
+**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
 
 ## Divergence and Contest-Only Resolution
 
@@ -66,7 +64,7 @@ Cnt is invalid on an already divergent IEL, which is by definition contested.
 
 This is intentional: history is encoded in the data. When a governance-authorized event diverges, there is no way to determine if the governance authorized event was created by an adversary or legitimate operator. Termination is the honest outcome; the operator re-incepts under a new identity if continued operation is needed.
 
-### What divergence means structurally
+### How divergence is detected and why it's terminal on IEL
 
 Divergence is detected when two IEL events share the same `previous` SAID. The chain becomes contested-terminal immediately by the privileged-divergence rule (every IEL event is governance-authorized, so any divergent set on IEL is privileged).
 
@@ -74,7 +72,20 @@ v0 divergence is rejected outright (inception is fully deterministic — two dis
 
 The route that creates divergence on an IEL chain:
 
-**Concurrent extensions** (race, same-batch fork): two events land at the same serial. Valid pairings on IEL involve `Evl` and `Sea` (both seal-advancing, governance-authorized, parent = tip directly) and `Cnt` (governance-authorized, parent = `v_{tip-1}` per the Cnt parent rule). Possible pairings: `Evl`-`Evl`, `Evl`-`Sea`, `Evl`-`Cnt`, `Sea`-`Cnt`. `Cnt`-`Cnt` cannot form (Cnt is absolute and terminal — at most one per log). `Sea`-`Sea` cannot form: IEL `Sea` carries no content or policy fields, so two `Sea` events with the same `previous`, `serial`, `prefix`, and `kind` are byte-identical → identical SAID → dedup at submit. `Dec` extends tip directly and lands only on linear chains, never in a divergent set — a `Dec` landing decommissions the chain. Every IEL divergent set at `v_d` contains at least one seal-advancing event (`Evl` or `Sea`). Divergence transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip.
+**Concurrent extensions** (race, same-batch fork): two events land at the same serial. Possible pairings:
+
+- `Evl`-`Evl`
+- `Evl`-`Sea`
+- `Evl`-`Cnt`
+- `Sea`-`Cnt`
+
+Pairings that cannot form:
+
+- `Cnt`-`Cnt` — Cnt is absolute and terminal; at most one per log.
+- `Sea`-`Sea` — IEL `Sea` carries no content or policy fields, so two `Sea` events with the same `previous`, `serial`, `prefix`, and `kind` are byte-identical → identical SAID → dedup at submit.
+- Anything involving `Dec` — `Dec` extends tip directly and lands only on linear chains; a `Dec` landing decommissions the chain.
+
+Every IEL divergent set at `v_d` contains at least one seal-advancing event (`Evl` or `Sea`). Divergence transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`/`Sea`/`Cnt`/`Dec` arriving via gossip.
 
 **Diagrams.** The possible shapes look like:
 
@@ -366,7 +377,7 @@ When more than one party can satisfy an IEL's `auth_policy` or `governance_polic
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
-The seal property and the anchoring model give *structural* guarantees against poisoning (policy immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered, and *no* guarantees when a participating KEL has been contested.
+Beyond the structural guarantees above, IEL trust degrades for consumers when anchoring KELs are recovered or contested. Specifically: the seal property and the anchoring model give *structural* guarantees against poisoning (policy immunity rule) and gossip races (terminal states are deterministic across nodes). They give *partial* guarantees when a participating KEL is later recovered, and *no* guarantees when a participating KEL has been contested.
 
 `Rec` (recovery-after-divergence; distinct from proactive `Ror`) is by design evidence that the prior signing key was compromised. After `rec`, anchors made under that key **may or may not** survive: anchors on the branch the Rec extends stay (`rec` archives only the other branch); anchors on the now-archived branch do not.
 
@@ -462,7 +473,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 **Notable simplifications vs. SEL:**
 - No `Rpr` kind, no `truncate_and_replace` discriminator algorithm, no archive tables, no repair-link rows.
 - IelVerifier still tracks branches (max 2 per the divergence invariant) but never reconciles — divergent stays divergent until `Cnt`.
-- `MAX_NON_EVALUATION_EVENTS` proactive bound doesn't apply (every IEL event after Icp is governance-authorized; no fork window to bound).
+- `MAX_NON_EVALUATION_EVENTS` proactive bound doesn't apply (every IEL event is governance-authorized; no fork window to bound).
 
 **Tests:**
 - Submit / verifier / builder coverage; gossip-race convergence on contested state.

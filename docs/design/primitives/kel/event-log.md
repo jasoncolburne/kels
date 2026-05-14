@@ -38,11 +38,14 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 ## Seal and Key Non-Poisonability
 
-Two distinct concepts share the SAID-of-recent-event pattern on KEL:
+KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
-**`last_seal_advancing_event`** — the SAID of the most recent `Rec`/`Ror` event. This is the chain's **seal**: the watermark beyond which no fork can land (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Recovery cannot truncate at or before it (handlers reject attempts to displace any prior seal-advancing event). `Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
+| Concept | Advances on | Used for |
+|---|---|---|
+| `last_seal_advancing_event` | `Rec`/`Ror` | Seal-cap rule: `event_serial >= seal_serial`; recovery cannot truncate at-or-before the seal. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded). |
+| `last_recovery_revealing_event` | `Rec`/`Ror`/`Cnt`/`Dec` | Spent-key rule + proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`). Once any recovery-revealing event lands, the recovery key is publicly known; future divergent events must be resolved by `Cnt`, not `Rec`. |
 
-**`last_recovery_revealing_event`** — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec` event. This tracks recovery-key revelation (all four kinds expose the recovery key via dual-signature). The spent-key rule and the proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`) both read off this concept: once any recovery-revealing event lands, the recovery key is publicly known, and future divergent events must be resolved by `Cnt`, not `Rec`.
+`Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
 
 **Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization — the chain's history at that serial is locked. Without this, history could be invalidated retroactively by anyone who later comes to control the revealed key material, making terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward spent-key effect applies.
 
@@ -86,26 +89,26 @@ Each submitter constructs with previous = tip.said = v_{d-1}.said:
 
 `Ror` is privileged (recovery-revealing) but not archiving — its parent rule is the same as `ixn`/`Rot`/`Dec`: `previous = tip.said`. When the submitter's tip is at `v_{d-1}`, `Ror.previous = v_{d-1}.said` directly; `Ror` lands at `v_d` and can join a divergent set there via the upgrade rule. (`Rec` would NOT fit this slot — `Rec` is the archiving privileged kind on KEL, routed through the discriminator's archival path, which removes the divergent set before any divergent-set check fires.)
 
-Gossip propagates. Each node eventually receives the events that landed at others:
+Gossip propagates. Each node eventually receives the events that landed at others. Per-node outcome depends on order of arrival:
 
-- **Node A** receives `ixn_b` first: chain becomes non-privileged-divergent (`ixn_a`-`ixn_b` at `v_d`); recoverable via `Rec`. Then receives `ror_c`: per the upgrade rule, the privileged `ror_c` joins as a third event; chain transitions to contested-terminal (`ror` is privileged → privileged-divergence-is-terminal fires). End: 3 events at `v_d`, contested.
-- **Node B** receives `ixn_a` then `ror_c`: same trajectory, ends contested with 3 events.
-- **Node C** receives `ixn_a` first: divergent set becomes mixed (`ror_c`-`ixn_a`); `ror_c` is privileged, so privileged-divergence-is-terminal fires immediately; chain contested with 2 events. Subsequent `ixn_b` arriving: rejected by the contested-state gate. End: 2 events at `v_d`, contested.
+| Node | First two events | Trajectory | Final state |
+|---|---|---|---|
+| A | `ixn_b`, then `ror_c` | non-priv divergent → upgrade-rule promotes via privileged `ror_c` → contested | 3 events at `v_d` |
+| B | `ixn_a`, then `ror_c` | same as A | 3 events at `v_d` |
+| C | `ixn_a` first | mixed divergent set with `ror_c` privileged → contested at first observation; subsequent `ixn_b` rejected | 2 events at `v_d` |
 
 ```
-Final state on Node A and Node B post-gossip (3-way divergent at v_d, contested):
+Final state on Node A and B (3-way divergent at v_d, contested):
+    ... → v_{d-1} ─┬─ ixn_a @ v_d
+                   ├─ ixn_b @ v_d
+                   └─ ror_c @ v_d
 
-    ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
-                   ├─ ixn_b @ v_d  ├── contested (ror_c privileged → privileged-divergence-is-terminal)
-                   └─ ror_c @ v_d  ┘
-
-Final state on Node C (2-way mixed at v_d, contested from the moment ror_c joins):
-
-    ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
-                   └─ ror_c @ v_d  ┴── contested
+Final state on Node C (2-way mixed at v_d, contested when ror_c joined):
+    ... → v_{d-1} ─┬─ ixn_a @ v_d
+                   └─ ror_c @ v_d
 ```
 
-End state: all nodes have effective SAID `hash_effective_said("contested:{prefix}")`, despite differing chain contents at `v_d` (3 events on A and B; 2 events on C). Cross-node SAID convergence holds without forensic-record convergence — anti-entropy sees matching SAIDs and does not re-queue. This is exactly the property [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence) asserts: semantic state agrees across nodes via deterministic effective-SAID even when chain contents diverge forensically. The upgrade rule's structural role is keeping nodes A and B from being stuck in non-privileged-divergent (recoverable) state when other nodes have already observed a contested-triggering privileged event. The same pattern applies on SEL with `Upd-Upd-Sea` (or any non-privileged + non-privileged + non-archiving-privileged sequence): see [../sel/verification.md §Upgrade rule](../sel/verification.md#upgrade-rule).
+All nodes have effective SAID `hash_effective_said("contested:{prefix}")` despite differing chain contents at `v_d`. Cross-node SAID convergence holds without forensic-record convergence — anti-entropy sees matching SAIDs and does not re-queue. This is the property [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence) asserts: semantic state agrees across nodes via deterministic effective-SAID even when chain contents diverge forensically. The upgrade rule's structural role is keeping nodes A and B from being stuck in non-privileged-divergent (recoverable) state when other nodes have already observed a contested-triggering privileged event. The same pattern applies on SEL with `Upd-Upd-Sea` — see [../sel/verification.md §Upgrade rule](../sel/verification.md#upgrade-rule).
 
 ## Recovery (Rec)
 
@@ -155,13 +158,19 @@ Cnt shares the divergence-ancestor-extending parent shape (`previous = v_{d-1}.s
 
 - **`verify_server_chain_pre_repair`** — calls `client.verify_key_events(prefix, ..., KelVerifier::new(prefix), ...)` and wraps verifier errors as `ChainHasUnverifiedEvents`. Defense-in-depth: a buggy/malicious server otherwise gets taken at its word when the builder extends from its `get_owner_tail`.
 
-Pending events are NOT a pre-flight failure. They're operator-staged unflushed events — application-level state used to display in-progress work — and ship in the same batch (see §Pending events bundling). The server verifies bundled pending events on submit like any other event; the verifier's signature and chain-linkage checks are the trust gate, not the builder's gate. The lifecycle event chains from the last bundled event (pending tail, missing tail, or `get_owner_tail` if both are empty). The merge engine handles boundary detection server-side via the discriminator.
+This is the only pre-flight failure mode. Pending events do not trigger pre-flight failure — see §Pending events bundling for the separate concern of how unflushed operator work rides along with lifecycle ops.
 
-Whenever pending is non-empty, the application SHOULD display it to the user. Human inspection is the only way to decide what should happen with in-progress work — the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." The library bundles pending into the lifecycle batch by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level and requires inspection.
+### Pending events and user display
+
+Whenever pending is non-empty, the application SHOULD display it to the user before submitting the lifecycle op. Human inspection is the only way to decide what should happen with in-progress work — the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." The library bundles pending into the lifecycle batch by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level and requires inspection.
 
 ### Conditional Rot follow-up
 
-`Rec` only rotates the signing key if it itself is not enough to escape key material that may be known to the other party. Mapping (the "extending branch" is the branch the Rec extends; the "archived branch" is the branch the discriminator removes):
+**Rule.** `needs_extra_rot = archived_branch_rotated && !extending_branch_rotated`.
+
+The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotation_hash`). If the archived branch has already used it but the extending branch hasn't, an extra `Rot` after `Rec` is needed to escape to a key only the operator (whoever holds the recovery key dictates this) knows. The "extending branch" is the branch `Rec.previous` walks back from; the "archived branch" is what the discriminator removes.
+
+Truth table:
 
 | Extending branch rotated since divergence? | Archived branch rotated? | Extra `Rot` after `Rec`? |
 |---|---|---|
@@ -169,8 +178,6 @@ Whenever pending is non-empty, the application SHOULD display it to the user. Hu
 | No | Yes | **Yes** |
 | Yes | Yes | No |
 | Yes | No | No |
-
-Logic: `needs_extra_rot = archived_branch_rotated && !extending_branch_rotated`. The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotation_hash`); if both branches have already used it, an extra `Rot` after `Rec` is needed to escape to a key only the operator (whoever holds the recovery key dictates this) knows.
 
 ### Pending events bundling
 
@@ -214,7 +221,12 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
 ### Cnt mechanics
 
-`Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_d`), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~62 events per the proactive-ROR cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence) — Cnt with `previous = v_{d-1}.said` validates uniformly across nodes regardless of which divergent contents each node received.
+`Cnt.previous = v_{tip-1}.said` — a unifying parent rule across linear and divergent chain shapes. See [../../protocol-doctrine.md §Privileged Divergence is Terminal](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the canonical statement and worked scenarios.
+
+KEL-specific notes:
+
+- **On a linear chain**, Cnt creates fresh divergence at `v_d` (the existing tip's serial).
+- **On a divergent chain**, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. The pre-existing branch may have extended past `v_d` before divergence was detected — up to ~62 events per the proactive-ROR cap.
 
 Cnt is privileged (recovery-revealing). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal. There is no separate "explicit Cnt" handling: Cnt is just another privileged event that triggers contested via the divergence rule.
 
@@ -226,20 +238,16 @@ Cnt's authorization is dual-signed against `v_{tip-1}`'s commitments: signing-ke
 
 This authorization choice gives the operator a recourse against signing-key-only Rot takeover. If a second signing-key holder (whose access was acquired via signing-key-only compromise) submits a Rot at `v_N` to take over, the keys committed by `v_{N-1}` are: signing key revealed by the Rot at `v_N` (both parties have it) + recovery key NOT revealed by Rot (only the original holder, who prepared it, has it; recovery is revealed only by `Rec`/`Ror`/`Cnt`/`Dec`). The original holder's dual-sig succeeds; the second signing-key holder's does not. The original holder can submit Cnt, terminate the chain, and reincept under a new prefix.
 
-### Algorithmic trigger — `ContestRequired`
+### Algorithmic trigger — `ContestRequired` vs `RecoverRequired`
 
-The merge engine returns `ContestRequired` when:
-- The KEL is divergent.
-- At least one event in the divergent chain reveals the recovery key (`Rec` / `Ror` / `Dec` / `Cnt`, or a `Ror`/`Dec` that pre-revealed proactively).
-- The submitted batch is not a contest (i.e., does not contain `Cnt`).
+On a divergent KEL, the merge engine returns one of two error codes depending on whether the recovery key has been revealed:
 
-The operator's only legitimate next event is `Cnt`. Any other submission — including `Rec` — is rejected with `ContestRequired`.
+| Divergent set state | Operator's legitimate next event | Merge engine returns |
+|---|---|---|
+| No recovery-revealing event in the divergent set | `Rec` (recovers; discriminator preserves surviving branch) | `RecoverRequired` for any non-`Rec` submission |
+| At least one recovery-revealing event in the divergent set (`Rec`/`Ror`/`Dec`/`Cnt`) | `Cnt` (terminates; no recovery available) | `ContestRequired` for any non-`Cnt` submission |
 
-This mirrors SEL's `ContestRequired` shape: someone has used the privileged primitive (KEL: revealed the recovery key by submitting `Rec`/`Ror`/`Dec`/`Cnt`; SEL: advanced the seal by submitting `Sea`/`Rpr`), and safe normal-flow continuation is no longer possible. The trigger is structurally the same — "the privileged operation has been used, you can't safely follow with the same primitive" — instantiated against the chain's privileged primitive (recovery key for KEL, evaluation seal for SEL).
-
-### Distinguishing from `RecoverRequired`
-
-A merely-divergent chain (no recovery-revealing event yet) returns `RecoverRequired` for any non-`Rec` submission. The chain can be recovered, the discriminator preserves the surviving branch. `ContestRequired` is specifically the recovery-revealed case.
+`ContestRequired` mirrors SEL's `ContestRequired` shape: someone has used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The trigger is structurally the same across primitives — "the privileged operation has been used, you can't safely follow with the same primitive" — instantiated against the chain's privileged primitive (recovery key for KEL, evaluation seal for SEL).
 
 ### Cnt event
 

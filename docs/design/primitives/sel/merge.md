@@ -14,7 +14,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the seal has advanced past the submitter's view
 
-Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `iel_event` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel--and-why-thats-enough).
+Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `iel_event` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel).
 
 ## Merge Outcome
 

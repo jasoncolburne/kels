@@ -170,7 +170,7 @@ if event is at-or-before `last_seal_advancing_event` in chain order
 
 This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.
 
-(For IEL, "policy is satisfied" means the event's anchor passes against `tracked_governance_policy` — every IEL event after Icp is governance-authorized.)
+(For IEL, "policy is satisfied" means the event's anchor passes against `tracked_governance_policy` — every IEL event including `Icp` is governance-authorized; `Icp` is self-endorsed under its declared policy.)
 
 ### 8. Overlap (non-divergent IEL, fork-creating event)
 
