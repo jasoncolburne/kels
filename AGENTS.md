@@ -96,9 +96,17 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/infrastructure/federation-state-machine.md`, `docs/design/infrastructure/secure-registration.md`, `docs/operations/registry-removal.md`, `docs/design/infrastructure/rejection-threshold.md`.
 
-**SAD Event Log (SEL)** — append-only, versioned, identity-rooted data chain in SADStore. Each chain is bound at inception to a specific Identity Event Log via the `identity` field on `Icp`; every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`). Lifecycle: `Icp` (permissionless v0), `Est` (binding-establishment at v1, tier-2 anchored per anchor-tier-elevation; inception batch `[Icp, Est]` minimum), `Upd` (routine content extension at v2+), `Sea` (re-evaluates IEL binding; may advance `iel_event` to a newer IEL state), `Rpr` (repair on unsealed divergence), `Cnt`/`Dec` (terminal). See `docs/design/primitives/sel/events.md`, `docs/design/primitives/sel/event-log.md`, `docs/design/protocol-doctrine.md §Anchor Tier Elevation`, and the IEL primitive below.
+**SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`).
 
-**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); `Sea` advances the seal without policy evolution (closes the post-exclusion-evolution window per protocol-doctrine §Exclusion Evolutions and the Seal Advance); terminal via `Cnt` (contest — IEL divergence is structurally contested-terminal at first 2-event observation; IEL has no `Rpr`) or `Dec` (decommission). Every IEL event — including `Icp` — is governance-authorized (anchored under the chain's `governance_policy`); `auth_policy` is the per-event policy declaration consumed by SEL `Est`/`Upd` via `iel_event` binding. Every introduced/evolved policy must be `immune: true`. Hosted in `services/sadstore/` alongside SE; `iel_events` table, `/api/v1/iel/events*` routes, `iel_updates` Redis channel, `kels/gossip/v1/topics/iel` gossip topic. See `docs/design/primitives/iel/events.md`, `docs/design/primitives/iel/event-log.md`, `docs/design/primitives/iel/verification.md`, `docs/design/primitives/iel/merge.md`.
+Kind set (sort-priority order): `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt`. `Icp` is permissionless and `[Icp, Est]` is the minimum inception batch. `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `iel_event`.
+
+See `docs/design/primitives/sel/events.md` and `docs/design/primitives/sel/event-log.md`.
+
+**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); `Sea` advances the seal without policy evolution; terminal via `Cnt` (contest) or `Dec` (decommission). Every IEL event is governance-authorized (anchored under the chain's `governance_policy`); `auth_policy` is the per-event policy declaration consumed by SEL `Est`/`Upd` via `iel_event` binding. Every introduced/evolved policy must be `immune: true`. IEL divergence is structurally contested-terminal at first 2-event observation; IEL has no `Rpr`.
+
+Storage: `iel_events` table; `/api/v1/iel/events*` routes; `iel_updates` Redis channel; `kels/gossip/v1/topics/iel` gossip topic.
+
+See `docs/design/primitives/iel/events.md`, `docs/design/primitives/iel/event-log.md`, `docs/design/primitives/iel/verification.md`, `docs/design/primitives/iel/merge.md`.
 
 **Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `auth_policy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/iel/event-log.md §Cascading effect on dependent SELs`.
 
@@ -129,7 +137,13 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 ### Event Transfer
 
-All multi-page transfers use `transfer_key_events` infrastructure in `lib/kels/src/types/kel/sync.rs`. Never use single-page `fetch_key_events` in loops. Key functions: `forward_key_events` (serve), `verify_key_events` / `completed_verification` (consume → `Verification` token), `collect_key_events` / `resolve_key_events` (client-only, accumulates into memory).
+All multi-page transfers use the `transfer_key_events` infrastructure in `lib/kels/src/types/kel/sync.rs`. Never use single-page `fetch_key_events` in loops.
+
+Key functions:
+
+- `forward_key_events` — server-side fan-out.
+- `verify_key_events` / `completed_verification` — consume; returns a `Verification` token.
+- `collect_key_events` / `resolve_key_events` — client-only; accumulates the chain into memory.
 
 ### Verification Invariant
 

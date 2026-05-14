@@ -38,7 +38,11 @@ Examples: effective-SAID endpoints (per-primitive), anti-entropy comparison, KEL
 
 ### Compromise is Permanent
 
-The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. A KEL key compromised in 2023 cannot Cnt the chain in 2026 even if the adversary still holds the key material; an IEL `governance_policy` participant who was revoked via `Evl` cannot Cnt the chain after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be Cnt'd by the rotated-out parties (subject to operator-side ratcheting via `Sea`).
+The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. Per primitive:
+
+- **KEL:** a key compromised in 2023 cannot `Cnt` the chain in 2026 even if the adversary still holds the key material.
+- **IEL:** a `governance_policy` participant revoked via `Evl` cannot `Cnt` the chain after their revocation.
+- **SEL:** an SEL bound to a stale IEL event whose governance has since rotated cannot be `Cnt`'d by the rotated-out parties — subject to operator-side ratcheting via `Sea` (see [§Exclusion Evolutions and the Seal Advance](#exclusion-evolutions-and-the-seal-advance)).
 
 This closes the **stale-state kill-switch problem**. Without this rule, every party who ever held authority over a chain would retain protocol-level kill-switch authority over it forever, and any past compromise would become a permanent vulnerability. With this rule, past compromise is structurally a non-event for protocol authority.
 
@@ -46,17 +50,23 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
-- **KEL**: `last_seal_advancing_event` — the SAID of the most recent `Rec`/`Ror` (Cnt/Dec are terminal and don't advance the seal but do enforce it). KEL separately tracks `last_recovery_revealing_event` (Rec/Ror/Cnt/Dec) for the spent-key / non-poisonability rule — a distinct concept; see [primitives/kel/event-log.md §Seal and Key Non-Poisonability](primitives/kel/event-log.md#seal-and-key-non-poisonability).
-- **IEL**: `last_seal_advancing_event` — the SAID of the most recent `Evl`/`Sea` (Cnt/Dec are terminal and don't advance the seal but do enforce it).
-- **SEL**: `last_seal_advancing_event` — the SAID of the most recent `Sea`/`Rpr` (Cnt/Dec terminal, don't advance the seal but do enforce it).
+Each primitive tracks `last_seal_advancing_event` — the SAID of the chain's most recent privileged-but-non-terminal event. The advancing kinds differ:
 
-**Same field across primitives.** Each primitive's `last_seal_advancing_event` is the SAID of the chain's most recent privileged-but-non-terminal event — the watermark beyond which the chain cannot fork. The kinds that advance the seal differ because each primitive's privileged-non-terminal set differs: KEL on `Rec`/`Ror`, IEL on `Evl`/`Sea`, SEL on `Sea`/`Rpr`. Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
+- **KEL**: `Rec`/`Ror`.
+- **IEL**: `Evl`/`Sea`.
+- **SEL**: `Sea`/`Rpr`.
+
+Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
+
+KEL additionally tracks `last_recovery_revealing_event` (`Rec`/`Ror`/`Cnt`/`Dec`) for the spent-key / non-poisonability rule. This is a distinct concept from the seal — see [primitives/kel/event-log.md §Seal and Key Non-Poisonability](primitives/kel/event-log.md#seal-and-key-non-poisonability).
 
 A new event's land-serial MUST be at-or-after the seal (`event_serial >= seal_serial`). Any submission whose land-serial is strictly before the seal is rejected (`"Cannot land at serial V — sealed by evaluation/recovery at serial S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
 ##### Parent-at-seal boundary case
 
-The land-serial framing matters at the parent-at-seal boundary. When the chain's tip is itself the most recent privileged event (always-true on linear IEL chains where every event advances the seal; sometimes-true on KEL when the tip is a `Rec` or `Ror` and on SEL when the tip is a `Sea` or `Rpr`), a Cnt with `previous = v_{tip-1}.said` lands at v_tip = seal_serial with `parent_serial = seal_serial − 1`. `event_serial = seal_serial` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal. Disallowing this boundary case would block Cnt on linear chains whose tip is a privileged event entirely — including all linear IEL chains.
+**Why this matters: without the boundary case, no Cnt could land on a linear IEL chain at all** (every IEL event advances the seal, so the seal always coincides with the tip — Cnt's `v_{tip-1}` parent rule would land at `seal − 1`, which the seal-cap would reject). The boundary case admits Cnt at exactly the seal version, preserving Cnt's availability as a termination event.
+
+The land-serial framing makes this work. When the chain's tip is itself the most recent privileged event (always-true on linear IEL chains where every event advances the seal; sometimes-true on KEL when the tip is a `Rec` or `Ror` and on SEL when the tip is a `Sea` or `Rpr`), a Cnt with `previous = v_{tip-1}.said` lands at `v_tip = seal_serial` with `parent_serial = seal_serial − 1`. `event_serial = seal_serial` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal.
 
 **Only `Cnt` is admitted at `event_serial = seal_serial`.** The boundary carve-out is `Cnt`-specific by construction. Per-primitive reconciliation matrices show all other kinds either route to `ContestRequired` or are structurally `n/a`:
 
@@ -65,14 +75,19 @@ The land-serial framing matters at the parent-at-seal boundary. When the chain's
 
 The asymmetry follows from semantics: `Cnt` is repudiation (it terminates without archival, leaving the seal-defining event in storage as forensic record); `Rec`/`Rpr` are recovery (they archive, which would destroy seal-defining state). Repudiation at the boundary is sound; recovery at the boundary is not.
 
-**Bounds on the post-seal window per primitive**:
-- **KEL**: protocol-bounded. `MAX_NON_REVEALING_EVENTS = 62` proactive-ROR rule caps the chain since the last recovery-revealing event to 62 non-revealing events; after that, the next event MUST be `Rec`/`Ror`/`Dec`/`Cnt`. The window in which past-but-not-yet-revealed keys could create new divergence is therefore bounded by ≤ 62 events.
-- **IEL**: no protocol cap. Every non-terminal IEL event after `Icp` advances the seal (`Evl` and `Sea` are both governance-authorized and seal-advancing; `Cnt`/`Dec` are terminal and enforce but don't advance), so the seal coincides with the tip on linear chains — within-window forks structurally don't exist on IEL. The bound on "how stale can authority become before being supplanted" is purely operator-side: governance evolution discipline.
-- **SEL**: protocol-bounded. `MAX_NON_EVALUATION_EVENTS = 63` rule caps the chain since the last `Sea`/`Rpr`/`Cnt`/`Dec` to 63 non-evaluation events. Combined with the **per-event parent-monotonic** check on `iel_event` (each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order, applied per branch independently), this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding. A new branch's iel_event is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
+**Bounds on the post-seal window per primitive:**
 
-  **The per-branch parent-monotonic rule is SEL-specific.** SEL is the only primitive where authorization context is referenced via a separate field (`iel_event`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
+- **KEL**: protocol-bounded at 62 events via the proactive-ROR rule (`MAX_NON_REVEALING_EVENTS = 62`).
+- **IEL**: no protocol cap — every non-terminal IEL event advances the seal, so the seal coincides with the tip on linear chains and within-window forks don't structurally exist. The "how stale can authority become" bound is operator-side discipline.
+- **SEL**: protocol-bounded at 63 events via `MAX_NON_EVALUATION_EVENTS = 63`. Combined with SEL's per-event parent-monotonic ratchet on `iel_event`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding.
 
-  **Consequence on divergent SEL chains**: branches may reference different IEL events at the same SEL serial, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded structurally by two rules: the seal-cap (no fork at-or-before the seal) caps how far back branches can diverge; privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain) caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation: KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
+##### Per-event parent-monotonic ratchet (SEL-specific)
+
+SEL is the only primitive where authorization context is referenced via a separate field (`iel_event`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
+
+Each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order, applied per branch independently. A new branch's `iel_event` is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
+
+**Consequence on divergent SEL chains.** Branches may reference different IEL events at the same SEL serial, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded by two rules: the seal-cap caps how far back branches can diverge, and privileged-divergence-is-terminal caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation — KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
 
 #### Privileged Divergence is Terminal; Cnt Triggers It Uniformly
 
@@ -212,9 +227,9 @@ The rule applies uniformly across KEL, IEL, and SEL — the convergence failure 
 
 #### Anchor Tier Elevation
 
-Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The tier required scales with the event's privilege: tier-1 (routine extension) anchors in `Ixn`; tier-2 (governance act — declaration, evolution, or seal advance — or binding establishment) anchors in `Rot`; tier-3 (recovery or terminal) anchors in `Ror`. The elevation closes the signing-key-only adversarial pathway to forging governance acts, binding establishments, and terminal events on the chains that root other chains' authority.
+Three operation classes, three key-tier requirements. Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The elevation closes the signing-key-only adversarial pathway to forging governance acts, binding establishments, and terminal events on the chains that root other chains' authority.
 
-KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier.
+KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier. The per-tier mapping:
 
 **Three-tier mapping.** Each operation class anchors in the KEL event kind that reveals the required key tier:
 
@@ -340,9 +355,9 @@ The expensive case is contesting an **IEL at the root of a dependency tree**: th
 
 ##### Exclusion Evolutions and the Seal Advance
 
-The kill-switch authority granted by `v_{tip-1}`'s policy is symmetric. It serves the operator against single-event adversarial takeover (the operator's `Cnt` against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. Same mechanism, different actors. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` can `Cnt` the chain at `v_N` within that window — subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
+An **exclusion evolution** is a governance `Evl` where the new policy `P_new` strictly removes parties who satisfied the old policy `P_old` — a removed member, a raised threshold past someone's contribution, a participant replacement. Pure additions or threshold-decreases that keep the prior membership are NOT exclusion evolutions — anyone who could `Cnt` under `P_old` can also `Cnt` under `P_new`, so no new "had authority, lost it" position opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
 
-The window is operationally meaningful only on **exclusion evolutions** — where `P_new` strictly removes parties who satisfied `P_old` (a removed member, a raised threshold past someone's contribution, a participant replacement). Pure additions or threshold-decreases that keep the prior membership don't create new "had authority, lost it" positions; anyone who could `Cnt` under `P_old` can also `Cnt` under `P_new`. No new attack surface opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
+That position matters because of how the seal-cap works. The kill-switch authority granted by `v_{tip-1}`'s policy is symmetric. It serves the operator against single-event adversarial takeover (the operator's `Cnt` against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` — including the rotated-out party — can `Cnt` the chain at `v_N` within that window, subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
 
 **`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `iel_event` to a newer IEL state — pure seal advance when `iel_event` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
 
@@ -353,8 +368,9 @@ The window is operationally meaningful only on **exclusion evolutions** — wher
 Shape constraints on `Sea`:
 
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
-- Parent cannot be another `Sea` with no semantically-distinguishing change — back-to-back seal advances that add no new information are an invalid shape. On IEL, `Sea` carries no content or policy fields, so any back-to-back Sea is semantically redundant and forbidden. On SEL, `Sea`-`Sea` is allowed only when the new `Sea` strictly advances `iel_event` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves; equal `iel_event` between consecutive Seas is rejected.
 - Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
+- **IEL Sea-Sea forbidden.** `Sea` carries no content or policy fields on IEL, so any back-to-back Sea is semantically redundant.
+- **SEL Sea-Sea allowed only with strict-advance.** The new `Sea` must strictly advance `iel_event` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves. Equal `iel_event` between consecutive Seas is rejected.
 
 SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `iel_event` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
 
