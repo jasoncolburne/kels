@@ -81,7 +81,11 @@ Runtime services and system components that store/serve/replicate the primitives
 
 ## Operations
 
-How to run the system. Lives in [`docs/operations/`](../operations/) — deployment, scale, retirement, backup. Read when operating a node or planning a federation deployment.
+How to run the system. Lives in [`docs/operations/`](../operations/) — deployment, scale, retirement, backup, multi-party-governance synchronization. Read when operating a node or planning a federation deployment.
+
+## Development
+
+How to build applications on top of the protocol. Lives in [`docs/development/`](../development/) — enrollment patterns and other application-developer guidance. Read when integrating against the primitives.
 
 ## Analysis
 

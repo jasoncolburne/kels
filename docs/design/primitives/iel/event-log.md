@@ -356,7 +356,7 @@ This is an operator best practice, not a protocol-enforced rule. Future automati
 
 ### Application-developer enrollment patterns
 
-The brand-new chain race described above is operationally defused by enrollment-time discipline on the application developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governance_policy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full operator guidance: [../../../operations/enrollment.md](../../../operations/enrollment.md).
+The brand-new chain race described above is defused by enrollment-time discipline on the application-developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governance_policy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full developer guidance: [../../../development/enrollment.md](../../../development/enrollment.md).
 
 ## Multi-Party Governance Synchronization
 

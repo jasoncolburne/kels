@@ -237,7 +237,7 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
   - `Icp` dedups (deterministic prefix derivation; same SAID across submitters).
   - `Upd_legit.previous = Icp.said` — operator extends `Icp` via dedup-equivalence (an endorsement-class event never extends an adversary event; see [../design/protocol-doctrine.md §Extension Discipline](../design/protocol-doctrine.md#extension-discipline)). `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape).
   - Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. `Rpr` lands at `v_2`; the chain becomes the operator's.
-  - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../operations/enrollment.md](../operations/enrollment.md).
+  - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../development/enrollment.md](../development/enrollment.md).
 - **Residual visibility cost:** `Upd_stale` moves to the archive table as forensic record; visible to a determined inspector but cannot ground authorization.
 - **Structural impossibility of closing further:** The deterministic prefix derivation enables dedup-idempotency, which is what creates the camping window. Closing the window would require breaking dedup-idempotency.
 
