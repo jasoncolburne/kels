@@ -7,7 +7,7 @@ This document describes the submit / merge protocol used when new events are sub
 The submit handler integrates new events into an existing IEL while handling:
 - Normal event appends (`Evl`, `Sea`)
 - Idempotent resubmissions (dedup by SAID)
-- Divergence detection (conflicting events at the same version)
+- Divergence detection (conflicting events at the same serial)
 - Contest (`Cnt`) — terminal authority conflict OR divergence resolution (the only divergence-resolver on IEL)
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the chain is divergent or post-evaluation-seal
@@ -168,7 +168,7 @@ if event is at-or-before `last_seal_advancing_event` in chain order
    → return ContestRequired { reason: "..." }
 ```
 
-This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher version, contest, or abandon.
+This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.
 
 (For IEL, "policy is satisfied" means the event's anchor passes against `tracked_governance_policy` — every IEL event after Icp is governance-authorized.)
 
@@ -197,7 +197,7 @@ The `IelVerification` token is the trusted context for routing decisions. The DB
 
 ## Pagination
 
-All IEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same version: `Icp` (0) → `Evl` (1) → `Sea` (2) → `Dec` (3) → `Cnt` (4). `MINIMUM_PAGE_SIZE = 64` controls page size.
+All IEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same serial: `Icp` (0) → `Evl` (1) → `Sea` (2) → `Dec` (3) → `Cnt` (4). `MINIMUM_PAGE_SIZE = 64` controls page size.
 
 ## Gossip Send-Side Partitioning (divergent IELs)
 
@@ -215,7 +215,7 @@ For an IEL that is divergent but not contested (no `Cnt` in either branch): in p
 
 ## Key Invariants
 
-1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
+1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored (the chain freezes after; only `Cnt` extends past divergence).
 3. **No archival** — no `truncate_and_replace`, no archive table. History is encoded in the data, including divergent branches, forever.
 4. **Terminal states are permanent** — any `Cnt` or `Dec` in the chain freezes it; no future submissions accepted.

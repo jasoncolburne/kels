@@ -15,7 +15,7 @@ IEL verification ensures:
 - `Evl` / `Sea` / `Cnt` / `Dec` are anchored under the branch's tracked `governance_policy`
 - Any policy referenced as `auth_policy` or `governance_policy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
-Events are linked by their `previous` SAID. Version is the position in the chain (inception is version 0).
+Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 
 Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `auth_policy` and `governance_policy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
@@ -23,7 +23,7 @@ The verifier answers a single question: **is this chain shape structurally authe
 
 ## Verification Algorithm
 
-`IelVerifier` (`lib/kels/src/types/iel/verification.rs`) processes events in a single forward pass, verifying structure and policy satisfaction simultaneously. Events must arrive in `version ASC, kind sort_priority ASC, said ASC` order.
+`IelVerifier` (`lib/kels/src/types/iel/verification.rs`) processes events in a single forward pass, verifying structure and policy satisfaction simultaneously. Events must arrive in `serial ASC, kind sort_priority ASC, said ASC` order.
 
 ### Per-Event Checks
 
@@ -41,9 +41,9 @@ verify_event(event):
     // 3. Structure validation
     IdentityEvent::validate_structure(event)  // per-kind field rules
 
-    // 4. Version continuity
-    if event.version != expected_version:
-        return Error("Version gap or regression")
+    // 4. Serial continuity
+    if event.serial != expected_serial:
+        return Error("Serial gap or regression")
 
     // 5. Chain continuity (previous pointer matches a known branch tip)
     match event to a branch via event.previous
@@ -62,11 +62,11 @@ verify_event(event):
 
 ### Generation Processing
 
-Events at the same version form a **generation**. The verifier processes all events in a generation together:
+Events at the same serial form a **generation**. The verifier processes all events in a generation together:
 
 ```
-verify_generation(events_at_version):
-    if events_at_version.len() > branches.len():
+verify_generation(events_at_serial):
+    if events_at_serial.len() > branches.len():
         // More events than branches = divergence detected
         fork BranchState for new branches
         record divergence_ancestor (the SAID of v_{d-1}) if first divergence
@@ -109,7 +109,7 @@ Authorization checks use the *previous tracked* policy values for `Evl` (an Evl 
 
 ### Terminal-state determination and authorization
 
-All events on IEL require HARD anchor: a Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, version monotonicity, immunity check on policy evolution — stay HARD as well.
+All events on IEL require HARD anchor: a Cnt or Dec whose governance check fails is rejected at the verifier; the chain stays at its prior state. Structural integrity rules — SAID validity, serial monotonicity, immunity check on policy evolution — stay HARD as well.
 
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
@@ -182,8 +182,8 @@ Accessors:
 | Prefix consistency | All events have same prefix |
 | Event chaining | `previous` field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
-| Version monotonicity | Each event's version equals predecessor's version + 1 |
-| Inception version | Inception (no `previous`) must have version 0 |
+| Serial monotonicity | Each event's serial equals predecessor's serial + 1 |
+| Inception serial | Inception (no `previous`) must have serial 0 |
 | `governance_policy` satisfaction at Icp | `evaluate_anchored_policy(event.governance_policy, event.said)` (self-governance-endorsement) |
 | `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Sea/Cnt/Dec |
 | Policy immunity | Every introduced/evolved auth_policy or governance_policy must have `immune: true` |
@@ -206,7 +206,7 @@ struct IelVerifier {
     prefix: Digest256,
     checker: Arc<dyn PolicyChecker>,
     branches: HashMap<Digest256, BranchState>,   // keyed by tip SAID
-    last_verified_version: Option<u64>,
+    last_verified_serial: Option<u64>,
     divergence_ancestor: Option<Digest256>,
     is_contested: bool,
     is_decommissioned: bool,
@@ -236,7 +236,7 @@ let verification = verifier.finish().await?;
 
 1. SAID integrity (`event.verify()`)
 2. Prefix matches verifier's prefix
-3. Version continuity (events arrive in generation order)
+3. Serial continuity (events arrive in generation order)
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency

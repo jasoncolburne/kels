@@ -8,7 +8,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Inception batches (`[Icp, Est, ...]` minimum — Icp alone is rejected)
 - Normal event appends (`Upd`, `Sea`)
 - Idempotent resubmissions (dedup by SAID)
-- Divergence detection (conflicting events at the same version)
+- Divergence detection (conflicting events at the same serial)
 - Repair (`Rpr`) — discriminator-driven archival of the events on the branch not extended by `Rpr.previous`
 - Contest (`Cnt`) — terminal authority conflict, no archival
 - Decommission (`Dec`) — terminal owner-initiated end
@@ -91,7 +91,7 @@ for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
                 isolation; parent-kind requires chain context.
 ```
 
-The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that version, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
+The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that serial, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
 
 ### 2. Inception Batch Rule
 
@@ -134,7 +134,7 @@ The handler inspects the post-dedup batch for kind discriminators and the chain'
 let is_repair       = new_events.iter().any(|e| e.kind.is_repair());
 let is_contest      = new_events.iter().any(|e| e.kind.is_contest());
 let is_decommission = new_events.iter().any(|e| e.kind.is_decommission());
-let is_divergent    = first_divergent_version.is_some();
+let is_divergent    = first_divergent_serial.is_some();
 let is_sealed       =
     divergence_ancestor.is_some() && last_seal_advancing_event_is_at_or_after(divergence_ancestor);
 
@@ -172,8 +172,8 @@ The sealed/unsealed predicate is computed from the **pre-batch** snapshot of `di
 
 Detected when any batch event has `kind = Rpr`. Calls `repository::truncate_and_replace`, which:
 
-1. Computes archive lower bound `L = first_divergent_version(prefix).unwrap_or(Rpr.version)`.
-2. Fetches one page of events at `version >= L`, ordered `(version ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`.
+1. Computes archive lower bound `L = first_divergent_serial(prefix).unwrap_or(Rpr.serial)`.
+2. Fetches one page of events at `serial >= L`, ordered `(serial ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`.
 3. Feeds the page through the resume-mode verifier (`SelVerifier::resume(&prefix, &sel_verification).verify_page(&page)`).
 4. Walks back from `Rpr.previous` through the verified page, accumulating the surviving-branch SAIDs.
 5. Archives events on the non-surviving branch; deletes them from `sad_events` by SAID; inserts the new batch (pending events first, then `Rpr`).
@@ -210,7 +210,7 @@ if event is at-or-before `last_seal_advancing_event` in chain order
 
 This fires when an authorized non-terminal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain (someone with governance authority issued a `Sea`/`Rpr` while the submitter had stale state). The submitter has authority but cannot proceed via normal append; they must accept, contest, or abandon.
 
-The "kind-relevant authorization" wording matters: an `Upd` that passed its `auth_policy` check but lands at-or-before the seal triggers `ContestRequired`; a `Sea` that passed its `governance_policy` check at the same version triggers it too. Both kinds use the same algorithmic gate — what differs is which IEL-resolved policy the §1 check ran against. By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger here is the existing-chain sanity floor (the chain wasn't already broken), combined with the version-vs-seal arithmetic.
+The "kind-relevant authorization" wording matters: an `Upd` that passed its `auth_policy` check but lands at-or-before the seal triggers `ContestRequired`; a `Sea` that passed its `governance_policy` check at the same serial triggers it too. Both kinds use the same algorithmic gate — what differs is which IEL-resolved policy the §1 check ran against. By the time §9 runs, the new event has already passed its anchoring check upstream. The `ContestRequired` trigger here is the existing-chain sanity floor (the chain wasn't already broken), combined with the serial-vs-seal arithmetic.
 
 This mirrors KEL's `ContestRequired` shape: someone else used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. See [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
 
@@ -239,7 +239,7 @@ The `SelVerification` token is the trusted context for routing decisions. The DB
 
 ## Pagination
 
-All SEL queries use `ORDER BY version ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same version. `MINIMUM_PAGE_SIZE = 64` controls page size for both reads and the discriminator's single-page fetch.
+All SEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. `MINIMUM_PAGE_SIZE = 64` controls page size for both reads and the discriminator's single-page fetch.
 
 ## Gossip Send-Side Partitioning (divergent SELs)
 
@@ -257,7 +257,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 
 ## Key Invariants
 
-1. **Events are sorted deterministically** — by `(version, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
+1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Cnt`/`Dec`.
 4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `last_seal_advancing_event` in chain order.

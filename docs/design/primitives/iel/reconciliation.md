@@ -24,7 +24,7 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Divergent** | Chain shape with 2 events at version `d`; treated as Contested per privileged-divergence (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
+| **Divergent** | Chain shape with 2 events at serial `d`; treated as Contested per privileged-divergence (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
 
@@ -47,7 +47,7 @@ What happens when a client submits events to the submit handler on a single node
 
 ### Notes on cell routing
 
-- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates a 2-event divergent set at `v_tip` with the existing tip; privileged-divergence-is-terminal fires immediately. On linear IEL the seal coincides with the tip, so `Cnt`'s land-version equals `seal_version` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates a 2-event divergent set at `v_tip` with the existing tip; privileged-divergence-is-terminal fires immediately. On linear IEL the seal coincides with the tip, so `Cnt`'s land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Sea` shape constraints** — parent must not be `Icp`/`Sea`/`Cnt`/`Dec`. See [events.md §Sea](events.md).
 - **`Dec` on Active or Active, sealed** — Dec terminates the chain rather than extending it; routes to decommission regardless of seal position.
 - **Divergent IEL → `ContestedIel` everywhere** — divergent IEL is structurally contested-terminal (every IEL event is governance-authorized → privileged), so no further events including Cnt land in the divergent state. The Cnt-as-third-event upgrade path doesn't exist on IEL. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
@@ -131,7 +131,7 @@ first observation of divergence. Both events stay in storage as forensic
 record. Operator reincepts under a new IEL prefix.
 ```
 
-The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by version + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../../protocol-doctrine.md §Ordering Without Timestamps](../../protocol-doctrine.md#ordering-without-timestamps). Divergence is preserved as data.
+The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by serial + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../../protocol-doctrine.md §Ordering Without Timestamps](../../protocol-doctrine.md#ordering-without-timestamps). Divergence is preserved as data.
 
 ### 2. Adversary submits a conflicting Evl after governance compromise
 
@@ -177,7 +177,7 @@ SEL chain bound to the IEL (last good binding pre-divergence):
   Submitter tries:
     [Upd_v_new, identity_event=Evl_d_a.said]   ← bound to a divergent IEL event
 
-  IEL resolver: "bound event lives at v_d ≥ first_divergent_version"
+  IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
   Submitter retries with stable pre-divergence binding:
@@ -187,11 +187,11 @@ SEL chain bound to the IEL (last good binding pre-divergence):
    for chain-validity; consumer trust degraded per whole-chain-suspect rule.
 ```
 
-Bindings at versions strictly less than `first_divergent_version` resolve cleanly (pre-divergence portion is unambiguous). Bindings at-or-after the divergent version are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
+Bindings at serials strictly less than `first_divergent_serial` resolve cleanly (pre-divergence portion is unambiguous). Bindings at-or-after the divergent serial are rejected as `IelDivergent`. SEL operator's recovery path: contest the SEL or migrate to a different IEL.
 
 ### 4. Multiple adversary injections to different nodes
 
-Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain freezes after the first divergence; subsequent injections are dedup-rejected (only one extra event per version is accepted as the divergence marker). Owner submits `Cnt` to terminate.
+Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain freezes after the first divergence; subsequent injections are dedup-rejected (only one extra event per serial is accepted as the divergence marker). Owner submits `Cnt` to terminate.
 
 ```
 Pre-state (linear at v_2, replicated to nodes A, B, C):
@@ -240,10 +240,10 @@ Two governance parties submit concurrently to different nodes:
 
   Party 1 (operator) → Node A:
     Cnt.previous = v_{d-1}.said
-    Cnt.version  = d
+    Cnt.serial  = d
   Party 2 (second governance party) → Node B:
     Evl_v_d.previous = v_{d-1}.said
-    Evl_v_d.version  = d
+    Evl_v_d.serial  = d
 
 Each event lands as a linear-chain extension on its submitting node (no
 divergence visible at submit time on either node). Gossip propagates.
@@ -327,7 +327,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which version contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
 
 ## References
 

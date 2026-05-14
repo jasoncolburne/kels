@@ -24,7 +24,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 `SadEvent::validate_structure()` enforces these. The verifier adds chain-state checks on top.
 
-| Kind | version | previous | identity | topic | identity_event | content | sort_priority | authorization | KEL anchor kind |
+| Kind | serial | previous | identity | topic | identity_event | content | sort_priority | authorization | KEL anchor kind |
 |---|---|---|---|---|---|---|---|---|---|
 | `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | forbidden | 0 | none (permissionless) | none |
 | `Est` | `== 1` | required | forbidden | **required** | **required** | **required** | 1 | auth (via IEL) | `Rot` (tier 2) |
@@ -82,10 +82,10 @@ The chain's identity cannot be changed after Icp. To migrate an SEL to a differe
 - `Est` / `Upd`: required. References the most recent IEL `Icp` or `Evl`-with-auth-policy at the time of submission — the IEL event that established the currently-tracked `auth_policy`.
 - `Sea` / `Rpr` / `Cnt` / `Dec`: required. References the most recent IEL `Icp` or `Evl`-with-governance-policy — the IEL event that established the currently-tracked `governance_policy`.
 
-#### Why bind by SAID rather than version
+#### Why bind by SAID rather than serial
 
-- **Unambiguous under IEL divergence.** A version number on a divergent IEL is ambiguous (two branches at the same version have different tracked policies); a SAID picks exactly one event on exactly one branch.
-- **Robust against re-tracked policies.** If IEL evolves `A → B → A` (same policy SAID re-tracked), version-binding would have to disambiguate which span you're claiming; SAID-binding pins the specific event.
+- **Unambiguous under IEL divergence.** A serial number on a divergent IEL is ambiguous (two branches at the same serial have different tracked policies); a SAID picks exactly one event on exactly one branch.
+- **Robust against re-tracked policies.** If IEL evolves `A → B → A` (same policy SAID re-tracked), serial-binding would have to disambiguate which span you're claiming; SAID-binding pins the specific event.
 - **Fast-eval shortcut.** Resolution is one IEL event fetch + one anchor check; no paginated walk required.
 
 Given the SAID-binding rule, the validation rules below apply uniformly across submit, gossip, bootstrap, and re-verification:
@@ -97,7 +97,7 @@ The same rules apply across all ingestion paths. KELS data is path-agnostic: an 
 For an SEL event at v1+:
 - `identity_event` references an IEL event in the IEL's authentic chain (`prefix == SEL.identity`).
 - That IEL event resolves to a tracked `auth_policy` (for `Est`/`Upd`) or `governance_policy` (for `Sea`/`Rpr`/`Cnt`/`Dec`) via the IEL's branch state at that event.
-- **The bound IEL event is acceptable iff** (a) the IEL is non-divergent, OR (b) the IEL is divergent AND `bound_event.version < first_divergent_version` (the bound event lives in the pre-divergence shared portion of the chain, which both branches agree on). A bound IEL event whose version is at-or-after the IEL's `first_divergent_version` is rejected with `IelDivergent` because the IEL doesn't have a single authoritative state at that point.
+- **The bound IEL event is acceptable iff** (a) the IEL is non-divergent, OR (b) the IEL is divergent AND `bound_event.serial < first_divergent_serial` (the bound event lives in the pre-divergence shared portion of the chain, which both branches agree on). A bound IEL event whose serial is at-or-after the IEL's `first_divergent_serial` is rejected with `IelDivergent` because the IEL doesn't have a single authoritative state at that point.
 
   Note: chain-validity allowing the binding does not imply consumer trust. A pre-divergence binding to a contested IEL passes here at the verifier layer but is treated as suspect by consumers per the whole-chain-suspect rule (see [../iel/event-log.md §Effect on Bound SELs](../iel/event-log.md#effect-on-bound-sels)).
 - SEL.said is anchored under the resolved policy.
@@ -171,19 +171,19 @@ v4       kind=sea  Sea_v4 advances last_seal_advancing_event to Sea_v4.said (cha
           auth_policy / governance_policy in their favor; operator detects the
           compromise on the IEL and chooses to terminate the SEL since they cannot
           safely advance under the new IEL governance)
-v4'      kind=cnt  previous=v_3.said, version=4                       ← Cnt joins Sea_v4 in a 2-event
+v4'      kind=cnt  previous=v_3.said, serial=4                       ← Cnt joins Sea_v4 in a 2-event
          identity_event = (IEL event whose governance_policy was in effect at v_3 —    privileged divergent set at v_4;
                           the legitimate pre-compromise IEL governance, which the      privileged-divergence-is-terminal
                           operator still satisfies)                                    fires; chain contested.
-         content preserved from v_3                                                    (Cnt's land-version v_4 = seal_version
-                                                                                       = Sea_v4.version; the seal-cap's
-                                                                                       event_version >= seal_version rule
+         content preserved from v_3                                                    (Cnt's land-serial v_4 = seal_serial
+                                                                                       = Sea_v4.serial; the seal-cap's
+                                                                                       event_serial >= seal_serial rule
                                                                                        admits this parent-at-(seal − 1)
                                                                                        boundary — see protocol-doctrine.md
                                                                                        §Forks are Seal-Bounded.)
 ```
 
-Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-version, not on the parent-version (see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
+Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-serial, not on the parent-serial (see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 

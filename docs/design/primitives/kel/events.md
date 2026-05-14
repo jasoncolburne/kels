@@ -121,10 +121,10 @@ The `Rec` extends owner's authentic tip (s5a), not the pre-divergence ancestor. 
 ```
 s0..s4   normal chain; s5_a = ixn extending s_4 (operator)
 s5_b     a second recovery-key holder submits Rec with previous = s_4.said,
-         version = 5 (divergence-ancestor-extending shape; the discriminator
+         serial = 5 (divergence-ancestor-extending shape; the discriminator
          archives s5_a; chain becomes recovered, linear, tip = Rec_b at v_5)
          — recovery key revealed by Rec_b; no further Rec can succeed —
-s5_c     operator submits Cnt with previous = s_4.said, version = 5
+s5_c     operator submits Cnt with previous = s_4.said, serial = 5
                                                                           ← Cnt joins Rec_b at v_5 in a
                                                                             2-event privileged divergent set;
                                                                             privileged-divergence-is-terminal
@@ -137,7 +137,7 @@ s5_c     operator submits Cnt with previous = s_4.said, version = 5
                                                                              by the operator.)
 ```
 
-Recovery is no longer available after Rec_b reveals the recovery key, so Cnt is the only protocol-level path to terminate. Cnt's `previous = v_{tip-1}.said = s_4.said` selects the divergence ancestor (one before the chain's current Rec-tip), which puts authorization at s_4's commitments — the operator still satisfies them. Cnt's land-version v_5 = seal_version (Rec_b advanced the seal to v_5); the seal-cap's parent-at-(seal − 1) boundary case admits this (see [event-log.md §Recovery-Revelation Seal and Key Non-Poisonability](event-log.md#recovery-revelation-seal-and-key-non-poisonability)). The archived s5_a remains in the archive table; Rec_b and Cnt_c stay in live storage as the divergent set.
+Recovery is no longer available after Rec_b reveals the recovery key, so Cnt is the only protocol-level path to terminate. Cnt's `previous = v_{tip-1}.said = s_4.said` selects the divergence ancestor (one before the chain's current Rec-tip), which puts authorization at s_4's commitments — the operator still satisfies them. Cnt's land-serial v_5 = seal_serial (Rec_b advanced the seal to v_5); the seal-cap's parent-at-(seal − 1) boundary case admits this (see [event-log.md §Recovery-Revelation Seal and Key Non-Poisonability](event-log.md#recovery-revelation-seal-and-key-non-poisonability)). The archived s5_a remains in the archive table; Rec_b and Cnt_c stay in live storage as the divergent set.
 
 ### Clean decommission
 

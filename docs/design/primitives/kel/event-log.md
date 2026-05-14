@@ -40,7 +40,7 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 Two distinct concepts share the SAID-of-recent-event pattern on KEL:
 
-**`last_seal_advancing_event`** — the SAID of the most recent `Rec`/`Ror` event. This is the chain's **seal**: the watermark beyond which no fork can land (`event_version >= seal_version`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Recovery cannot truncate at or before it (handlers reject attempts to displace any prior seal-advancing event). `Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
+**`last_seal_advancing_event`** — the SAID of the most recent `Rec`/`Ror` event. This is the chain's **seal**: the watermark beyond which no fork can land (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Recovery cannot truncate at or before it (handlers reject attempts to displace any prior seal-advancing event). `Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
 
 **`last_recovery_revealing_event`** — the SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec` event. This tracks recovery-key revelation (all four kinds expose the recovery key via dual-signature). The spent-key rule and the proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`) both read off this concept: once any recovery-revealing event lands, the recovery key is publicly known, and future divergent events must be resolved by `Cnt`, not `Rec`.
 
@@ -48,7 +48,7 @@ Two distinct concepts share the SAID-of-recent-event pattern on KEL:
 
 `last_seal_advancing_event` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
 
-The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_version`, with `parent_version = seal_version − 1`. The land-version equals the seal; the parent-version is one below. The land-version framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted. (`Cnt`/`Dec`-tipped chains are terminal, so the boundary case is mooted by the contested/decommissioned gates — the Cnt-overrides-Dec case is covered separately in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).)
+The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_serial`, with `parent_serial = seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. The land-serial framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted. (`Cnt`/`Dec`-tipped chains are terminal, so the boundary case is mooted by the contested/decommissioned gates — the Cnt-overrides-Dec case is covered separately in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).)
 
 ## Divergence and Freeze
 
@@ -193,7 +193,7 @@ The cost of discarding pending may be substantial: a flush that involved collect
 Both follow the same algorithmic shape as SEL's `truncate_and_replace`:
 
 1. Detect recovery: any event in the batch has `kind = Rec` (or `Cnt` for contest).
-2. Compute archive lower bound `L = serial of (divergence_ancestor) + 1` (i.e., the divergence version `v_d`).
+2. Compute archive lower bound `L = serial of (divergence_ancestor) + 1` (i.e., the divergence serial `v_d`).
 3. **Single page fetch**: events at `serial >= L` for the prefix, ordered `(serial ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`. One round-trip.
 4. **Trust gate**: feed the page through the resume-mode verifier (`KelVerifier::resume(&prefix, &kel_verification).verify_page(&page)`). The verifier checks SAID, prefix, chain linkage, and verifies each event's signatures against the establishment-declared keys. Verification failure aborts archival — fail-secure on tampered DB rows.
 5. Build a SAID-keyed in-memory map of the verified page (and of the batch's own new events not yet on the chain — bundled missing events may be referenced by `Rec.previous`).
@@ -262,7 +262,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 
 - Verify `Cnt`'s structure, dual signatures against `v_{tip-1}`'s commitments (HARD).
 - Insert `Cnt`. **No archival** — the KEL itself is the record (existing events preserved alongside Cnt).
-- Cnt's `previous = v_{tip-1}.said` always creates or contributes to a divergent set at the tip's version. The privileged-divergence rule (Cnt is recovery-revealing → privileged) makes the chain contested-terminal at that point. Both branches' events (and Cnt) remain in storage as forensic record.
+- Cnt's `previous = v_{tip-1}.said` always creates or contributes to a divergent set at the tip's serial. The privileged-divergence rule (Cnt is recovery-revealing → privileged) makes the chain contested-terminal at that point. Both branches' events (and Cnt) remain in storage as forensic record.
 - Any `Cnt` event in the chain → `is_contested = true`. All future submissions rejected with `ContestedKel`.
 - Effective SAID for a contested KEL: `hash_effective_said("contested:{prefix}")` — deterministic, cross-node consistent.
 

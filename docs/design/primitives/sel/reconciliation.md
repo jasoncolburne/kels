@@ -61,7 +61,7 @@ Additional rejection cases for v1+ events that don't fit per-state cells:
 
 ### Notes on cell routing
 
-- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-version equals `seal_version` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `last_seal_advancing_event` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
 - **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded).
@@ -72,7 +72,7 @@ Additional rejection cases for v1+ events that don't fit per-state cells:
 The submit handler treats a batch atomically:
 
 - **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `identity_event` and is anchored under the bound IEL's auth_policy (tier 2 per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
-- **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at version ≥ `first_divergent_version` are archived.
+- **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at serial ≥ `first_divergent_serial` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
 
@@ -135,7 +135,7 @@ Archival happens synchronously within the submit-handler transaction that accept
 The discriminator identifies owner events via a single strategy — SEL's repair always extends owner's authentic tip, so `Rpr.previous` is always owner's chain head:
 
 - Walk back from `Rpr.previous` through the verified page; everything reached is owner's chain.
-- Everything else at `version ≥ first_divergent_version` is adversary.
+- Everything else at `serial ≥ first_divergent_serial` is adversary.
 
 The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mirrors KEL's `archive_adversary_chain` (see [../kel/event-log.md §Server-side discriminator](../kel/event-log.md#server-side-discriminator)). Cryptographic gate is signature verification on KEL anchoring; same trust posture.
 
@@ -151,7 +151,7 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 ### 1. Adversary Sea as normal append
 
-The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governance_policy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at version ≤ the new seal triggers `ContestRequired`.
+The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governance_policy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at serial ≤ the new seal triggers `ContestRequired`.
 
 ```
 Pre-state (linear at v_N; seal at last Sea/Rpr/Cnt/Dec ≤ N):
@@ -164,7 +164,7 @@ satisfied via bound IEL's current governance_policy):
   [Icp] → ... → [Upd_v_N] → [Sea_v_{N+1}]   (seal advances to N+1)
 
 Effect: chain stays linear; seal advances. Any subsequent submission at
-version ≤ N+1 (any Upd/Sea/Rpr extending pre-Sea state) triggers
+serial ≤ N+1 (any Upd/Sea/Rpr extending pre-Sea state) triggers
 ContestRequired — the seal-cap forbids forking at-or-before the seal.
 Operator's only recourse is Cnt extending v_{tip-1} on the post-Sea
 linear chain.
@@ -172,7 +172,7 @@ linear chain.
 
 ### 2. Multiple adversary injections across nodes
 
-Adversary injects different events to different nodes. When gossip syncs, divergence is created at one or more nodes. The first divergent event at each version is stored; subsequent ones are dedup-rejected. Repair (or contest) resolves it. All nodes converge after the resolution propagates.
+Adversary injects different events to different nodes. When gossip syncs, divergence is created at one or more nodes. The first divergent event at each serial is stored; subsequent ones are dedup-rejected. Repair (or contest) resolves it. All nodes converge after the resolution propagates.
 
 ```
 Pre-state (linear at v_{d-1}, replicated to nodes A and B):
@@ -235,7 +235,7 @@ Post-state (linear, repaired, pending replayed):
 
 ### 4. Post-repair events synced to a node that has the adversary chain
 
-After repair on node A, new events (`Upd`, `Sea`) appended. When gossip propagates the chain to node B (still on the adversary version), node B fetches the full repaired chain and submits to its local handler. The handler observes the `Rpr` in the batch, runs the discriminator, archives node B's adversary events, and inserts the new chain.
+After repair on node A, new events (`Upd`, `Sea`) appended. When gossip propagates the chain to node B (still on the adversary serial), node B fetches the full repaired chain and submits to its local handler. The handler observes the `Rpr` in the batch, runs the discriminator, archives node B's adversary events, and inserts the new chain.
 
 ```
 Pre-sync state (post-repair on A; adversary chain still on B):
@@ -315,7 +315,7 @@ Step 3 — Operator submits Rpr (branch-tip-extending shape, extending
 Est_legit at v_2):
 
   Rpr.previous = Est_legit.said
-  Rpr.version  = 2
+  Rpr.serial  = 2
 
   Discriminator's walkback from Rpr.previous reaches Est_legit at v_1;
   Est_stale's branch is archived.
@@ -382,7 +382,7 @@ Dependent SEL trying to extend:
   Submitter tries:
     [Upd_v_new, identity_event=Evl_d_a.said]   ← bound to a divergent IEL event
 
-  IEL resolver: "bound event lives at v_d ≥ first_divergent_version"
+  IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
   Submitter tries with pre-divergence binding:
@@ -452,7 +452,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which version contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
 
 ## References
 

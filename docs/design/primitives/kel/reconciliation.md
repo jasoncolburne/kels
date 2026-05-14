@@ -143,7 +143,7 @@ Adversary submits rec with previous = s_N.said (and dual-sig satisfied):
   s_0 → ... → s_N → rec_adv  (s_{N+1}; seal advances to N+1)
 
 Effect: chain stays linear; seal advances to N+1; recovery key now spent for
-this chain. Any future divergence at version ≤ N+1 triggers ContestRequired
+this chain. Any future divergence at serial ≤ N+1 triggers ContestRequired
 because the seal-cap forbids forking at-or-before the seal. Owner's only
 recourse is Cnt extending v_{tip-1} on the post-rec linear chain.
 ```
@@ -166,7 +166,7 @@ Adversary injects different events at s_d on each node:
 Gossip propagates ixn_a → B, ixn_b → A. Each node's merge engine
 observes overlap at s_d and writes the second event as the fork
 event (one extra event per overlap, dedup-rejection on subsequent
-adversary submissions at the same version):
+adversary submissions at the same serial):
 
   Both nodes:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d   (non-priv divergent)
                                     └─ ixn_b @ s_d
@@ -312,7 +312,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which version contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
 
 ## References
 

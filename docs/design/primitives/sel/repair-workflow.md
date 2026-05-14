@@ -24,7 +24,7 @@ The builder API exposes three terminal-state operations on `SadEventBuilder`:
 Each operation runs the same pre-flight (mirrors KEL's `recover` / `contest` / `rotate_recovery`):
 
 - Verify the server's chain via `client.verify_sel_events(prefix, checker)` — defense-in-depth against a buggy/malicious server.
-- (Repair) Derive boundary uniformly: `boundary = owner_tip.version`. `Rpr.previous = owner_tip.said` (branch-tip-extending shape — operator preserves their branch as the survivor and archives the divergent counterpart). `Rpr` also has a divergence-ancestor-extending shape (`Rpr.previous = v_{d-1}.said`, lands at `v_d`, archives both branches at `v_d`) used when both branches at `v_d` are adversary-planted and the operator wants to replace `v_d` entirely; see [event-log.md §Repair (Rpr)](event-log.md#repair-rpr).
+- (Repair) Derive boundary uniformly: `boundary = owner_tip.serial`. `Rpr.previous = owner_tip.said` (branch-tip-extending shape — operator preserves their branch as the survivor and archives the divergent counterpart). `Rpr` also has a divergence-ancestor-extending shape (`Rpr.previous = v_{d-1}.said`, lands at `v_d`, archives both branches at `v_d`) used when both branches at `v_d` are adversary-planted and the operator wants to replace `v_d` entirely; see [event-log.md §Repair (Rpr)](event-log.md#repair-rpr).
 - Build the appropriate event extending the bundled-pending tip (or owner's verified tip if pending is empty).
 - Submit `[pending..., Rpr/Cnt/Dec]` atomically.
 
