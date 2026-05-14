@@ -321,7 +321,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | `Cnt` whose `previous` matches a pre-Dec event's parent (Cnt creates or joins a divergent set on the chain) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt at `v_d` alongside Dec; Case B — Cnt at `v_d` as sibling of pre-Dec tip, Dec at `v_{d+1}` on the surviving branch. |
+| Decommissioned | `Cnt` whose `previous` matches `v_{d-1}.said` of some in-chain event (Cnt creates or joins a divergent set at `v_d`) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt's "other event" at `v_d` is `Dec` itself; Case B — Cnt's "other event" is the pre-Dec tip at `v_d`, and Dec sits at `v_{d+1}` on the surviving branch. |
 | Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map

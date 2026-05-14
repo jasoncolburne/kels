@@ -242,6 +242,7 @@ Accessors:
 - `policy_satisfied()` — overall authorization satisfaction across the chain
 - `last_seal_advancing_event()` — SAID of the most recent `Sea`/`Rpr`
 - `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
+- `is_divergent()` — `branches.len() > 1`.
 - `is_contested()`, `is_decommissioned()`
 
 ## Key Properties Verified

@@ -113,7 +113,7 @@ The divergence invariant guarantees:
 
 ### Why SEL has Rpr (and IEL doesn't)
 
-SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting submissions — `Est`-`Est` at v=1 (the brand-new-chain race) or `Upd`-`Upd` at v ≥ 2. `Rpr` is governance-authorized — a higher-bar authority than the auth-authorized fork — and resolves the divergence by archiving the branch not on `Rpr.previous`'s walkback. The asymmetry `Rpr` exploits is between auth and governance authority, not between protocol-distinguished operator and adversary.
+SEL divergence on `Est`/`Upd` events happens at the auth-policy layer: multiple parties with auth (e.g., multiple endorsers in a `Threshold` policy) can race conflicting submissions — `Est`-`Est` at v=1 (the brand-new-chain race) or `Upd`-`Upd` at v ≥ 2. **`Rpr`'s asymmetry is purely auth-vs-governance** — a higher-bar authority (governance) resolves a lower-bar fork (auth) via archival of the branch not on `Rpr.previous`'s walkback. The protocol does not distinguish "the legitimate operator" from "the adversary": both branches were authorized under `auth_policy` when they landed, and the discriminator is which branch the governance-authorized `Rpr` chose to preserve.
 
 IEL has no analog because every IEL event after Icp is governance-authorized; there is no auth-vs-governance asymmetry for `Rpr` to exploit. See [../iel/event-log.md §Why no `Rpr`](../iel/event-log.md#why-no-rpr).
 
@@ -321,7 +321,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | `Cnt` whose `previous` matches a pre-Dec event's parent (Cnt creates or joins a divergent set on the chain) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt at `v_d` alongside Dec; Case B — Cnt at `v_d` as sibling of pre-Dec tip, Dec at `v_{d+1}` on the surviving branch. |
+| Decommissioned | `Cnt` whose `previous` matches `v_{d-1}.said` of some in-chain event (Cnt creates or joins a divergent set at `v_d`) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt's "other event" at `v_d` is `Dec` itself; Case B — Cnt's "other event" is the pre-Dec tip at `v_d`, and Dec sits at `v_{d+1}` on the surviving branch. |
 | Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Est`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 

@@ -57,8 +57,9 @@ Before routing, check whether the chain is already terminal:
 if chain has any Cnt event → reject ContestedKel
 if chain has any Dec event:
     if batch is a single Cnt whose `previous` matches some `v_x.said` where
-       another pre-Dec event in the chain also extends `v_x` (i.e., Cnt creates
-       or joins a divergent set at `v_{x+1}` with that pre-Dec event):
+       another event in the chain also extends `v_x` (i.e., Cnt creates or joins
+       a divergent set at `v_{x+1}` — the "other event" is `Dec` itself in Case A,
+       the pre-Dec tip in Case B):
         // Cnt-overrides-Dec — see ../../protocol-doctrine.md §Cnt Overrides Dec.
         // Two shapes converge to Contested:
         //   Case A (post-Dec sequential):    Cnt.previous = Dec.previous = v_{d-1}.said;
@@ -94,13 +95,13 @@ else:
 Events chain directly from the current tip of a non-divergent KEL. Decommissioned and Contested chains are handled by §2 Terminal-State Gate and cannot reach this branch (a Dec'd chain's tip is `Dec`, which is terminal — nothing extends it; a Contested chain rejects all submissions).
 
 ```
-if batch contains contest:
-    return Error("Contest requires divergence")
 continue KEL verification with submitted events (via KelVerifier::resume from tip)
 check proactive ROR compliance
 insert events
 return Accepted
 ```
+
+`Cnt` cannot reach this branch: `Cnt.previous = v_{tip-1}.said` (not `tip.said`), so it does not chain from the current tip and routing sends it to §6 Full Path (Overlap subbranch).
 
 ### 5. New KEL
 
@@ -117,14 +118,7 @@ return Accepted
 
 Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
 
-#### 6a. Contested check
-
-```
-if KEL is contested:
-    return Error("KEL is already contested")
-```
-
-#### 6b. Deduplication
+#### 6a. Deduplication
 
 ```
 check submitted SAIDs against existing SAIDs in DB
@@ -137,7 +131,7 @@ if first remaining event has no previous:
 
 This handles partial re-submissions (e.g., gossip sending a full KEL including events the node already has). After dedup, if the remaining events chain from the current tip, they are processed as a normal append.
 
-#### 6c. Divergent KEL
+#### 6b. Divergent KEL
 
 If the `KelVerification` shows the KEL is already divergent, the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the surviving branch (the chain identified by `Rec.previous` walkback or the operator's intended Cnt extension).
 
@@ -176,7 +170,7 @@ if batch contains a rec event:
 return RecoverRequired/ContestRequired  // Only rec/cnt can resolve a divergent KEL
 ```
 
-#### 6d. Overlap (non-divergent KEL)
+#### 6c. Overlap (non-divergent KEL)
 
 Events chain from an earlier point in a non-divergent KEL, creating a potential fork. The branch point is the existing event whose SAID matches the first submitted event's `previous`.
 

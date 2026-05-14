@@ -91,8 +91,9 @@ if chain is divergent      → reject ContestedIel
                               regardless of whether an explicit Cnt event has landed)
 if chain has any Dec event:
     if batch is a single Cnt whose `previous` matches some `v_x.said` where
-       another pre-Dec event in the chain also extends `v_x` (i.e., Cnt creates
-       or joins a divergent set at `v_{x+1}` with that pre-Dec event):
+       another event in the chain also extends `v_x` (i.e., Cnt creates or joins
+       a divergent set at `v_{x+1}` — the "other event" is `Dec` itself in Case A,
+       the pre-Dec tip in Case B):
         // Cnt-overrides-Dec — see ../../protocol-doctrine.md §Cnt Overrides Dec.
         // Two shapes converge to Contested:
         //   Case A (post-Dec sequential):    Cnt.previous = Dec.previous = v_{d-1}.said;

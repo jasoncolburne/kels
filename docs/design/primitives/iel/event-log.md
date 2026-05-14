@@ -455,7 +455,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Linear, post-evaluation-seal | `Evl` or `Sea` extending pre-seal version | Rejected by seal-cap (cannot fork at or before the seal). |
 | Any non-terminal | `Dec` | Append at tip; mark decommissioned. |
 | Contested (post-divergence or post-Cnt) | any submission, including further `Evl`/`Sea`/`Cnt`/`Dec` via gossip at `v_d` or beyond | Rejected with `ContestedIel`. |
-| Decommissioned | `Cnt` whose `previous` matches a pre-Dec event's parent (Cnt creates or joins a divergent set on the chain) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt at `v_d` alongside Dec; Case B — Cnt at `v_d` as sibling of pre-Dec tip, Dec at `v_{d+1}` on the surviving branch. |
+| Decommissioned | `Cnt` whose `previous` matches `v_{d-1}.said` of some in-chain event (Cnt creates or joins a divergent set at `v_d`) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt's "other event" at `v_d` is `Dec` itself; Case B — Cnt's "other event" is the pre-Dec tip at `v_d`, and Dec sits at `v_{d+1}` on the surviving branch. |
 | Decommissioned | any other submission | Rejected with `IelDecommissioned`. |
 
 ## Implementation Map

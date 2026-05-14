@@ -78,14 +78,14 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 |--------|-------------|--------------|--------------------------------------|-----------------|-----------------|----------------------|
 | **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → divergence ✓ | Duplicates of one branch, no-op ✓ | `ContestedIel` | `IelDecommissioned` |
 | **Divergent** | Both fork events appended ✓ | Fork event creates overlap → divergence ✓ | Fork event creates overlap → divergence ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `IelDecommissioned` |
-| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ |
-| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap, `Dec` in chain → decommission ✓ | `ContestRequired` | `ContestedIel` | Effective SAIDs match; no-op |
+| **Contested** | Full chain (incl. `Cnt`) appended ✓ | `Cnt` batch → contest ✓ | `Cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | Effective SAIDs match ✓ | `Cnt` batch → override → contest ✓ |
+| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap → divergence → Contested ✓ | `ContestedIel` | `ContestedIel` | Effective SAIDs match; no-op |
 
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
 - **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
-- **Decommissioned → Divergent sink** — `Dec` does not resolve divergence; gossip's `Dec` extending one branch of a divergent sink is rejected with `ContestRequired`. The sink stays divergent until a `Cnt` arrives via gossip or direct submission.
+- **Decommissioned → Divergent sink** — divergent IEL is structurally Contested per privileged-divergence-is-terminal (every IEL event is privileged); the §2 Terminal-State Gate rejects every gossip-delivered event including the source's `Dec` with `ContestedIel`. Effective SAIDs converge on `hash("contested:{prefix}")` for the sink; the decommissioned source's effective SAID is `Dec.said`, which does not converge — but the sink is the terminal state of record here and the source is the one that needs gossip from elsewhere to reconcile.
 - **Divergent → Divergent sink** — effective SAIDs match by construction (both produce `hash("contested:{prefix}")` since IEL divergent-shape sets is_contested = true); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
 The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, just contest or decommission (divergent-shape always resolves as Contested).

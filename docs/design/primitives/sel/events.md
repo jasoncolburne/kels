@@ -13,7 +13,7 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 | `Icp` | `kels/sel/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
 | `Est` | `kels/sel/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
 | `Upd` | `kels/sel/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
-| `Sea` | `kels/sel/v1/events/sea` | Seal — governance evaluation. Advances `last_seal_advancing_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
+| `Sea` | `kels/sel/v1/events/sea` | Seal — governance evaluation. Advances `last_seal_advancing_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed only when the new `Sea`'s `identity_event` **strictly advances** beyond the parent `Sea`'s `identity_event` in IEL chain order (a stricter check than the per-event parent-monotonic ratchet, which admits equality; equal `identity_event` between consecutive Seas is semantically redundant and rejected by the verifier). See [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
 | `Rpr` | `kels/sel/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
 | `Cnt` | `kels/sel/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
 | `Dec` | `kels/sel/v1/events/dec` | Decommission — terminal owner-initiated end. |
@@ -24,17 +24,17 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 `SadEvent::validate_structure()` enforces these. The verifier adds chain-state checks on top.
 
-| Kind | version | previous | identity | identity_event | content | sort_priority | authorization | KEL anchor kind |
-|---|---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | **required** | forbidden | forbidden | 0 | none (permissionless) | none |
-| `Est` | `== 1` | required | forbidden | **required** | **required** | 1 | auth (via IEL) | `Rot` (tier 2) |
-| `Upd` | `>= 2` | required | forbidden | **required** | **required** | 2 | auth (via IEL) | `Ixn` (tier 1) |
-| `Sea` | `>= 2` | required | forbidden | **required** | preserved | 3 | governance (via IEL) | `Rot` (tier 2) |
-| `Rpr` | `>= 2` | required | forbidden | **required** | preserved | 4 | governance (via IEL) | `Ror` (tier 3) |
-| `Dec` | `>= 2` | required | forbidden | **required** | preserved | 5 | governance (via IEL) | `Ror` (tier 3) |
-| `Cnt` | `>= 2` | required | forbidden | **required** | preserved | 6 | governance (via IEL) | `Ror` (tier 3) |
+| Kind | version | previous | identity | topic | identity_event | content | sort_priority | authorization | KEL anchor kind |
+|---|---|---|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | forbidden | 0 | none (permissionless) | none |
+| `Est` | `== 1` | required | forbidden | **required** | **required** | **required** | 1 | auth (via IEL) | `Rot` (tier 2) |
+| `Upd` | `>= 2` | required | forbidden | **required** | **required** | **required** | 2 | auth (via IEL) | `Ixn` (tier 1) |
+| `Sea` | `>= 2` | required | forbidden | **required** | **required** | preserved | 3 | governance (via IEL) | `Rot` (tier 2) |
+| `Rpr` | `>= 2` | required | forbidden | **required** | **required** | preserved | 4 | governance (via IEL) | `Ror` (tier 3) |
+| `Dec` | `>= 2` | required | forbidden | **required** | **required** | preserved | 5 | governance (via IEL) | `Ror` (tier 3) |
+| `Cnt` | `>= 2` | required | forbidden | **required** | **required** | preserved | 6 | governance (via IEL) | `Ror` (tier 3) |
 
-The `identity` field lives on `Icp` only; subsequent events inherit it from chain context. The chain's bound IEL is fixed at inception and cannot be changed.
+The `identity` field lives on `Icp` only; subsequent events inherit it from chain context. The chain's bound IEL is fixed at inception and cannot be changed. The `topic` field — present on every event — is the SAD content-kind namespace (e.g., `kels/sad/v1/keys/mlkem`) and seeds the SEL prefix derivation `(identity, topic) → prefix` on `Icp`; subsequent events carry the same topic, enforced by the verifier's Topic consistency check (see [verification.md §Per-Event Checks](verification.md#per-event-checks)).
 
 ### Satisfaction model
 
@@ -51,13 +51,21 @@ A submission containing an `Icp` event MUST also contain an `Est` event at v1 in
 
 Rationale: SEL Icp is permissionless — by itself, it would land an "exists but unused" chain with no policy enforcement, no binding to IEL, and no content. Forcing an `Est` in the same batch ensures the chain is born with all three: a policy-enforced event, an `identity_event` binding, and content. This eliminates a liminal state the security analysis would otherwise have to reason about.
 
-`Est`'s tier-2 anchoring (KEL `Rot` per contributing policy member) further raises per-attempt cost on SEL camping — see [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The combination of "Icp permissionless + Est tier-2 + inception batch required" is what makes SEL camping expensive without sacrificing dedup-idempotency on the prefix-deterministic `Icp` itself.
-
 The rule is enforced inside the verifier (`SelVerifier::finish_internal` returns `IncompleteInception` whenever any branch tip is still an `Icp`) so every consumer's verifier walk applies it — a tampered DB serving `[Icp]` alone is rejected at end-verification, not just at submit. Submit handlers do not duplicate the rule.
 
 The Icp itself is still permissionless and still dedup-idempotent across submitters — the rule only governs whether the batch as a whole lands. If `[Icp, Est_A]` and `[Icp, Est_B]` race, the SAIDs of the Est events differ (different `identity_event` and/or content), so both Ests land at v1 forming a divergent set. The legitimate operator's `Rpr` resolves the divergence.
 
 This rule is SEL-specific. IEL has no analogous rule — IEL Icp is itself policy-enforced (anchored under its declared `governance_policy`, since every IEL event is governance-authorized), so an IEL Icp alone is already a meaningful, authorized chain birth.
+
+### Camping defense (Icp permissionless + Est tier-2 + inception batch required)
+
+SEL's prefix derives from `(identity, topic)` — predictable and well-known. Any party can compute and race-incept SEL chains for tuples an operator might use. SEL's defense against this is structural and lives in three composed rules:
+
+- **`Icp` is permissionless and dedup-idempotent.** Any party's `Icp` for the same `(identity, topic)` produces the same SAID and lands once regardless of submitter. The camping party gains nothing from being first to submit `Icp` — the chain identity is determined entirely by the tuple, and the legitimate operator can submit the same `Icp` whenever they choose.
+- **`Est` is tier-2 anchored.** `Est` (v1) is where binding and authorization actually happen — it carries `identity_event` and content. Anchoring `Est` at tier 2 (KEL `Rot` per contributing policy member) means every camping attempt requires the camper's policy members to each produce a KEL `Rot`. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. See [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation).
+- **Inception batch required.** A bare `[Icp]` is rejected at end-verification (`IncompleteInception`). Camping attempts must submit `[Icp, Est_camper]` as a single batch; the legitimate operator submits `[Icp, Est_operator]`. The SAIDs differ at `Est`, forming a divergent set at v1 which the legitimate operator's `Rpr` resolves under the higher-bar `governance_policy`.
+
+The three rules compose: `Icp` permissionless preserves dedup-idempotency on the prefix-deterministic inception; `Est` tier-2 raises per-attempt camping cost; inception batch required closes the "lone `Icp` placeholder" gap. Together they make SEL camping expensive without sacrificing the structural properties (deterministic prefix, dedup-idempotent inception) that the rest of the system depends on.
 
 ### `identity` semantics
 
