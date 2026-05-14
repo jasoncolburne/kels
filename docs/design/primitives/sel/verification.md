@@ -57,6 +57,20 @@ verify_event(event):
     // 6. Topic consistency
     if event.topic != branch.topic:
         return Error("Topic mismatch")
+
+    // 7. Sea parent-kind constraint (chain-state, requires predecessor)
+    if event.kind == Sea:
+        parent = lookup event.previous
+        if parent.kind in {Cnt, Dec}:
+            return Error("Sea parent cannot be terminal")
+        if parent.kind == Sea:
+            // Sea-Sea allowed on SEL only when the new Sea strictly advances
+            // identity_event beyond the parent Sea's identity_event in IEL
+            // chain order (stricter than parent-monotonic, which admits equality;
+            // equal identity_event between consecutive Seas is semantically
+            // redundant and rejected). See events.md.
+            if not event.identity_event > parent.identity_event in IEL chain order:
+                return Error("Sea-Sea must strictly advance identity_event")
 ```
 
 ### Generation Processing

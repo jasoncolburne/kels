@@ -90,11 +90,18 @@ if chain is divergent      → reject ContestedIel
                               IEL fires the privileged-divergence-is-terminal rule,
                               regardless of whether an explicit Cnt event has landed)
 if chain has any Dec event:
-    if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
-        // Cnt-overrides-Dec path — see ../../protocol-doctrine.md §Cnt Overrides Dec.
-        // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
-        // chain becomes Contested. Standard divergent-set verification handles
-        // the {Dec, Cnt} set without new walker logic.
+    if batch is a single Cnt whose `previous` matches some `v_x.said` where
+       another pre-Dec event in the chain also extends `v_x` (i.e., Cnt creates
+       or joins a divergent set at `v_{x+1}` with that pre-Dec event):
+        // Cnt-overrides-Dec — see ../../protocol-doctrine.md §Cnt Overrides Dec.
+        // Two shapes converge to Contested:
+        //   Case A (post-Dec sequential):    Cnt.previous = Dec.previous = v_{d-1}.said;
+        //                                    Cnt lands at v_d alongside Dec.
+        //   Case B (pre-Dec true-concurrent): Cnt.previous = v_{d-1}.said matches the
+        //                                    pre-Dec tip's parent; Cnt lands at v_d
+        //                                    as sibling of the pre-Dec tip; Dec sits
+        //                                    at v_{d+1} on the surviving branch.
+        // privileged-divergence-is-terminal fires; chain becomes Contested.
         accept and route to contest path
     else:
         reject IelDecommissioned

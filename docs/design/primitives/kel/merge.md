@@ -49,7 +49,34 @@ reject batches containing both rec and cnt (contradictory intent)
 
 The `KelVerification` token is the trusted context for all routing decisions. The DB cannot be trusted directly (verification invariant).
 
-### 2. Routing
+### 2. Terminal-State Gate
+
+Before routing, check whether the chain is already terminal:
+
+```
+if chain has any Cnt event → reject ContestedKel
+if chain has any Dec event:
+    if batch is a single Cnt whose `previous` matches some `v_x.said` where
+       another pre-Dec event in the chain also extends `v_x` (i.e., Cnt creates
+       or joins a divergent set at `v_{x+1}` with that pre-Dec event):
+        // Cnt-overrides-Dec — see ../../protocol-doctrine.md §Cnt Overrides Dec.
+        // Two shapes converge to Contested:
+        //   Case A (post-Dec sequential):    Cnt.previous = Dec.previous = v_{d-1}.said;
+        //                                    Cnt lands at v_d alongside Dec.
+        //   Case B (pre-Dec true-concurrent): Cnt.previous = v_{d-1}.said matches the
+        //                                    pre-Dec tip's parent; Cnt lands at v_d
+        //                                    as sibling of the pre-Dec tip; Dec sits
+        //                                    at v_{d+1} on the surviving branch.
+        // verify Cnt's dual signatures against v_{d-1}'s rotation_hash / recovery_hash.
+        // privileged-divergence-is-terminal fires; chain becomes Contested.
+        accept and route to contest path
+    else:
+        reject KelDecommissioned
+```
+
+Fires before all other routing. Terminal state means no further events of any kind, with the single exception of an overriding `Cnt` on a Dec'd chain. Structurally parallel to IEL/SEL Terminal-State Gates.
+
+### 3. Routing
 
 Three handlers based on the `KelVerification` and the submitted events:
 
@@ -62,20 +89,11 @@ else:
     → handle_full_path
 ```
 
-### 3. Normal Append (~99% of submissions)
+### 4. Normal Append (~99% of submissions)
 
-Events chain directly from the current tip of a non-divergent KEL.
+Events chain directly from the current tip of a non-divergent KEL. Decommissioned and Contested chains are handled by §2 Terminal-State Gate and cannot reach this branch (a Dec'd chain's tip is `Dec`, which is terminal — nothing extends it; a Contested chain rejects all submissions).
 
 ```
-if KEL is decommissioned:
-    if batch is a single Cnt with previous = v_{d-1}.said (Dec's parent):
-        // Cnt-overrides-Dec path — see ../../protocol-doctrine.md §Cnt Overrides Dec.
-        // Cnt lands at v_d alongside Dec; privileged-divergence-is-terminal fires;
-        // chain becomes Contested.
-        verify Cnt's dual signatures against v_{d-1}'s commitments
-        insert Cnt
-        return Contested
-    return Error("KEL decommissioned")
 if batch contains contest:
     return Error("Contest requires divergence")
 continue KEL verification with submitted events (via KelVerifier::resume from tip)
@@ -84,7 +102,7 @@ insert events
 return Accepted
 ```
 
-### 4. New KEL
+### 5. New KEL
 
 Events start from inception (`previous` is `None`) and no KEL exists yet.
 
@@ -95,18 +113,18 @@ insert events
 return Accepted
 ```
 
-### 5. Full Path (divergence/recovery/overlap)
+### 6. Full Path (divergence/recovery/overlap)
 
 Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
 
-#### 5a. Contested check
+#### 6a. Contested check
 
 ```
 if KEL is contested:
     return Error("KEL is already contested")
 ```
 
-#### 5b. Deduplication
+#### 6b. Deduplication
 
 ```
 check submitted SAIDs against existing SAIDs in DB
@@ -119,7 +137,7 @@ if first remaining event has no previous:
 
 This handles partial re-submissions (e.g., gossip sending a full KEL including events the node already has). After dedup, if the remaining events chain from the current tip, they are processed as a normal append.
 
-#### 5c. Divergent KEL
+#### 6c. Divergent KEL
 
 If the `KelVerification` shows the KEL is already divergent, the merge engine searches the batch for `cnt` or `rec` to determine routing. Pre-recovery/pre-contest events in the batch establish the surviving branch (the chain identified by `Rec.previous` walkback or the operator's intended Cnt extension).
 
@@ -158,7 +176,7 @@ if batch contains a rec event:
 return RecoverRequired/ContestRequired  // Only rec/cnt can resolve a divergent KEL
 ```
 
-#### 5d. Overlap (non-divergent KEL)
+#### 6d. Overlap (non-divergent KEL)
 
 Events chain from an earlier point in a non-divergent KEL, creating a potential fork. The branch point is the existing event whose SAID matches the first submitted event's `previous`.
 

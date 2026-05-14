@@ -214,7 +214,7 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
 ### Cnt mechanics
 
-`Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_N`), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~62 events per the proactive-ROR cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence) — Cnt with `previous = v_{d-1}.said` validates uniformly across nodes regardless of which divergent contents each node received.
+`Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at `v_d`), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~62 events per the proactive-ROR cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence) — Cnt with `previous = v_{d-1}.said` validates uniformly across nodes regardless of which divergent contents each node received.
 
 Cnt is privileged (recovery-revealing). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal. There is no separate "explicit Cnt" handling: Cnt is just another privileged event that triggers contested via the divergence rule.
 
@@ -313,7 +313,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 |---|---|---|
 | Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `diverged_at: None`. |
 | Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event, freeze. `Diverged (non-privileged)`, `diverged_at: Some(d)`. |
-| Linear (active) | batch ending in `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
+| Linear (active) | batch ending in `Cnt` (`previous = v_{d-1}.said`) | Insert; creates divergence at `v_d` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
 | Linear, overlap, recovery revealed in existing branch | non-`Cnt` events | `ContestRequired`. |
 | Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Branch-tip-extending Rec: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rec: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
 | Divergent (non-privileged), no recovery revealed | non-`Rec`/non-`Cnt` events | `RecoverRequired`. |
@@ -321,7 +321,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
+| Decommissioned | `Cnt` whose `previous` matches a pre-Dec event's parent (Cnt creates or joins a divergent set on the chain) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt at `v_d` alongside Dec; Case B — Cnt at `v_d` as sibling of pre-Dec tip, Dec at `v_{d+1}` on the surviving branch. |
 | Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map

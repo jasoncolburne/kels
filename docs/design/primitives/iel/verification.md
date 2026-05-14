@@ -49,6 +49,15 @@ verify_event(event):
     match event to a branch via event.previous
     if no matching branch:
         return Error("Previous SAID not found")
+
+    // 6. Sea parent-kind constraint (chain-state, requires predecessor)
+    if event.kind == Sea:
+        parent = lookup event.previous
+        if parent.kind in {Icp, Sea, Cnt, Dec}:
+            return Error("Sea parent must be Evl")
+        // back-to-back Sea is forbidden on IEL — Sea carries no content field,
+        // so a Sea extending another Sea would add no semantic information beyond
+        // the parent; see events.md §Per-Kind Policy Field Discipline.
 ```
 
 ### Generation Processing
@@ -161,6 +170,7 @@ Accessors:
 - `policy_satisfied()` — overall policy satisfaction across the chain.
 - `last_seal_advancing_event()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
 - `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
+- `is_divergent()` — `branches.len() > 1`.
 - `is_contested()`, `is_decommissioned()`
 
 ## Key Properties Verified

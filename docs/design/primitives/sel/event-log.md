@@ -289,7 +289,7 @@ Clean lifecycle terminated by Dec:
   Dec.version  = N + 1
 ```
 
-Dec is privileged but terminal — it does not advance the seal on SEL (`last_seal_advancing_event` advances only on `Sea`/`Rpr`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). A `Cnt` with `previous = v_N.said` lands at `v_{N+1}` alongside `Dec` under the override rule — `event_version >= seal_version` is satisfied because the seal sits at-or-before `v_N` (Dec didn't move it). See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). No archival — `Dec` is appended to the chain as the (potentially) terminal event.
+Dec is privileged but terminal — it does not advance the seal on SEL (`last_seal_advancing_event` advances only on `Sea`/`Rpr`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). A `Cnt` with `previous = v_{d-1}.said` lands at `v_d` under the override rule — `event_version >= seal_version` is satisfied because the seal sits at-or-before `v_{d-1}` (Dec didn't move it). See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). No archival — `Dec` remains on the chain as forensic record.
 
 ### Server semantics
 
@@ -312,7 +312,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append | non-terminal events | Append. Seal advances on `Sea`/`Rpr`. |
-| Linear (active) | `Cnt` (`previous = v_{N-1}.said`) | Insert; creates divergence at `v_N` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
+| Linear (active) | `Cnt` (`previous = v_{d-1}.said`) | Insert; creates divergence at `v_d` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. |
 | Linear, overlap (fork, non-privileged events) | concurrent `Upd` (v ≥ 2) or concurrent `Est` (v = 1, brand-new-chain race) | Insert second event at `v_d`; chain becomes Divergent (non-privileged); recoverable via `Rpr`. |
 | Linear, overlap (fork, includes privileged) | concurrent governance event | Insert second event at `v_d`; privileged-divergence rule fires; chain becomes contested-terminal. |
 | Linear, post-evaluation-seal | non-terminal/non-`Rpr`/non-`Cnt` with valid kind-relevant auth | `ContestRequired { reason }` (algorithmic trigger). |
@@ -321,7 +321,7 @@ Sealed/unsealed predicate (used in the divergent rows): a chain is **sealed** if
 | Divergent (non-privileged) | `Cnt` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. |
 | Divergent (non-privileged) | other events (`Upd`/`Sea`/`Dec`) | `RepairRequired`. Chain unchanged. |
 | Contested | any | Rejected with `ContestedSel`. |
-| Decommissioned | `Cnt` (`previous = v_{d-1}.said`, lands at `v_d` alongside `Dec`) | Insert `Cnt` as 2nd event at `v_d`; privileged-divergence-is-terminal fires; chain becomes Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). |
+| Decommissioned | `Cnt` whose `previous` matches a pre-Dec event's parent (Cnt creates or joins a divergent set on the chain) | Cnt overrides Dec per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); privileged-divergence-is-terminal fires; chain becomes Contested. Two shapes converge: Case A — Cnt at `v_d` alongside Dec; Case B — Cnt at `v_d` as sibling of pre-Dec tip, Dec at `v_{d+1}` on the surviving branch. |
 | Decommissioned | any other submission | Rejected with `DecommissionedSel`. |
 | Chain ends at Icp | `[Icp]` alone (no v1 `Est`) | Rejected by the verifier (`SelVerifier::finish_internal` → `IncompleteInception`). |
 
