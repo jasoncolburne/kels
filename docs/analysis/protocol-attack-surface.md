@@ -51,7 +51,7 @@ Attacks that exist *because* of the doctrine's structural decisions — outside 
 
 **Attack:** Two parties — one legitimate, one adversarial — submit conflicting events that race onto the chain, producing divergence. Alternatively: two legitimate parties race and produce divergence; an external observer interprets the divergence as evidence of compromise.
 - **Outcome:** Divergence is divergence; the chain shape does not record cause. Consumer trust degrades uniformly post-divergence. Out-of-band judgment (the operator's own observation history, external attestations through a different channel) is the only way to interpret event-level legitimacy.
-- **Mitigation:** None at the protocol layer. Multi-party governance synchronization above the protocol (designated submitter, leader election, Raft over the registry) prevents accidental race-induced divergence on high-stakes chains. See [../design/iel/event-log.md §Multi-Party Governance Synchronization](../design/primitives/iel/event-log.md#multi-party-governance-synchronization).
+- **Mitigation:** None at the protocol layer. Multi-party governance synchronization above the protocol (designated submitter, leader election, Raft over the registry) prevents accidental race-induced divergence on high-stakes chains. See [../operations/multi-party-governance.md](../operations/multi-party-governance.md).
 
 ### Cnt-Dec Race Convergence
 
@@ -207,7 +207,7 @@ The IEL primitive governs identity authorization via `auth_policy` (consumed by 
 
 **Attack:** Two legitimately governance-authorized parties (or one legitimate + one threshold-compromised — protocol cannot distinguish) submit `Evl` concurrently to different nodes.
 - **Mitigation:** Both `Evl`s land via linear-chain rules on their submitting nodes. Gossip merges into a 2-event divergent set at the same version. Every IEL event is privileged → the divergent set always contains a privileged event → privileged-divergence-is-terminal fires → chain transitions to contested-terminal at first observation on each node. No protocol-level distinction between accidental race and threshold compromise; consumer/application response is the same (reincept under a new IEL prefix).
-- **Operational mitigation:** Multi-party governance synchronization above the protocol (designated submitter, leader election, Raft) prevents accidental races. **Required for high-stakes IEL identities.** See [../design/iel/event-log.md §Multi-Party Governance Synchronization](../design/primitives/iel/event-log.md#multi-party-governance-synchronization).
+- **Operational mitigation:** Multi-party governance synchronization above the protocol (designated submitter, leader election, Raft) prevents accidental races. **Required for high-stakes IEL identities.** See [../operations/multi-party-governance.md](../operations/multi-party-governance.md).
 
 ### Threshold Compromise via Evl
 
@@ -237,7 +237,7 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
   - `Icp` dedups (deterministic prefix derivation; same SAID across submitters).
   - `Upd_legit.previous = Icp.said` — operator extends `Icp` via dedup-equivalence (an endorsement-class event never extends an adversary event; see [../design/protocol-doctrine.md §Extension Discipline](../design/protocol-doctrine.md#extension-discipline)). `Upd_legit` lands at `v_1` alongside `Upd_stale`, creating a non-privileged divergent set (both auth-authorized; Upd-Upd race shape).
   - Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Upd_legit` branch; the discriminator archives `Upd_stale`. `Rpr` lands at `v_2`; the chain becomes the operator's.
-  - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../design/iel/event-log.md §Application-developer enrollment patterns](../design/primitives/iel/event-log.md#application-developer-enrollment-patterns).
+  - Operator treats the user as inactive during enrollment; no consumers honor authorizations rooted in the in-progress chain. See [../operations/enrollment.md](../operations/enrollment.md).
 - **Residual visibility cost:** `Upd_stale` moves to the archive table as forensic record; visible to a determined inspector but cannot ground authorization.
 - **Structural impossibility of closing further:** The deterministic prefix derivation enables dedup-idempotency, which is what creates the camping window. Closing the window would require breaking dedup-idempotency.
 

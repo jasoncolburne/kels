@@ -345,32 +345,11 @@ This is an operator best practice, not a protocol-enforced rule. Future automati
 
 ### Application-developer enrollment patterns
 
-Operationally, the brand-new SEL chain race (above, under §What parent-monotonic blocks) is bounded by enrollment: until a user has finished registering all required well-known SEL topics for their identity, the system treats them as inactive, and no consumers honor authorizations rooted in their in-progress chains. Application developers must structure enrollment to take advantage of this:
-
-- **Register all required well-known SEL topics atomically.** Submit one batch per topic, with all topics together within the enrollment flow; do not partially-enroll a user.
-- **For each topic, detect and resolve prior chain content.** If the chain at the derived prefix already exists with content the operator didn't author (a competing party with `auth_policy` authority on the bound IEL submitted `[Icp, Est_stale]` first), enrollment submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the operator's legitimate `Est`. `Rpr` archives the competing branch and the chain becomes the operator's. `Rpr` resolves the divergence cleanly because `governance_policy` is structurally a higher bar than `auth_policy` — the operator's current governance authority outranks any auth-only competing submission.
-- **Treat the user as inactive until enrollment completes** (including any `Rpr` cleanup). During the inactive enrollment window, no consumers honor authorizations rooted in the in-progress chains; the user's chains gain trust grounding only after enrollment finishes.
-
-This pattern eliminates the brand-new chain race as an authorization-bearing concern: a competing party's race-won v1 has no consumers honoring it during the inactive window, and `Rpr` archives it before the user becomes active.
+The brand-new chain race described above is operationally defused by enrollment-time discipline on the application developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governance_policy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full operator guidance: [../../../operations/enrollment.md](../../../operations/enrollment.md).
 
 ## Multi-Party Governance Synchronization
 
-For IEL chains with multi-party governance — an `auth_policy` or `governance_policy` that multiple parties can satisfy — races between concurrent submissions create divergence even when all parties are legitimately authorized. Two operators independently signing and submitting `Evl` events without coordination produces two events at the same serial: divergence on IEL → contested-terminal immediately (every IEL event is privileged, so any divergent set on IEL fires the privileged-divergence rule).
-
-**Synchronization above the protocol is load-bearing for high-stakes IEL identities.** For a federation's root identity that issues credentials to many nodes, an identity hierarchy's root, or any identity whose reincept would cascade through many dependent chains, accidental divergence kills the identity and forces operational reincept. Without synchronization, any race takes the identity offline. This is not an optional optimization for these cases — it's an operator-facing requirement.
-
-Mitigation is a mechanism that serializes governance submissions so two parties don't reach the chain concurrently. Concrete options:
-
-- **Designated submitter**: one party assembles signatures from the other governance parties offline, then submits the assembled event. Other parties don't submit directly.
-- **Leader election among governance parties**: a primary submitter is designated; leadership transfers via out-of-band coordination when needed.
-- **Sequential signing rounds**: parties sign in turn; the final signer submits.
-- **Consensus protocol (e.g., Raft) over the registry**: the KELS reference federation deployment uses the Raft registry for this purpose. The registry's commit log serializes governance submissions to the federation's identity chain, so two operators committing concurrently are serialized by Raft before reaching the chain. See [../../infrastructure/registry.md](../../infrastructure/registry.md) for the registry architecture.
-
-The choice of synchronization mechanism is operational, not protocol-level — the IEL's protocol rules apply uniformly regardless of how submissions are serialized. The pattern is **required for high-stakes IEL identities** and **strongly recommended for any IEL whose governance involves more than a single submitter**.
-
-Note that synchronization protects against **accidental** races, not against **compromise**. A second governance-authorized party who acquired authority via threshold compromise can author submissions regardless of any synchronization mechanism — that threat is the same with or without synchronization. Defense against threshold compromise is operational hardening: high thresholds, geographic and organizational distribution of operators, custody discipline, monitoring for unexpected governance activity.
-
-**Threshold redundancy** is the operator's per-anchor recovery option for partial compromise: an anchored policy with `M > N` identities tolerates loss of `M − N` while remaining satisfiable, and a new anchor using a different threshold-satisfying subset re-establishes authorization without changing the policy itself (see [../../features/policy.md §Threshold Redundancy](../../features/policy.md#threshold-redundancy)).
+When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or Raft over the registry). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
