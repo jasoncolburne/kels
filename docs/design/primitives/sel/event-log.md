@@ -215,38 +215,30 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
 
 `Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's serial), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~63 events per the proactive-evaluation cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence).
 
-```
-Scenario 1 — Cnt on a linear chain (creates fresh divergence at v_d):
+*Scenario 1 — Cnt on a linear chain.* Cnt extends `v_{d-1}` (one before the tip) and lands at `v_d` as sibling of the existing tip, creating fresh divergence. Cnt is privileged, so privileged-divergence-is-terminal fires immediately:
 
-  Pre-state:        ... → v_{d-1} → Upd_v_d   (linear tip at v_d)
-                                       ↑
-                                      tip
+```
+  Pre-state:        ... → v_{d-1} → Upd_v_d   (tip)
 
   Cnt construction: cnt.previous = v_{tip-1}.said = v_{d-1}.said
-                    cnt.serial  = d
+                    cnt.serial   = d
 
   Post-state:       ... → v_{d-1} ─┬─ Upd_v_d ┐
-                                   └─ Cnt     ┴── contested-terminal
-                                                  (Cnt privileged →
-                                                   privileged-divergence-
-                                                   is-terminal fires)
+                                   └─ Cnt     ┴── contested
+```
 
+*Scenario 2 — Cnt on an already-divergent SEL.* A non-priv divergent set (e.g., Upd-Upd race) sits at `v_d`. Cnt extends `v_{d-1}` (the divergence ancestor, same as the new branch's `v_{tip-1}`) and joins the divergent set as a 3rd event via the upgrade rule; privileged-divergence-is-terminal fires:
 
-Scenario 2 — Cnt on an already-divergent SEL (joins via upgrade rule):
-
-  Pre-state (non-priv divergent at v_d, Upd-Upd race):
-                    ... → v_{d-1} ─┬─ Upd_a @ v_d
+```
+  Pre-state:        ... → v_{d-1} ─┬─ Upd_a @ v_d
                                    └─ Upd_b @ v_d
 
-  Cnt construction: cnt.previous = v_{d-1}.said   (upgrade-rule v_{d-1} parent)
-                    cnt.serial  = d
+  Cnt construction: cnt.previous = v_{d-1}.said
+                    cnt.serial   = d
 
   Post-state:       ... → v_{d-1} ─┬─ Upd_a @ v_d ┐
-                                   ├─ Upd_b @ v_d ├── contested-terminal
-                                   └─ Cnt   @ v_d ┘   (Cnt privileged →
-                                                       upgrade-rule joins +
-                                                       privileged-divergence
-                                                       fires)
+                                   ├─ Upd_b @ v_d ├── contested
+                                   └─ Cnt   @ v_d ┘
 ```
 
 Cnt is privileged (governance-authorized). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal.

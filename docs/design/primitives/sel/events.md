@@ -183,27 +183,18 @@ The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (pre
 
 ### Contest after IEL governance compromise
 
+Setup: a second governance-authorized party — authority acquired via threshold compromise on the bound IEL — submits `Evl` on the IEL evolving `auth_policy` / `governance_policy` in their favor. The operator detects the compromise and chooses to terminate the SEL rather than advance under the new IEL governance.
+
 ```
 v0..v3   normal chain
-v4       kind=sea  Sea_v4 advances last_seal_advancing_event to Sea_v4.said (chain tip)
-         (a second governance-authorized party — authority acquired via threshold
-          compromise on the bound IEL — submits Evl on the IEL evolving
-          auth_policy / governance_policy in their favor; operator detects the
-          compromise on the IEL and chooses to terminate the SEL since they cannot
-          safely advance under the new IEL governance)
-v4'      kind=cnt  previous=v_3.said, serial=4                       ← Cnt joins Sea_v4 in a 2-event
-         iel_event = (IEL event whose governance_policy was in effect at v_3 —    privileged divergent set at v_4;
-                          the legitimate pre-compromise IEL governance, which the      privileged-divergence-is-terminal
-                          operator still satisfies)                                    fires; chain contested.
-         content preserved from v_3                                                    (Cnt's land-serial v_4 = seal_serial
-                                                                                       = Sea_v4.serial; the seal-cap's
-                                                                                       event_serial >= seal_serial rule
-                                                                                       admits this parent-at-(seal − 1)
-                                                                                       boundary — see protocol-doctrine.md
-                                                                                       §Forks are Seal-Bounded.)
+v4       Sea       (advances last_seal_advancing_event to Sea_v4.said)
+v4'      Cnt       previous=v_3.said, serial=4
+                   iel_event = pre-compromise IEL governance event
+                   — Cnt joins Sea_v4 at v_4 as a 2-event privileged
+                     divergent set; chain contested-terminal —
 ```
 
-Contest is the operator's path when a second party has demonstrated authority on the bound IEL (and thus over the SEL) that the operator cannot defeat. Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at v_3's IEL-resolved governance_policy — the legitimate pre-compromise governance — which the operator still satisfies. Cnt's parent-at-(seal − 1) shape works at the boundary because the seal-cap is on the new event's land-serial, not on the parent-serial (see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
+Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at `v_3`'s IEL-resolved `governance_policy` — the legitimate pre-compromise governance, which the operator still satisfies. Content is preserved from `v_3` per the content carry-forward rule. Cnt's land-serial `v_4 = seal_serial = Sea_v4.serial` satisfies `event_serial >= seal_serial` via the seal-cap's parent-at-(seal − 1) boundary: the parent sits at `seal − 1`, the new event itself lives at the seal (see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 

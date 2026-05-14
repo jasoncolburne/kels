@@ -68,6 +68,10 @@ use crate::{handlers::AppState, repository::KelsRepository};
 - Sign the SAID's QB64 bytes, never serialized payloads.
 - All HTTP endpoints: POST with JSON bodies. No identifiers in URL paths or query params.
 
+## Doc Style
+
+**Diagram annotations.** In ASCII diagrams (chain shapes, scenario walkthroughs, state transitions), keep in-diagram text terse — short pointer labels like `(tip)`, `(adversary)`, `→ contested`, `(frozen)`. Multi-sentence explanations of *why* a step does what it does go in prose above or below the diagram, not inside it. The reader's eye can't track both an ASCII layout and paragraph-length annotations at the same time; separating the two lets the diagram carry shape and the prose carry argument.
+
 ## Core Concepts
 
 **Prefix** — persistent chain identifier. Derived from inception event with both `said` and `prefix` set to placeholders before Blake3. Different from SAID (which only blanks `said`). Stable across chain lifetime.
