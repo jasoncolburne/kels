@@ -147,14 +147,25 @@ Authorization is consumer-side: endorsing parties anchor the event's SAID in the
 
 ## Gossip Replication
 
-SAD data replicates via the existing gossip infrastructure on a separate topic (`kels/sad/v1`).
+SAD objects and SEL chain events replicate via the gossip infrastructure on two separate topics:
+
+- `kels/gossip/v1/topics/sad` — SAD object announcements
+- `kels/gossip/v1/topics/sel` — SEL chain event announcements
 
 ### Message Types
 
 ```rust
-enum SadAnnouncement {
-    Object { said, origin },
-    Event { prefix, said, origin },
+/// SAD object announcement (on `kels/gossip/v1/topics/sad`)
+struct SadAnnouncement {
+    said: String,
+    origin: String,
+}
+
+/// SEL chain event announcement (on `kels/gossip/v1/topics/sel`)
+struct SelAnnouncement {
+    prefix: String,
+    said: String,
+    origin: String,
 }
 ```
 
@@ -169,11 +180,11 @@ When a SAD's `availability.nodes` references a NodeSet, the gossip policy contro
 
 ### Flow
 
-1. KELS SADStore publishes to Redis (`sad_updates` or `sel_updates`)
-2. Gossip service subscribes, broadcasts announcement on `kels/sad/v1` topic
-3. Peers receive announcement, fetch missing data from origin
-4. For objects: fetch blob and PUT locally
-5. For chains: fetch SAD events + content, submit to local service
+1. KELS SADStore publishes to Redis (`sad_updates` for SAD objects; `sel_updates` for SEL chain updates)
+2. Gossip service subscribes; broadcasts SAD object announcements on `kels/gossip/v1/topics/sad`, SEL chain event announcements on `kels/gossip/v1/topics/sel`
+3. Peers receive announcements, fetch missing data from origin
+4. For SAD object announcements: fetch blob and PUT locally
+5. For SEL chain event announcements: fetch SAD events + content, submit to local service
 
 ## Configuration
 

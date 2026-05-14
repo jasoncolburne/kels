@@ -48,7 +48,7 @@ After `repair` succeeds, the chain is back to Active state and accepts normal `U
 When `repair`, `contest`, or `decommission` succeeds:
 
 1. SADStore publishes the new effective SAID to Redis (`sel_updates`).
-2. Gossip service subscribes, broadcasts an announcement on `kels/sad/v1`.
+2. Gossip service subscribes, broadcasts an announcement on `kels/gossip/v1/topics/sel`.
 3. Peers receive the announcement, compare against their local effective SAID for the prefix.
 4. Stale peers fetch the full chain from origin via `POST /api/v1/sad/events/fetch` and submit to their local SADStore.
 5. Receiving handler observes the `Rpr` / `Cnt` / `Dec` in the batch and routes through the kind-discriminator paths described in [merge.md](merge.md). Archival (for `Rpr`) happens synchronously in the receiver's transaction.

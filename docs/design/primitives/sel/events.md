@@ -10,13 +10,13 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 | Kind | Topic | Purpose |
 |---|---|---|
-| `Icp` | `kels/sad/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
-| `Est` | `kels/sad/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
-| `Upd` | `kels/sad/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
-| `Sea` | `kels/sad/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
-| `Rpr` | `kels/sad/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
-| `Cnt` | `kels/sad/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
-| `Dec` | `kels/sad/v1/events/dec` | Decommission — terminal owner-initiated end. |
+| `Icp` | `kels/sel/v1/events/icp` | Inception (v0). Declares `identity`. Seeds prefix derivation via `(identity, topic)`. Permissionless — no authorization gate. |
+| `Est` | `kels/sel/v1/events/est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. |
+| `Upd` | `kels/sel/v1/events/upd` | Normal update (v2+) — append content to the chain. Routine, tier-1 anchored. |
+| `Sea` | `kels/sel/v1/events/sea` | Seal — governance evaluation. Advances `last_governance_event`. No policy-field evolution (policies live on IEL), but may advance `identity_event` to a newer IEL state (re-ratcheting the binding after the bound IEL evolves). Back-to-back `Sea`-`Sea` is allowed when the second `Sea` advances `identity_event` — see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance) for the cross-primitive shape rule. |
+| `Rpr` | `kels/sel/v1/events/rpr` | Repair — resolves non-privileged divergence and seals. Extends a tip at `v_{d+1}`; discriminator-driven archival of the events on the branch not extended. |
+| `Cnt` | `kels/sel/v1/events/cnt` | Contest — terminal due to authority conflict. No archival. |
+| `Dec` | `kels/sel/v1/events/dec` | Decommission — terminal owner-initiated end. |
 
 `Sea`, `Rpr`, `Cnt`, `Dec` all return `evaluates_governance() = true` — each requires `governance_policy` satisfaction (resolved through the bound IEL event). `Est` is `auth_policy`-gated (like `Upd`) but tier-2 anchored (unlike `Upd`).
 

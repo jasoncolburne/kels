@@ -89,10 +89,22 @@ services/gossip/
     └── hsm_signer.rs   # HSM-backed request signing and peer verification
 ```
 
+### Topics
+
+Gossip pubsub topics, one per subsystem:
+
+| Topic | Carries |
+|-------|---------|
+| `kels/gossip/v1/topics/kel` | KEL chain announcements |
+| `kels/gossip/v1/topics/iel` | IEL chain event announcements |
+| `kels/gossip/v1/topics/sel` | SEL chain event announcements |
+| `kels/gossip/v1/topics/sad` | SAD object announcements |
+| `kels/gossip/v1/topics/mail` | Mail envelope announcements |
+
 ### Message Types
 
 ```rust
-/// Broadcast via PlumTree to announce KEL updates
+/// Broadcast via PlumTree to announce KEL updates (on `kels/gossip/v1/topics/kel`)
 struct KelAnnouncement {
     prefix: String,
     said: String,
@@ -100,19 +112,32 @@ struct KelAnnouncement {
 }
 ```
 
-### SAD Store Replication
+### SADStore Replication
 
-The gossip service also replicates SAD store data on a separate topic (`kels/sad/v1`). See `docs/design/sadstore.md` for full details.
+The gossip service replicates SADStore data on two topics:
+
+- `kels/gossip/v1/topics/sad` — SAD object announcements
+- `kels/gossip/v1/topics/sel` — SEL chain event announcements
+
+See `docs/design/infrastructure/sadstore.md` for full details.
 
 Two Redis channels drive announcements:
-- `sad_updates` — new SAD objects (payload: `{said}`)
-- `sel_updates` — SEL updates (payload: `{prefix}:{effective_said}`)
+- `sad_updates` — new SAD objects (payload: `{said}`) → broadcast on `kels/gossip/v1/topics/sad`
+- `sel_updates` — SEL chain updates (payload: `{prefix}:{effective_said}`) → broadcast on `kels/gossip/v1/topics/sel`
 
-Message type:
+Message types:
 ```rust
-enum SadAnnouncement {
-    Object { said, origin },
-    Event { prefix, said, origin },
+/// SAD object announcement (on `kels/gossip/v1/topics/sad`)
+struct SadAnnouncement {
+    said: String,
+    origin: String,
+}
+
+/// SEL chain event announcement (on `kels/gossip/v1/topics/sel`)
+struct SelAnnouncement {
+    prefix: String,
+    said: String,
+    origin: String,
 }
 ```
 
