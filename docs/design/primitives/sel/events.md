@@ -24,17 +24,37 @@ For chain lifecycle (states, divergence, repair, contest, decommission, evaluati
 
 `SadEvent::validate_structure()` enforces these. The verifier adds chain-state checks on top.
 
-| Kind | serial | previous | identity | topic | iel_event | content | sort_priority | authorization | KEL anchor kind |
-|---|---|---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | forbidden | 0 | none (permissionless) | none |
-| `Est` | `== 1` | required | forbidden | **required** | **required** | **required** | 1 | auth (via IEL) | `Rot` (tier 2) |
-| `Upd` | `>= 2` | required | forbidden | **required** | **required** | **required** | 2 | auth (via IEL) | `Ixn` (tier 1) |
-| `Sea` | `>= 2` | required | forbidden | **required** | **required** | preserved | 3 | governance (via IEL) | `Rot` (tier 2) |
-| `Rpr` | `>= 2` | required | forbidden | **required** | **required** | preserved | 4 | governance (via IEL) | `Ror` (tier 3) |
-| `Dec` | `>= 2` | required | forbidden | **required** | **required** | preserved | 5 | governance (via IEL) | `Ror` (tier 3) |
-| `Cnt` | `>= 2` | required | forbidden | **required** | **required** | preserved | 6 | governance (via IEL) | `Ror` (tier 3) |
+### Structural fields
+
+| Kind | serial | previous | identity | topic | iel_event | content |
+|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | forbidden |
+| `Est` | `== 1` | required | forbidden | **required** | **required** | **required** |
+| `Upd` | `>= 2` | required | forbidden | **required** | **required** | **required** |
+| `Sea` | `>= 2` | required | forbidden | **required** | **required** | preserved |
+| `Rpr` | `>= 2` | required | forbidden | **required** | **required** | preserved |
+| `Dec` | `>= 2` | required | forbidden | **required** | **required** | preserved |
+| `Cnt` | `>= 2` | required | forbidden | **required** | **required** | preserved |
 
 The `identity` field lives on `Icp` only; subsequent events inherit it from chain context. The chain's bound IEL is fixed at inception and cannot be changed. The `topic` field — present on every event — is the SAD content-kind namespace (e.g., `kels/sad/v1/keys/mlkem`) and seeds the SEL prefix derivation `(identity, topic) → prefix` on `Icp`; subsequent events carry the same topic, enforced by the verifier's Topic consistency check (see [verification.md §Per-Event Checks](verification.md#per-event-checks)).
+
+### Authorization and anchor
+
+| Kind | authorization | KEL anchor kind | sort_priority |
+|---|---|---|---|
+| `Icp` | none (permissionless) | none | 0 |
+| `Est` | auth (via IEL) | `Rot` (tier 2) | 1 |
+| `Upd` | auth (via IEL) | `Ixn` (tier 1) | 2 |
+| `Sea` | governance (via IEL) | `Rot` (tier 2) | 3 |
+| `Rpr` | governance (via IEL) | `Ror` (tier 3) | 4 |
+| `Dec` | governance (via IEL) | `Ror` (tier 3) | 5 |
+| `Cnt` | governance (via IEL) | `Ror` (tier 3) | 6 |
+
+Authorization is resolved through the bound IEL via each event's `iel_event` field: "auth (via IEL)" means against the IEL-resolved `auth_policy` at the bound event; "governance (via IEL)" means against the IEL-resolved `governance_policy`. `Icp` is permissionless — no authorization gate; the prefix derives deterministically from `(identity, topic)` and `Icp` alone is rejected by the verifier (see §Inception batch rule below).
+
+KEL anchor kinds follow [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation): tier-1 (`Ixn`) for routine extension (`Upd`); tier-2 (`Rot`) for binding establishment and seal advance (`Est`, `Sea`); tier-3 (`Ror`) for recovery and terminals (`Rpr`, `Cnt`, `Dec`).
+
+`sort_priority` is used by the merge engine for deterministic ordering of events at the same serial.
 
 ### Satisfaction model
 

@@ -22,13 +22,15 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 `IdentityEvent::validate_structure()` enforces serial and `previous` rules. Per-kind policy-field discipline (carry-forward vs. evolution vs. declaration) is enforced by the **verifier** — not by `validate_structure` — because the discipline depends on chain-state context (the previous event's policy values) which structural validation alone cannot see.
 
-| Kind | serial | previous | auth_policy | governance_policy | nonce | sort_priority | authorization | KEL anchor kind |
-|---|---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | **required** | 0 | self (governance_policy) | `Rot` (tier 2) |
-| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | forbidden | 1 | governance | `Rot` (tier 2) |
-| `Sea` | `>= 2` | required | forbidden | forbidden | forbidden | 2 | governance | `Rot` (tier 2) |
-| `Dec` | `>= 1` | required | forbidden | forbidden | forbidden | 3 | governance | `Ror` (tier 3) |
-| `Cnt` | `>= 1` | required | forbidden | forbidden | forbidden | 4 | governance | `Ror` (tier 3) |
+### Structural fields
+
+| Kind | serial | previous | auth_policy | governance_policy | nonce |
+|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | declared (required) | declared (required) | **required** |
+| `Evl` | `>= 1` | required | preserved or evolved | preserved or evolved (at least one of `auth_policy` / `governance_policy` MUST evolve) | forbidden |
+| `Sea` | `>= 2` | required | forbidden | forbidden | forbidden |
+| `Dec` | `>= 1` | required | forbidden | forbidden | forbidden |
+| `Cnt` | `>= 1` | required | forbidden | forbidden | forbidden |
 
 `nonce` is a field on `Icp` only — opaque random bytes chosen by the inceptor that seed the prefix derivation `(auth_policy, governance_policy, nonce) → prefix`. It makes the prefix structurally unpredictable from outside (defending against well-known-tuple camping, which IEL — unlike SEL — has no other structural defense against). The verifier rejects any non-`Icp` event carrying a non-`None` nonce: nonce reuse or replay outside Icp would dilute the prefix's unpredictability.
 
@@ -38,9 +40,23 @@ IEL has **no `Upd` kind** — there is no "content" on identity chains. The chai
 
 `Sea`'s `serial >= 2` constraint and the parent-kind constraint (`Sea`'s parent must be `Evl` — see §Per-Kind Policy Field Discipline) are co-implied: only `Evl` can land at v=1 on a non-terminal IEL chain (Icp is at v=0; Sea/Cnt/Dec are forbidden at v=1 by serial rules or terminal semantics), so the parent at `v_{tip-1}` of any `Sea` at v=2 is necessarily an `Evl`. The two constraints are stated independently for clarity but describe the same structural shape.
 
+`Cnt`'s parent rule (`previous = v_{tip-1}.said`) is satisfiable only when the chain has at least one event after `Icp`. On a freshly-incepted IEL (tip = `Icp` at v=0), `v_{tip-1}` doesn't exist, so the parent rule has no valid target. Cnt becomes reachable at v=1 once the first `Evl` lands (where `Cnt.previous = Icp.said` creates a 2-event divergent set with the `Evl` at v=1). On a chain with only `Icp`, the operator's termination path is `Dec` (which extends the tip directly). The constraint is on the parent rule, not on per-kind field validation — a Cnt event itself can be constructed in isolation; what cannot be satisfied is the chain-state precondition for its parent.
+
+### Authorization and anchor
+
+| Kind | authorization | KEL anchor kind | sort_priority |
+|---|---|---|---|
+| `Icp` | self (governance_policy) | `Rot` (tier 2) | 0 |
+| `Evl` | governance | `Rot` (tier 2) | 1 |
+| `Sea` | governance | `Rot` (tier 2) | 2 |
+| `Dec` | governance | `Ror` (tier 3) | 3 |
+| `Cnt` | governance | `Ror` (tier 3) | 4 |
+
+Authorization terminology: "self" means the event is governance-authorized against the policy it declares at the same event (Icp anchors `Icp.said` under the declared `governance_policy`); "governance" means against the branch's tracked `governance_policy` (resolved at the predecessor). Every IEL event is governance-authorized; see §Satisfaction model below.
+
 The "KEL anchor kind" column reflects [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation): tier-2 (`Rot`) for `Icp`/`Evl`/`Sea` (governance acts — declaration, evolution, seal advance); tier-3 (`Ror`) for `Cnt` and `Dec` (terminals). Each contributing KEL member's `governance_policy` leaf must produce an anchor of the required kind on the IEL event's SAID.
 
-`Cnt`'s parent rule (`previous = v_{tip-1}.said`) is satisfiable only when the chain has at least one event after `Icp`. On a freshly-incepted IEL (tip = `Icp` at v=0), `v_{tip-1}` doesn't exist, so the parent rule has no valid target. Cnt becomes reachable at v=1 once the first `Evl` lands (where `Cnt.previous = Icp.said` creates a 2-event divergent set with the `Evl` at v=1). On a chain with only `Icp`, the operator's termination path is `Dec` (which extends the tip directly). The constraint is on the parent rule, not on per-kind field validation — a Cnt event itself can be constructed in isolation; what cannot be satisfied is the chain-state precondition for its parent.
+`sort_priority` is used by the merge engine for deterministic ordering of events at the same serial (during divergent-set processing and gossip-merge). The values are decorative ordering hints, not authorization-relevant; lower priority sorts first.
 
 ### Per-Kind Policy Field Discipline
 

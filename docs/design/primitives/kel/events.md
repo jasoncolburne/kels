@@ -23,16 +23,35 @@ For chain lifecycle (states, divergence, recovery via discriminator, contest, de
 
 `KeyEvent::validate_structure()` enforces these. The verifier and merge engine add chain-state checks on top (e.g., proactive-ROR enforcement; dual-signature verification against prior establishment commitments).
 
-| Kind | serial | previous | public_key | rotation_hash | recovery_key | recovery_hash | anchor | delegating_prefix | sort_priority | authorization |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | forbidden | 0 | signing |
-| `Dip` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden | **required** | 1 | signing (+ `Delegated`) |
-| `Ixn` | `>= 1` | required | forbidden | forbidden | forbidden | forbidden | **required** | forbidden | 2 | signing |
-| `Rot` | `>= 1` | required | **required** | **required** | forbidden | forbidden | optional | forbidden | 3 | signing |
-| `Ror` | `>= 1` | required | **required** | **required** | **required** | **required** | optional | forbidden | 4 | dual |
-| `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden | forbidden | 5 | dual |
-| `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | 6 | dual |
-| `Cnt` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden | forbidden | 7 | dual |
+### Structural fields
+
+| Kind | serial | previous | public_key | rotation_hash | recovery_key | recovery_hash | delegating_prefix |
+|---|---|---|---|---|---|---|---|
+| `Icp` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | forbidden |
+| `Dip` | `== 0` | forbidden | **required** | **required** | forbidden | **required** | **required** |
+| `Ixn` | `>= 1` | required | forbidden | forbidden | forbidden | forbidden | forbidden |
+| `Rot` | `>= 1` | required | **required** | **required** | forbidden | forbidden | forbidden |
+| `Ror` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden |
+| `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden |
+| `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden |
+| `Cnt` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden |
+
+The forward-key commitment fields (`rotation_hash`, `recovery_key`, `recovery_hash`) drive the dual-signature mechanic; see §Forward-key commitments below. `delegating_prefix` is `Dip`-only and supports the `Delegated(delegator)` policy node (see §Authorization model).
+
+### Authorization, anchor, and routing
+
+| Kind | authorization | anchor | sort_priority |
+|---|---|---|---|
+| `Icp` | signing | forbidden | 0 |
+| `Dip` | signing (+ `Delegated`) | forbidden | 1 |
+| `Ixn` | signing | **required** | 2 |
+| `Rot` | signing | optional | 3 |
+| `Ror` | dual | optional | 4 |
+| `Rec` | dual | forbidden | 5 |
+| `Dec` | dual | forbidden | 6 |
+| `Cnt` | dual | forbidden | 7 |
+
+The `anchor` field (when present) carries the SAID of an IEL/SEL event being anchored cross-chain — see §Anchor on Rot and Ror below. `Rec`/`Dec`/`Cnt` are anchor-forbidden by design (single-purpose semantics; see §Anchor on Rot and Ror). `sort_priority` is used by the merge engine for deterministic ordering of events at the same serial.
 
 ### Authorization model
 
