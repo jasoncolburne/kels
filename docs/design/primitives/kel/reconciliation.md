@@ -254,40 +254,63 @@ forensic divergence is acceptable (and unavoidable given the gossip-
 window timing).
 ```
 
-### 6. Cnt-Dec race (override)
+### 6. Cnt-Dec override
 
-Two parties race a terminal event onto a chain: the operator submits `Dec` (clean retirement) to one node, while a second authority-holder submits `Cnt` (contest) to another. Each lands as a linear-chain extension on its submitting node. Gossip then carries each event to the other node, where the doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) governs the merge:
+Two parties submit terminal events onto a chain: the operator submits `Dec` (clean retirement) to one node; a second authority-holder submits `Cnt` (contest) to another. The doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
-- The node that received `Dec` first now receives `Cnt` (with `previous = v_{d-1}.said`). The decommissioned-state gate accepts the override; `Cnt` lands at `v_d` alongside `Dec`; privileged-divergence-is-terminal fires; the chain becomes contested.
-- The node that received `Cnt` first now receives `Dec` (with `previous = v_{d-1}.said`). The contested-state gate rejects `Dec` outright — the asymmetry is intentional. The sink's chain stays at `[Cnt]` alone at `v_d`.
+**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
+
+```
+Pre-Cnt state on both nodes (Dec landed on A, gossiped to B):
+
+  ... → v_{d-1} → dec @ v_d    (tip)
+
+Node B (second authority, post-Dec view) submits:
+
+  cnt.previous = v_{d-1}.said   → cnt lands at v_d on B alongside dec
+
+After gossip merges:
+
+  ... → v_{d-1} ─┬─ dec @ v_d ┐
+                 └─ cnt @ v_d ┴── contested-terminal @ v_d
+```
+
+**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_{d-1}` at construction; neither observes the other before submitting. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-2}.said`; Cnt lands at `v_{d-1}` as sibling of the pre-Dec tip event.
 
 ```
 Pre-state on both nodes (linear at v_{d-1}):
 
-  ... → v_{d-1}    (tip)
+  ... → v_{d-2} → v_{d-1}    (tip)
 
-Concurrent submissions:
+Concurrent submissions (no mutual observation):
 
-  Node A (operator)        → dec.previous = v_{d-1}.said   (lands at v_d on A)
-  Node B (other authority) → cnt.previous = v_{d-1}.said   (lands at v_d on B)
+  Node A (operator):    dec.previous = v_{d-1}.said   → dec lands at v_d on A
+  Node B (other):       cnt.previous = v_{d-2}.said   → cnt lands at v_{d-1} on B
+                                                         (sibling of v_{d-1};
+                                                          contested fires at v_{d-1})
 
-After gossip merge:
+After gossip merges:
 
-  Node A receives Cnt → override accepted → divergent set at v_d:
-    ... → v_{d-1} ─┬─ dec @ v_d ┐
-                   └─ cnt @ v_d ┴── contested-terminal
+  Node A (Dec'd) receives cnt with previous = v_{d-2}.said:
+    decommissioned-state gate accepts (cnt creates divergence with pre-Dec v_{d-1}).
+    Chain transitions to contested at v_{d-1}:
 
-  Node B receives Dec → contested-state gate rejects → unchanged:
-    ... → v_{d-1} → cnt @ v_d        contested-terminal (2-event set
-                                      shape on A; 1-event set shape on B
-                                      — forensic divergence acceptable)
+    ... → v_{d-2} ─┬─ v_{d-1} → dec @ v_d  ┐
+                   └─ cnt @ v_{d-1}        ┴── contested-terminal @ v_{d-1}
 
-  effective_said(A) = hash_effective_said("contested:{prefix}")
-  effective_said(B) = hash_effective_said("contested:{prefix}")
-                    = effective_said(A)    ✓
+  Node B (contested at v_{d-1}) receives dec:
+    contested-state gate rejects; dec is dropped.
+
+    ... → v_{d-2} ─┬─ v_{d-1}              ┐
+                   └─ cnt @ v_{d-1}        ┴── contested-terminal @ v_{d-1}
 ```
 
-Both nodes converge on the contested effective SAID. Cross-node forensic divergence (which events each node holds at `v_d`) is acceptable; anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: A converges on `hash("decommissioned:{prefix}")` = Dec.said while B converges on `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Both shapes converge to contested:
+
+  effective_said(A) = hash_effective_said("contested:{prefix}")
+  effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
+
+Cross-node forensic divergence (which events each node holds; at which version contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
 
 ## References
 
