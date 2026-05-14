@@ -65,6 +65,14 @@ for events introducing or evolving auth_policy or governance_policy
     fetch the referenced policy by SAID
     if not policy.immune: reject with NotImmunePolicy
               (policy immunity rule — see events.md)
+
+for Sea events: verify parent-kind constraint — parent must be Evl
+                (Sea is forbidden after Icp, Sea, Cnt, or Dec on IEL).
+                Sea-Sea is forbidden on IEL because Sea carries no content
+                field, so consecutive Seas have no semantic difference.
+                See [events.md §Satisfaction model](events.md#satisfaction-model).
+                Chain-state check enforced in the verifier walk — validate_structure
+                sees only the event in isolation; parent-kind requires chain context.
 ```
 
 The Icp authorization requirement is structural authentication of the inceptor against their own declared `governance_policy`. Unlike SEL's Icp, there is no phishing class to defend against — the prefix is structurally unpredictable from outside (the inception `nonce` makes it unguessable).

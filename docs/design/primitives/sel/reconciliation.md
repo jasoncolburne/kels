@@ -416,35 +416,35 @@ After gossip merges:
                              └─ cnt @ v_d ┴── contested-terminal @ v_d
 ```
 
-**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_{d-1}` at construction; neither observes the other before submitting. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-2}.said`; Cnt lands at `v_{d-1}` as sibling of the pre-Dec tip event.
+**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said`; Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
 
 ```
-Pre-state on both nodes (linear at v_{d-1}):
+Pre-state on both nodes (linear at v_d):
 
-  [Icp] → ... → [v_{d-2}] → [Upd_{d-1}]    (tip)
+  [Icp] → ... → [v_{d-1}] → [Upd_d]    (tip)
 
 Concurrent submissions (no mutual observation):
 
-  Node A (operator):              dec.previous = v_{d-1}.said   → dec lands at v_d on A
-  Node B (other governance):      cnt.previous = v_{d-2}.said   → cnt lands at v_{d-1} on B
-                                                                   (sibling of Upd_{d-1};
+  Node A (operator):              dec.previous = v_d.said       → dec lands at v_{d+1} on A
+  Node B (other governance):      cnt.previous = v_{d-1}.said   → cnt lands at v_d on B
+                                                                   (sibling of Upd_d;
                                                                     cnt privileged → contested
-                                                                    fires immediately at v_{d-1})
+                                                                    fires immediately at v_d)
 
 After gossip merges:
 
-  Node A (Dec'd) receives cnt with previous = v_{d-2}.said:
-    decommissioned-state gate accepts (cnt creates divergence with pre-Dec Upd_{d-1}).
-    Chain transitions to contested at v_{d-1}:
+  Node A (Dec'd) receives cnt with previous = v_{d-1}.said:
+    decommissioned-state gate accepts (cnt creates divergence with pre-Dec Upd_d).
+    Chain transitions to contested at v_d:
 
-    [Icp] → ... → [v_{d-2}] ─┬─ Upd_{d-1} → dec @ v_d  ┐
-                             └─ cnt @ v_{d-1}          ┴── contested-terminal @ v_{d-1}
+    [Icp] → ... → [v_{d-1}] ─┬─ Upd_d → dec @ v_{d+1}  ┐
+                             └─ cnt @ v_d              ┴── contested-terminal @ v_d
 
-  Node B (contested at v_{d-1}) receives dec:
+  Node B (contested at v_d) receives dec:
     contested-state gate rejects; dec is dropped.
 
-    [Icp] → ... → [v_{d-2}] ─┬─ Upd_{d-1}              ┐
-                             └─ cnt @ v_{d-1}          ┴── contested-terminal @ v_{d-1}
+    [Icp] → ... → [v_{d-1}] ─┬─ Upd_d                  ┐
+                             └─ cnt @ v_d              ┴── contested-terminal @ v_d
 ```
 
 Both shapes converge to contested:

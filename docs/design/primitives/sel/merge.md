@@ -78,6 +78,14 @@ for v1+: cross-chain authorization resolution:
         extending an existing branch tip) in IEL chain order; reject
         BadIdentityBinding otherwise. Branches with different parent-chains
         do not constrain each other.
+
+for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
+                when the new Sea's identity_event advances over the parent
+                Sea's identity_event (the per-event parent-monotonic ratchet
+                above strictly enforces this). Sea forbidden after Cnt/Dec
+                (terminal). See [events.md](events.md) for the per-kind table.
+                Chain-state check enforced in the verifier walk — validate_structure
+                sees only the event in isolation; parent-kind requires chain context.
 ```
 
 The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that version, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.

@@ -50,6 +50,8 @@ The "authorization" column names which signature(s) the verifier requires for th
 
 `Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
+`Rec`, `Dec`, and `Cnt` are anchor-forbidden by design. `Rec`'s role is divergence resolution (archival); `Dec`/`Cnt` end the chain. The protocol does not conflate event semantics — anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery or terminal primitives. Each event kind carries one explicit purpose; operators compose them rather than combining behaviors in a single event.
+
 ### Recovery-key revelation
 
 `Rec` / `Ror` / `Dec` / `Cnt` reveal the `recovery_key` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events must be resolved by `Cnt` (contest), not `Rec` (recovery). The merge engine surfaces this via `KelMergeResult::ContestRequired` (see [event-log.md](event-log.md#contest-cnt) for the trigger).
