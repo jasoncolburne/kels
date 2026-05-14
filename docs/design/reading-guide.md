@@ -28,7 +28,7 @@ The simplest primitive. Every IEL event is governance-authorized (no auth-vs-gov
 
 Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitives/iel/event-log.md) → [merge.md](primitives/iel/merge.md) → [verification.md](primitives/iel/verification.md) → [reconciliation.md](primitives/iel/reconciliation.md).
 
-**Note on forward references.** IEL is the authorization root for SEL, so IEL docs forward-reference SEL concepts (`identity_event`, SEL `Upd` / `Est` / `Sea` / `Rpr` / `Cnt` / `Dec` binding rules). On first read, treat these as "the binding exists; the SEL-side docs cover the consumer rules" — you'll fill them in once you reach SEL.
+**Note on forward references.** IEL is the authorization root for SEL, so IEL docs forward-reference SEL concepts (`iel_event`, SEL `Upd` / `Est` / `Sea` / `Rpr` / `Cnt` / `Dec` binding rules). On first read, treat these as "the binding exists; the SEL-side docs cover the consumer rules" — you'll fill them in once you reach SEL.
 
 ### KEL — second
 
@@ -40,7 +40,7 @@ Read in order: [events.md](primitives/kel/events.md) → [event-log.md](primitiv
 
 ### SEL — third
 
-The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Adds a `content` field (the per-event payload — KELS application data), an `identity_event` field (the SAID of the IEL event whose policy authorizes this SEL event), and the SEL-specific per-event parent-monotonic ratchet on `identity_event`. Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and the upgrade rule (already introduced in KEL).
+The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Adds a `content` field (the per-event payload — KELS application data), an `iel_event` field (the SAID of the IEL event whose policy authorizes this SEL event), and the SEL-specific per-event parent-monotonic ratchet on `iel_event`. Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and the upgrade rule (already introduced in KEL).
 
 New concepts to internalize after KEL + IEL: identity-rooting (every SEL binds to an IEL prefix at inception), the per-event parent-monotonic ratchet, `Rpr` as SEL's discriminator-based recovery, cross-chain binding stability under IEL governance evolution.
 

@@ -162,7 +162,7 @@ the chain is contested-terminal, all subsequent submissions are rejected.
 
 ### 3. Cross-chain effect: SELs bound to a divergent IEL event
 
-If an SEL's `identity_event` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
+If an SEL's `iel_event` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
 
 ```
 IEL chain (now divergent at v_d):
@@ -172,16 +172,16 @@ IEL chain (now divergent at v_d):
 
 SEL chain bound to the IEL (last good binding pre-divergence):
 
-  [Icp] → [Upd_v1, identity_event=Evl_{d-1}.said] → ...
+  [Icp] → [Upd_v1, iel_event=Evl_{d-1}.said] → ...
 
   Submitter tries:
-    [Upd_v_new, identity_event=Evl_d_a.said]   ← bound to a divergent IEL event
+    [Upd_v_new, iel_event=Evl_d_a.said]   ← bound to a divergent IEL event
 
   IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
   Submitter retries with stable pre-divergence binding:
-    [Upd_v_new, identity_event=Evl_{d-1}.said]   ← bound at v_{d-1} < d
+    [Upd_v_new, iel_event=Evl_{d-1}.said]   ← bound at v_{d-1} < d
 
   IEL resolver: "bound event is in pre-divergence shared prefix" → OK
    for chain-validity; consumer trust degraded per whole-chain-suspect rule.

@@ -20,19 +20,19 @@ State is computed from the chain's events, never tracked as a separate flag. The
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
 - `last_seal_advancing_event: Option<Digest256>` — SAID of the most recent `Sea`/`Rpr` (the "evaluation seal").
-- `last_identity_event: Option<Digest256>` — derived aggregate: the highest IEL event (in IEL chain order) that any SEL event in the chain has bound to. Computed across all events; not used as a watermark gate. New event acceptance is gated by per-event parent-monotonic on `identity_event`, applied per branch (see [verification.md](verification.md) and [../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
+- `last_iel_event: Option<Digest256>` — derived aggregate: the highest IEL event (in IEL chain order) that any SEL event in the chain has bound to. Computed across all events; not used as a watermark gate. New event acceptance is gated by per-event parent-monotonic on `iel_event`, applied per branch (see [verification.md](verification.md) and [../iel/event-log.md §What parent-monotonic blocks](../iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt)).
 
 ## Event Kinds
 
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
 | `Icp` | Inception (v0). Declares `identity` (IEL prefix). Permissionless — deterministic prefix derivation; no auth gate. | None at v0; chain advances require IEL-resolved authorization at v1+. | No |
-| `Est` | Establishment (v1). The first authorization-gated event; carries `identity_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. | `auth_policy` resolved through `identity_event`. | No |
-| `Upd` | Normal update (v2+) — append content. | `auth_policy` resolved through `identity_event`. | No |
-| `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `identity_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `identity_event`. | No |
-| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Branch-tip-extending shape: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending shape: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). | `governance_policy` resolved through `identity_event`. | No |
-| `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `identity_event`. | **Yes** |
-| `Dec` | Decommission — terminal owner-initiated end. | `governance_policy` resolved through `identity_event`. | **Yes** |
+| `Est` | Establishment (v1). The first authorization-gated event; carries `iel_event` binding to the IEL plus the chain's first content. Tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation) — raises per-attempt cost on SEL camping. | `auth_policy` resolved through `iel_event`. | No |
+| `Upd` | Normal update (v2+) — append content. | `auth_policy` resolved through `iel_event`. | No |
+| `Sea` | Seal — governance evaluation; advances the seal and (typically) advances its branch's tip `iel_event` to the IEL's current event, closing the stale-binding window for subsequent same-branch events. No field evolution (policies live on IEL). | `governance_policy` resolved through `iel_event`. | No |
+| `Rpr` | Repair — advances the seal AND resolves non-privileged divergence. Branch-tip-extending shape: `Rpr.previous` is a branch tip at `v_d`, Rpr extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending shape: `Rpr.previous = v_{d-1}.said`, Rpr lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). | `governance_policy` resolved through `iel_event`. | No |
+| `Cnt` | Contest — terminal due to authority conflict. | `governance_policy` resolved through `iel_event`. | **Yes** |
+| `Dec` | Decommission — terminal owner-initiated end. | `governance_policy` resolved through `iel_event`. | **Yes** |
 
 `Sea`, `Rpr`, `Cnt`, `Dec` all return `evaluates_governance() = true`.
 
@@ -40,18 +40,18 @@ For per-kind field rules and typical chain shapes, see [events.md](events.md).
 
 ### Inception batch rule
 
-A submission containing an `Icp` event MUST also contain an `Est` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 `Est`, the chain is born with content, an `identity_event` binding, and the first policy-enforced event. `Est` is tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), raising per-attempt cost against SEL camping. See [events.md §Inception batch rule](events.md#inception-batch-rule).
+A submission containing an `Icp` event MUST also contain an `Est` event at v1 in the same batch. SEL Icp is permissionless (deterministic prefix derivation for lookup); paired with the v1 `Est`, the chain is born with content, an `iel_event` binding, and the first policy-enforced event. `Est` is tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), raising per-attempt cost against SEL camping. See [events.md §Inception batch rule](events.md#inception-batch-rule).
 
 ## Authorization via IEL — and Why That's Enough
 
 SELs do not declare or evolve their own authorization policies. Every authorization decision routes through the IEL the chain is bound to:
 
-- **`Est` / `Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `identity_event`. (`Est` is the v=1 binding-establishment event and is tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation); `Upd` is the routine extension at v=2+ and is tier-1 anchored.)
-- **`Sea` / `Rpr` / `Cnt` / `Dec`** is authorized iff anchored under the IEL's tracked `governance_policy` resolved through `identity_event`.
+- **`Est` / `Upd`** is authorized iff anchored under the IEL's tracked `auth_policy` resolved through the SEL event's `iel_event`. (`Est` is the v=1 binding-establishment event and is tier-2 anchored per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation); `Upd` is the routine extension at v=2+ and is tier-1 anchored.)
+- **`Sea` / `Rpr` / `Cnt` / `Dec`** is authorized iff anchored under the IEL's tracked `governance_policy` resolved through `iel_event`.
 
 The IEL primitive carries the immunity rule and the anchor-non-poisonability guarantees SEL depends on; SEL inherits stability for free: every IEL event referenced by an SEL binding has its policy SAIDs immune (IEL submit and verification gates enforce this), so the policy contents are fixed for the lifetime of the chain. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) and [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
-The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include per-event parent-monotonic on `identity_event` applied per branch (each event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order; branches with different parent-chains do not constrain each other). This rule is SEL-specific — KEL and IEL have no separate field referencing another chain's authorization context, so no analog rule applies to them.
+The cross-chain validation rules — same at submit, gossip, bootstrap, and re-verification — are documented at [../iel/event-log.md §Path-agnostic validation rules](../iel/event-log.md#path-agnostic-validation-rules). They include per-event parent-monotonic on `iel_event` applied per branch (each event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order; branches with different parent-chains do not constrain each other). This rule is SEL-specific — KEL and IEL have no separate field referencing another chain's authorization context, so no analog rule applies to them.
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
@@ -109,7 +109,7 @@ The divergence invariant guarantees:
 - **Non-privileged divergent set** at serial `d` (event kinds limited to `Upd` at v ≥ 2, or `Est` at v = 1): max 2 events. Recoverable via `Rpr`.
 - **Privileged divergent set** at serial `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
-- Every event lives at a serial at-or-after the chain's last evaluation seal (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `identity_event` (each event's `identity_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `identity_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_serial = d = seal_serial`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
+- Every event lives at a serial at-or-after the chain's last evaluation seal (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `iel_event` (each event's `iel_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `iel_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_serial = d = seal_serial`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
 
 ### Why SEL has Rpr (and IEL doesn't)
 
@@ -165,7 +165,7 @@ The asymmetry between auth-only `Upd`s in the divergent set and the governance-a
 - `Rpr.previous = boundary.said`
 - `Rpr.serial = boundary.serial + 1`
 - `Rpr.content = boundary.content` (preservation rule; Rpr does not mutate content)
-- `Rpr.identity_event = current IEL governance-establishing event`
+- `Rpr.iel_event = current IEL governance-establishing event`
 
 ### Pending events bundling
 
@@ -255,7 +255,7 @@ Cnt is privileged (governance-authorized). Its presence in any divergent set tri
 
 See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
-Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `identity_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `identity_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
+Authorization is the same IEL-resolved `governance_policy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `iel_event` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governance_policy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `iel_event` via `Sea` after IEL governance evolves) keeps the resolved policy current.
 
 ### Server semantics
 
@@ -331,7 +331,7 @@ The full sealed/unsealed × per-kind matrix (including `BadIdentityBinding` and 
 
 **Code:**
 - `lib/kels/src/types/sad/event.rs` — `SadEventKind` enum (`Icp`/`Est`/`Upd`/`Sea`/`Rpr`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules. The inception batch rule is a chain-validity rule lifted into the verifier (it is not per-event, so it has no place in `validate_structure`).
-- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds the branch tip's `identity_event` for the per-event parent-monotonic check on the next event extending the branch; authorization policies are not tracked per branch (they resolve through IEL on demand). The chain-wide `last_identity_event` is a derived aggregate (max across branches), not a flowing watermark gate. `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
+- `lib/kels/src/types/sad/verification.rs` — `SelVerifier`, `SelVerification`. Branch state holds the branch tip's `iel_event` for the per-event parent-monotonic check on the next event extending the branch; authorization policies are not tracked per branch (they resolve through IEL on demand). The chain-wide `last_iel_event` is a derived aggregate (max across branches), not a flowing watermark gate. `finish_internal` enforces the inception batch rule (`IncompleteInception` whenever any branch tip is `Icp`).
 - `lib/kels/src/sad_builder.rs` — `SadEventBuilder` with `update()`, `seal()`, `repair()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification (factored helper `verify_server_chain_pre_action`).
 - `services/sadstore/src/handlers.rs` — submit handler: structural + IEL-resolved-authorization gate, terminal-state gate, divergence routing, `ContestRequired` algorithmic trigger.
 - `services/sadstore/src/repository.rs` — `truncate_and_replace` discriminator (single-page fetch + resume-verify trust gate + walkback + archival).

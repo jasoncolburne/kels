@@ -14,7 +14,7 @@ The submit handler in `services/sadstore/src/handlers.rs::submit_sad_events` int
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the seal has advanced past the submitter's view
 
-Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `identity_event` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel--and-why-thats-enough).
+Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. **Authorization for v1+ events is resolved through the bound IEL** via each event's `iel_event` field. See [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel--and-why-thats-enough).
 
 ## Merge Outcome
 
@@ -35,7 +35,7 @@ Server errors map to:
 | `ContestedSel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `DecommissionedSel` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `IncompleteInception` | Verifier walked a chain whose tip is `Icp` (no v1 `Est`) | unchanged (rejected) |
-| `BadIdentityBinding(reason)` | `identity_event` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
+| `BadIdentityBinding(reason)` | `iel_event` does not resolve to a real IEL event with matching prefix, or fails per-event parent-monotonic check | unchanged |
 | `IelDivergent(prefix)` | Bound IEL event is on a divergent IEL branch | unchanged |
 
 ## Submit Flow
@@ -54,13 +54,13 @@ for v0 (Icp): no authorization gate (permissionless, deterministic prefix deriva
               BUT: chain may not end at Icp (inception batch rule, enforced inside the verifier)
 
 for v1+: cross-chain authorization resolution:
-    fetch IEL event by event.identity_event
+    fetch IEL event by event.iel_event
     confirm IEL event's prefix == SEL's bound identity
     if IEL is divergent at the bound branch → reject IelDivergent
 
     pick the relevant policy:
-        Est, Upd → IEL-resolved auth_policy at identity_event
-        Sea/Rpr/Cnt/Dec → IEL-resolved governance_policy at identity_event
+        Est, Upd → IEL-resolved auth_policy at iel_event
+        Sea/Rpr/Cnt/Dec → IEL-resolved governance_policy at iel_event
 
     verify event.said is anchored under the resolved policy with the
     anchor kind required by the event's tier — see
@@ -73,17 +73,17 @@ for v1+: cross-chain authorization resolution:
     contributing to satisfaction → reject.
 
     per-event parent-monotonic check (per branch):
-        event.identity_event must be at-or-after the parent event's identity_event
-        (parent via previous SAID; this is the branch's tip identity_event when
+        event.iel_event must be at-or-after the parent event's iel_event
+        (parent via previous SAID; this is the branch's tip iel_event when
         extending an existing branch tip) in IEL chain order; reject
         BadIdentityBinding otherwise. Branches with different parent-chains
         do not constrain each other.
 
 for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
-                only when the new Sea's identity_event strictly advances
-                beyond the parent Sea's identity_event in IEL chain order
+                only when the new Sea's iel_event strictly advances
+                beyond the parent Sea's iel_event in IEL chain order
                 (a stricter check than the parent-monotonic ratchet above,
-                which admits equality; equal identity_event between
+                which admits equality; equal iel_event between
                 consecutive Seas is semantically redundant and rejected).
                 Sea forbidden after Cnt/Dec (terminal). See [events.md](events.md)
                 for the per-kind table. Chain-state check enforced in the
@@ -91,7 +91,7 @@ for Sea events: verify parent-kind constraint — Sea-Sea is allowed on SEL
                 isolation; parent-kind requires chain context.
 ```
 
-The `identity_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `identity_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that serial, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
+The `iel_event` resolution may walk back through the IEL chain if the named event doesn't carry the relevant policy field (e.g., `iel_event` points at an Evl that evolved governance only; the auth_policy in effect is what was tracked at that serial, which may have been seeded at IEL Icp). The walk is bounded by IEL chain length and cached aggressively.
 
 ### 2. Inception Batch Rule
 

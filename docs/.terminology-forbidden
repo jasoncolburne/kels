@@ -178,3 +178,35 @@ security-invariant\.md
 \blast_governance_version\b
 \blast_recovery_revealing_serial\b
 \blast_governance_event\b
+
+# ============================================================================
+# §Doc-only — version → serial rename (IEL/SEL adopting KEL's terminology)
+# ============================================================================
+# IEL and SEL chain-event integer position field renamed from `version` to
+# `serial`. KEL has always used `serial` (KERI heritage). The rename
+# unifies vocabulary across primitives. The integer position has multi-event-
+# at-same-value semantics under divergence, which `serial` (= "Nth in
+# sequence", admits duplicates during forks) captures more accurately than
+# `version` (which implies single-valued state). Math notation `v_d` /
+# `v_{tip-1}` is unchanged — `v` remains the position label regardless of
+# what the field is named.
+
+\bevent_version\b
+\bseal_version\b
+\bparent_version\b
+\bexpected_version\b
+\bevents_at_version\b
+\bfirst_divergent_version\b
+\blast_verified_version\b
+
+# ============================================================================
+# §Doc-only — identity_event → iel_event rename
+# ============================================================================
+# SEL's per-event field that references an IEL event by SAID renamed from
+# `identity_event` to `iel_event`. The new name is more direct: "the SAID
+# of the IEL event this SEL event binds to." Also renames `last_identity_event`
+# and `tip_identity_event` accessors/internal fields.
+
+\bidentity_event\b
+\blast_identity_event\b
+\btip_identity_event\b

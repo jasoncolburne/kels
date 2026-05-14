@@ -7,7 +7,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (RustFS, S3-compatible) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SEL event's authorization resolves through the bound IEL (`identity` at Icp; `identity_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SEL event's authorization resolves through the bound IEL (`identity` at Icp; `iel_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
 
@@ -25,7 +25,7 @@ Fields:
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
-- `identity_event` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/sel/events.md) for the full per-kind matrix.
+- `iel_event` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/sel/events.md) for the full per-kind matrix.
 
 #167: `custody` and `availability` are not part of the `SadEvent` struct, so any inline keys with those names get silently dropped during deserialization — chain events broadcast as a unit and can't carry differential authority/replication across links. The drop is structural (type-system), not an explicit submit-handler rejection: a chain-event JSON body containing those keys parses cleanly with the keys ignored. The `CustodyValidationError::CustodyNotAllowedOnEvent` / `AvailabilityNotAllowedOnEvent` variants exist for a future explicit-rejection path (e.g., `deny_unknown_fields` on `SadEvent` deserialization or boundary JSON-key inspection); they are not raised today.
 
@@ -65,7 +65,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **SAD events**: No signature verification — authorization is via the anchoring model. The chain is identity-rooted: every chain binds at inception (Icp) to a specific IEL (`identity` field), and every v1+ event references a specific IEL event by SAID (`identity_event`). Authorization policies (`auth_policy` for `Upd`; `governance_policy` for `Sea` / `Rpr`) live on the bound IEL and are resolved on demand. Endorsing parties anchor the event's SAID in their KELs; consumers verify the anchoring when they use the data.
+- **SAD events**: No signature verification — authorization is via the anchoring model. The chain is identity-rooted: every chain binds at inception (Icp) to a specific IEL (`identity` field), and every v1+ event references a specific IEL event by SAID (`iel_event`). Authorization policies (`auth_policy` for `Upd`; `governance_policy` for `Sea` / `Rpr`) live on the bound IEL and are resolved on demand. Endorsing parties anchor the event's SAID in their KELs; consumers verify the anchoring when they use the data.
 
 ## Chain Lifecycle
 
@@ -85,9 +85,9 @@ If a node misses the gossip message (e.g., it was offline), the owner submits th
 
 ## Verification
 
-The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `identity_event` (each event's `identity_event` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `iel_event` (each event's `iel_event` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `last_seal_advancing_event()`, `last_identity_event()`, `is_contested()`, `is_decommissioned()`, `divergence_ancestor()`. `last_seal_advancing_event()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergence_ancestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `last_identity_event()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip identity_events.) The `is_contested` / `is_decommissioned` / `divergence_ancestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/sel/event-log.md) for the state model.
+Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `last_seal_advancing_event()`, `last_iel_event()`, `is_contested()`, `is_decommissioned()`, `divergence_ancestor()`. `last_seal_advancing_event()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergence_ancestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `last_iel_event()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_contested` / `is_decommissioned` / `divergence_ancestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/sel/event-log.md) for the state model.
 
 ## Policy Evaluation Modes
 

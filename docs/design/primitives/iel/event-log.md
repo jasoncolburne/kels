@@ -4,7 +4,7 @@
 
 The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `auth_policy` and `governance_policy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked governance policy.
 
-An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL — SELs in particular by prefix at inception, resolving per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`identity_event` semantics](../sel/events.md#identity_event-semantics) for the SEL-side binding.
+An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL — SELs in particular by prefix at inception, resolving per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`iel_event` semantics](../sel/events.md#iel_event-semantics) for the SEL-side binding.
 
 ## Chain States
 
@@ -175,7 +175,7 @@ This split between contested and decommissioned IELs is the operator's recovery 
 
 ## Cross-Chain Anchor Stability
 
-IEL is the cornerstone of cross-chain consistency for the federation. Every SEL event at v1+ binds to a specific IEL event by SAID via `identity_event`. The immunity rule on IEL is what makes this binding stable across time.
+IEL is the cornerstone of cross-chain consistency for the federation. Every SEL event at v1+ binds to a specific IEL event by SAID via `iel_event`. The immunity rule on IEL is what makes this binding stable across time.
 
 ### Why IEL stability matters to SEL
 
@@ -196,7 +196,7 @@ SEL→IEL authorization resolution for a SEL Upd at v1+:
 
   SEL Upd                                    IEL chain
   ───────                                    ─────────
-  identity_event = X.said  ────────────►  IEL_event_X (Icp or Evl)
+  iel_event = X.said  ────────────►  IEL_event_X (Icp or Evl)
                                                 │
                                                 ├─ declares / evolves
                                                 │   auth_policy_X
@@ -219,15 +219,15 @@ KELS data is path-agnostic: an event accepted at one node should be acceptable a
 
 For an SEL event at v1+, all paths (submit, gossip ingestion, bootstrap, re-verification) check:
 
-- `identity_event` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
+- `iel_event` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
 - That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SEL `Est`/`Upd`, `governance_policy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
 - IEL is not divergent at the bound event's branch.
 - SEL.said is anchored under the resolved policy.
-- **Per-event parent-monotonic on `identity_event`** (SEL-specific): each SEL event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order, where "parent" is the event referenced by `previous` SAID. The check is applied per branch — the verifier walks each branch independently, comparing each event's `identity_event` against the previous event's on the same branch. Branches with different parent-chains do not constrain each other's `identity_event` values.
+- **Per-event parent-monotonic on `iel_event`** (SEL-specific): each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order, where "parent" is the event referenced by `previous` SAID. The check is applied per branch — the verifier walks each branch independently, comparing each event's `iel_event` against the previous event's on the same branch. Branches with different parent-chains do not constrain each other's `iel_event` values.
 
 This rule is unique to the SEL↔IEL cross-chain binding. SEL is the only primitive whose authorization is referenced via a separate field pointing at another chain; KEL and IEL resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}` and have no analog rule.
 
-There is no chain-wide watermark gate. The chain's `last_identity_event` (the highest `identity_event` observed across all events in the chain) is a derived aggregate, computed after the fact, used by consumers to query "what's the highest IEL binding this SEL has reached" — not used to gate new event acceptance. New event acceptance is gated by the per-event parent-monotonic check on the branch the event extends.
+There is no chain-wide watermark gate. The chain's `last_iel_event` (the highest `iel_event` observed across all events in the chain) is a derived aggregate, computed after the fact, used by consumers to query "what's the highest IEL binding this SEL has reached" — not used to gate new event acceptance. New event acceptance is gated by the per-event parent-monotonic check on the branch the event extends.
 
 **Consequence for divergent SEL chains**: branches may reference different IEL events at the same SEL serial, and may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded structurally by SEL's seal-cap (no fork at-or-before the seal — caps how far back branches can diverge) and by privileged-divergence-is-terminal (any privileged event in the divergent set ends the chain — caps how long the chain can stay in a divergent state). KEL and IEL never have within-chain policy variation.
 
@@ -235,7 +235,7 @@ There is no separate "most recent at submit time" rule. Such a rule would create
 
 ### What parent-monotonic blocks (and what it doesn't)
 
-Parent-monotonic prevents an adversary from extending a branch with a regressed `identity_event` — once a branch's tip is bound to IEL_v5, no further event extending that same branch can bind to anything earlier than v5. On actively-maintained chains, the legitimate operator's recent events on the live branch have advanced `identity_event` forward; an adversary with stale (revoked-since) authority cannot insert new events on that same branch bound to their old IEL state.
+Parent-monotonic prevents an adversary from extending a branch with a regressed `iel_event` — once a branch's tip is bound to IEL_v5, no further event extending that same branch can bind to anything earlier than v5. On actively-maintained chains, the legitimate operator's recent events on the live branch have advanced `iel_event` forward; an adversary with stale (revoked-since) authority cannot insert new events on that same branch bound to their old IEL state.
 
 Parent-monotonic does NOT prevent:
 
@@ -244,7 +244,7 @@ Parent-monotonic does NOT prevent:
   ```
   Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
 
-    [Icp_v0] → [Est_stale @ v_1, identity_event=IEL_v_old]   (chain tip)
+    [Icp_v0] → [Est_stale @ v_1, iel_event=IEL_v_old]   (chain tip)
 
   Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
   Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
@@ -252,8 +252,8 @@ Parent-monotonic does NOT prevent:
     Icp dedups (deterministic prefix + SAID across submitters).
     Est_legit lands at v_1 alongside Est_stale:
 
-    [Icp_v0] ─┬─ [Est_stale @ v_1, identity_event=IEL_v_old]
-              └─ [Est_legit @ v_1, identity_event=IEL_v_current]
+    [Icp_v0] ─┬─ [Est_stale @ v_1, iel_event=IEL_v_old]
+              └─ [Est_legit @ v_1, iel_event=IEL_v_current]
 
     Both auth-authorized; neither privileged → non-privileged divergent.
 
@@ -269,46 +269,46 @@ Parent-monotonic does NOT prevent:
                                        Est_stale archived (forensic;
                                                            not on live chain)
   ```
-- **Stale governance termination on an unratcheted branch.** An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `identity_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `identity_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `identity_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
+- **Stale governance termination on an unratcheted branch.** An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `iel_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `iel_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `iel_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
 
   ```
   IEL evolves governance:
     IEL: [Icp] → [Evl_old] → [Evl_new]
 
   Vulnerable window (SEL tip not yet ratcheted):
-    SEL: [Icp] → ... → [Upd_v_N, identity_event=Evl_old.said]   (tip)
+    SEL: [Icp] → ... → [Upd_v_N, iel_event=Evl_old.said]   (tip)
                                             ↑
                                       adversary with stale gov_old
                                       authority can submit:
 
       Cnt_stale.previous       = Upd_v_N.said       (extends tip)
-      Cnt_stale.identity_event = Evl_old.said       (stale binding)
+      Cnt_stale.iel_event = Evl_old.said       (stale binding)
 
       Per-event parent-monotonic check:
-        parent's identity_event = Evl_old.said
+        parent's iel_event = Evl_old.said
         Cnt_stale's             = Evl_old.said
         Evl_old ≥ Evl_old → SATISFIED → accepted; chain terminates.
 
   After operator-discipline Sea ratchet (post-Sea state):
-    SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, identity_event=Evl_new.said]  (tip)
+    SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, iel_event=Evl_new.said]  (tip)
 
   Same adversary tries again:
       Cnt_stale.previous       = Sea_v_{N+1}.said
-      Cnt_stale.identity_event = Evl_old.said
+      Cnt_stale.iel_event = Evl_old.said
 
       Per-event parent-monotonic check:
-        parent's identity_event = Evl_new.said
+        parent's iel_event = Evl_new.said
         Cnt_stale's             = Evl_old.said
         Evl_old < Evl_new → REGRESS → HARD-fail rejection.
   ```
 
-- **Cnt fork-contest with low identity_event.** A Cnt that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.identity_event >= v_{d-1}.identity_event`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch. This is intentional: chain-wide watermark would otherwise reject Cnt fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `identity_event`s than the Cnt's binding.
+- **Cnt fork-contest with low iel_event.** A Cnt that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.iel_event >= v_{d-1}.iel_event`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch. This is intentional: chain-wide watermark would otherwise reject Cnt fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `iel_event`s than the Cnt's binding.
 
   ```
   Pre-state (existing non-priv divergent at v_d with high SEL serials but
-  low identity_event on the diverged branches):
+  low iel_event on the diverged branches):
 
-    SEL: [Icp] → ... → [Upd_{d-1}, identity_event=IEL_v3] ─┬─ Upd_a @ v_d  ┐
+    SEL: [Icp] → ... → [Upd_{d-1}, iel_event=IEL_v3] ─┬─ Upd_a @ v_d  ┐
                                                           └─ Upd_b @ v_d  ┘
                                                           (both bound to IEL_v3)
 
@@ -317,18 +317,18 @@ Parent-monotonic does NOT prevent:
 
     Cnt.previous       = v_{d-1}.said      (parent is divergence ancestor)
     Cnt.serial        = d
-    Cnt.identity_event = IEL_v5.said       (operator's current binding)
+    Cnt.iel_event = IEL_v5.said       (operator's current binding)
 
   Per-event parent-monotonic check (per branch, against THIS branch's
   parent — v_{d-1}, NOT against Upd_a/Upd_b which are on independent
   branches):
-    parent's identity_event = IEL_v3.said
+    parent's iel_event = IEL_v3.said
     Cnt's                   = IEL_v5.said
     IEL_v5 ≥ IEL_v3 → SATISFIED → Cnt joins the divergent set as a
     3rd event at v_d via upgrade rule → privileged-divergence-is-terminal
     fires → chain becomes contested-terminal.
 
-  Cnt's binding is unrelated to Upd_a/Upd_b's `identity_event` because
+  Cnt's binding is unrelated to Upd_a/Upd_b's `iel_event` because
   they're on structurally independent branches from Cnt's. Chain-wide
   watermark would block this — rightly understood as overconstraining.
   ```
@@ -339,7 +339,7 @@ Independent of any submit/verify gates, a consumer reading an SEL can detect sta
 
 ### Operator-discipline corollary for governance evolution
 
-When the IEL's `governance_policy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SEL to advance the live branch's tip `identity_event` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` extending the new branch tip — once the tip's `identity_event` is at the new Evl, any subsequent same-branch event must bind at-or-after the new Evl, so a regressed-binding event on that branch fails parent-monotonic.
+When the IEL's `governance_policy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` extending the new branch tip — once the tip's `iel_event` is at the new Evl, any subsequent same-branch event must bind at-or-after the new Evl, so a regressed-binding event on that branch fails parent-monotonic.
 
 This is an operator best practice, not a protocol-enforced rule. Future automation could auto-issue SEL Seas on IEL governance evolution, but is out of scope for v1 of this design.
 
@@ -421,7 +421,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 
 ### Cascading effect on dependent SELs
 
-A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so the SEL's IEL-resolved `auth_policy` and `governance_policy` (resolved through each SEL event's `identity_event` binding) are effectively frozen at whatever IEL state was current when contestation occurred.
+A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so the SEL's IEL-resolved `auth_policy` and `governance_policy` (resolved through each SEL event's `iel_event` binding) are effectively frozen at whatever IEL state was current when contestation occurred.
 
 Operator response per SEL:
 - **Migrate**: incept a new SEL bound to a different IEL.

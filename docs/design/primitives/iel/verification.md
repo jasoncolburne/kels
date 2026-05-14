@@ -100,7 +100,7 @@ verify_policy(event, branch):
 
 Policy state is **branch-tracked**:
 
-- `tracked_auth_policy` — seeded from v0's `auth_policy` declaration *after* the verifier confirms the policy is immune (see Immunity check below). The Icp anchor check is against `governance_policy`, not `auth_policy`; tracked_auth_policy is the per-event policy declaration consumed downstream by SEL `Upd` via `identity_event` binding. Updated whenever an authorized `Evl` carries a new `auth_policy` (subject to the same immunity check on the new policy).
+- `tracked_auth_policy` — seeded from v0's `auth_policy` declaration *after* the verifier confirms the policy is immune (see Immunity check below). The Icp anchor check is against `governance_policy`, not `auth_policy`; tracked_auth_policy is the per-event policy declaration consumed downstream by SEL `Upd` via `iel_event` binding. Updated whenever an authorized `Evl` carries a new `auth_policy` (subject to the same immunity check on the new policy).
 - `tracked_governance_policy` — seeded from v0's `governance_policy` declaration *after* the verifier confirms (a) the policy is immune (see Immunity check below) and (b) Icp.said is anchored under it (the IEL Icp self-governance-endorsement check). Updated whenever an authorized `Evl` carries a new `governance_policy`. Subject to the immunity check on every introduction or evolution.
 
 **Immunity check.** Whenever `tracked_auth_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error and the chain is rejected. This mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)) — both submit and verify enforce the rule because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
@@ -134,7 +134,7 @@ The handler-level rejection on contested/decommissioned chains is a separate sea
 
 ### Caller-bounded SAID querying
 
-The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `identity_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `auth_policy` / `governance_policy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
+The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `iel_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `auth_policy` / `governance_policy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`:
@@ -142,7 +142,7 @@ The chain-wide `policy_satisfied: bool` answers "is the chain currently authorit
   - The verifier snapshots the event's tracked `(auth_policy, governance_policy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
 - For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `tracked_auth_policy` / `tracked_governance_policy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
 
-The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs or the universe of per-event policy state. The SEL verifier collects `identity_event` references from its own chain walk in a pre-pass, passes them as `queried_saids` to the IEL verification, and uses `is_said_satisfied` + `auth_policy_at` / `governance_policy_at` to resolve each binding. Same shape as KEL's `is_said_anchored`. Token memory is `O(|queried_saids|)`, not `O(chain length)`. Callers that need post-hoc resolution for SAIDs they didn't declare go through `IelResolver` directly.
+The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs or the universe of per-event policy state. The SEL verifier collects `iel_event` references from its own chain walk in a pre-pass, passes them as `queried_saids` to the IEL verification, and uses `is_said_satisfied` + `auth_policy_at` / `governance_policy_at` to resolve each binding. Same shape as KEL's `is_said_anchored`. Token memory is `O(|queried_saids|)`, not `O(chain length)`. Callers that need post-hoc resolution for SAIDs they didn't declare go through `IelResolver` directly.
 
 ## Verification Return Value
 
@@ -165,7 +165,7 @@ Accessors:
 
 - `current_event()` → `None` if divergent
 - `prefix()`
-- `auth_policy_at(event_said)` — SAID of the `auth_policy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `identity_event` bindings.
+- `auth_policy_at(event_said)` — SAID of the `auth_policy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `iel_event` bindings.
 - `governance_policy_at(event_said)` — same, for governance_policy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
 - `last_seal_advancing_event()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
@@ -245,9 +245,9 @@ let verification = verifier.finish().await?;
 
 ## Cross-Chain Use: SEL Authorization Resolution
 
-SEL verification depends on IEL verification for resolving `identity_event` bindings. The flow:
+SEL verification depends on IEL verification for resolving `iel_event` bindings. The flow:
 
-1. SEL event has `identity_event = IEL_X.said`.
+1. SEL event has `iel_event = IEL_X.said`.
 2. SEL verifier (or merge handler) needs to know "what auth_policy or governance_policy was declared/evolved at IEL_X?"
 3. The IEL is fetched (or already cached). `IelVerification` is loaded or computed.
 4. `auth_policy_at(IEL_X.said)` (or `governance_policy_at(...)`) returns the relevant policy SAID.

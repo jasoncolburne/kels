@@ -6,7 +6,7 @@ Analysis of attack vectors against the KELS protocol — cryptographic propertie
 
 The KELS protocol has no central authority. Four doctrinal pillars frame everything below; each protocol-level attack vector is best understood as an attempt to violate or evade one of them.
 
-**Compromise is permanent — authority is current-state-only.** The protocol grants authority only to a chain's currently-tracked state (and the most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers have zero structural ability to act on the chain. A KEL signing/recovery key rotated out of current state cannot `Cnt` the chain even if the adversary still holds the key material; an IEL `governance_policy` participant superseded by `Evl` cannot `Cnt`/`Dec` the chain after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be `Cnt`'d/`Dec`'d by the rotated-out parties (subject to operator-side ratcheting via `Sea`). The structural mechanism is the chain's evaluation/recovery seal: new events must land at-or-after `seal_version`, so divergent branches always derive from a parent that carries the chain's currently-tracked state. See [../design/protocol-doctrine.md §Compromise is Permanent](../design/protocol-doctrine.md#compromise-is-permanent).
+**Compromise is permanent — authority is current-state-only.** The protocol grants authority only to a chain's currently-tracked state (and the most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers have zero structural ability to act on the chain. A KEL signing/recovery key rotated out of current state cannot `Cnt` the chain even if the adversary still holds the key material; an IEL `governance_policy` participant superseded by `Evl` cannot `Cnt`/`Dec` the chain after their revocation; an SEL bound to a stale IEL event whose governance has since rotated cannot be `Cnt`'d/`Dec`'d by the rotated-out parties (subject to operator-side ratcheting via `Sea`). The structural mechanism is the chain's evaluation/recovery seal: new events must land at-or-after `seal_serial`, so divergent branches always derive from a parent that carries the chain's currently-tracked state. See [../design/protocol-doctrine.md §Compromise is Permanent](../design/protocol-doctrine.md#compromise-is-permanent).
 
 **End-verifiability.** Every event carries SAID + signature + chain linkage. Tampering at any node — by an adversary, by a buggy replication path, by a malicious peer — surfaces at the consumer's verifier walk. The source of an event is untrusted; the data of the event is end-verified. Protocol attack surface is structurally bounded to what an adversary can do with **valid data**, not what they can do by injecting a single node into the gossip mesh.
 
@@ -140,8 +140,8 @@ A controller of a KEL identity has three keys to protect. Clients should be depl
 
 ### Seal-Cap Violation
 
-**Attack:** Submit an event with `event_version < seal_version` — attempting to fork at-or-before the last `Rec`/`Ror`/`Dec`/`Cnt`.
-- **Mitigation:** The verifier walk enforces `event_version >= seal_version`. Any submission whose land-version is strictly before the seal is rejected with "Cannot land at version V — sealed by evaluation/recovery at version S". This is the structural mechanism that enforces current-state-only authority. See [../design/protocol-doctrine.md §Forks are Seal-Bounded](../design/protocol-doctrine.md#forks-are-seal-bounded).
+**Attack:** Submit an event with `event_serial < seal_serial` — attempting to fork at-or-before the last `Rec`/`Ror`/`Dec`/`Cnt`.
+- **Mitigation:** The verifier walk enforces `event_serial >= seal_serial`. Any submission whose land-version is strictly before the seal is rejected with "Cannot land at version V — sealed by evaluation/recovery at version S". This is the structural mechanism that enforces current-state-only authority. See [../design/protocol-doctrine.md §Forks are Seal-Bounded](../design/protocol-doctrine.md#forks-are-seal-bounded).
 
 ## KEL Merge Exploitation
 
@@ -162,7 +162,7 @@ A controller of a KEL identity has three keys to protect. Clients should be depl
 ### Re-divergence After Recovery
 
 **Attack:** After the owner recovers, a second party re-submits events at the same generation to re-diverge.
-- **Mitigation:** Recovery via `rec` advances the chain past the divergence point — the discriminator archives the other branch's events. The post-`rec` chain has a new seal at Rec's version (or `v_{d+1}` on branch-tip-extending; `v_d` on divergence-ancestor-extending). Any attempt to re-diverge by an event extending pre-`rec` state fails the seal-cap (`event_version >= seal_version`). If the second party still controls the recovery key and submits `Cnt` extending `v_{tip-1}.said` on the post-`rec` linear chain, `Cnt` lands at the tip's serial, creates a divergent set, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. There is no "re-divergence into a recoverable state" — any post-`rec` privileged event from a second authority-holder transitions the chain into contested-terminal, never back into a recoverable divergent state.
+- **Mitigation:** Recovery via `rec` advances the chain past the divergence point — the discriminator archives the other branch's events. The post-`rec` chain has a new seal at Rec's version (or `v_{d+1}` on branch-tip-extending; `v_d` on divergence-ancestor-extending). Any attempt to re-diverge by an event extending pre-`rec` state fails the seal-cap (`event_serial >= seal_serial`). If the second party still controls the recovery key and submits `Cnt` extending `v_{tip-1}.said` on the post-`rec` linear chain, `Cnt` lands at the tip's serial, creates a divergent set, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. There is no "re-divergence into a recoverable state" — any post-`rec` privileged event from a second authority-holder transitions the chain into contested-terminal, never back into a recoverable divergent state.
 
 ### Contested KEL Bypass
 
@@ -172,8 +172,8 @@ A controller of a KEL identity has three keys to protect. Clients should be depl
 ### Decommissioned KEL Bypass
 
 **Attack:** Submit events to a decommissioned KEL (perhaps with a past compromised key from before decommission).
-- **Mitigation:** `Dec` is recovery-revealing → privileged → advances the seal to its own version. The seal-cap rule (`event_version >= seal_version`) prevents any event from landing at versions strictly before the seal; a past-key-compromise adversary cannot fork the chain at-or-before `Dec`, and the verifier rejects with "Cannot land at version V — sealed by evaluation/recovery at version S".
-- **Sole exception — Cnt override.** A gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) is accepted by the decommissioned-state gate as a state-transition event. `Cnt`'s land-version equals `Dec`'s land-version (`d = seal_version`), satisfying `event_version >= seal_version`; the seal-cap admits this parent-at-(seal − 1) boundary case (the parent sits at `seal − 1`; the new event lives at the seal). `Cnt` lands at `v_d` alongside `Dec`; privileged-divergence-is-terminal fires; the chain transitions to contested. This is structural doctrine for protocol-completeness, not an attack — see [§Cnt-Dec Race Convergence](#cnt-dec-race-convergence) above and [../design/protocol-doctrine.md §Cnt Overrides Dec](../design/protocol-doctrine.md#cnt-overrides-dec). Cnt's dual-signature authorization requirement at `v_{d-1}` still applies; a past-key adversary who cannot satisfy `v_{d-1}`'s commitments is rejected.
+- **Mitigation:** `Dec` is recovery-revealing → privileged → advances the seal to its own version. The seal-cap rule (`event_serial >= seal_serial`) prevents any event from landing at versions strictly before the seal; a past-key-compromise adversary cannot fork the chain at-or-before `Dec`, and the verifier rejects with "Cannot land at version V — sealed by evaluation/recovery at version S".
+- **Sole exception — Cnt override.** A gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) is accepted by the decommissioned-state gate as a state-transition event. `Cnt`'s land-version equals `Dec`'s land-version (`d = seal_serial`), satisfying `event_serial >= seal_serial`; the seal-cap admits this parent-at-(seal − 1) boundary case (the parent sits at `seal − 1`; the new event lives at the seal). `Cnt` lands at `v_d` alongside `Dec`; privileged-divergence-is-terminal fires; the chain transitions to contested. This is structural doctrine for protocol-completeness, not an attack — see [§Cnt-Dec Race Convergence](#cnt-dec-race-convergence) above and [../design/protocol-doctrine.md §Cnt Overrides Dec](../design/protocol-doctrine.md#cnt-overrides-dec). Cnt's dual-signature authorization requirement at `v_{d-1}` still applies; a past-key adversary who cannot satisfy `v_{d-1}`'s commitments is rejected.
 
 ## KEL Verification Bypass Attempts
 
@@ -224,11 +224,11 @@ The IEL primitive governs identity authorization via `auth_policy` (consumed by 
 
 ### Stale-IEL-Binding by SEL (cross-reference)
 
-IEL events resolve their authorization intrinsically (via tracked policies); they don't reference other chains for their own auth. SELs bind to IEL events via `identity_event`, and that's where stale-binding attacks land. See [§SEL Attack Surface — Stale-IEL-Binding Upd on Existing SEL](#stale-iel-binding-upd-on-existing-sel).
+IEL events resolve their authorization intrinsically (via tracked policies); they don't reference other chains for their own auth. SELs bind to IEL events via `iel_event`, and that's where stale-binding attacks land. See [§SEL Attack Surface — Stale-IEL-Binding Upd on Existing SEL](#stale-iel-binding-upd-on-existing-sel).
 
 ## SEL Attack Surface
 
-SELs are identity-rooted — every SEL binds at inception to an IEL prefix and resolves per-event authorization through specific IEL event SAIDs (`identity_event` field). See [../design/sel/event-log.md](../design/primitives/sel/event-log.md).
+SELs are identity-rooted — every SEL binds at inception to an IEL prefix and resolves per-event authorization through specific IEL event SAIDs (`iel_event` field). See [../design/sel/event-log.md](../design/primitives/sel/event-log.md).
 
 ### Pre-Icp Camping
 
@@ -244,9 +244,9 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
 ### Stale-IEL-Binding Upd on Existing SEL (Doctrine Win)
 
 **Attack:** Adversary holds a past IEL `auth_policy` preimage. Tries to extend an existing SEL branch with `Upd_stale` referencing an old IEL event whose `auth_policy` the adversary can satisfy.
-- **Mitigation:** Per-event parent-monotonic ratchet on `identity_event` (applied per branch). Each SEL event's `identity_event` must be at-or-after its parent event's `identity_event` in IEL chain order. If the operator's branch tip is bound to a recent IEL event (e.g., `IEL_v5`), an adversary's `Upd_stale` bound to `IEL_v2` cannot extend that branch — its `identity_event` regresses relative to the parent. HARD-fail rejection at the verifier walk.
+- **Mitigation:** Per-event parent-monotonic ratchet on `iel_event` (applied per branch). Each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order. If the operator's branch tip is bound to a recent IEL event (e.g., `IEL_v5`), an adversary's `Upd_stale` bound to `IEL_v2` cannot extend that branch — its `iel_event` regresses relative to the parent. HARD-fail rejection at the verifier walk.
 - **Doctrine reference:** [../design/protocol-doctrine.md §Forks are Seal-Bounded](../design/protocol-doctrine.md#forks-are-seal-bounded) (per-event parent-monotonic on SEL).
-- **Symmetry:** Structurally parallel to KEL Past-Key Replay and IEL Past Governance-Policy Replay. The mechanism differs (SEL references its auth context via `identity_event` rather than tracking it intrinsically), but the doctrinal-rejection shape is the same.
+- **Symmetry:** Structurally parallel to KEL Past-Key Replay and IEL Past Governance-Policy Replay. The mechanism differs (SEL references its auth context via `iel_event` rather than tracking it intrinsically), but the doctrinal-rejection shape is the same.
 
 ### Race-Divergence Upd-Upd
 
@@ -263,8 +263,8 @@ SELs are identity-rooted — every SEL binds at inception to an IEL prefix and r
 ### Stale-Bound Sea/Rpr/Cnt/Dec
 
 **Attack:** Adversary holds a past IEL `governance_policy` preimage. Tries to submit any of the governance-authorized SEL lifecycle events (`Sea`/`Rpr`/`Cnt`/`Dec`) bound to a past IEL event whose `governance_policy` the adversary can satisfy.
-- **Mitigation (general case):** HARD anchor — the verifier rejects unless the resolved policy at the bound IEL event is satisfied AND per-event parent-monotonic on `identity_event` is satisfied. On an actively-maintained live branch (operator has ratcheted `identity_event` forward via prior events), an adversary's stale-bound same-branch extension fails parent-monotonic.
-- **Acknowledged residual: Cnt fork-contest with low `identity_event`.** A `Cnt` that branches from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.identity_event >= v_{d-1}.identity_event` — it does not need to satisfy any constraint relative to the existing diverged branches (those are structurally independent branches from this `Cnt`'s branch). A stale-governance holder can use this shape to terminate a chain whose live branch hasn't been ratcheted past their old IEL event. **Mitigation: operator discipline.** After IEL governance evolves, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `identity_event` forward to the current IEL event, closing the regression window for adversaries extending the live branch. See [../design/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
+- **Mitigation (general case):** HARD anchor — the verifier rejects unless the resolved policy at the bound IEL event is satisfied AND per-event parent-monotonic on `iel_event` is satisfied. On an actively-maintained live branch (operator has ratcheted `iel_event` forward via prior events), an adversary's stale-bound same-branch extension fails parent-monotonic.
+- **Acknowledged residual: Cnt fork-contest with low `iel_event`.** A `Cnt` that branches from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.iel_event >= v_{d-1}.iel_event` — it does not need to satisfy any constraint relative to the existing diverged branches (those are structurally independent branches from this `Cnt`'s branch). A stale-governance holder can use this shape to terminate a chain whose live branch hasn't been ratcheted past their old IEL event. **Mitigation: operator discipline.** After IEL governance evolves, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the current IEL event, closing the regression window for adversaries extending the live branch. See [../design/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
 
 ## Cross-Primitive Cascade
 
@@ -286,7 +286,7 @@ KELS primitives chain authority: KELs anchor IEL governance acts; IELs root SEL 
 ### Stale-Binding Propagation
 
 **Scenario:** An IEL evolves governance (via `Evl`). SELs bound to past IEL events keep their old authorization-resolution path, still resolving against the pre-evolution policy.
-- **Operator-discipline mitigation:** After significant IEL governance evolution, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `identity_event` forward to the new IEL event. This closes the regression window on the live branch — any same-branch extension thereafter must bind at-or-after the new IEL event (per-event parent-monotonic).
+- **Operator-discipline mitigation:** After significant IEL governance evolution, the operator submits `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the new IEL event. This closes the regression window on the live branch — any same-branch extension thereafter must bind at-or-after the new IEL event (per-event parent-monotonic).
 - **Structural defense:** None — chain mathematics permit stale bindings on pre-evolution events. This is operator-discipline territory, not a structural defense. See [../design/iel/event-log.md §Operator-discipline corollary for governance evolution](../design/primitives/iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
 
 ### Cascade-Reincept Cost
@@ -414,7 +414,7 @@ End-verifiability provides a structural safety net here: even if a consumer fetc
 **Protocol-level attack vectors closed by the doctrine:**
 - **Past-key replay** (KEL) — verifier resolves against currently-tracked commitments.
 - **Past-policy replay** (IEL) — verifier resolves against currently-tracked `governance_policy`.
-- **Past-binding replay** (SEL) — per-event parent-monotonic on `identity_event` blocks same-branch regression.
+- **Past-binding replay** (SEL) — per-event parent-monotonic on `iel_event` blocks same-branch regression.
 - **Seal-cap violation** — verifier rejects events landing strictly before the chain's last seal.
 - **Recovery-race / divergence-as-takeover ambiguity** — privileged-divergence-is-terminal fires uniformly on `Rec`/`Ror`/`Cnt`/`Dec` (KEL), `Icp`/`Evl`/`Cnt`/`Dec` (IEL), `Sea`/`Rpr`/`Cnt`/`Dec` (SEL).
 - **Policy poisoning** — IEL immunity rule rejects non-immune policies at both submit and verify time.

@@ -12,13 +12,13 @@ The submit handler integrates new events into an existing IEL while handling:
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions when the chain is divergent or post-evaluation-seal
 
-Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governance_policy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `auth_policy` is reserved for SEL Upd authorization through `identity_event` binding (see [../sel/events.md](../sel/events.md)).
+Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governance_policy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `auth_policy` is reserved for SEL Upd authorization through `iel_event` binding (see [../sel/events.md](../sel/events.md)).
 
 **There is no `Rpr` kind on IEL** (see [event-log.md §Why no `Rpr`](event-log.md#why-no-rpr)). Divergence is preserved as data; only `Cnt` resolves it.
 
 ## Merge Outcome
 
-`submit_identity_events` returns:
+`submit_iel_events` returns:
 
 | Field | Meaning |
 |---|---|
@@ -38,7 +38,7 @@ Server errors map to:
 
 ## Submit Flow
 
-`submit_identity_events` is the single HTTP entry point for all write paths. It validates the batch, walks the existing chain, then routes to one of several handler paths.
+`submit_iel_events` is the single HTTP entry point for all write paths. It validates the batch, walks the existing chain, then routes to one of several handler paths.
 
 ### 1. Structural and Authorization Validation
 
