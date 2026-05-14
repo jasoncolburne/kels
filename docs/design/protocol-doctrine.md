@@ -127,17 +127,25 @@ Scenario 1 — Cnt on a linear chain (creates fresh divergence at v_d):
 
 Scenario 2 — Cnt on an already-divergent chain (joins divergent set at v_d):
 
-  Pre-state (existing non-priv divergence at v_d, e.g., ixn-ixn race):
-                    ... → v_{d-1} ─┬─ ixn_a @ v_d
-                                   └─ ixn_b @ v_d
+  Pre-state (existing non-priv divergence at v_d, e.g., ixn-ixn race on KEL).
+  The pre-existing branch may have extended past v_d before divergence was
+  observed (up to ~62 events on KEL per proactive-ROR; ~63 on SEL per
+  proactive-evaluation; always single-event on IEL since every IEL event
+  advances the seal and 2-event divergence is contested-terminal at first
+  observation). The new (divergence-causing) branch is always single-event
+  at v_d — freeze-on-divergence blocks any further extension once divergence
+  is observed:
+                    ... → v_{d-1} ─┬─ ixn_a @ v_d → ixn_a' @ v_{d+1} → …    (pre-existing; may extend)
+                                   └─ ixn_b @ v_d                           (new; frozen at single event)
 
-  Cnt construction (via the upgrade rule's v_{d-1} parent):
+  Cnt's parent rule selects the new branch's v_{tip-1}, which is v_{d-1}
+  (NOT the pre-existing branch's v_{tip-1}, which would sit at v_d or later):
                     cnt.previous = v_{d-1}.said
                     cnt.serial   = d
 
-  Post-state:       ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
-                                   ├─ ixn_b @ v_d  ├── contested (cnt privileged)
-                                   └─ cnt   @ v_d  ┘
+  Post-state:       ... → v_{d-1} ─┬─ ixn_a @ v_d → ixn_a' @ v_{d+1} → …    ┐
+                                   ├─ ixn_b @ v_d                           ├── contested (cnt privileged)
+                                   └─ cnt   @ v_d                           ┘
 
 
 Scenario 3 — Sequential post-ixn Cnt (Cnt extends an existing v_d event after gossip):
