@@ -114,32 +114,7 @@ struct KelAnnouncement {
 
 ### SADStore Replication
 
-The gossip service replicates SADStore data on two topics:
-
-- `kels/gossip/v1/topics/sad` — SAD object announcements
-- `kels/gossip/v1/topics/sel` — SEL chain event announcements
-
-See `docs/design/infrastructure/sadstore.md` for full details.
-
-Two Redis channels drive announcements:
-- `sad_updates` — new SAD objects (payload: `{said}`) → broadcast on `kels/gossip/v1/topics/sad`
-- `sel_updates` — SEL chain updates (payload: `{prefix}:{effective_said}`) → broadcast on `kels/gossip/v1/topics/sel`
-
-Message types:
-```rust
-/// SAD object announcement (on `kels/gossip/v1/topics/sad`)
-struct SadAnnouncement {
-    said: String,
-    origin: String,
-}
-
-/// SEL chain event announcement (on `kels/gossip/v1/topics/sel`)
-struct SelAnnouncement {
-    prefix: String,
-    said: String,
-    origin: String,
-}
-```
+SAD object and SEL chain announcement types, the Redis channels that drive them (`sad_updates`, `sel_updates`), and the gossip policy that decides what gets broadcast are defined in [sadstore.md §Gossip Replication](sadstore.md#gossip-replication). The gossip service consumes those Redis channels and broadcasts on the `kels/gossip/v1/topics/sad` and `kels/gossip/v1/topics/sel` topics listed above.
 
 ### Protocols
 
@@ -183,7 +158,8 @@ struct SelAnnouncement {
 
 ### HSM-backed gossip identity
 
-Gossip nodes use persistent HSM-backed identities:
+Gossip nodes use persistent HSM-backed identities. Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). See [secure-registration.md §HSM identity model](secure-registration.md) for the cross-service HSM model.
+
 - Each node's identity is cryptographically bound to ML-DSA-65 or ML-DSA-87 keys in the HSM — the identity does not change across restarts
 - The NodePrefix (44-char CESR-encoded) identifies the node in the gossip mesh and verified allowlist
 - Nodes must be added to the peer allowlist before they can connect to the gossip mesh

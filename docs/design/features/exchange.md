@@ -90,7 +90,7 @@ ML-KEM encapsulation keys are published as SADStore event chains with kind `kels
 
 **Discovery:** Anyone computes the SEL prefix offline: take the publisher's IEL identity prefix and call `compute_sel_prefix(identity, "kels/sad/v1/keys/mlkem")`. Query any SADStore node for the latest event.
 
-**Rotation:** Append a new version to the event chain with updated content_said. The tip event is always the current key.
+**Rotation:** Append a new event to the chain with updated content_said. The tip event is always the current key.
 
 ### EncapsulationKeyPublication
 
@@ -156,9 +156,9 @@ pub struct ExchangeMessage {
 
 ### Issuance with Negotiation
 1. Holder sends `Apply` (schema request) via ESSR mail
-2. Issuer receives, replies with `Offer` (terms)
+2. Issuing identity receives, replies with `Offer` (terms)
 3. Holder sends `Agree`
-4. Issuer sends `Grant` with full credential
+4. Issuing identity sends `Grant` with full credential
 5. Holder verifies, sends `Admit`
 
 ### Presentation

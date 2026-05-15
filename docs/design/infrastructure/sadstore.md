@@ -21,7 +21,7 @@ Fields:
 - `said` — Self-addressing identifier (content hash)
 - `prefix` — Chain identifier (derived from inception content)
 - `previous` — SAID of previous event (None for v0)
-- `version` — Monotonically increasing (0, 1, 2, ...)
+- `serial` — Monotonically increasing (0, 1, 2, ...)
 - `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
@@ -96,7 +96,7 @@ If a node misses the gossip message (e.g., it was offline), the owner submits th
 
 ## Verification
 
-The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, version monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `iel_event` (each event's `iel_event` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, serial monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `iel_event` (each event's `iel_event` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
 
 Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `last_seal_advancing_event()`, `last_iel_event()`, `is_contested()`, `is_decommissioned()`, `divergence_ancestor()`. `last_seal_advancing_event()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergence_ancestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `last_iel_event()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_contested` / `is_decommissioned` / `divergence_ancestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/sel/event-log.md) for the state model.
 

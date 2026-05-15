@@ -249,17 +249,13 @@ kubectl logs -n node-a deploy/gossip | grep PeerPrefix
 
 ## Gossip Connection Filtering
 
-In addition to registry authentication, the gossip layer verifies connections during the handshake:
+The cryptographic handshake itself — prefix exchange, ML-KEM-1024 key exchange, mutual ML-DSA-65/87 signature exchange, BLAKE3-derived AES-GCM-256 session keys — is defined in [gossip.md §HSM-backed gossip identity](gossip.md#hsm-backed-gossip-identity). The verification layered on top of that handshake is owned by registration:
 
-1. Exchange 44-byte prefixes
-2. ML-KEM-1024 key exchange — initiator generates keypair and sends encapsulation key (qb64), acceptor encapsulates and sends ciphertext back (qb64), both derive shared secret
-3. Mutual ML-DSA-65/87 signature exchange — each side signs JSON payload `{our_ek, their_ek, their_prefix}`
-4. `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist
-5. `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key
-6. ML-DSA-65/87 only enforcement — P-256 peers are rejected
-7. Session keys derived from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
-8. Unknown peers trigger a one-shot allowlist refresh before rejection
-9. Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection
+- `KelsPeerVerifier` checks the peer's NodePrefix against the verified allowlist.
+- `KelsPeerVerifier` verifies the handshake signature against the peer's KEL public key.
+- ML-DSA-65/87 only enforcement — P-256 peers are rejected.
+- Unknown peers trigger a one-shot allowlist refresh before rejection.
+- Key mismatches (due to rotation) trigger a KEL re-fetch from the peer before rejection.
 
 Nodes periodically refresh their allowlist from the registry's `/api/v1/peers` endpoint (default: every 60 seconds).
 
