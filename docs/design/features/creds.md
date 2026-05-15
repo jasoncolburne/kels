@@ -30,9 +30,9 @@ Typed credential for issuance. `T` is the claims payload (must satisfy the `Clai
 #[serde(bound = "T: Claims", rename_all = "camelCase")]
 pub struct Credential<T: Claims> {
     pub said: String,
-    pub schema: String,              // always a SAID reference to a Schema
-    pub policy: String,              // policy SAID (defines endorsement requirements)
-    pub subject: Option<String>,
+    pub schema: String,                       // always a SAID reference to a Schema
+    pub issuer_iel_event: String,             // issuer's IEL event SAID at issuance
+    pub subject_iel_event: Option<String>,    // subject's IEL event SAID; None for unbound
     pub issued_at: StorageDatetime,
     pub nonce: Option<String>,
     pub claims: Compactable<T>,
@@ -42,13 +42,19 @@ pub struct Credential<T: Claims> {
 }
 ```
 
+**Identity binding.** Both parties to the credential are referenced by IEL event SAID, not KEL prefix. `issuer_iel_event` is the issuer's identity-event SAID at the moment of issuance — a frozen attestation that pins both "who issued" (the IEL prefix, derivable by dereferencing) and "under what authorization" (the `auth_policy` tracked at that IEL event). `subject_iel_event` plays the same role for the subject (the holder/principal the credential is about); `None` for unbound creds. The cred no longer carries a separate `policy` field — the issuer's `auth_policy` SAID is fully derivable by dereferencing `issuer_iel_event`.
+
+The single-SAID-yields-two-modes shape mirrors [sadstore.md §Custody](../infrastructure/sadstore.md#custody-per-sad-object-authority)'s `owner_iel_event`: from one event SAID a verifier can ask either "was the issuer authorized under the `auth_policy` *at this event*?" (frozen-mode policy walk against the event's pinned `auth_policy`) or "is the issuer's identity still authorized at the *current* tip?" (walk forward to the IEL tip and use its current `auth_policy`). See [Credential Verification](#credential-verification) for the mode choice.
+
+**Surface accessors.** `issuer_prefix()` and `subject_prefix()` return the identity prefix derived from each IEL-event SAID via dereferencing through the IEL source. The identity prefix is the user-facing handle for the issuer / subject; the IEL-event SAID is what is stored.
+
 The `said` is computed over the canonical form — all nested `SelfAddressed` fields replaced by their SAIDs, then the credential's own SAID derived. This means a verifier can always recover the credential SAID from any disclosure state by compacting back to canonical form.
 
 Implements `FromStr` for JSON deserialization, which is the primary way credentials are constructed from external input (applications, FFI).
 
 ### Untyped Operations
 
-Disclosure operates on `serde_json::Value` directly — no wrapper type needed. Verification takes a typed `Credential<T>` since it needs structured access to fields like `policy`, `schema`, and `claims`. The JSON API uses `Credential<serde_json::Value>` via the `SelfAddressed` impl on `Value`.
+Disclosure operates on `serde_json::Value` directly — no wrapper type needed. Verification takes a typed `Credential<T>` since it needs structured access to fields like `issuer_iel_event`, `schema`, and `claims`. The JSON API uses `Credential<serde_json::Value>` via the `SelfAddressed` impl on `Value`.
 
 ### Schema
 
@@ -117,11 +123,13 @@ pub struct Edge {
     #[said]
     pub said: String,
     pub schema: String,                // schema SAID (what kind of credential)
-    pub policy: Option<String>,        // policy SAID (trust requirements for the credential)
+    pub policy: Option<String>,        // canonical policy SAID (trust requirements)
     pub credential: Option<String>,    // credential SAID (a specific one)
     pub nonce: Option<String>,         // anti-correlation nonce
 }
 ```
+
+`Edge.policy` is a **canonical policy SAID** constraint: the edge matches any credential whose issuer `auth_policy` (resolved by dereferencing the credential's `issuer_iel_event` and compacting the result) compacts to this SAID. The constraint is structural — what shape of authorization the issuer was operating under — independent of which specific IEL event the credential is bound to. Under identity binding, canonical policies typically use `identity(X)` leaves (per [policy.md](policy.md#identity-resolution)) so the edge's trust requirement names identities, not specific KEL prefixes; identity-current vs. issuance-frozen semantics fall out of the verification mode chosen for the cred itself.
 
 ```rust
 #[derive(SelfAddressed)]
@@ -345,35 +353,41 @@ pub async fn apply_disclosure(
 
 ## Issuance Flow
 
-`Credential::build()` is the only public way to create a credential. It constructs the credential from expanded inputs, validates against the schema, and derives all SAIDs. This prevents construction of credentials with compacted (uninspected) fields — a canonical SAID commits to content the builder has not examined, allowing an attacker to hide malicious payloads behind opaque hashes. The caller is responsible for anchoring the canonical SAID in endorser KELs.
+`Credential::build()` is the only public way to create a credential. It constructs the credential from expanded inputs, validates against the schema, and derives all SAIDs. This prevents construction of credentials with compacted (uninspected) fields — a canonical SAID commits to content the builder has not examined, allowing an attacker to hide malicious payloads behind opaque hashes. The caller is responsible for anchoring the canonical SAID in whatever KELs satisfy the issuer's `auth_policy` at the chosen IEL event.
 
-1. `build()` takes expanded inputs (claims, edges, rules) plus a schema and `Policy`
-2. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction
-3. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this canonical form
-4. The credential is reconstructed by expanding from the canonical SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them
-5. `build()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the canonical SAID
-6. Caller anchors the canonical SAID in endorser KELs via `builder.interact(&canonical_said)` — each endorser anchors independently
-7. Caller stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure
-8. Credential delivered to holder (out of band)
+1. Issuer captures their **current IEL tip SAID** as `issuer_iel_event`. This pins both their identity prefix and the `auth_policy` in force at that moment.
+2. Subject (optional) is identified by their current `subject_iel_event` — the subject's IEL tip SAID at issuance.
+3. `build()` takes expanded inputs (claims, edges, rules) plus a schema, the two IEL-event SAIDs (subject optional), and metadata. The issuer's `auth_policy` is not passed separately — it is derivable from `issuer_iel_event` via the IEL source.
+4. Validates all constraints via `validate_credential_report()` and derives all SAIDs using schema-aware compaction.
+5. Credential is compacted to canonical form (only schema-marked compactable fields replaced by SAIDs, bottom-up), then the credential's SAID is computed over this canonical form.
+6. The credential is reconstructed by expanding from the canonical SAID using a temporary in-memory store — this ensures all inner SAIDs are correctly derived without requiring callers to pre-populate them.
+7. `build()` returns `(Credential<T>, String)` — the expanded credential with all SAIDs set, plus the canonical SAID.
+8. Caller anchors the canonical SAID in any KEL(s) authorized by the issuer's `auth_policy` at `issuer_iel_event` — per identity composition, that may be a specific endorser KEL, multiple KELs (threshold), or KELs reachable through nested `identity(X)` leaves. Each anchoring party anchors independently via `builder.interact(&canonical_said)`.
+9. Caller stores the credential via `Credential::store(schema, &sad_store)` or `json_api::store()` if needed for later disclosure.
+10. Credential delivered to holder (out of band).
 
 ```rust
 // Build credential (construct + validate + derive SAIDs)
 let (credential, canonical_said) = Credential::build(
-    &schema, &policy, subject, claims, unique, edges, rules, expires_at,
+    &schema, &issuer_iel_event, subject_iel_event,
+    claims, unique, edges, rules, expires_at,
 ).await?;
-// Anchor in endorser's KEL (caller's responsibility)
+// Anchor in any KEL authorized by issuer's auth_policy at issuer_iel_event
+// (caller's responsibility; may be multiple anchors under threshold policies).
 builder.interact(&canonical_said).await?;
 credential.store(&schema, &sad_store).await?;       // store for disclosure
 ```
 
 ## Poisoning (Endorsement Withdrawal)
 
-Poisoning replaces the legacy single-issuer revocation model. An endorser (or authorized admin) poisons a credential by anchoring the **poison hash** in their KEL:
+Poisoning replaces the legacy single-issuer revocation model. An endorser identity (or authorized admin identity) poisons a credential by anchoring the **poison hash** in any KEL currently authorized by that identity's `auth_policy`:
 
 **Poison hash** = `Blake3(b"kels/poison:" || credential_said.as_bytes()).qb64()`
 
-- **Endorsed:** credential SAID is anchored in endorser's KEL, no poison hash present
-- **Poisoned:** poison hash is anchored in endorser's KEL (regardless of whether SAID is also anchored — proactive poisoning is supported)
+Under identity binding, poison checks are always **identity-current**: the verifier resolves the endorser identity's IEL to its tip, fetches the current `auth_policy`, and checks all KELs that policy authorizes for the poison hash. A poison anchor in any one of those KELs counts. This is the natural mode for withdrawal: an identity withdraws by acting under whatever device authority it currently controls — the endorser may have rotated their KEL since issuance, and the poison must still take effect.
+
+- **Endorsed:** credential SAID is anchored under the endorser identity's authorized KELs (per the policy walk), no poison hash present
+- **Poisoned:** poison hash is anchored in any KEL currently authorized by the endorser identity (regardless of whether SAID is also anchored — proactive poisoning is supported)
 
 Poisoning behavior is controlled by two mutually exclusive fields on the policy:
 
@@ -383,47 +397,76 @@ Poisoning behavior is controlled by two mutually exclusive fields on the policy:
 | `poison` set | Yes, per DSL expression | If poison expression is satisfied, entire policy is unsatisfied |
 | `immune: true` | No | Endorsements are permanent; poison hashes ignored |
 
-When `poison` is set on the policy, only prefixes matched by that expression are checked for poison hashes, and the expression is evaluated as a full DSL expression (e.g., "2-of-3 admins must poison"). This enables admin-controlled poisoning.
+When `poison` is set on the policy, only identities/prefixes matched by that expression are checked for poison hashes, and the expression is evaluated as a full DSL expression (e.g., "2-of-3 admins must poison"). This enables admin-controlled poisoning. `identity(X)` leaves in the poison expression resolve identity-current the same way they do in the main expression.
 
 To poison:
 ```rust
 let poison_hash = kels_policy::poison_hash(&canonical_said);
-builder.interact(&poison_hash)?;  // anchor poison hash in endorser's KEL
+builder.interact(&poison_hash)?;  // anchor in any KEL the endorser's identity currently authorizes
 ```
+
+**Mode asymmetry: frozen-mode endorsement against identity-current poison.** Verification's main walk supports two modes (frozen-at-issuance against `issuer_iel_event`'s `auth_policy`, or identity-current against the issuer's IEL tip; see [Credential Verification](#credential-verification)). Poisoning, however, is always identity-current — the endorser's authority to withdraw is read at the verifier's current view, not the issuance moment. This is deliberate: pinning poison checks to the issuance-time `auth_policy` would mean an endorser couldn't withdraw using a KEL they rotated to after issuance, which defeats the durability story for identity binding. The consequence is that a frozen-mode endorsement walk can resolve "valid at issuance, withdrawn now"; verifier implementations should surface that state explicitly rather than collapse it into a single satisfied boolean.
 
 ## Credential Verification
 
-Verification combines structural checks with policy-based KEL-anchored trust. Anchoring in endorsers' KELs per the policy is the proof of endorsement — no separate signature verification is needed since the anchors prove the endorsers committed to the credential SAID.
+Verification combines structural checks with a policy walk rooted at the issuer's identity event. Anchoring in the issuer's authorized KELs per the resolved `auth_policy` is the proof of endorsement — no separate signature verification is needed since the anchors prove the endorsers committed to the credential SAID.
 
 ### Depth Bounds
 
 All recursive operations share a single depth constant:
 - `MAX_RECURSION_DEPTH = 32` — maximum depth for compaction, expansion, schema validation, claims validation, and edge verification
 
+### Verification Modes
+
+The verifier exposes a mode choice that selects which `auth_policy` to walk against the cred's canonical SAID:
+
+- **Frozen mode** (default) — dereference `issuer_iel_event` and use the `auth_policy` tracked at that exact IEL event. This is "validate the cred against the authorization the issuer had at issuance." Pin-to-issuance semantics: subsequent IEL evolutions of `auth_policy` do not invalidate prior creds, and they do not extend authority to endorsers added later.
+- **Current mode** — walk the issuer's IEL prefix (derived by dereferencing `issuer_iel_event`) forward to its current tip, then use the tip's tracked `auth_policy`. This is "validate the cred against whatever the issuer's identity currently authorizes." Survives KEL rotations under the issuer's identity — if alice replaces a decommissioned KEL with a new one under the same IEL, current-mode keeps verifying.
+
+Both modes derive from the single SAID `issuer_iel_event`; the verifier API exposes the choice. The same mode applies to nested `identity(X)` leaves encountered during the walk: frozen-mode walks into them as identity-current (they're a structural feature of the policy DSL — see [policy.md §Identity Resolution](policy.md#identity-resolution)). Only the issuer's outermost `auth_policy` selection is mode-controlled.
+
+Poison checks are always identity-current regardless of the mode (see [Poisoning](#poisoning-endorsement-withdrawal) — flag for review).
+
 ### Steps
 
 1. **Schema SAID match** — Verify the credential's `schema` field matches the provided schema's SAID.
-2. **Policy SAID match** — Verify `policy.said == credential.policy`.
+2. **Issuer dereferencing** — Resolve `issuer_iel_event` via the IEL source to recover (a) the issuer's identity prefix, (b) the `auth_policy` SAID tracked at that event (frozen) or at the IEL's current tip (current, per mode). Failure to resolve surfaces as a verification error — never silent `false` (see [policy.md §Identity Resolution](policy.md#identity-resolution) trust model).
 3. **Expanded SAID integrity** — Recompute the credential's SAID from its current data via `compute_said_from_value`. If it doesn't match `credential.said`, the data has been tampered with.
 4. **Canonical SAID integrity** — Compact the credential to canonical form using schema-aware compaction and derive the canonical SAID. This is the SAID that was anchored by endorsers at endorsement time.
 5. **Schema validation** — Validate the credential against the schema via `validate_credential_report`. Compacted fields are accepted (type checking is skipped for SAID strings in compactable fields).
-6. **Policy evaluation** — Call `evaluate_policy(policy, &canonical_said, source, resolver)`. This walks the policy AST, checking each endorser's KEL for credential SAID anchoring and (unless immune) poison hash anchoring. Returns a `PolicyVerification` with per-endorser status and overall satisfaction.
+6. **Policy walk** — Call `evaluate_policy(auth_policy, &canonical_said, source, resolver, iel_source)` against the `auth_policy` selected by the mode. Per leaf:
+   - `endorse(KEL)` — check the cred SAID is anchored in `KEL` via `ixn` (or, per [protocol-doctrine.md §Anchor Tier Elevation](../protocol-doctrine.md#anchor-tier-elevation), the appropriate establishment-tier event when elevation is in force).
+   - `identity(X)` — resolve `X`'s IEL tip, fetch its current `auth_policy`, and evaluate that policy in place against the same canonical SAID. Recursive; cycle-guarded; per-evaluation-cached (per [policy.md §Identity Resolution](policy.md#identity-resolution)). No special-case handling at the cred level.
+   - `delegate(DELEGATOR)` — KEL-layer delegation for fleet scaling. The verifier walks `DELEGATOR`'s KEL to discover any prefix X that satisfies the `dip` inception + anchor rule, then checks whether X anchors the cred SAID. X is not in the policy — it's found at evaluation. See [policy.md §Delegation](policy.md#delegation).
+   - `threshold` / `weighted` accumulate per policy DSL semantics; `policy(SAID)` resolves a nested policy and recurses.
+   Returns a `PolicyVerification` with per-leaf status and overall satisfaction.
 7. **Expiration** — Check if `expires_at` is present and in the past.
 8. **Edge verification** — If a `SadStore` and `edge_schemas` are provided and edges are expanded, recursively verify each edge that references a credential SAID. For each edge:
-   - Look up the referenced credential by SAID in the SadStore
-   - Verify the credential's schema matches the edge's schema reference
-   - Expand using schema-aware expansion with the edge's schema
-   - Parse as `Credential<Value>` and recursively verify
-   - Enforce `edge.policy` constraint: compact the presented credential's policy and check `compacted.said == edge.policy` (allows delegate flexibility)
+   - Look up the referenced credential by SAID in the SadStore.
+   - Verify the credential's schema matches the edge's schema reference.
+   - Expand using schema-aware expansion with the edge's schema.
+   - Parse as `Credential<Value>` and recursively verify (same mode propagates).
+   - Enforce `edge.policy` constraint: dereference the referenced cred's `issuer_iel_event` to its `auth_policy`, compact it, and check `compacted.said == edge.policy`. The canonical form survives operational changes under both `identity(X)` (KEL replacements under the identity) and `delegate(DELEGATOR)` (delegate worker rotations under the delegator), since neither leaf bakes those variable details into the policy.
 
 ### API
 
 ```rust
+pub enum VerificationMode {
+    /// Use the auth_policy at issuer_iel_event exactly (pin-to-issuance).
+    FrozenAtIssuance,
+    /// Walk the issuer's IEL to its current tip and use the tip's auth_policy.
+    Current,
+}
+
 pub struct CredentialVerification {
     pub credential: String,
-    pub policy: String,
+    pub issuer_iel_event: String,
+    pub issuer_prefix: String,
+    pub auth_policy: String,                 // SAID resolved per mode
+    pub mode: VerificationMode,
     pub policy_verification: PolicyVerification,
-    pub subject: Option<String>,
+    pub subject_iel_event: Option<String>,
+    pub subject_prefix: Option<String>,
     pub is_expired: bool,
     pub schema_validation: SchemaValidationReport,
     pub edge_verifications: BTreeMap<String, CredentialVerification>,
@@ -434,12 +477,14 @@ pub struct SchemaValidationReport {
     pub errors: Vec<String>,
 }
 
-/// Verify a credential against the KEL via policy evaluation, optionally with recursive edge verification.
+/// Verify a credential by walking the issuer's auth_policy (resolved per `mode`)
+/// against the credential SAID. Optionally recurses into expanded edges.
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
     schema: &Schema,
-    policy: &Policy,
+    mode: VerificationMode,
     source: &dyn PagedKelSource,
+    iel_source: &dyn IelSource,
     resolver: &dyn PolicyResolver,
     sad_store: Option<&dyn SadStore>,
     edge_schemas: &BTreeMap<String, Schema>,
@@ -450,35 +495,38 @@ pub async fn verify_credential<T: Claims>(
 
 `policy_verification` contains the full result of policy evaluation: per-endorser `EndorsementStatus` (Endorsed, NotEndorsed, Poisoned, KelError) and nested policy verification results.
 
-When a `SadStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified against the KEL via policy evaluation. Edge policy constraints use **canonical policy matching**: the presented credential's policy is compacted to canonical form and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
+When a `SadStore` is provided, edges with a `credential` SAID reference are looked up, expanded using schema-aware expansion (with the schema from `edge_schemas`), parsed as `Credential<Value>`, and recursively verified. Edge policy constraints use **canonical policy matching**: the referenced cred's resolved `auth_policy` is compacted to canonical form and its SAID compared to `edge.policy`, allowing delegate flexibility. Recursion is bounded by `MAX_RECURSION_DEPTH`. Edges without a `credential` field are skipped — there's nothing to verify.
 
-`Credential::verify()` is a convenience method that delegates to `verify_credential`.
+`Credential::verify()` is a convenience method that delegates to `verify_credential` and defaults `mode` to `FrozenAtIssuance`.
 
 ## JSON API
 
 The `json_api` module provides JSON-boundary functions for consumers who work with raw JSON strings rather than typed Rust structs. All schema parameters are JSON strings, parsed internally.
 
 - `store(json_credential, json_schema, sad_store)` — compact and store a credential, returns canonical SAID
-- `verify(json_credential, json_schema, json_policy, source, sad_store, json_edge_schemas, json_policies)` — verify a credential via policy evaluation, returns verification result JSON. `json_policy` is the policy JSON, `json_policies` is an optional JSON object mapping policy SAIDs to policy objects (for nested policy resolution).
+- `verify(json_credential, json_schema, mode, source, iel_source, sad_store, json_edge_schemas, json_policies)` — verify a credential by walking the issuer's `auth_policy` (resolved per `mode` against `issuer_iel_event`), returns verification result JSON. `json_policies` is an optional JSON object mapping policy SAIDs to policy objects (for nested `policy(SAID)` resolution).
 - `disclose(canonical_said, disclosure_statement, sad_store, json_schema)` — apply disclosure DSL to a stored credential, returns disclosed credential JSON
 - `validate(json_credential, json_schema)` — validate a credential against a schema, returns `SchemaValidationReport`
 - `parse_edges(json)` — parse edge JSON into `Edges` (for FFI use)
 - `parse_rules(json)` — parse rule JSON into `Rules` (for FFI use)
 
-The JSON API also provides `build()` for constructing credentials from JSON strings — it returns the credential JSON and canonical SAID. Anchoring the SAID in endorser KELs is the caller's responsibility.
+The JSON API also provides `build()` for constructing credentials from JSON strings — callers pass identity prefixes (`issuer_identity`, optional `subject_identity`) and the JSON API resolves the current IEL tip for each to set `issuer_iel_event` / `subject_iel_event`. Returns the credential JSON and canonical SAID. Anchoring the SAID in KELs authorized by the issuer's `auth_policy` is the caller's responsibility.
 
 These use `Credential<serde_json::Value>` internally via the `SelfAddressed` impl on `Value`, ensuring the same validation and verification logic as the typed API.
 
 ## FFI Surface
 
-Exposed through `kels-ffi`, not through a separate crate. All credential operations use C-compatible types.
+Exposed through `kels-ffi`, not through a separate crate. All credential operations use C-compatible types. User-facing prefix arguments are **identity prefixes** (durable across KEL replacement); the FFI implementation resolves the current IEL tip to set the cred's `issuer_iel_event` / `subject_iel_event` internally.
 
 ```c
-// Credential operations
+// Credential operations — `issuer_identity` and `subject_identity` are identity
+// prefixes (IEL chain prefixes), not KEL prefixes. The cred records the current
+// IEL tip SAID for each at issuance time.
 KelsCredentialResult kels_credential_issue(
     KelsContext* ctx,
     const char* schema_json,
-    const char* subject_prefix,
+    const char* issuer_identity,
+    const char* subject_identity,    // nullable for unbound creds
     const char* claims_json,
     const char* edges_json,         // nullable
     const char* rules_json,         // nullable
@@ -495,7 +543,8 @@ KelsCredentialResult kels_credential_disclose(
 
 KelsVerifyResult kels_credential_verify(
     KelsContext* ctx,
-    const char* credential_json
+    const char* credential_json,
+    KelsVerificationMode mode        // frozen-at-issuance or current
 );
 
 KelsRevokeResult kels_credential_poison(
@@ -532,11 +581,11 @@ lib/creds/
     ├── store.rs            # store_credentials (SadStore trait + InMemorySadStore are in kels-core)
     ├── disclosure.rs       # DSL parser, AST, apply_disclosure
     ├── compaction.rs       # compact/expand (schema-aware, depth-bounded, with _fields variants for sub-trees)
-    ├── verification.rs     # verify_credential, CredentialVerification (policy-based)
+    ├── verification.rs     # verify_credential, CredentialVerification, VerificationMode (identity-rooted: dereferences issuer_iel_event, walks resolved auth_policy)
     ├── json_api.rs         # JSON-boundary functions (build, store, verify, disclose, validate, parse helpers)
     └── error.rs            # CredentialError
 ```
 
-Dependencies: `kels` (core types, `KelVerification`, `KelVerifier`, `KelsError`), `kels-policy` (policy types, `evaluate_policy`, `PolicyVerification`, `PolicyResolver`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compute_said_from_value`), `serde`, `serde_json` (with `preserve_order` for deterministic serialization), `tokio` (sync primitives), `async-trait`, `thiserror`.
+Dependencies: `kels` (core types, `KelVerification`, `KelVerifier`, `KelsError`, `IelSource`), `kels-policy` (policy types, `evaluate_policy`, `PolicyVerification`, `PolicyResolver`), `cesr` (CESR encoding, `Digest`), `verifiable-storage` (`SelfAddressed` derive, `compute_said_from_value`), `serde`, `serde_json` (with `preserve_order` for deterministic serialization), `tokio` (sync primitives), `async-trait`, `thiserror`.
 
 FFI bindings in `lib/ffi/src/credential.rs` — no separate FFI crate.

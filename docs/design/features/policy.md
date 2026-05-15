@@ -47,7 +47,7 @@ Six composable node types:
 ```
 endorse(PREFIX)                    # leaf: this KEL prefix must anchor the credential SAID
 identity(PREFIX)                   # leaf: resolve PREFIX's IEL tip, evaluate its current auth_policy here
-delegate(DELEGATOR, DELEGATE)      # delegated endorsement (see below)
+delegate(DELEGATOR)                # leaf: any KEL the delegator has dip-delegated and anchored may endorse
 threshold(MIN, [NODE, ...])        # M-of-N children must be satisfied
 weighted(MIN_WEIGHT, [NODE:W, ...])# sum of satisfied weights >= min_weight
 policy(SAID)                       # resolve + evaluate another policy by SAID
@@ -66,12 +66,14 @@ threshold(2, [
 
 ### Delegation
 
-`delegate(DELEGATOR, DELEGATE)` verifies:
-1. DELEGATE's KEL was incepted via `dip` with DELEGATOR as delegating prefix
-2. DELEGATOR's KEL anchors DELEGATE's prefix
-3. DELEGATE anchors the credential SAID
+`delegate(DELEGATOR)` names a KEL-layer delegator. The verifier accepts the leaf if some KEL X satisfies:
+1. X was incepted via `dip` with DELEGATOR as the delegating prefix.
+2. DELEGATOR's KEL anchors X's prefix.
+3. X anchors the credential SAID.
 
-This supports fleet scaling — an HSM-backed service delegates to rotating software-key services. When a delegate rotates, re-issue the credential with a new policy naming the new delegate.
+X is not named in the policy. Any KEL that DELEGATOR has dip-delegated and anchored qualifies; the verifier discovers X at evaluation time by walking DELEGATOR's KEL for anchored delegate prefixes.
+
+This is the fleet-scaling primitive: an HSM-backed service (DELEGATOR) sub-delegates to short-lived software-key workers without those workers needing to appear in any policy. New workers come online and old workers rotate out without requiring cred re-issuance — the policy names only the long-lived delegator.
 
 ### Identity Resolution
 
@@ -110,9 +112,9 @@ threshold(2, [
 
 Same pattern as credential compaction. Strip variable parts (delegates), recompute SAID:
 
-- `delegate(DELEGATOR, DELEGATE)` compacts to `delegate(DELEGATOR)`
 - `endorse(PREFIX)` stays as-is
 - `identity(PREFIX)` stays as-is — the identity prefix is structurally stable (chosen at IEL inception, fixed for the chain's life); only the *resolved* `auth_policy` evolves, and that's fetched at evaluation, not baked into the policy
+- `delegate(DELEGATOR)` stays as-is — the leaf names only the delegator; specific delegates are discovered at evaluation time, never baked into the policy
 - `threshold`, `weighted`, `policy` recursively compact children
 - `poison` expression is also compacted
 
@@ -134,7 +136,7 @@ For the operator-facing intuition behind redundancy — adversary patience, the 
 pub enum PolicyNode {
     Endorse(String),                          // specific KEL prefix
     Identity(String),                         // IEL prefix; resolves to its current auth_policy at evaluation
-    Delegate(String, String),                 // delegator, delegate
+    Delegate(String),                         // delegator only; delegates are discovered at evaluation time
     Weighted(u64, Vec<(PolicyNode, u64)>),    // min_weight, (child, weight)
     Policy(String),                           // nested policy SAID
 }
@@ -144,7 +146,7 @@ pub enum PolicyNode {
 
 ## Parser
 
-Hand-written recursive descent (no external parser deps). Accepts `identity(PREFIX)` as a leaf alongside `endorse(PREFIX)` and `delegate(DELEGATOR, DELEGATE)`. Validates:
+Hand-written recursive descent (no external parser deps). Accepts `endorse(PREFIX)`, `identity(PREFIX)`, and `delegate(DELEGATOR)` as leaves. Validates:
 - Weighted/threshold min_weight >= 1 and <= total weight
 - Non-empty child lists
 - Weight >= 1 per item
@@ -210,7 +212,7 @@ For `Identity(prefix)` resolution, the evaluator additionally takes an IEL sourc
 
 1. For `Endorse(prefix)`: verify prefix's KEL, check for credential SAID anchoring and (unless immune) poison hash
 2. For `Identity(prefix)`: walk prefix's IEL chain to its current tip via the IEL source, read the tip's tracked `auth_policy` SAID, resolve that policy via `PolicyResolver`, evaluate it recursively in place. Push `prefix` onto the identity-resolution stack before the recursive call and pop after; reject as a cycle if `prefix` is already on the stack. Results are memoized for the remainder of the evaluation under the key `(prefix, chain_tip_SAID)`.
-3. For `Delegate(delegator, delegate)`: verify delegation relationship, then check delegate's endorsement
+3. For `Delegate(delegator)`: discover any KEL X that DELEGATOR has dip-delegated and anchored; check whether X anchors the credential SAID. The specific X is found at evaluation time by walking DELEGATOR's KEL for anchored delegate prefixes that satisfy the `dip`-inception rule.
 4. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight (threshold is weighted with unit weights)
 5. For `Policy(said)`: resolve via `PolicyResolver`, parse, evaluate recursively
 
