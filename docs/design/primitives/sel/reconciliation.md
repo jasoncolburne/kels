@@ -45,7 +45,6 @@ What happens when a client submits events to the submit handler on a single node
 | SEL State | Upd | Sea | Rpr / pending+Rpr | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
-| **Empty** (`[Icp]` alone) | Rejected as `IncompleteInception` (verifier-enforced) | | | | |
 | **Empty** (`[Icp, Est]` minimum) | Append ✓ if `iel_event` binding + anchor satisfy IEL auth_policy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (auth_policy via IEL) | Append ✓ (governance_policy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Active, sealed** (`Upd` at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
@@ -55,7 +54,8 @@ What happens when a client submits events to the submit handler on a single node
 | **Contested** | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` | `ContestedSel` |
 | **Decommissioned** | `DecommissionedSel` | `DecommissionedSel` | `DecommissionedSel` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `DecommissionedSel` | `DecommissionedSel` |
 
-Additional rejection cases for v1+ events that don't fit per-state cells:
+Additional rejection cases that don't fit per-state cells:
+- `IncompleteInception` — inception submission of `[Icp]` alone (no `Est`); verifier rejects whenever any branch tip is `Icp`. See [§Chain States](#chain-states) row "Incepted, no v1".
 - `BadIdentityBinding` — `iel_event` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
 - `IelDivergent` — bound IEL event lives on a divergent IEL branch.
 
