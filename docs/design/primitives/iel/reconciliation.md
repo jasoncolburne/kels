@@ -42,7 +42,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Active, sealed** (`Evl`/`Sea` would land at-or-before `last_seal_advancing_event` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` | `IelDecommissioned` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` (every valid Cnt shape per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) qualifies for the override; the catch-all rejects malformed parent SAIDs) | `IelDecommissioned` |
 
 ### Notes on cell routing
 

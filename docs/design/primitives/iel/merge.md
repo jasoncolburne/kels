@@ -36,7 +36,7 @@ Server errors map to:
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
 | `InvalidIel(reason)` | Structural validation failure | unchanged |
 
-**Note on `ContestRequired` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal (every IEL event is privileged → privileged-divergence-is-terminal fires at first 2-event divergence), so a submission to a divergent IEL is rejected with `ContestedIel`, not `ContestRequired`. `ContestRequired` is only for the seal-cap case on a linear chain.
+**Note on `ContestRequired` vs `ContestedIel`.** Divergent IEL is structurally contested-terminal, so divergent IEL → `ContestedIel`, not `ContestRequired`. The latter is reserved for the seal-cap case on linear IEL chains.
 
 ## Submit Flow
 

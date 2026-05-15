@@ -120,6 +120,8 @@ return Accepted
 
 Reached when events don't chain from the current tip and the KEL is not empty. Handles deduplication, divergent KELs, and overlap submissions.
 
+This handler subdivides into: §6a Dedup → §6b Divergent KEL (Cnt path | Rec path | else) → §6c Overlap (Cnt-on-recovered branch | Rec batch | else).
+
 #### 6a. Deduplication
 
 ```

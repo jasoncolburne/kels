@@ -51,7 +51,7 @@ KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
 `last_seal_advancing_event` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
 
-The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_serial`, with `parent_serial = seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. The land-serial framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted. (`Cnt`/`Dec`-tipped chains are terminal, so the boundary case is mooted by the contested/decommissioned gates — the Cnt-overrides-Dec case is covered separately in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).)
+The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_serial`, with `parent_serial = seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. The land-serial framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted.
 
 ## Divergence and Freeze
 
@@ -89,13 +89,16 @@ Each submitter constructs with previous = tip.said = v_{d-1}.said:
 
 `Ror` is privileged (recovery-revealing) but not archiving — its parent rule is the same as `ixn`/`Rot`/`Dec`: `previous = tip.said`. When the submitter's tip is at `v_{d-1}`, `Ror.previous = v_{d-1}.said` directly; `Ror` lands at `v_d` and can join a divergent set there via the upgrade rule. (`Rec` would NOT fit this slot — `Rec` is the archiving privileged kind on KEL, routed through the discriminator's archival path, which removes the divergent set before any divergent-set check fires.)
 
-Gossip propagates. Each node eventually receives the events that landed at others. Per-node outcome depends on order of arrival:
+Gossip propagates. Each node eventually receives the events that landed at others. Per-node outcome depends on order of arrival; the trajectory in each case is:
 
-| Node | First two events | Trajectory | Final state |
-|---|---|---|---|
-| A | `ixn_b`, then `ror_c` | non-priv divergent → upgrade-rule promotes via privileged `ror_c` → contested | 3 events at `v_d` |
-| B | `ixn_a`, then `ror_c` | same as A | 3 events at `v_d` |
-| C | `ixn_a` first | mixed divergent set with `ror_c` privileged → contested at first observation; subsequent `ixn_b` rejected | 2 events at `v_d` |
+- If two non-privileged events (`ixn_a`, `ixn_b`) arrive first, the node enters non-privileged-divergent state; the later-arriving `ror_c` is privileged and promotes the chain to contested via the upgrade rule (3 events at `v_d`).
+- If `ror_c` arrives among the first two, the divergent set is privileged at first observation and the chain transitions to contested immediately; the gate closes before the third concurrent submission can join (2 events at `v_d`).
+
+| Node | First two events | Final state |
+|---|---|---|
+| A | `ixn_b`, then `ror_c` | 3 events at `v_d` (contested via upgrade rule) |
+| B | `ixn_a`, then `ror_c` | 3 events at `v_d` (contested via upgrade rule) |
+| C | `ixn_a`, then `ror_c` (before `ixn_b`) | 2 events at `v_d` (contested at first observation; subsequent `ixn_b` rejected) |
 
 ```
 Final state on Node A and B (3-way divergent at v_d, contested):
@@ -162,7 +165,9 @@ This is the only pre-flight failure mode. Pending events do not trigger pre-flig
 
 ### Pending events and user display
 
-Whenever pending is non-empty, the application SHOULD display it to the user before submitting the lifecycle op. Human inspection is the only way to decide what should happen with in-progress work — the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." The library bundles pending into the lifecycle batch by default; the user-facing decision (bundle vs. discard vs. selectively-discard) is application-level and requires inspection.
+The library bundles pending into the lifecycle batch by default; the application SHOULD display pending events to the user for inspection before submission.
+
+**Why:** the library cannot algorithmically distinguish "stale draft to discard" from "valuable signed work to keep" from "work made suspect by an incident." Human inspection is the only way to decide. The user-facing call (bundle vs. discard vs. selectively-discard) is application-level.
 
 ### Conditional Rot follow-up
 
@@ -242,10 +247,10 @@ This authorization choice gives the operator a recourse against signing-key-only
 
 On a divergent KEL, the merge engine returns one of two error codes depending on whether the recovery key has been revealed:
 
-| Divergent set state | Operator's legitimate next event | Merge engine returns |
-|---|---|---|
-| No recovery-revealing event in the divergent set | `Rec` (recovers; discriminator preserves surviving branch) | `RecoverRequired` for any non-`Rec` submission |
-| At least one recovery-revealing event in the divergent set (`Rec`/`Ror`/`Dec`/`Cnt`) | `Cnt` (terminates; no recovery available) | `ContestRequired` for any non-`Cnt` submission |
+| Divergent set state | Operator's response | What the response does | Merge engine returns |
+|---|---|---|---|
+| No recovery-revealing event in the divergent set | `Rec` | Recovers; discriminator preserves the surviving branch | `RecoverRequired` for any non-`Rec` submission |
+| At least one recovery-revealing event in the divergent set (`Rec`/`Ror`/`Dec`/`Cnt`) | `Cnt` | Terminates; no recovery available | `ContestRequired` for any non-`Cnt` submission |
 
 `ContestRequired` mirrors SEL's `ContestRequired` shape: someone has used the privileged primitive (KEL: revealed the recovery key; SEL: advanced the seal), and safe normal-flow continuation is no longer possible. The trigger is structurally the same across primitives — "the privileged operation has been used, you can't safely follow with the same primitive" — instantiated against the chain's privileged primitive (recovery key for KEL, evaluation seal for SEL).
 

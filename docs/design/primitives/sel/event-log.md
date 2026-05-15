@@ -107,7 +107,10 @@ delivered events.
 
 The divergence invariant guarantees:
 - **Non-privileged divergent set** at serial `d` (event kinds limited to `Upd` at v ≥ 2, or `Est` at v = 1): max 2 events. Recoverable via `Rpr`.
-- **Privileged divergent set** at serial `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`): max 3 events (2 non-privileged that arrived first via concurrent `Upd` extension + 1 privileged that landed via the upgrade rule and triggered the contested transition; OR 2 events at least one of which is privileged from the start). Contested-terminal.
+- **Privileged divergent set** at serial `d` (at least one event is governance-authorized — `Sea`/`Rpr`/`Cnt`/`Dec`):
+  - **3-event variant** — 2 non-privileged arrived first (concurrent `Upd` extension); the 3rd privileged event landed via the upgrade rule and triggered the contested transition.
+  - **2-event variant** — at least one of the two events was privileged from the start.
+  - Both: contested-terminal.
 - The post-`d` window for non-privileged divergence is bounded by the proactive evaluation rule (one page).
 - Every event lives at a serial at-or-after the chain's last evaluation seal (`event_serial >= seal_serial`; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). The seal-cap keeps fork-creation in the post-seal window where the parent's auth context is current. Combined with per-event parent-monotonic on `iel_event` (each event's `iel_event` must be at-or-after its parent's), this prevents stale-IEL-policy holders from extending an existing branch with a regressed `iel_event`. Cnt joining a divergent set at v_d on a chain whose tip is itself the most recent privileged event (a `Sea`-tipped SEL) lands at `event_serial = d = seal_serial`; the seal-cap admits this parent-at-(seal − 1) boundary case (parent at v_{d-1}, event at v_d = seal).
 

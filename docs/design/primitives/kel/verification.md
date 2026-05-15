@@ -51,6 +51,8 @@ verify_event(event):
         verify anchor is a valid CESR digest
 ```
 
+Anchor *kind* validation (`Ixn`/`Rot`/`Ror` per tier 1/2/3) is cross-chain — IEL/SEL verifiers enforce it when evaluating cross-chain policy satisfaction. KEL verification itself only validates anchor *format*.
+
 ### Generation Processing
 
 Events at the same serial form a **generation**. The verifier processes all events in a generation together:

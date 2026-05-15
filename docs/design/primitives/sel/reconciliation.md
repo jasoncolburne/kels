@@ -45,7 +45,7 @@ What happens when a client submits events to the submit handler on a single node
 | SEL State | Upd | Sea | Rpr / pending+Rpr | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
-| **Empty** (`[Icp]` alone) | n/a | n/a | n/a | n/a | n/a — rejected as `IncompleteInception` |
+| **Empty** (`[Icp]` alone) | Rejected as `IncompleteInception` (verifier-enforced) | | | | |
 | **Empty** (`[Icp, Est]` minimum) | Append ✓ if `iel_event` binding + anchor satisfy IEL auth_policy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
 | **Active** | Append ✓ (auth_policy via IEL) | Append ✓ (governance_policy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Active, sealed** (`Upd` at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
@@ -262,6 +262,8 @@ All nodes converge on the same effective SAID (tip event SAID).
 ### 5. Contested chains across nodes
 
 Different nodes may have different event counts for a contested SEL (e.g., one node had owner's `Cnt` lands first; another had adversary `Sea` advance further before contest arrived). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any chain with a `Cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+
+(`Sea` is used in the diagram below to demonstrate the upgrade rule; `Cnt` would produce the same converged effective SAID via the same mechanism.)
 
 ```
 Different event sets across nodes, same effective SAID:

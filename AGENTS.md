@@ -100,7 +100,9 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`).
 
-Kind set (sort-priority order): `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt`. `Icp` is permissionless and `[Icp, Est]` is the minimum inception batch. `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `iel_event`.
+- Kind set (sort-priority order): `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt`.
+- Inception: `Icp` is permissionless; `[Icp, Est]` is the minimum inception batch.
+- Authorization and evolution: `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `iel_event`.
 
 See `docs/design/primitives/sel/events.md` and `docs/design/primitives/sel/event-log.md`.
 

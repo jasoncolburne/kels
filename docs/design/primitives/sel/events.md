@@ -97,8 +97,8 @@ The chain's identity cannot be changed after Icp. To migrate an SEL to a differe
 `iel_event: Digest256` references the SAID of the specific IEL event whose declared/evolved policy authorizes the SEL event:
 
 - `Icp`: forbidden. (No authorization gate; no policy to bind to.)
-- `Est` / `Upd`: required. References the most recent IEL `Icp` or `Evl`-with-auth-policy at the time of submission — the IEL event that established the currently-tracked `auth_policy`.
-- `Sea` / `Rpr` / `Cnt` / `Dec`: required. References the most recent IEL `Icp` or `Evl`-with-governance-policy — the IEL event that established the currently-tracked `governance_policy`.
+- `Est` / `Upd`: required. References the IEL event whose `auth_policy` field is currently tracked at the time of submission — i.e., the most recent IEL `Icp` or `Evl` that evolved `auth_policy`. (Subsequent `Sea` or `Evl`-without-auth-change on IEL leave the tracked `auth_policy` unchanged.)
+- `Sea` / `Rpr` / `Cnt` / `Dec`: required. References the IEL event whose `governance_policy` field is currently tracked at the time of submission — i.e., the most recent IEL `Icp` or `Evl` that evolved `governance_policy`. (Subsequent `Sea` or `Evl`-without-governance-change on IEL leave the tracked `governance_policy` unchanged.)
 
 #### Why bind by SAID rather than serial
 
