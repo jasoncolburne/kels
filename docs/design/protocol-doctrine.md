@@ -321,13 +321,14 @@ If an adversary acquires sufficient currently-controlling authority — current 
 
 There is no protocol mechanism to distinguish "legitimately current" from "compromise-acquired-current." There is a narrow detect-and-respond window before the rotation lands: if the legitimate operator detects compromise and submits `Cnt` under the still-current pre-rotation authority before the adversary's rotation event lands, the legitimate `Cnt` wins. After the rotation, no protocol-level recourse remains.
 
-**Defense for current-state compromise is operational**, not structural:
-- High thresholds for governance / recovery — make "controls current authority" hard to achieve.
-- Separation of custody — no single point of compromise grants current-state authority.
-- Monitoring for unexpected governance / rotation events — fire alerts before adversary completes rotation.
-- Fast operator response — cut the detect-to-Cnt latency to within the gossip window.
-- **Threshold redundancy** — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [features/policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
-- **Abandon-and-reincept** under a new prefix when current-state compromise is suspected — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
+**Defense for current-state compromise is operational**, not structural. Practices compose across both protocol layers (KEL's dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` blocks signing/rotation-key compromise regardless of recovery-key custody; IEL policy composition handles total device compromise via `Evl` rotation of the lost device):
+
+- **High thresholds** in IEL `governance_policy` / `auth_policy` — raise the cost of accumulating sufficient policy-member authority.
+- **Custody separation** sized to threat model — KEL-internal (recovery key in different custody from the signing key, e.g., HSM or ceremony-gated) hardens against coerced signing or partial-device compromise; IEL-level (policy members on distinct devices/locations/custodians) hardens against total device compromise.
+- **Monitoring** for unexpected governance / rotation events — fire alerts before adversary completes rotation.
+- **Fast operator response** — cut the detect-to-Cnt latency to within the gossip window.
+- **Threshold redundancy** (`M > N`) — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [features/policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
+- **Abandon-and-reincept** under a new prefix when current-state compromise is suspected and no ratchet-out path exists — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
 
 The trade the protocol makes is intentional: a narrow current-state-compromise vulnerability (high-friction, time-bounded, operationally mitigable) in exchange for closing the much broader past-state kill-switch surface (low-friction, time-unbounded, structurally unmitigable without this doctrine).
 
@@ -345,7 +346,7 @@ The operational stakes for getting policy design wrong are concrete. A chain who
 
 Policies designed for ratchet-out — high thresholds, redundancy beyond the threshold, hierarchical scope partitioning — keep the prefix stable across compromise events. **Survivable compromise instead of catastrophic reincept.** Design policies to survive compromise without truck-roll; treat reincept as the option of last resort, not the routine response.
 
-The principle applies uniformly across KEL, IEL, and SEL. KEL's recovery key custody benefits from physical separation from the signing key (the privileged-vs-routine asymmetry the dual-signature requirement was designed for). IEL's `governance_policy` benefits from `M > N` thresholds across distinct organizational custodians and from hierarchical structure (root IEL → subordinate IELs scoped narrowly). SEL inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience.
+The principle applies uniformly across KEL, IEL, and SEL. **KEL** uses the dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` to block signing/rotation-key compromise (exfiltration, brute force, coerced signing, side channels) regardless of where the recovery key is custodied — a single-device deployment is first-class for threat models where signing-tier compromise wouldn't also expose the recovery key. Custody separation (different device, HSM, ceremony-gated) is an optional deployment hardening for threat shapes where signing and recovery would otherwise fall together (coerced signing especially). **IEL** uses `M > N` thresholds across distinct custodians plus hierarchical scope partitioning (root IEL → subordinate IELs scoped narrowly) to handle total device compromise — surviving members rotate the contested device out via `Evl` without losing the identity. **SEL** inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience. The choice between KEL-internal custody separation and IEL multi-device composition depends on the application's threat shape and operational model; the protocol supports either, and both can be combined.
 
 ##### Cascade-reincept honesty
 
