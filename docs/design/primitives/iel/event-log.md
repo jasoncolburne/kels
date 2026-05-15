@@ -11,8 +11,7 @@ An IEL is the authorization root for a SEL. Every Credential, SEL, or generally 
 | State | Description | Accepts new events? |
 |---|---|---|
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
-| **Divergent** | Chain shape with 2 events at serial `d`; treated as Contested per privileged-divergence (every IEL event is privileged → see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)). Persists in storage as forensic record. | Treated as Contested. |
-| **Contested** | Chain terminated — divergence (any divergent set on IEL), or explicit `Cnt` on a linear chain (see [§Cnt mechanics](#cnt-mechanics)). | None. All submissions rejected. |
+| **Contested** | Chain terminated — any divergent set (every IEL event is privileged → privileged-divergence-is-terminal fires at first 2-event observation; see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)), or explicit `Cnt` on a linear chain (see [§Cnt mechanics](#cnt-mechanics)). Both branches preserved as forensic record. | None. All submissions rejected. |
 | **Decommissioned** | Chain terminated cleanly by operator — at least one `Dec`, no Cnt or divergence. | Gossip-delivered `Cnt` → Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); all other submissions rejected with `IelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `IelVerification` token surfaces:
@@ -185,6 +184,10 @@ When the IEL is contested (divergence has occurred, with or without explicit Cnt
 When the IEL is decommissioned (Dec landed, no Cnt or divergence), bound SELs continue to verify cleanly — pre-Dec IEL events stay authoritative under their original auth. Dec is a clean-retirement signal; the operator simply isn't using the IEL going forward. New SEL submissions that reference a decommissioned IEL fail (the IEL accepts no new events to ratchet against), but existing SEL events bound to pre-Dec IEL events keep their meaning.
 
 This split between contested and decommissioned IELs is the operator's recovery surface. Cascade-reincept is the operational reality when an IEL fails: every dependent SEL must reincept under a new IEL. **Operators should design identity hierarchies with this cascade in mind** — anchoring everything to a single root means root compromise costs the entire dependent tree. Partition the dependency graph so a single compromise has a bounded blast radius.
+
+## Multi-Party Governance Synchronization
+
+When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or Raft over the registry). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
 
 ## Cross-Chain Anchor Stability
 
@@ -370,10 +373,6 @@ This is an operator best practice, not a protocol-enforced rule. Future automati
 ### Application-developer enrollment patterns
 
 The brand-new chain race described above is defused by enrollment-time discipline on the application-developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governance_policy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full developer guidance: [../../../development/enrollment.md](../../../development/enrollment.md).
-
-## Multi-Party Governance Synchronization
-
-When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or Raft over the registry). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 

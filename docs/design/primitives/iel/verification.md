@@ -53,8 +53,9 @@ verify_event(event):
     // 6. Sea parent-kind constraint (chain-state, requires predecessor)
     if event.kind == Sea:
         parent = lookup event.previous
-        if parent.kind in {Icp, Sea, Cnt, Dec}:
+        if parent.kind in {Icp, Sea}:
             return Error("Sea parent must be Evl")
+        // terminal kinds (Cnt/Dec) cannot have children; the terminal-state gate enforces.
         // back-to-back Sea is forbidden on IEL — Sea carries no content field,
         // so a Sea extending another Sea would add no semantic information beyond
         // the parent; see events.md §Per-Kind Policy Field Discipline.

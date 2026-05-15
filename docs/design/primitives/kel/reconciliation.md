@@ -29,10 +29,6 @@ These invariants are what make synchronous archival, single-page discriminator w
 
 "Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only `cnt` is accepted; non-`cnt` submissions return `ContestRequired`.
 
-**Active, sealed** — KEL's analog of IEL/SEL's "Active, sealed" sub-state. The sub-state applies when a submitter's local tip lands at-or-before `last_seal_advancing_event` (the seal has advanced past the submitter's view via a `Rec` or `Ror` they haven't observed). Non-terminal submissions return `ContestRequired`; `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
-
-On KEL the rule is expressed via §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than as a distinct matrix sub-state. The structural behavior matches IEL/SEL.
-
 ## Local Submissions Matrix
 
 What happens when a client submits events to the merge engine on a single node.
@@ -41,6 +37,7 @@ What happens when a client submits events to the merge engine on a single node.
 |-----------|---------|-----|---------------|------------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
 | **Active** | Append ✓ | Append ✓ | Append ✓ (gossip-sync of recovered KELs) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rec` cannot truncate at-or-before the seal) | Contest ✓ → Contested | `ContestRequired` |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | Contest ✓ → Contested (joins set via upgrade rule) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
 | **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
@@ -51,6 +48,7 @@ What happens when a client submits events to the merge engine on a single node.
 
 - **`Cnt` on Active** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip` with the existing tip; privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent / Divergent (recovery revealed)** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **Active, sealed** — Handled algorithmically by §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than by a state precondition; structural behavior matches IEL/SEL. `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
 - **`Divergent (recovery revealed)` → `ContestRequired` for non-Cnt** — once the recovery key is revealed in a divergent branch (via `Rec`/`Ror`/`Dec`/`Cnt`), only Cnt is admissible. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
 - **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `KelDecommissioned`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 

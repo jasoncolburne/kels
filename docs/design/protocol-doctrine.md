@@ -81,7 +81,9 @@ The asymmetry follows from semantics: `Cnt` is repudiation (it terminates withou
 - **IEL**: no protocol cap — every non-terminal IEL event advances the seal, so the seal coincides with the tip on linear chains and within-window forks don't structurally exist. The "how stale can authority become" bound is operator-side discipline.
 - **SEL**: protocol-bounded at 63 events via `MAX_NON_EVALUATION_EVENTS = 63`. Combined with SEL's per-event parent-monotonic ratchet on `iel_event`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding.
 
-##### Per-event parent-monotonic ratchet (SEL-specific)
+The SEL-specific ratchet that the bound composes with lives at [§Per-Event Parent-Monotonic Ratchet (SEL-specific)](#per-event-parent-monotonic-ratchet-sel-specific) below.
+
+#### Per-Event Parent-Monotonic Ratchet (SEL-specific)
 
 SEL is the only primitive where authorization context is referenced via a separate field (`iel_event`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
 
@@ -366,7 +368,7 @@ That position matters because of how the seal-cap works. The kill-switch authori
 
 **Operator-discipline recommendation: batch `[Evl, Sea]` on exclusion evolutions.** Submit the exclusion `Evl` and the seal-advancing `Sea` as a single batch. The `Sea` lands at `v_{N+1}` immediately after the `Evl` at `v_N`, advancing the seal past the exclusion point in the same submission. This closes the operator-side window where forgetting to follow up would leave `v_{N-1}`'s policy as the parent-at-(seal − 1) basis indefinitely. The `Sea` is authorized under the new (post-`Evl`) policy, which the operator now controls.
 
-Shape constraints on `Sea`:
+##### Shape constraints on Sea
 
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
 - Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
