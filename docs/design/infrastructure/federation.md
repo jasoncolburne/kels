@@ -217,31 +217,17 @@ After approval, the peer is deactivated and moved from active to inactive in the
 
 ## Security Considerations
 
-### Federation Membership
+The full layered model — compile-time trust, KEL-based message auth, follower-side verification, multi-party voting, tamper-evident chaining — is documented in [federation-state-machine.md §Defense in Depth](federation-state-machine.md#defense-in-depth). Operator-facing summary:
 
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` constant (JSON array of `{id, prefix, active}` objects for the registry service) and `TRUSTED_REGISTRY_PREFIXES` (comma-separated prefixes for gossip nodes and client binaries via the `federation` feature on kels-core)
-- Only known registry prefixes can participate in consensus
-- Cannot be changed at runtime - must be baked into the binary at build time
-
-### Message Authentication
-
-- All Raft messages are signed with the sender's identity key (HSM-backed)
-- Recipients verify signatures against the sender's KEL
-- Messages from prefixes not in `TRUSTED_REGISTRY_MEMBERS` are rejected
-
-### Member KEL Sync
-
-- Identity and completion handlers push KEL events directly to `POST /api/v1/member-kels/events` using `KelsClient`
-- The submit endpoint fans out to all federation peers synchronously (best-effort, with 5s timeout)
-- A periodic anti-entropy loop (every 30s) syncs own KEL from identity, then compares effective SAIDs with each peer and pushes deltas
-- KELs survive registry restarts since they are stored in the local PostgreSQL database
-- Recovery propagates naturally: identity recovers → push/AE loop picks up → each member verifies independently via `save_with_merge`
-- See [Registry Removal](../../operations/registry-removal.md) for decommission procedures
-- See [Recovery Workflow](../primitives/kel/recovery-workflow.md) for the recovery architecture
+- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` constants — only known registry prefixes can participate in consensus, and these cannot be changed at runtime.
+- All Raft messages are signed with the sender's HSM-backed identity key; recipients verify signatures against the sender's KEL and reject messages from prefixes outside `TRUSTED_REGISTRY_MEMBERS`.
+- Member-KEL distribution runs outside Raft: identity pushes events to `POST /api/v1/member-kels/events`, which fans out to peers, and a 30s anti-entropy loop fills gaps. Recovery propagates naturally. See [federation-state-machine.md §Member KELs](federation-state-machine.md#member-kels) and [federation-state-machine.md §KEL Sync Loop](federation-state-machine.md#kel-sync-loop) for the sync mechanism; [Registry Removal](../../operations/registry-removal.md) for decommission; [Recovery Workflow](../primitives/kel/recovery-workflow.md) for recovery.
 
 ## Disaster Recovery
 
 ### Rogue Registry Scenario
+
+This section is the operator playbook for responding to a compromise. For the *defensive* analysis — what the protocol does to limit damage *before* operators intervene — see [federation-state-machine.md §Rogue Leader Attack](federation-state-machine.md#rogue-leader-attack).
 
 If a federation member is compromised:
 
@@ -267,12 +253,7 @@ Peer changes require the approval threshold described above — minimum 3 votes,
 
 #### Threshold Verification
 
-The approval threshold is stored on each proposal at creation time. Verification is split across two layers:
-
-- **Leader handler** (exact match): At proposal submission time, the leader rejects proposals where `threshold != approval_threshold()`. This prevents a proposer from submitting a low threshold in a large federation.
-- **Raft `apply()`** (floor check): During log replay and replication, followers enforce only a minimum threshold floor (`compute_approval_threshold(0)`, currently 3). The exact-match check is deliberately not repeated here because the config may have changed since the entry was committed — a federation that grew from 3 to 10 members would incorrectly reject legitimate historical proposals from when the threshold was 3.
-
-This split ensures that no peer change can be approved with fewer than 3 verified votes, while remaining safe across federation growth and Raft log replay. See [federation-state-machine.md](federation-state-machine.md#threshold-verification) for details.
+The approval threshold is stored on each proposal at creation time and verified in two layers — exact-match at the leader's HTTP handler (rejects below-config thresholds), floor-check during Raft `apply()` (rejects below-minimum-of-3 during log replay). See [federation-state-machine.md §Threshold Verification](federation-state-machine.md#threshold-verification) for the full rationale and the safety argument across federation growth.
 
 ### Split-Brain Protection
 
@@ -282,44 +263,33 @@ This split ensures that no peer change can be approved with fewer than 3 verifie
 
 ## API Endpoints
 
-### Federation Status
-```
-GET /api/v1/federation/status
-```
+These endpoints are served by registries running in federated mode. See [secure-registration.md](secure-registration.md) for the request-authorization details.
 
-Returns current federation state including leader, term, and membership.
+Peer discovery and member-KEL sync:
 
-### List Peers (Federated Mode)
-```
-GET /api/v1/peers
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/peers` | Get the peer allowlist from the Raft state machine |
+| `POST` | `/api/v1/member-kels/events` | Submit member key events (push model); fans out only when the prefix matches the receiver's own |
+| `GET` | `/api/v1/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
+| `GET` | `/api/v1/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
 
-Returns the peer set from the Raft state machine.
+Federation protocol:
 
-### Member Key Events (per-prefix)
-```
-GET /api/v1/member-kels/:prefix?limit=N&since=SAID
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/federation/status` | Federation status (leader, term, members) |
+| `GET` | `/api/v1/federation/proposals` | Completed proposals with votes (for independent verification) |
+| `POST` | `/api/v1/federation/rpc` | Internal Raft RPC between registries (not intended for external use) |
 
-Returns a specific member's KEL with pagination support.
+Admin API (signed requests):
 
-### Admin API (localhost only)
-
-Peer proposal management:
-
-```
-POST   /api/v1/admin/addition-proposals              # Propose a new peer (addition)
-POST   /api/v1/admin/removal-proposals              # Propose removal of a peer
-GET    /api/v1/federation/proposals/:proposal_prefix     # Get proposal details (unauthenticated)
-POST   /api/v1/admin/proposals/:proposal_prefix/vote    # Vote on a proposal (addition or removal)
-```
-
-### Federation RPC (Internal)
-```
-POST /api/v1/federation/rpc
-```
-
-Internal endpoint for Raft protocol messages between registries. Not intended for external use.
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/admin/addition-proposals` | Propose a new peer (addition) |
+| `POST` | `/api/v1/admin/removal-proposals` | Propose removal of a peer |
+| `GET` | `/api/v1/federation/proposals/:proposal_prefix` | Get proposal details |
+| `POST` | `/api/v1/admin/proposals/:proposal_prefix/vote` | Vote on a proposal (addition or removal) |
 
 ## Testing
 

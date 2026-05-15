@@ -204,6 +204,8 @@ The voting threshold for peer approval scales with federation size:
 
 The minimum threshold of 3 prevents trivial collusion — even in the smallest viable federation (3 members), all members must agree.
 
+A complementary **rejection threshold** of 2 votes kills a proposal immediately, so that a colluding minority can't override a majority that doesn't want a peer added. See [rejection-threshold.md](rejection-threshold.md) for the rationale.
+
 ## Threshold Verification
 
 The approval threshold is stored on each proposal at creation time. Threshold verification is split across two layers:

@@ -32,20 +32,7 @@ For multi-cloud/multi-region deployments, multiple registries can be federated u
 
 ### Federated Registries
 
-For high availability and multi-party operation, multiple registries can form a federation:
-
-```
-        REGISTRY FEDERATION (Raft Consensus)
-    ┌─────────────────────────────────────────┐
-    │  Registry A ◄──► Registry B ◄──► Registry C  │
-    │  (Leader)       (Follower)      (Follower)   │
-    └─────────────────────────────────────────┘
-         │                │                │
-         ▼                ▼                ▼
-    [nodes a,d]      [node b]         [node c]
-```
-
-See [Multi-Registry Federation](federation.md) for detailed documentation.
+For high availability and multi-party operation, multiple registries can form a federation via Raft consensus. See [federation.md §Architecture](federation.md#architecture) for the federated deployment diagram and trust model; [federation-state-machine.md](federation-state-machine.md) for the Raft state machine and verification layers.
 
 ## Data Flow
 
@@ -112,33 +99,7 @@ services/registry/
 
 #### Federation-Only Endpoints
 
-Peer discovery:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/peers` | Get peer allowlist (from Raft) |
-| `POST` | `/api/v1/member-kels/events` | Submit member key events (push model); fans out only when prefix matches receiver's own |
-| `GET` | `/api/v1/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
-| `GET` | `/api/v1/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
-
-Federation protocol:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/federation/status` | Get federation status (leader, term, members) |
-| `GET` | `/api/v1/federation/proposals` | Completed proposals with votes (for independent verification) |
-| `POST` | `/api/v1/federation/rpc` | Internal Raft RPC between registries |
-
-Admin API (signed requests):
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/admin/addition-proposals` | Propose a new peer (addition) |
-| `POST` | `/api/v1/admin/removal-proposals` | Propose removal of a peer |
-| `GET` | `/api/v1/federation/proposals/:proposal_prefix` | Get proposal details |
-| `POST` | `/api/v1/admin/proposals/:proposal_prefix/vote` | Vote on a proposal (addition or removal) |
-
-> **Note:** Peer discovery, federation, and admin endpoints are only available when federation is configured. See [Secure Peer Authorization](secure-registration.md) for details.
+When federation is configured, the registry additionally serves peer-discovery, member-KEL sync, federation-protocol, and admin endpoints. See [federation.md §API Endpoints](federation.md#api-endpoints) for the catalog and [secure-registration.md](secure-registration.md) for authorization details.
 
 ### KELS Prefix Listing
 
