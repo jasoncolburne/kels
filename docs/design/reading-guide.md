@@ -71,7 +71,6 @@ Applications built on the primitives. Read once you've internalized the primitiv
 Runtime services and system components that store/serve/replicate the primitives. Read when reasoning about deployment, gossip mechanics, or the federation layer.
 
 - [sadstore.md](infrastructure/sadstore.md) — SADStore service architecture.
-- [streaming.md](infrastructure/streaming.md) — streaming verification architecture.
 - [federation.md](infrastructure/federation.md) — multi-registry federation.
 - [federation-state-machine.md](infrastructure/federation-state-machine.md) — Raft state machine for federation peer management.
 - [gossip.md](infrastructure/gossip.md) — gossip protocol mechanics, anti-entropy.

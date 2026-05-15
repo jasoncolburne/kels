@@ -281,7 +281,9 @@ Verification does NOT fail on divergence. Instead:
 - Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler resolves divergence via `Rpr` (see [merge.md](merge.md))
 
-## Streaming Verification (SelVerifier)
+## Streaming
+
+SEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `SelVerifier`. Proof-of-verification token: `SelVerification`. Per-SEL specifics: cross-chain `iel_event` resolution via `IelResolver` (separate trait from `PolicyChecker` — see §Two-trait split below); per-event parent-monotonic check on `iel_event` walked per-branch; post-divergence soft-fail propagation on non-privileged divergent sets; constructors `new` / `resume`.
 
 `SelVerifier` walks forward through events page by page, verifying integrity and authorization without loading the full chain into memory.
 
@@ -374,5 +376,5 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 - [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SEL).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle (immunity rule, anchor stability).
 - [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
-- [../../infrastructure/streaming.md](../../infrastructure/streaming.md) — Cross-side streaming-verification architecture.
+- [../../protocol-doctrine.md §Part 3 Verification Mechanics](../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

@@ -511,6 +511,14 @@ The implementation invariants that make Part 1's security invariants enforceable
 
 Functions that consume chain data accept a verification token (`&KelVerification`, `&IelVerification`, `&SelVerification`) as a parameter. Holding the token proves the corresponding chain was verified. Token fields are private with no public constructor — the only way to obtain one is through the corresponding verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`).
 
+### Streaming
+
+Chain verification streams events page by page rather than loading entire chains into memory. The pattern applies uniformly across KEL, IEL, and SEL; each primitive has parallel types — `{Kel,Iel,Sel}Verifier` for the walk, `{Kel,Iel,Sel}Verification` for the proof-of-verification token, and a primitive-specific `PageLoader` trait abstracting the storage backend (a `KelStore` reference, an advisory-locked transaction, etc.).
+
+The verifier walks events in **generations** (all events at a given serial), tracking per-branch state; divergence forks per-branch state. `completed_verification(loader, prefix, page_size, max_pages, ...)` is the paginated helper — it drives the loader and calls `truncate_incomplete_generation()` at each page boundary so a generation whose events span two pages re-fetches on the next page rather than being processed half-observed. The helper returns the trusted verification token; `max_pages` caps resource use (default 64 pages ≈ 2K events).
+
+Per-primitive specifics — constructors, branch-state shape, divergence semantics, `PageLoader` implementations — live in each primitive's `verification.md`.
+
 ### Merge Verification
 
 When merging new events into an existing chain (submit handler), first verify the entire existing chain in the DB using the corresponding verifier with paginated reads under an advisory lock. Obtain a trusted verification token from the verifier and use that token's data as the context for verifying the new incoming events — never re-query the DB between verification and use. The pattern applies uniformly across KEL, IEL, and SEL submit paths.
@@ -522,3 +530,30 @@ Each verifier supports registering SAIDs of interest before the walk so the walk
 ### Advisory Locking
 
 All verify-then-write paths hold PostgreSQL advisory locks for the duration of both verification and write. Per-primitive locked-transaction types implement the corresponding `PageLoader` trait by reading under the advisory lock; the same transaction is then used for the write. This eliminates time-of-check-to-time-of-use vulnerabilities. Applies uniformly across KEL, IEL, and SEL submit paths.
+
+### Effective-SAID synthetic comparison
+
+The effective SAID is the canonical chain-tip representation across KEL, IEL, and SEL. It identifies the chain's current state and lets nodes recognize that state across the network without exchanging chain data.
+
+**Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — IEL only) carry the `Dec` event's real SAID. Two states have synthetic representations:
+
+- `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial.
+- `hash_effective_said("contested:{prefix}")` — chain has reached a `Cnt` event and is permanently frozen.
+
+The synthetic depends only on `(state, prefix)` — no chain history, no fork point, no serial. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
+
+**Cross-node coordination primitive.** Effective SAIDs travel on the wire — gossip announcements, sadstore 422 responses, `/effective-said` endpoints. Two nodes whose chain `P` is divergent (perhaps at different fork points) compute and exchange the same `hash_effective_said("divergent:P")`. This is what lets nodes recognize each other's chain state without exchanging the chains themselves. Encoding fork-point or serial into the synthetic would break this — node A and node B couldn't recognize each other's "divergent for P" state if their representations differed.
+
+**State-detection algorithm.** Given an observed effective SAID for prefix `P`, a node tests:
+
+1. `observed == hash_effective_said("divergent:{P}")` → chain is divergent.
+2. `observed == hash_effective_said("contested:{P}")` → chain is contested (`Cnt`'d, terminal).
+3. Otherwise → chain has a real tip event SAID; for IEL this may be a `Dec`-tip (use the chain's per-event lookup to disambiguate if needed); for KEL/SEL this is always a normal tip.
+
+States are mutually exclusive at any instant — at most one synthetic-match holds. `Cnt` is terminal, so a contested chain cannot also be divergent at the same point in time; divergence is by definition pre-`Cnt`.
+
+A node observing an effective SAID for a prefix it has no local state for can still compute the synthetics: the function is `(state, prefix) → SAID` with no chain-history input. This is what lets a peer recognize "your chain `P` is contested" purely from the observed SAID, even on first contact.
+
+The canonical helper is `hash_effective_said(input: &str)` in `lib/kels/src/types/sync.rs`. Inputs follow the `"<state>:{prefix-qb64}"` shape.
+
+**Why divergence resolution doesn't need fork-point detail.** Differently-divergent chains across nodes are resolved through local `Cnt` (chain becomes contested, terminal) or, on KEL specifically, local `Rec` (revealing event that locks the KEL alongside resolving). Cross-node sync of differently-divergent chains is intentionally not attempted — chains that can't be replayed deterministically must be resolved locally. The synthetic abstraction's prefix-only shape aligns with this design choice: a node receiving a divergent-effective-SAID from a peer learns "peer's chain is divergent" but cannot (and should not try to) reconcile against its own divergent state.

@@ -82,7 +82,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/kel/events.md`, `docs/design/primitives/kel/verification.md`, `docs/design/infrastructure/streaming.md`.
+**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/kel/events.md`, `docs/design/primitives/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
 
 **Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/primitives/kel/event-log.md`, `docs/design/primitives/kel/recovery-workflow.md`, `docs/design/primitives/kel/reconciliation.md`.
 

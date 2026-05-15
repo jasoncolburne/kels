@@ -209,11 +209,11 @@ Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/ev
 
 Events with recovery signatures require dual authorization, making them the highest authority operations in the KEL.
 
-## Streaming Verification (KelVerifier)
+## Streaming
 
-`KelVerifier` is the sole verification mechanism for KELs. It walks forward through events page by page, verifying cryptographic integrity without loading the full KEL into memory. It supports both linear and divergent KELs by tracking per-branch state.
+KEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `KelVerifier`. Proof-of-verification token: `KelVerification`. Per-KEL specifics: branch-tip behavior on divergence (verifier forks `BranchState` per branch and tracks `divergence_ancestor`); inline anchor checking against caller-registered SAIDs; constructors `new` / `resume` / `from_branch_tip`.
 
-Events are processed in **generations** (all events at a given serial). When multiple events appear at the same serial (divergence), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
+`KelVerifier` is the sole verification mechanism for KELs. It walks forward through events page by page, verifying cryptographic integrity without loading the full KEL into memory. Events are processed in **generations** (all events at a given serial). When multiple events appear at the same serial (divergence), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
 
 ```
 struct KelVerifier {
@@ -253,9 +253,17 @@ Register SAIDs to check before verification with `verifier.check_anchors(saids)`
 
 Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
 
+### PageLoader implementations
+
+KEL implements the streaming pattern's `PageLoader` trait with three flavors:
+
+- `KelStorePageLoader` — wraps a `KelStore` reference; non-locking reads.
+- `KelTransaction` — reads under a PostgreSQL advisory lock, then reuses the same transaction for the subsequent write. Used by submit-handler paths.
+- `LockedKelTransaction` — identity service's advisory-locked transaction wrapper.
+
 ### Paginated verification helper
 
-`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader` (implemented by `KelStorePageLoader` for `KelStore`, or by transaction wrappers for advisory-locked reads), calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events).
+`completed_verification(loader, prefix, page_size, max_pages, anchors)` pages through a `PageLoader`, calling `truncate_incomplete_generation()` at page boundaries to handle divergent generations that span pages. Returns a trusted `KelVerification` token. The `max_pages` parameter prevents resource exhaustion (default 64 pages = ~2K events; configurable via `KELS_MAX_VERIFICATION_PAGES`).
 
 ### Checks per event
 

@@ -205,7 +205,9 @@ Verification does NOT fail on divergence. Instead:
 - Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler resolves divergence via `Cnt` (see [merge.md](merge.md)). There is no `Rpr` on IEL; divergent chains stay divergent until contested.
 
-## Streaming Verification (IelVerifier)
+## Streaming
+
+IEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `IelVerifier`. Proof-of-verification token: `IelVerification`. Per-IEL specifics: every IEL event is governance-authorized so divergent sets are immediately contested-terminal at first 2-event observation — branches max out at 2 in the divergent case but the chain never returns to a single-tip recovered state on IEL (no `Rpr`); the verifier resolves policy satisfaction via a `PolicyChecker` against the bound KEL anchors; caller-bounded SAID querying against `queried_saids` mirrors KEL's inline anchor checking.
 
 `IelVerifier` walks forward through events page by page, verifying integrity and policy satisfaction without loading the full chain into memory. It supports both linear and divergent chains by tracking per-branch state.
 
@@ -271,5 +273,5 @@ The IEL verifier produces these accessors as part of its normal verification out
 - [events.md](events.md) — Per-kind structural rules.
 - [../sel/verification.md](../sel/verification.md) — SEL verification (consumer of IEL verification for binding resolution).
 - [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
-- [../../infrastructure/streaming.md](../../infrastructure/streaming.md) — Cross-side streaming-verification architecture.
+- [../../protocol-doctrine.md §Part 3 Verification Mechanics](../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.
