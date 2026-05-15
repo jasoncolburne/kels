@@ -41,12 +41,23 @@ This constructs the v0 inception event (which has only deterministic fields), de
 
 ### Custody (per-SAD-object authority)
 
-#167: per-SAD authority. Inline-on-parent struct (no separate SAID). Both fields independently optional:
+Per-SAD authority via two independent fields, each optional. Inline-on-parent (no separate SAID):
 
-- `write` — IEL event SAID whose `auth_policy` was satisfied at write time. Anchored, point-in-time write attestation. `None` for unsigned (anonymous) content.
-- `read` — IEL prefix; reads resolve through the IEL's current `auth_policy` at evaluation. Identity-current. `None` for publicly readable content.
+- `owner_iel_event` — IEL event SAID, the writer's identity at write time. Write attestation derives from this event: a verifier can ask either "was the writer authorized under the `auth_policy` at *this event*?" (historical lookup against the event's policy) or "is the writer's identity still authorized at the *current* tip?" (dereference → extract IEL prefix → walk to tip → resolve current `auth_policy`). Both modes derive from one SAID. `None` for unsigned (anonymous) writes.
+- `read_policy` — policy SAID. At read time, the policy is fetched and evaluated against a verified prefix set from a `SignedRequest`. The policy can compose identities arbitrarily — e.g., `threshold(2, [identity(X), identity(Y), identity(Z)])` permits any 2 of 3 identities without those three needing to form a shared IEL. `None` for publicly readable content.
 
-The four valid combinations correspond to public/anonymous, signed-public, anonymous-drop-box, and identity-bound-private patterns. See [#167](https://github.com/jasoncolburne/kels/issues/167) for the table.
+The asymmetry between the two fields is intentional: writes are single-identity-bound (one writer at one moment); reads are composable (any DSL expression). Typical `read_policy` uses `identity(X)` leaves to gate by identity-current state; `endorse(KEL)` is allowed but rare since most read-side gating is identity-oriented rather than device-oriented.
+
+Four valid combinations:
+
+| `owner_iel_event` | `read_policy` | Pattern |
+|-------------------|---------------|---------|
+| `None` | `None` | Public, anonymous write |
+| `Some` | `None` | Attested write, public read |
+| `None` | `Some` | Anonymous write, controlled read (drop-box) |
+| `Some` | `Some` | Attested write, controlled read (private message) |
+
+**Supersedes #167's `custody.write` + `custody.read` split.** The prior design used `custody.write` (IEL event SAID) + `custody.read` (IEL prefix). The write field stays as an IEL event SAID under the new name `owner_iel_event`; the read field generalizes from "IEL prefix" to "policy SAID," giving composability that the prefix-only form couldn't express. Asymmetric patterns (signed-public, anonymous-drop-box) are preserved.
 
 ### Availability (per-SAD-object replication + lifecycle)
 
@@ -102,13 +113,13 @@ Used for credential issuance and endorsement verification. Evaluates a policy ag
 - `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
 - Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
 
-### `evaluate_signed_policy` — Access Control Context (`custody.read` enforcement)
+### `evaluate_signed_policy` — Access Control Context (`read_policy` enforcement)
 
-Used for SAD-object read enforcement at fetch time, against the IEL-resolved auth_policy referenced by `custody.read`. Evaluates a policy against a verified prefix set from a `SignedRequest`.
+Used for SAD-object read enforcement at fetch time, against the policy referenced by `read_policy`. The policy is fetched and evaluated against the verified prefix set from a `SignedRequest`; `identity(X)` leaves in the policy resolve to X's current `auth_policy` (walk to tip), while `endorse(KEL)` leaves check the KEL's current state.
 
 - Checks prefix set membership: the caller has already verified the signers' KELs and collected verified prefixes
-- Supports `Endorse`, `Weighted`, and `Policy` (nested) nodes only
-- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. Read-gating policies should use direct `endorse()` nodes for any party that needs read access
+- Supports `Endorse`, `Identity`, `Weighted`, and `Policy` (nested) nodes
+- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. Read-gating policies should use direct `endorse()` or `identity()` nodes for any party that needs read access
 - No poison checks, no async KEL calls — synchronous evaluation against the verified set
 
 ## API
@@ -224,5 +235,5 @@ kels-cli sel prefix <identity> <topic>           # Compute SEL prefix offline
 
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
-- **Ephemeral objects** — `availability.once: true` + `custody.read` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
-- **Access-controlled data** — `custody.read` enforces fetch-time access control via signed requests evaluated against the IEL's current auth_policy.
+- **Ephemeral objects** — `availability.once: true` + `read_policy` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
+- **Access-controlled data** — `read_policy` enforces fetch-time access control via signed requests evaluated against a composable policy (typically `identity(X)` leaves resolving identity-current state).

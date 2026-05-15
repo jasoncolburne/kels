@@ -42,10 +42,11 @@ When `poison` is absent, any endorser in the main expression can soft-poison (th
 
 ## DSL
 
-Five composable node types:
+Six composable node types:
 
 ```
-endorse(PREFIX)                    # leaf: this prefix must anchor the credential SAID
+endorse(PREFIX)                    # leaf: this KEL prefix must anchor the credential SAID
+identity(PREFIX)                   # leaf: resolve PREFIX's IEL tip, evaluate its current auth_policy here
 delegate(DELEGATOR, DELEGATE)      # delegated endorsement (see below)
 threshold(MIN, [NODE, ...])        # M-of-N children must be satisfied
 weighted(MIN_WEIGHT, [NODE:W, ...])# sum of satisfied weights >= min_weight
@@ -57,6 +58,7 @@ Nodes nest freely:
 ```
 threshold(2, [
   endorse(KBfd1234...),
+  identity(EAliceIdentity...),
   weighted(3, [endorse(KAbc5678...):2, endorse(KCde9012...):1]),
   policy(KHij3456...)
 ])
@@ -71,12 +73,46 @@ threshold(2, [
 
 This supports fleet scaling — an HSM-backed service delegates to rotating software-key services. When a delegate rotates, re-issue the credential with a new policy naming the new delegate.
 
+### Identity Resolution
+
+`identity(PREFIX)` resolves PREFIX as an IEL (identity-chain) prefix. At evaluation time the evaluator walks PREFIX's IEL chain to its current tip, reads the tip's tracked `auth_policy` SAID, resolves that policy, and evaluates it in place — the `identity(X)` leaf is, semantically, the current `auth_policy` of X expanded at the position the leaf occupies. This is the load-bearing primitive that lets every other subsystem hold a stable reference to a user-facing identity: devices come and go under X's IEL, but a policy `identity(X)` keeps resolving to whatever endorsers X currently authorizes, with no edit to the referencing policy.
+
+Identity resolution composes. The policy at X's tip may itself contain `identity(...)` leaves naming other identities; those resolve through the same mechanism. A policy expressing "X plus any 2-of-3 federation members, where each member is itself an identity" nests transparently.
+
+**Cycle guard.** The evaluator carries a stack of identity prefixes currently being resolved. Visiting an identity already on the stack is rejected as a cycle — `identity(X)` cannot, directly or transitively through other identities, expand to a policy that names X again.
+
+**Per-evaluation cache.** Resolutions are cached keyed by `(identity_prefix, chain_tip_SAID)` for the duration of a single evaluation. Repeated `identity(X)` references within one policy walk hit the cache; the same key in a later evaluation invalidates naturally once X's IEL advances, because the tip SAID changes.
+
+**Trust model.** Resolving `identity(X)` requires an IEL/SEL source. For consumers running with the standard `AnchoredPolicyChecker` wiring, that source is provided alongside the KEL source. For offline contexts (CLI tools computing a prefix from inputs that don't reach the network), `identity(X)` is unresolvable: callers must surface the error rather than treat unresolved leaves as `false` — silently false would let a policy be "satisfied" by an evaluator that simply couldn't see the truth. Fail loudly.
+
+**DSL examples.**
+
+```
+# Single-identity endorsement: anyone alice's current auth_policy admits.
+identity(EAliceIdentity...)
+
+# Threshold of identities: any 2 of 3 named identities.
+threshold(2, [
+  identity(EAliceIdentity...),
+  identity(EBobIdentity...),
+  identity(ECarolIdentity...),
+])
+
+# Mixed identity + raw KEL leaves: identity-current authority for alice,
+# pinned device authority for a specific service node.
+threshold(2, [
+  identity(EAliceIdentity...),
+  endorse(KServiceNodePrefix...),
+])
+```
+
 ### Policy Compaction
 
 Same pattern as credential compaction. Strip variable parts (delegates), recompute SAID:
 
 - `delegate(DELEGATOR, DELEGATE)` compacts to `delegate(DELEGATOR)`
 - `endorse(PREFIX)` stays as-is
+- `identity(PREFIX)` stays as-is — the identity prefix is structurally stable (chosen at IEL inception, fixed for the chain's life); only the *resolved* `auth_policy` evolves, and that's fetched at evaluation, not baked into the policy
 - `threshold`, `weighted`, `policy` recursively compact children
 - `poison` expression is also compacted
 
@@ -96,18 +132,19 @@ For the operator-facing intuition behind redundancy — adversary patience, the 
 
 ```rust
 pub enum PolicyNode {
-    Endorse(String),                          // specific prefix
+    Endorse(String),                          // specific KEL prefix
+    Identity(String),                         // IEL prefix; resolves to its current auth_policy at evaluation
     Delegate(String, String),                 // delegator, delegate
     Weighted(u64, Vec<(PolicyNode, u64)>),    // min_weight, (child, weight)
     Policy(String),                           // nested policy SAID
 }
 ```
 
-`threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])` — threshold is syntactic sugar for equal-weight weighted. `Display` produces `threshold()` syntax when all weights are 1, preserving round-trip identity. `compact()` strips delegates for compaction.
+`threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])` — threshold is syntactic sugar for equal-weight weighted. `Display` produces `threshold()` syntax when all weights are 1, preserving round-trip identity. `compact()` strips delegates for compaction; `Identity` variants pass through unchanged (the prefix is the stable handle, the resolved policy isn't part of the compacted form).
 
 ## Parser
 
-Hand-written recursive descent (no external parser deps). Validates:
+Hand-written recursive descent (no external parser deps). Accepts `identity(PREFIX)` as a leaf alongside `endorse(PREFIX)` and `delegate(DELEGATOR, DELEGATE)`. Validates:
 - Weighted/threshold min_weight >= 1 and <= total weight
 - Non-empty child lists
 - Weight >= 1 per item
@@ -165,16 +202,19 @@ pub trait PolicyResolver: Sync {
 
 `InMemoryPolicyResolver` wraps a `BTreeMap<String, Policy>` for tests and simple use cases.
 
+For `Identity(prefix)` resolution, the evaluator additionally takes an IEL source — the same shape that `AnchoredPolicyChecker` uses for IEL access, parallel to its KEL source. The IEL source supplies "tip event + tracked `auth_policy` at the tip" for an identity prefix; the resulting `auth_policy` SAID is then passed through the same `PolicyResolver`. Tests can in-memory both sources side by side; production wires them to the live KEL/IEL infrastructure.
+
 ## Evaluation
 
 `evaluate_policy(policy, credential_said, source, resolver)` walks the AST:
 
 1. For `Endorse(prefix)`: verify prefix's KEL, check for credential SAID anchoring and (unless immune) poison hash
-2. For `Delegate(delegator, delegate)`: verify delegation relationship, then check delegate's endorsement
-3. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight (threshold is weighted with unit weights)
+2. For `Identity(prefix)`: walk prefix's IEL chain to its current tip via the IEL source, read the tip's tracked `auth_policy` SAID, resolve that policy via `PolicyResolver`, evaluate it recursively in place. Push `prefix` onto the identity-resolution stack before the recursive call and pop after; reject as a cycle if `prefix` is already on the stack. Results are memoized for the remainder of the evaluation under the key `(prefix, chain_tip_SAID)`.
+3. For `Delegate(delegator, delegate)`: verify delegation relationship, then check delegate's endorsement
+4. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight (threshold is weighted with unit weights)
 5. For `Policy(said)`: resolve via `PolicyResolver`, parse, evaluate recursively
 
-Cycle detection via visited-set on policy SAIDs. Max nesting depth = 10.
+Cycle detection runs on two independent stacks: policy SAIDs (for `Policy(said)` nesting) and identity prefixes (for `Identity(prefix)` nesting). Max nesting depth = 10 on each. Unresolvable identities (no IEL source available; IEL fetch failed) surface as evaluation errors, never as silent `false`.
 
 When `poison` is set:
 - Main expression evaluates without poison checks (only endorsement)
@@ -234,11 +274,11 @@ lib/policy/
 ├── deny.toml
 └── src/
     ├── lib.rs              # public API re-exports
-    ├── ast.rs              # PolicyNode enum (Endorse, Delegate, Weighted, Policy) + Display + compact()
+    ├── ast.rs              # PolicyNode enum (Endorse, Identity, Delegate, Weighted, Policy) + Display + compact()
     ├── parser.rs           # recursive descent parser + canonicalize(); threshold() is sugar for Weighted
     ├── policy.rs           # Policy struct + build() + compact() + helpers
-    ├── resolver.rs         # PolicyResolver trait + InMemoryPolicyResolver
-    ├── evaluator.rs        # evaluate_policy() + poison_hash()
+    ├── resolver.rs         # PolicyResolver trait + InMemoryPolicyResolver; IelSource trait for identity() resolution
+    ├── evaluator.rs        # evaluate_policy() + poison_hash(); identity-resolution stack + per-evaluation cache
     ├── json_api.rs         # JSON-boundary functions (build, compact, poison_hash)
     ├── verification.rs     # PolicyVerification + EndorsementStatus
     └── error.rs            # PolicyError

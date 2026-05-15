@@ -104,16 +104,19 @@ kels/sad/v1/events/evl
 # lint script.
 \b[rR]ound[- ]?1[0-3]\b
 
-# === Issue #167: Custody reshape ===
-# Pre-#167 Custody fields: `writePolicy` / `readPolicy` (renamed to
-# `write` / `read`), and the `nodes` / `ttl` / `once` keys that relocated
-# from `custody.*` to `availability.*`. The bare `nodes` / `ttl` / `once`
-# tokens are too generic to forbid (they appear in unrelated code), so
-# the camelCase Custody-field forms are the catchable surface here.
+# === Issue #167: Custody reshape (partially superseded) ===
+# Pre-#167 Custody fields included `writePolicy` / `readPolicy` and the
+# `nodes` / `ttl` / `once` keys that relocated from `custody.*` to
+# `availability.*`. The bare `nodes` / `ttl` / `once` tokens are too
+# generic to forbid (they appear in unrelated code), so the camelCase
+# Custody-field forms are the catchable surface here.
+#
+# Note: the redesign after #167 re-canonizes `read_policy` as the read-side
+# field name (policy SAID for read access; same semantic as pre-#167's
+# readPolicy). The write side is now `owner_iel_event`, so writePolicy
+# stays banned.
 \bwritePolicy\b
-\breadPolicy\b
 \bwrite_policy\b
-\bread_policy\b
 # Pre-#167 type forms that don't survive the reshape.
 \bSadCustodyContext\b
 \bCustodyRepository\b
