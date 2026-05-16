@@ -2,7 +2,7 @@
 
 KELS is a federated decentralized key management infrastructure (DKMI), inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
 
-For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md).
+For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md). **Note**: Design is currently in flux and not guaranteed to be correct. I've worked to try and ensure the primitives/doctrine are well fleshed out, but it needs more review and the features and infrastructure designs are about to undergo many changes.
 
 ## Why a DKMI?
 
