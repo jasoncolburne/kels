@@ -38,11 +38,28 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 
 ### KELS
 
-KELS is a federated key event system that shares KERI's foundational concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust. KELS **stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem. It introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics. Replication uses a custom gossip protocol (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts. Federation is itself an identity — a shared **federation IEL** whose current `auth_policy` declares the set of authorized peers and whose `governance_policy` constrains how membership evolves. Peer identities are HSM-backed gossip-service identities; membership changes are governance-authorized `Evl` events on the federation IEL.
+KELS is a federated DVTI (Decentralized Verifiable Trust Infrastructure) that shares KERI's foundational DKMI concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust — and extends past the keys layer to identity (IEL) and content (SEL). KELS:
 
-KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification attacks.
+- **Stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem.
+- Introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics.
+- Uses a custom gossip protocol for replication (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts.
+- Constructs federation as an identity — a shared **federation IEL** whose current `auth_policy` declares the set of authorized peers and whose `governance_policy` constrains how membership evolves.
+- Backs peer gossip-service identities with HSMs.
 
-Beyond the DKMI layer, KELS adds **SELs** (SAD Event Logs) — a generic append-only verifiable event log for arbitrary Self-Addressing Data, governed by a composable policy DSL. The DSL provides `endorse(kel_prefix)`, `identity(iel_prefix)` (resolves through an IEL's current `auth_policy`), `delegate(DELEGATOR)` (any KEL the delegator has dip-delegated and anchored), `threshold(k, [...])`, `weighted(k, [... : weight])`, and nested `policy(SAID)` references, with soft/hard/immune poisoning for withdrawing endorsements. Where a KEL manages keys for a single device, SELs compose key management across multiple identities into higher-level primitives: identity chains, exchange-key (encap-key) chains, custody envelopes, and credential-anchor chains are all SELs with policy-governed write and governance lifecycles. KERI has no analogue at this layer — ACDC credentials and TEL registries are credential-specific data structures rather than a general event-log substrate, and tholder thresholds live within a single identifier's keys rather than composing across identities.
+KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification/correlation attacks.
+
+Beyond the DKMI layer, KELS adds:
+
+- **SELs** (SAD Event Logs) — a generic append-only verifiable event log for arbitrary Self-Addressing Data, with per-event authorization resolved through the bound IEL. Concrete chains include ML-KEM encapsulation-key publication, per-peer gossip-service address publication, custody envelopes, and mail metadata.
+- **A composable policy DSL** with the following constructs:
+  - `endorse(kel_prefix)` — a specific KEL must anchor the SAID.
+  - `identity(iel_prefix)` — resolves through an IEL's current `auth_policy` at evaluation time.
+  - `delegate(DELEGATOR)` — any KEL the delegator has dip-delegated and anchored qualifies.
+  - `threshold(k, [...])` / `weighted(k, [... : weight])` — composition aggregators.
+  - `policy(SAID)` — nest another policy by SAID.
+  - Soft/hard/immune poisoning for withdrawing endorsements.
+
+KERI has no analogue at this layer — ACDC credentials and TEL registries are credential-specific data structures rather than a general event-log substrate, and tholder thresholds live within a single identifier's keys rather than composing across identities.
 
 ---
 
