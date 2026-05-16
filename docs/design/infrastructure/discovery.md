@@ -21,9 +21,9 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
 2. **Enumerate authorized identities.** Walk the `auth_policy` expression and collect the set of `identity(...)` leaves. Each leaf is a peer-identity prefix.
 3. **For each peer identity, compute the address SEL prefix.**
    ```
-   address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sad/v1/peers/address")
+   address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/address")
    ```
-   The topic string `"kels/sad/v1/peers/address"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
+   The topic string `"kels/sel/v1/peer/address"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd` (or `Icp` if no `Upd` has landed yet).
 5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
 

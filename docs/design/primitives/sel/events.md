@@ -34,7 +34,7 @@ Pure structural reference for SAD Event Log (SEL) event kinds, per-kind field ru
 | `Dec` | `>= 2` | required | forbidden | **required** | **required** | preserved |
 | `Cnt` | `>= 2` | required | forbidden | **required** | **required** | preserved |
 
-The `identity` field lives on `Icp` only; subsequent events inherit it from chain context. The chain's bound IEL is fixed at inception and cannot be changed. The `topic` field — present on every event — is the SAD content-kind namespace (e.g., `kels/sad/v1/keys/mlkem`) and seeds the SEL prefix derivation `(identity, topic) → prefix` on `Icp`; subsequent events carry the same topic, enforced by the verifier's Topic consistency check (see [verification.md §Per-Event Checks](verification.md#per-event-checks)).
+The `identity` field lives on `Icp` only; subsequent events inherit it from chain context. The chain's bound IEL is fixed at inception and cannot be changed. The `topic` field — present on every event — is the SAD content-kind namespace (e.g., `kels/sel/v1/keys/mlkem`) and seeds the SEL prefix derivation `(identity, topic) → prefix` on `Icp`; subsequent events carry the same topic, enforced by the verifier's Topic consistency check (see [verification.md §Per-Event Checks](verification.md#per-event-checks)).
 
 ### Authorization and anchor
 
@@ -157,7 +157,7 @@ See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#
 ### Exchange key publication
 
 ```
-v0  kind=icp  identity=IEL_prefix, topic=kels/sad/v1/keys/mlkem
+v0  kind=icp  identity=IEL_prefix, topic=kels/sel/v1/keys/mlkem
 v1  kind=est  iel_event=IEL_v0_said, content=key_publication_said    ← inception batch Est; binds to IEL Icp's auth_policy; tier-2 anchored
 v2  kind=upd  iel_event=IEL_v0_said, content=rotated_key_said        ← routine extension; tier-1 anchored
 v3  kind=sea  iel_event=IEL_v0_said, content=rotated_key_said        ← preserved from v2; pure evaluation
