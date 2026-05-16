@@ -2,7 +2,7 @@
 
 A KELS federation is **itself an identity**. Membership lives on a single shared IEL — the *federation IEL* — and membership changes are governance-authorized `Evl` events on that chain. Discovery, authorization, and burn semantics all reduce to operations on that one identity.
 
-This document explains the model and its load-bearing properties. For node-side discovery mechanics see [discovery.md](discovery.md); for the handshake-time authorization check see [secure-registration.md](secure-registration.md).
+This document explains the model and its load-bearing properties. For node-side discovery mechanics see [discovery.md](discovery.md); for the handshake-time authorization check see [peer-identity.md](peer-identity.md).
 
 ## Why federation reduces to identity
 
@@ -87,7 +87,7 @@ Each node runs a gossip service. That service is a **degenerate single-KEL ident
 
 The gossip service is the only service on a node that participates in federation authentication. Other services on the same node (`sadstore`, `mail`, the `kels` service, identity service) are workers; they don't carry federation identities and don't authenticate with peers themselves. When this doc says "peer," it means a gossip-service instance — not a host, not a deployment, not an operator.
 
-The HSM ceremony is documented in [secure-registration.md](secure-registration.md).
+The HSM ceremony is documented in [peer-identity.md](peer-identity.md).
 
 ## Per-peer address publication
 
@@ -226,7 +226,7 @@ Each node needs to know which federation IEL is its federation. The prefix is co
 
 The runtime override exists for recovery: operators can repoint a federation to a fresh IEL prefix on existing binaries when the federation IEL becomes contested, then align the compile-time default at the next release.
 
-HSM and gossip identity config: see [gossip.md](gossip.md) and [secure-registration.md](secure-registration.md).
+HSM and gossip identity config: see [gossip.md](gossip.md) and [peer-identity.md](peer-identity.md).
 
 Bootstrap and onboarding flows use `transfer_*_events` parameterized with the coordinator-of-the-moment's store addresses at invocation time — a CLI argument, not a service env var. See [§Bootstrap](#bootstrap-one-time-ceremony).
 
@@ -276,6 +276,6 @@ A contested federation IEL stays contested forever — that is the structural me
 - [protocol-doctrine.md §Multi-Party Governance Synchronization](../protocol-doctrine.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
 - [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).
 - [discovery.md](discovery.md) — node-side discovery (`auth_policy` enumeration + address SEL walks).
-- [secure-registration.md](secure-registration.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
+- [peer-identity.md](peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
 - [gossip.md](gossip.md) — gossip protocol mechanics (HyParView+PlumTree, PQ transport).
 - [../../operations/multi-party-governance.md](../../operations/multi-party-governance.md) — operator playbook for serializing high-stakes governance submissions.

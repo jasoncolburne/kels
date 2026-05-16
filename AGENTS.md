@@ -96,7 +96,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Exchange** — ESSR authenticated encryption, ML-KEM key publication via SAD Event Logs. See `docs/design/features/exchange.md`.
 
-**Federation** — itself an identity. Membership lives on a single shared IEL (the *federation IEL*) whose `auth_policy` declares authorized peers; membership changes are governance-authorized `Evl` events. Each peer publishes its own network endpoints via a per-peer address SEL at a deterministic prefix. Handshake authorization is `evaluate_signed_policy` against the federation IEL's current `auth_policy`. See `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`, `docs/design/infrastructure/secure-registration.md`.
+**Federation** — itself an identity. Membership lives on a single shared IEL (the *federation IEL*) whose `auth_policy` declares authorized peers; membership changes are governance-authorized `Evl` events. Each peer publishes its own network endpoints via a per-peer address SEL at a deterministic prefix. Handshake authorization is `evaluate_signed_policy` against the federation IEL's current `auth_policy`. See `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`, `docs/design/infrastructure/peer-identity.md`.
 
 **SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`).
 

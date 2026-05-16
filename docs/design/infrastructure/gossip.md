@@ -158,10 +158,10 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 
 ### HSM-backed gossip identity
 
-Gossip nodes use persistent HSM-backed identities. Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). See [secure-registration.md §HSM identity model](secure-registration.md) for the cross-service HSM model.
+Gossip nodes use persistent HSM-backed identities. Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). See [peer-identity.md](peer-identity.md) for the gossip identity model.
 
 - Each node's identity is cryptographically bound to ML-DSA-65 or ML-DSA-87 keys in the HSM — the identity does not change across restarts
-- The peer identity prefix (44-char CESR-encoded; a single-KEL IEL prefix per [secure-registration.md](secure-registration.md)) identifies the node in the gossip mesh
+- The peer identity prefix (44-char CESR-encoded; a single-KEL IEL prefix per [peer-identity.md](peer-identity.md)) identifies the node in the gossip mesh
 - A node must be listed in the federation IEL's current `auth_policy` to be authorized; handshakes from unauthorized identities are rejected
 - Only ML-DSA-65/87 peers are accepted (P-256 peers are rejected)
 - The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
@@ -173,7 +173,7 @@ Gossip nodes use persistent HSM-backed identities. Development deployments load 
   6. Exchange and verify signatures against peer's KEL public key
   7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
 - Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security
-- See [Secure Registration](secure-registration.md) for the handshake authorization model (federation IEL `auth_policy` check)
+- See [Peer Identity](peer-identity.md) for the handshake authorization model (federation IEL `auth_policy` check)
 
 ### Delta-based sync with full-fetch fallback
 

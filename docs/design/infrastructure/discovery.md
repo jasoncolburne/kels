@@ -25,7 +25,7 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
    ```
    The topic string `"kels/sad/v1/peers/address"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd` (or `Icp` if no `Upd` has landed yet).
-5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [secure-registration.md](secure-registration.md)).
+5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
 
 All four reads (federation IEL, address SELs) hit local storage; no network calls are needed for the discovery itself. The freshness of the answer depends on gossip anti-entropy, which is what keeps the local chains current.
 
@@ -79,7 +79,7 @@ In all cases the failure mode is **fail-secure**: an unverifiable or contested c
 ## References
 
 - [federation.md](federation.md) — full federation-as-identity design.
-- [secure-registration.md](secure-registration.md) — handshake-time authorization check against the federation IEL.
+- [peer-identity.md](peer-identity.md) — handshake-time authorization check against the federation IEL.
 - [gossip.md](gossip.md) — gossip protocol mechanics, anti-entropy, transport layer.
 - [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics.
 - [primitives/sel/event-log.md](../primitives/sel/event-log.md) — SEL chain semantics; address SELs follow the standard SEL pattern.

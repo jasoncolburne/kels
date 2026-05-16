@@ -1,4 +1,4 @@
-# Secure Peer Authorization
+# Peer Identity
 
 Each gossip node carries an HSM-backed identity. At handshake time, the federation IEL's current `auth_policy` decides whether a connecting peer is authorized to participate in the mesh.
 
