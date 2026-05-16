@@ -304,6 +304,24 @@ IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — p
 
 Anchor tier elevation is a **verifier-side rule**. The verifier walks each IEL/SEL event and checks anchor presence of the required kind in candidate policy members' KELs as part of computing threshold satisfaction. Submit handlers invoke the verifier; consumers reading gossip-received, replicated, or bootstrapped data enforce the same check. No submit-handler-only carve-out exists.
 
+#### Sea-after-Upd ratchet (application pattern)
+
+An application protocol can require trailing SEL `Upd`s be followed by `Sea`, batching `[Upd..., Sea]` as the atomic application operation. Plain `Upd`-tailed chains are application-invalid; the next event must be `Sea` before the SEL is treated as complete by governance-aware consumers.
+
+`Sea` is tier-2 anchored — it must anchor in a KEL `Rot`. So the pattern forces a key rotation on every sealed batch. Three layered properties result:
+
+- **Exposure-window bounding (cryptographic).** Each operating signing key is exposed to operations for at most one batch. Pre-rotation hides the next key behind its hash until `Rot` reveals it; cryptanalysis against the current key (offline signature analysis, side-channel observation, harvest-now-decrypt-later quantum attacks against the signature stream) doesn't extend to the next key. Continuous rotation moves the attack target before any single key can be broken. The property holds independent of custody arrangement — pre-rotation defends through *exposure surface*, not through where the keys are stored.
+- **Policy-layer separation (when `auth_policy ≠ governance_policy`).** `Sea` is governance-authorized. An auth-key-only holder can produce `Upd`s but not `Sea`. Multi-device or otherwise composed identities get real cryptographic separation between "auth-set wrote this" and "governance-set sealed this."
+- **Consumer-visibility.** A chain ending in unsealed `Upd`s is structurally identifiable as pending. Consumers that need to know "has governance acknowledged this state?" detect the absence of a trailing `Sea`.
+
+The exposure-window property is the load-bearing one and applies even to degenerate single-KEL IELs where `auth_policy = governance_policy`. KERI's entire security story leans on pre-rotation for the same reason; KELS inherits it and the Sea-after-Upd ratchet makes the rotation cadence application-driven rather than operator-paced.
+
+**Where it applies:** any IEL+SEL composition where the operator wants exposure-window bounding on durable state, or where governance and auth need to be cryptographically separated, or where governance-aware consumers need a chain-completeness signal. For peer-address SELs on degenerate gossip-service IELs, exposure-window bounding is the primary motivation.
+
+**Operational cost:** every sealed batch forces a `Rot`. The operator's rotation cadence is set by application traffic, not by an operator-defined schedule. For peer addresses where updates are infrequent, this is cheap; for high-frequency SEL traffic, the rotation overhead is non-trivial and the operator should batch `Upd`s aggressively before sealing.
+
+This is an application-protocol convention, not a protocol invariant — the verifier does not require `Sea`-trailing structure. Applications that want the properties above enforce the convention at their construction layer.
+
 #### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
