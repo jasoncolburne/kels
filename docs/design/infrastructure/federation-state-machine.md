@@ -1,5 +1,7 @@
 # Federation State Machine
 
+> **⚠️ Design in transition.** This document describes the Raft state machine used by the current voting + registry federation model. A redesign replacing voting/Raft with federation-as-identity (IEL chain ordering replaces Raft; policy satisfaction replaces vote tally) is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). When that design lands, this document is deleted (no state machine in the new model).
+
 This document describes the Raft state machine used by the registry federation to manage the peer set.
 
 ## Overview

@@ -1,5 +1,7 @@
 # Secure Peer Authorization
 
+> **⚠️ Design in transition.** This document describes the current allowlist-based peer authorization. A redesign replacing the allowlist concept with handshake authorization against the federation IEL's `auth_policy` is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). The HSM-backed identity ceremony stays; the allowlist concept goes. When that design lands, this document is refocused.
+
 This document describes the cryptographically secured peer authorization system for KELS gossip nodes. Signed requests are verified using HSM-backed identities against a peer allowlist.
 
 ## Overview

@@ -1,5 +1,7 @@
 # KELS Node Registry & Bootstrap Sync
 
+> **⚠️ Design in transition.** This document describes the current registry-service-based discovery model. A redesign replacing the registry service entirely with federation-as-identity (gossip nodes hold the federation IEL locally; discovery via federation `auth_policy` enumeration + per-peer address SELs) is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). When that design lands, this document is substantially trimmed to node-side discovery only.
+
 ## Overview
 
 The registry service (`services/registry`) provides peer discovery for KELS gossip deployments. When new nodes come online, they query the registry for peers, bootstrap sync missing KELs, then begin normal gossip operation. Clients discover nodes via the registry and test latency to select optimal nodes.

@@ -1,5 +1,7 @@
 # Multi-Registry Federation
 
+> **⚠️ Design in transition.** This document describes the current voting + registry + Raft federation model. A redesign replacing this with federation-as-identity (single federation IEL, identity-rooted membership, no registry service, no Raft) is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). When that design lands, this document is substantially rewritten per the tracker's plan.
+
 This document describes the multi-registry federation architecture that enables independent registries across different clouds/regions with consensus-based peer management.
 
 ## Overview

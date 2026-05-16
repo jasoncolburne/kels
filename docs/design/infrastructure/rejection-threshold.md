@@ -1,5 +1,7 @@
 # Rejection Threshold
 
+> **⚠️ Design in transition.** This document describes the rejection threshold under the current count-based voting model. A redesign replacing voting with endorsement-accumulation policy satisfaction is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). The rejection-threshold concept doesn't transfer: under endorsement accumulation there's no "active rejection" action, only absence of endorsement, which is captured by the threshold itself. When that design lands, this document is deleted.
+
 ## Problem
 
 The approval threshold for peer proposals is `ceil(n/3)` (minimum 3). With 21 federation members this is 7. Without a rejection mechanism, 7 approvals would add a peer even if the remaining 14 members all voted to reject. A supermajority saying "no" should not be overridden by a minority saying "yes."
