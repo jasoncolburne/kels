@@ -1,6 +1,6 @@
 //! Integration tests for the KELS SADStore service.
 //!
-//! Shared server instance with Postgres + MinIO testcontainers.
+//! Shared server instance with Postgres + RustFS testcontainers.
 //! Tests cover: PUT/GET SAD objects, SAD event submission/fetch,
 //! prefix computation, chain integrity rejection, effective SAID.
 
@@ -63,8 +63,9 @@ async fn retry_get_port_generic(
 
 struct SharedHarness {
     base_url: String,
+    objects_endpoint: String,
     _postgres: ContainerAsync<Postgres>,
-    _minio: ContainerAsync<GenericImage>,
+    _objects: ContainerAsync<GenericImage>,
 }
 
 static SHARED_HARNESS: OnceLock<OnceCell<Option<SharedHarness>>> = OnceLock::new();
@@ -106,23 +107,28 @@ impl SharedHarness {
             pg_host, pg_port
         );
 
-        // Start MinIO
-        let minio = GenericImage::new("minio/minio", "latest")
+        // Start the object store (RustFS)
+        let objects = GenericImage::new("rustfs/rustfs", "latest")
             .with_exposed_port(9000.into())
-            .with_wait_for(WaitFor::message_on_stderr("API:"))
+            .with_wait_for(WaitFor::seconds(5))
             .with_label(TEST_CONTAINER_LABEL.0, TEST_CONTAINER_LABEL.1)
-            .with_env_var("MINIO_ROOT_USER", "minioadmin")
-            .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-            .with_cmd(vec!["server".to_string(), "/data".to_string()])
+            .with_env_var("RUSTFS_ACCESS_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_SECRET_KEY", "rustfsadmin")
+            .with_env_var("RUSTFS_VOLUMES", "/data")
+            .with_env_var("RUSTFS_ADDRESS", "0.0.0.0:9000")
+            .with_env_var("RUSTFS_CONSOLE_ADDRESS", "0.0.0.0:9001")
             .start()
             .await
-            .expect("MinIO container failed to start");
+            .expect("object store container failed to start");
 
-        let minio_host = minio.get_host().await.expect("failed to get MinIO host");
-        let minio_port = retry_get_port_generic(&minio, 9000)
+        let objects_host = objects
+            .get_host()
             .await
-            .expect("failed to get MinIO port");
-        let minio_endpoint = format!("http://{}:{}", minio_host, minio_port);
+            .expect("failed to get object store host");
+        let objects_port = retry_get_port_generic(&objects, 9000)
+            .await
+            .expect("failed to get object store port");
+        let objects_endpoint = format!("http://{}:{}", objects_host, objects_port);
 
         // Bind to random port
         let std_listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind");
@@ -132,10 +138,10 @@ impl SharedHarness {
 
         // Set env vars for the server
         unsafe {
-            std::env::set_var("MINIO_ENDPOINT", &minio_endpoint);
-            std::env::set_var("MINIO_REGION", "us-east-1");
-            std::env::set_var("MINIO_ACCESS_KEY", "minioadmin");
-            std::env::set_var("MINIO_SECRET_KEY", "minioadmin");
+            std::env::set_var("OBJECTS_ENDPOINT", &objects_endpoint);
+            std::env::set_var("OBJECTS_REGION", "us-east-1");
+            std::env::set_var("OBJECTS_ACCESS_KEY", "rustfsadmin");
+            std::env::set_var("OBJECTS_SECRET_KEY", "rustfsadmin");
             std::env::set_var("KELS_SAD_BUCKET", "kels-sad-test");
             std::env::set_var("KELS_TEST_ENDPOINTS", "true");
         }
@@ -173,8 +179,9 @@ impl SharedHarness {
                 eprintln!("Shared test server ready at {}", base_url);
                 return Some(Self {
                     base_url,
+                    objects_endpoint,
                     _postgres: postgres,
-                    _minio: minio,
+                    _objects: objects,
                 });
             }
             sleep(Duration::from_millis(100)).await;
@@ -192,6 +199,20 @@ impl SharedHarness {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap()
+    }
+
+    /// Build an `ObjectStore` client pointing at the harness's RustFS
+    /// container. Used by tests that need to manipulate the object store
+    /// directly (e.g. simulating an object-store-only orphan to verify
+    /// recovery via §5.1's RustFS-first ordered idempotent store).
+    fn object_store_client(&self) -> kels_sadstore::ObjectStore {
+        kels_sadstore::ObjectStore::new(
+            &self.objects_endpoint,
+            "us-east-1",
+            "kels-sad-test",
+            "rustfsadmin",
+            "rustfsadmin",
+        )
     }
 }
 
@@ -344,6 +365,179 @@ async fn test_post_sad_object_invalid_json_rejected() {
     assert_eq!(resp.status(), 400);
 }
 
+// ==================== §5.1 Atomicity Tests ====================
+// `SadObjectIndex::store` writes object store first then PG (auto-commit);
+// HEAD-checks consult PG, not object store. The asymmetric behaviors below
+// only become observable post-§5.1 — under the prior shape, a transient
+// object-store orphan would short-circuit subsequent POSTs (sticky), and
+// tests crashing between PUT and COMMIT would leave PG-orphans.
+
+#[tokio::test]
+async fn test_object_store_orphan_heals_on_repost() {
+    // Simulate an object-store-only orphan (e.g. process crashed between
+    // PUT and PG INSERT under the new ordering). A subsequent POST of the
+    // same SAD must heal the orphan: idempotent PUT on RustFS, then PG
+    // INSERT records the entry. Pre-§5.1 the HEAD check on object store
+    // returned true and short-circuited without writing PG, leaving the
+    // orphan sticky.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "object-store-orphan-heal-test",
+    });
+    object.derive_said().unwrap();
+    let said = object.get_said();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    // Pre-condition: place bytes in object store directly, bypassing PG.
+    harness
+        .object_store_client()
+        .put(&said, &bytes)
+        .await
+        .expect("direct object-store put failed");
+
+    // Existence check should report `not tracked` (PG is the source of truth).
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad/exists"))
+        .json(&serde_json::json!({ "said": said.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "PG-side existence check should miss before heal POST"
+    );
+
+    // POST the SAD — must succeed (201) and heal the orphan by inserting PG.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "POST should heal object-store orphan and create PG entry"
+    );
+
+    // Post-condition: PG now tracks the object; existence reports OK.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad/exists"))
+        .json(&serde_json::json!({ "said": said.to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "PG-side existence check should hit after heal POST"
+    );
+}
+
+#[tokio::test]
+async fn test_head_check_consults_pg_not_object_store() {
+    // After a successful POST, PG holds the entry. If object-store bytes
+    // are independently deleted (external loss / TTL race / operator
+    // intervention), the next POST of the same SAD must still short-
+    // circuit to 200 because PG remains the source of truth post-§5.1.
+    // Pre-§5.1 the HEAD check on object store would have missed and the
+    // handler would have proceeded into `SadObjectIndex::store`, which
+    // hit the DuplicateRecord shortcut and returned without rewriting
+    // bytes — same observable outcome but for the wrong reason.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "head-check-pg-source-of-truth",
+    });
+    object.derive_said().unwrap();
+    let said = object.get_said();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    // Initial POST populates both stores.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Independently delete object-store bytes.
+    harness
+        .object_store_client()
+        .delete(&said)
+        .await
+        .expect("direct object-store delete failed");
+
+    // Re-POST: HEAD-check via PG sees the entry → 200 short-circuit.
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "PG HEAD check should short-circuit even after object-store byte loss"
+    );
+}
+
+#[tokio::test]
+async fn test_repost_is_idempotent_under_pg_head_check() {
+    // Plain idempotency under §5.1: repeat POSTs of identical bytes
+    // produce 201 then 200 (HEAD via PG). Mirrors
+    // `test_put_sad_object_idempotent` but pinned to the post-§5.1
+    // contract: the second response is driven by PG presence, not
+    // object-store presence.
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let mut object = serde_json::json!({
+        "said": "",
+        "data": "duplicate-record-idempotence",
+    });
+    object.derive_said().unwrap();
+    let bytes = serde_json::to_vec(&object).unwrap();
+
+    let r1 = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), 201);
+
+    let r2 = harness
+        .client()
+        .post(harness.url("/api/v1/sad"))
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), 200);
+}
+
 // ==================== Prefix Computation Tests ====================
 
 #[tokio::test]
@@ -417,15 +611,7 @@ async fn test_submit_event_invalid_said_rejected() {
     };
 
     // Create an event but tamper with the SAID
-    let mut event = SadEvent::create(
-        "kels/v1/test-kind".to_string(),
-        kels_core::SadEventKind::Icp,
-        None,
-        None,
-        Some(test_digest("kel-test-prefix")),
-        None,
-    )
-    .unwrap();
+    let mut event = SadEvent::icp(test_digest("kel-test-prefix"), "kels/v1/test-kind").unwrap();
     event.topic = "tampered".to_string(); // Tamper after SAID computation
 
     let events = vec![event];
@@ -473,6 +659,35 @@ async fn test_list_prefixes_empty() {
 }
 
 #[tokio::test]
+async fn test_list_iel_prefixes_empty() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+
+    let body = kels_core::SignedRequest {
+        payload: kels_core::PaginatedSelfAddressedRequest::create(
+            kels_core::generate_nonce(),
+            None,
+            None,
+        )
+        .unwrap(),
+        signatures: HashMap::from([(test_digest("test"), test_signature("test"))]),
+    };
+
+    let resp = harness
+        .client()
+        .post(harness.url("/api/test/iel/events/prefixes"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: kels_core::PrefixListResponse = resp.json().await.unwrap();
+    assert!(body.prefixes.len() <= 100);
+}
+
+#[tokio::test]
 async fn test_list_objects_empty() {
     let Some(harness) = get_harness().await else {
         return;
@@ -496,4 +711,64 @@ async fn test_list_objects_empty() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ==================== IEL fetch: request shape (#167 said-form) ====================
+//
+// The IEL fetch handler accepts either `prefix` OR `said` (exclusive). The
+// happy-path said-form fetch (with real IEL fixtures) is exercised by Gap 3's
+// verifier tests; here we pin the request-validation contract.
+
+#[tokio::test]
+async fn test_iel_fetch_rejects_both_prefix_and_said() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let body = serde_json::json!({
+        "prefix": test_digest("any").to_string(),
+        "said": test_digest("any").to_string(),
+    });
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_iel_fetch_rejects_neither_prefix_nor_said() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let body = serde_json::json!({});
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_iel_fetch_said_form_unknown_returns_404() {
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    // SAID not in any IEL — subquery returns empty → empty page → 404.
+    let body = serde_json::json!({
+        "said": test_digest("not-in-any-iel").to_string(),
+    });
+    let resp = harness
+        .client()
+        .post(harness.url("/api/v1/iel/events/fetch"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }

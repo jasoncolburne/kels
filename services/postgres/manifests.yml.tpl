@@ -27,7 +27,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 10Gi
+      storage: 1Gi
 
 ---
 
@@ -50,7 +50,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:18
           ports:
             - containerPort: 5432
               name: postgres
@@ -63,6 +63,16 @@ spec:
               value: "postgres"
             - name: PGDATA
               value: "/var/lib/postgresql/data/pgdata"
+            # Initialise the cluster with C locale so TEXT collation is
+            # bytewise. Required for sort-merge against `cesr::Digest256`
+            # (which compares qb64 byte-for-byte): under en_US.utf8 the
+            # collation is case-insensitive primary, so 'KAa' < 'KAB' is
+            # true at the SQL layer but false bytewise — paginated KEL /
+            # SAD listings would disagree with the bootstrap merge driver
+            # and entries would be mis-classified as remote-only or
+            # equal. C collation makes both sides agree.
+            - name: POSTGRES_INITDB_ARGS
+              value: "--locale=C --encoding=UTF8"
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data

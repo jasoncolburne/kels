@@ -1,8 +1,122 @@
 //! KELS Error Types
 
+use std::fmt;
+
 use thiserror::Error;
 
 use crate::ErrorCode;
+
+/// #156: deferrable dep payload — IEL event missing locally.
+///
+/// Used as the carrier for [`KelsError::MissingIelEvent`] and as a verifier
+/// product (alongside [`MissingKelAnchor`]) the deferred-deps layer maps to
+/// a 422 + `iel_event` dep. Boxed in the error variant to keep the
+/// `KelsError` enum small (clippy::result_large_err).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingIelEvent {
+    pub iel_prefix: cesr::Digest256,
+    pub event_said: cesr::Digest256,
+}
+
+/// #156: permanent counterpart to [`MissingIelEvent`].
+///
+/// Carries the cross-IEL contamination, IEL chain-order regression, and
+/// chain-integrity-breach cases the prior `BadIdentityBinding(String)`
+/// merged together. Held by both [`KelsError::IdentityBindingViolation`]
+/// and the corresponding `IelSatisfaction::PermanentFailure` (Gap 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityBindingViolation {
+    pub reason: String,
+}
+
+impl IdentityBindingViolation {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for IdentityBindingViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+/// #156: deferrable dep payload — KEL anchor missing locally.
+///
+/// Used as the carrier for [`KelsError::MissingKelAnchor`]. The
+/// deferred-deps layer maps to a 422 + `kel_anchor` dep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingKelAnchor {
+    pub kel_prefix: cesr::Digest256,
+    pub anchor_said: cesr::Digest256,
+}
+
+/// #156: permanent counterpart to [`MissingKelAnchor`].
+///
+/// Anchor present but invalid (bad sig, wrong key per policy) or anchor's
+/// KEL in a structurally-failed state. The `reason` describes which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorPermanentFailure {
+    pub kel_prefix: cesr::Digest256,
+    pub anchor_said: cesr::Digest256,
+    pub reason: String,
+}
+
+/// #156: deferrable dep payload — SAD object not present locally.
+///
+/// Carrier for [`KelsError::MissingSadObject`]. Used by the IEL/SEL
+/// verifier walks when a referenced SAD object (typically a Policy SAD
+/// referenced by an Icp's `auth_policy` / `governance_policy`) hasn't
+/// propagated to this node yet. The deferred-deps layer maps to a 422 +
+/// `sad_object` dep; gossip parks under `pending:said:{S}` and drains on
+/// `sad_updates(S)` arrival.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSadObject {
+    pub said: cesr::Digest256,
+}
+
+/// #156: deferrable failure accumulated during a verifier walk in
+/// collect-mode (`SelVerifier::verify_page_collecting`,
+/// `IelVerifier::verify_page_collecting`).
+///
+/// Each entry corresponds to one wire-format dep the deferred-deps layer
+/// will surface in the 422 response. Permanent failures are NOT carried
+/// here — they halt the walk with `Err(KelsError)` and are not deferrable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredFailure {
+    /// IEL event SAID not present in the bound IEL chain locally.
+    /// Wire: `iel_event` dep.
+    MissingIelEvent(MissingIelEvent),
+    /// KEL anchor not yet committed by the named endorser.
+    /// Wire: `kel_anchor` dep.
+    MissingKelAnchor(MissingKelAnchor),
+    /// SAD object referenced by an event hasn't propagated locally
+    /// (typically a Policy SAD object referenced by an Icp/Evl event's
+    /// `auth_policy` / `governance_policy`). Wire: `sad_object` dep.
+    MissingSadObject(MissingSadObject),
+}
+
+impl DeferredFailure {
+    pub fn missing_iel_event(iel_prefix: cesr::Digest256, event_said: cesr::Digest256) -> Self {
+        Self::MissingIelEvent(MissingIelEvent {
+            iel_prefix,
+            event_said,
+        })
+    }
+
+    pub fn missing_kel_anchor(kel_prefix: cesr::Digest256, anchor_said: cesr::Digest256) -> Self {
+        Self::MissingKelAnchor(MissingKelAnchor {
+            kel_prefix,
+            anchor_said,
+        })
+    }
+
+    pub fn missing_sad_object(said: cesr::Digest256) -> Self {
+        Self::MissingSadObject(MissingSadObject { said })
+    }
+}
 
 #[derive(Error, Clone, Debug)]
 pub enum KelsError {
@@ -108,8 +222,25 @@ pub enum KelsError {
     #[error("Contested KEL: {0}")]
     ContestedKel(String),
 
-    #[error("Contest required: recovery key revealed")]
-    ContestRequired,
+    #[error("Contested IEL: {0}")]
+    ContestedIel(String),
+
+    #[error("IEL is decommissioned: {0}")]
+    IelDecommissioned(String),
+
+    #[error(
+        "IEL is divergent: {0} — only `Cnt` resolves an IEL; bound an SEL event to a non-divergent branch state instead"
+    )]
+    IelDivergent(String),
+
+    #[error("Invalid IEL: {0}")]
+    InvalidIel(String),
+
+    #[error("Policy {policy} is not immune — write/governance/auth policies must be immune")]
+    NotImmunePolicy { policy: String },
+
+    #[error("Contest required: {reason}")]
+    ContestRequired { reason: String },
 
     #[error("KEL diverged at: {0}")]
     Diverged(String),
@@ -132,8 +263,17 @@ pub enum KelsError {
     #[error("Invalid version: {0}")]
     InvalidVersion(String),
 
-    #[error("Anchor verification failed: {0}")]
-    AnchorVerificationFailed(String),
+    /// #156: deferrable — verifier walked the bound KEL and could not find
+    /// the anchor SAID; the anchor may commit later. Caller can defer on
+    /// `(kel_prefix, anchor_said)` and replay when the KEL advances.
+    #[error("Missing KEL anchor {} in KEL {}", .0.anchor_said, .0.kel_prefix)]
+    MissingKelAnchor(Box<MissingKelAnchor>),
+
+    /// #156: permanent — anchor present but invalid (bad signature, wrong
+    /// key per policy) or anchor's KEL is in a structurally-failed state.
+    /// Cleanup at the deferred-deps layer; surface 4xx-permanent.
+    #[error("Anchor permanent failure for {} in KEL {}: {}", .0.anchor_said, .0.kel_prefix, .0.reason)]
+    AnchorPermanentFailure(Box<AnchorPermanentFailure>),
 
     #[error("Hardware error: {0}")]
     HardwareError(String),
@@ -149,6 +289,155 @@ pub enum KelsError {
 
     #[error("Invalid disclosure expression: {0}")]
     InvalidDisclosure(String),
+
+    #[error("Evaluation required: would exceed non-evaluation event bound")]
+    EvaluationRequired,
+
+    #[error(
+        "SAD Event Log diverged at version {at} — stage a repair to resolve before further updates"
+    )]
+    SelDivergent { at: u64 },
+
+    #[error(
+        "Nothing to repair — chain is linear and the cached tip matches the local store's owner-authored tip"
+    )]
+    NothingToRepair,
+
+    #[error(
+        "Chain has unverified events: {0} — cannot repair until policy is satisfied (verify the data source and re-run, or re-fetch a clean owner-local view)"
+    )]
+    ChainHasUnverifiedEvents(String),
+
+    #[error("Pending events block repair/recovery: {0} — discard pending and retry")]
+    PendingEventsBlockRepair(String),
+
+    #[error(
+        "SAD store payload missing for prefix {prefix} — index has SAID {said} but the keyed blob is absent (local-store corruption: manual filesystem manipulation, partial restore, or crash mid-write between SAID storage and index update)"
+    )]
+    // Stored as `String` (qb64 encoding) rather than `cesr::Digest256` to keep
+    // `KelsError` small enough to pass `clippy::result_large_err`. Digest256 is
+    // ~152 bytes; embedding two of them would balloon every `Result<_, KelsError>`
+    // returned by the crate.
+    SadStorePayloadMissing { prefix: String, said: String },
+
+    /// #147: an SEL batch contained an `Icp` but did not also contain an
+    /// `Upd` at v1. The inception batch rule (`docs/design/sel/events.md`)
+    /// requires `[Icp, Upd, ...]` minimum so every chain is born with both
+    /// content and an IEL binding; lone-Icp batches are rejected.
+    #[error("Incomplete inception: {0} — a batch containing Icp must also contain an Upd at v1")]
+    IncompleteInception(String),
+
+    /// #156 (split from prior `BadIdentityBinding`): deferrable — the
+    /// named IEL event SAID isn't present in the bound IEL chain locally.
+    /// The event may commit later via gossip propagation; caller can
+    /// defer on `(iel_prefix, event_said)` and replay on chain advance.
+    #[error("Missing IEL event {} in IEL {}", .0.event_said, .0.iel_prefix)]
+    MissingIelEvent(Box<MissingIelEvent>),
+
+    /// #156 (split from prior `BadIdentityBinding`): permanent — the
+    /// SEL event's `identity_event` binding is structurally invalid.
+    /// Covers cross-IEL contamination (named SAID's IEL prefix doesn't
+    /// match the SEL's `identity`), IEL chain-order regression
+    /// (named SAID regresses the SEL branch's monotonic ratchet), and
+    /// chain-integrity breaches (event referenced not in policy_history,
+    /// walk-back failures). The `reason` describes which.
+    ///
+    /// HARD for ALL SEL kinds (`Upd` / `Sea` / `Rpr` / `Cnt` / `Dec`) —
+    /// a chain with no valid IEL binding cannot be recorded; chain
+    /// integrity beats forensic preservation.
+    #[error("Identity binding violation: {0}")]
+    IdentityBindingViolation(IdentityBindingViolation),
+
+    /// #156: deferrable — a SAD object referenced by a verifying event
+    /// (typically a Policy SAD object referenced by an Icp/Evl event's
+    /// `auth_policy` / `governance_policy` field) is not present in the
+    /// local SAD object store. Object may commit later via gossip
+    /// propagation; caller can defer on `said` and replay when the SAD
+    /// object lands. Used by IEL/SEL verifier collect-mode to accumulate
+    /// `DeferredFailure::MissingSadObject`.
+    #[error("Missing SAD object: {}", .0.said)]
+    MissingSadObject(Box<MissingSadObject>),
+
+    /// #147: `SadEventBuilder::decommission()` pre-flight refused
+    /// because the SEL is divergent. Generic — does not distinguish
+    /// sealed vs. unsealed (the routing rules differ — sealed →
+    /// `ContestRequired`, unsealed → `RepairRequired`); operators see the
+    /// concrete next move from the server's response on a force-submit.
+    #[error("Decommission blocked by divergence: {0}")]
+    DecommissionBlockedByDivergence(String),
+
+    /// Server-side chain re-verification of already-stored events failed.
+    /// Indicates DB integrity loss or tampering — the receiver cannot
+    /// confirm its own historical state, so it cannot accept new events.
+    /// Surfaces as 500 (server-internal failure), not 409 (which is
+    /// reserved for client-vs-state structural conflicts).
+    #[error("Chain verification failed: {0}")]
+    ChainVerificationFailed(String),
+}
+
+impl KelsError {
+    /// Construct `ContestRequired` from a KEL-side reason. The three flavors
+    /// (`_kel`, `_sel`, `_iel`) point at the same variant — the helper exists
+    /// for call-site readability so a reader can tell which primitive's
+    /// contest-trigger fired without reading the reason string.
+    pub fn contest_required_kel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
+
+    /// Construct `ContestRequired` from an SEL-side reason.
+    pub fn contest_required_sel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
+
+    /// Construct `ContestRequired` from an IEL-side reason.
+    pub fn contest_required_iel(reason: impl Into<String>) -> Self {
+        Self::ContestRequired {
+            reason: reason.into(),
+        }
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingIelEvent`].
+    pub fn missing_iel_event(iel_prefix: cesr::Digest256, event_said: cesr::Digest256) -> Self {
+        Self::MissingIelEvent(Box::new(MissingIelEvent {
+            iel_prefix,
+            event_said,
+        }))
+    }
+
+    /// #156: construct a permanent [`KelsError::IdentityBindingViolation`].
+    pub fn identity_binding_violation(reason: impl Into<String>) -> Self {
+        Self::IdentityBindingViolation(IdentityBindingViolation::new(reason))
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingKelAnchor`].
+    pub fn missing_kel_anchor(kel_prefix: cesr::Digest256, anchor_said: cesr::Digest256) -> Self {
+        Self::MissingKelAnchor(Box::new(MissingKelAnchor {
+            kel_prefix,
+            anchor_said,
+        }))
+    }
+
+    /// #156: construct a deferrable [`KelsError::MissingSadObject`].
+    pub fn missing_sad_object(said: cesr::Digest256) -> Self {
+        Self::MissingSadObject(Box::new(MissingSadObject { said }))
+    }
+
+    /// #156: construct a permanent [`KelsError::AnchorPermanentFailure`].
+    pub fn anchor_permanent_failure(
+        kel_prefix: cesr::Digest256,
+        anchor_said: cesr::Digest256,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::AnchorPermanentFailure(Box::new(AnchorPermanentFailure {
+            kel_prefix,
+            anchor_said,
+            reason: reason.into(),
+        }))
+    }
 }
 
 impl From<cesr::CesrError> for KelsError {
@@ -254,7 +543,16 @@ mod tests {
             KelsError::CacheError("cache error".to_string()),
             KelsError::StorageError("storage error".to_string()),
             KelsError::ContestedKel("contested".to_string()),
-            KelsError::ContestRequired,
+            KelsError::ContestedIel("iel contested".to_string()),
+            KelsError::IelDecommissioned("iel decommissioned".to_string()),
+            KelsError::IelDivergent("iel diverged at v=7".to_string()),
+            KelsError::InvalidIel("bad iel".to_string()),
+            KelsError::NotImmunePolicy {
+                policy: cesr::Digest256::blake3_256(b"policy").to_string(),
+            },
+            KelsError::contest_required_kel("recovery key revealed"),
+            KelsError::contest_required_sel("sealed past submitter view"),
+            KelsError::contest_required_iel("only Cnt resolves a divergent IEL"),
             KelsError::Diverged("diverged".to_string()),
             KelsError::Divergent,
             KelsError::Frozen,
@@ -262,11 +560,36 @@ mod tests {
             KelsError::InvalidSaid("bad said".to_string()),
             KelsError::InvalidPrefix("bad prefix".to_string()),
             KelsError::InvalidVersion("bad version".to_string()),
-            KelsError::AnchorVerificationFailed("anchor failed".to_string()),
+            KelsError::missing_kel_anchor(
+                cesr::Digest256::blake3_256(b"kel"),
+                cesr::Digest256::blake3_256(b"anchor"),
+            ),
+            KelsError::anchor_permanent_failure(
+                cesr::Digest256::blake3_256(b"kel"),
+                cesr::Digest256::blake3_256(b"anchor"),
+                "bad sig",
+            ),
             KelsError::HardwareError("hw error".to_string()),
             KelsError::NoReadyNodes,
             KelsError::RegistryFailure("all failed".to_string()),
             KelsError::InvalidDisclosure("bad expression".to_string()),
+            KelsError::EvaluationRequired,
+            KelsError::SelDivergent { at: 7 },
+            KelsError::NothingToRepair,
+            KelsError::ChainHasUnverifiedEvents("local store policy_satisfied=false".to_string()),
+            KelsError::PendingEventsBlockRepair("pending non-empty".to_string()),
+            KelsError::SadStorePayloadMissing {
+                prefix: cesr::Digest256::blake3_256(b"prefix").to_string(),
+                said: cesr::Digest256::blake3_256(b"said").to_string(),
+            },
+            KelsError::IncompleteInception("missing v1 Upd".to_string()),
+            KelsError::missing_iel_event(
+                cesr::Digest256::blake3_256(b"iel"),
+                cesr::Digest256::blake3_256(b"identity_event"),
+            ),
+            KelsError::identity_binding_violation("cross-IEL contamination"),
+            KelsError::DecommissionBlockedByDivergence("chain divergent".to_string()),
+            KelsError::ChainVerificationFailed("server-side existing chain re-verify".to_string()),
         ];
 
         for err in errors {

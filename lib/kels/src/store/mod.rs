@@ -1,10 +1,13 @@
-//! Storage traits - persisting Key Event Logs and Self-Addressed Data locally
+//! Storage traits - persisting Key Event Logs, Self-Addressed Data, and
+//! Identity Event Logs locally.
 
 pub mod file;
+pub mod iel;
 pub mod repository;
 pub mod sad;
 
 pub use file::FileKelStore;
+pub use iel::{IdentityStore, InMemoryIdentityStore};
 pub use repository::RepositoryKelStore;
 pub use sad::{FileSadStore, InMemorySadStore, SadStore};
 

@@ -1,0 +1,5 @@
+# [Round-12 review fix → resolved] SEL pre-walk + soft-fail predicate + β-ordering documentation
+
+- SEL handler's inline pre-walk replaced with a private helper `collect_se_chain_identity_event_saids_via_tx` colocated with `verify_existing_chain` in `services/sadstore/src/handlers.rs`. Mirrors `kels_core::collect_identity_event_saids[_from_loader]` for the transactional repository path. Fail-secures on `max_pages` overrun (was silently using a partial set, which would soft-fail every binding past the limit).
+- `auth_soft_eligible` predicate in `SelVerifier::flush_generation` split into named pieces (`terminal_soft` for the round-11 baseline; `post_divergence_soft` for the round-12 third-follow-up rule). Each rule independently documented; their union still drives gate severity.
+- β-ordering rationale (Step 1 fetch / Step 2 resolve_*_at IelDivergent / Step 3 is_satisfied / Step 4 is_anchored / Step 5 monotonic-ratchet) documented inline at the SEL per-event auth gate sequence — explains why both the IelDivergent gate and the `is_satisfied` gate stay wired (defense-in-depth + complementary coverage).

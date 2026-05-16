@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-reconciliation.sh - Reconciliation Proof Test Suite
-# Validates every case in docs/design/reconciliation.md against
+# Validates every case in docs/design/kel/reconciliation.md against
 # a live multi-node deployment.
 #
 # Uses nodes d, e, f. Requires kels-cli built with --features dev-tools.

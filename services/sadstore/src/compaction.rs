@@ -5,12 +5,12 @@
 //!
 //! Two-phase design to prevent resource amplification:
 //! 1. **Dry run** (`compact_sad`): compute SAIDs and build compacted JSON in memory,
-//!    collecting the `(SAID, bytes)` pairs for each nested SAD. No MinIO writes.
-//! 2. **Commit** (`commit_compacted`): write the collected nested SADs to MinIO.
+//!    collecting the `(SAID, bytes)` pairs for each nested SAD. No object store writes.
+//! 2. **Commit** (`commit_compacted`): write the collected nested SADs to object store.
 //!
 //! The caller HEAD-checks the canonical SAID between phases — if the parent already
 //! exists, the commit is skipped entirely. This prevents attackers from filling
-//! MinIO with arbitrary objects via repeated expanded SAD submissions.
+//! object store with arbitrary objects via repeated expanded SAD submissions.
 
 use std::collections::HashMap;
 
@@ -24,7 +24,7 @@ const MAX_COMPACTION_DEPTH: usize = 32;
 
 /// Compact all nested SADs inside `value` in memory. Each nested object with
 /// a `said` field has its canonical SAID computed, its bytes serialized, and
-/// is replaced with its SAID string. The nested SADs are NOT written to MinIO —
+/// is replaced with its SAID string. The nested SADs are NOT written to object store —
 /// they are collected in the returned map for a later `commit_compacted` call.
 ///
 /// After this returns, `value` is fully compacted and the caller should derive
@@ -37,7 +37,7 @@ pub fn compact_sad(
     Ok(collected)
 }
 
-/// Write previously collected nested SADs to MinIO. Call this only after
+/// Write previously collected nested SADs to object store. Call this only after
 /// confirming the parent SAD doesn't already exist (HEAD check).
 pub async fn commit_compacted(
     collected: &HashMap<cesr::Digest256, Vec<u8>>,
@@ -76,20 +76,22 @@ fn compact_children(
                     continue;
                 }
 
+                // Mutate in place via `get_mut` to preserve the IndexMap's
+                // insertion order. A remove/reinsert cycle (as the previous
+                // implementation used) scrambles multi-field SADs because
+                // serde_json::Map::remove is swap_remove-based, which moves
+                // the last entry into the vacated slot and then re-append
+                // drops the moved key at a new position. Multi-field SADs
+                // like SadEvent end up serializing with a different key
+                // order than the client hashed over, breaking SAID verify.
                 #[allow(clippy::expect_used)]
-                let mut child = value
+                let child = value
                     .as_object_mut()
                     .expect("matched Object variant")
-                    .remove(&key)
-                    .unwrap_or(serde_json::Value::Null);
+                    .get_mut(&key)
+                    .expect("key from snapshot must still be present");
 
-                compact_value(&mut child, collected, remaining_depth - 1)?;
-
-                #[allow(clippy::expect_used)]
-                value
-                    .as_object_mut()
-                    .expect("matched Object variant")
-                    .insert(key, child);
+                compact_value(child, collected, remaining_depth - 1)?;
             }
         }
         serde_json::Value::Array(arr) => {
@@ -137,7 +139,7 @@ fn compact_value(
                 serde_json::Value::String(said.to_string()),
             );
 
-        // Serialize and collect (don't write to MinIO yet)
+        // Serialize and collect (don't write to object store yet)
         let data = serde_json::to_vec(value)
             .map_err(|e| ObjectStoreError::S3(format!("serialization failed: {}", e)))?;
         collected.insert(said, data);

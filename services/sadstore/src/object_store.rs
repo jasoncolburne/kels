@@ -1,7 +1,7 @@
 //! S3-compatible object store client for SAD objects.
 //!
 //! Wraps `aws-sdk-s3` to provide PUT/GET/HEAD operations keyed by SAID.
-//! Objects are stored as JSON blobs in MinIO.
+//! Objects are stored as JSON blobs in object store.
 
 use aws_sdk_s3::{
     Client,

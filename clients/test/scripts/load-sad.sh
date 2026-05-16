@@ -1,10 +1,11 @@
 #!/bin/bash
 # load-sad.sh - Populate a SADStore node with SAD objects and SAD events
 #
-# For each group, creates a KEL, builds a single-endorser policy from its
-# prefix (using the policy SAID as write_policy), stores SAD objects, then
-# creates an event chain with a random number [1, MAX_CHAIN_VERSIONS] of
-# versions, each referencing a different SAD object as content.
+# For each group, creates a KEL, sets up an IEL identity (single-endorser
+# immune policy bound to the KEL), publishes content SAD objects, then
+# drives a SEL via `kels sel incept` (atomic [Icp, Upd@v1]) followed
+# by zero or more `kels sel update` calls. Each version references a
+# different SAD object as content.
 #
 # Usage: load-sad.sh [count] [concurrency]
 #   count:       number of SAD objects to create (default: 900, rounded to group size)
@@ -53,151 +54,109 @@ create_group() {
     local group=$1
     local tmpdir
     tmpdir=$(mktemp -d)
+    local cli_global="--kels-url $KELS_URL --sadstore-url $SADSTORE_URL --config-dir $tmpdir"
 
-    # 1. Create a KEL
+    # 1. Create a KEL.
     local prefix
-    prefix=$(kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel incept --signing-algorithm "$ALGORITHM" 2>&1 | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
+    prefix=$(kels-cli $cli_global kel incept --signing-algorithm "$ALGORITHM" 2>&1 \
+        | grep -oE 'K[A-Za-z0-9_-]{43}' | head -1)
     if [ -z "$prefix" ]; then
         echo "ERROR [group $group]: KEL inception failed" >&2
         rm -rf "$tmpdir"
         return 1
     fi
 
-    # 1b. Build a real policy (single endorser) and store as SAD object
-    local policy_json
-    policy_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($prefix)" \
-        '{said: $p, expression: $expr}')
-    local policy_said
-    policy_said=$(compute_said "$policy_json")
-    policy_json=$(echo "$policy_json" | jq -c --arg s "$policy_said" '.said = $s')
-
-    local policy_resp
-    policy_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad" \
-        -H 'Content-Type: application/json' \
-        -d "$policy_json")
-    local policy_code
-    policy_code=$(echo "$policy_resp" | tail -1)
-    if [ "$policy_code" != "201" ] && [ "$policy_code" != "200" ]; then
-        echo "ERROR [group $group]: policy upload failed (HTTP $policy_code)" >&2
+    # 2. Set up an IEL identity (single-endorser immune policy bound to the KEL).
+    #    The helpers need the same `kels-cli` invocation flags the rest of
+    #    create_group uses — most importantly `--config-dir`, so the
+    #    `kel anchor` step inside `setup_iel_identity` can find the
+    #    per-group key store under `$tmpdir`. Sharing $cli_global keeps
+    #    every CLI call in a group rooted in the same isolated config.
+    local iel_prefix
+    iel_prefix=$(setup_iel_identity "kels-cli $cli_global" "$prefix" "load-${group}-$$") || {
+        echo "ERROR [group $group]: IEL identity setup failed" >&2
         rm -rf "$tmpdir"
         return 1
-    fi
+    }
 
-    # 2. Create 9 SAD objects and collect their SAIDs
-    local object_saids=()
+    # 3. Publish $MAX_CHAIN_VERSIONS content SAD objects.
+    local content_saids=()
     for i in $(seq 1 "$MAX_CHAIN_VERSIONS"); do
-        local json
-        json=$(jq -nc --arg p "$PLACEHOLDER" --arg v "load-test-${group}-${i}-$(date +%s%N)" \
-            '{said: $p, value: $v}')
-        local said
-        said=$(compute_said "$json")
-        json=$(echo "$json" | jq -c --arg s "$said" '.said = $s')
-
-        local put_resp
-        put_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad" \
-            -H 'Content-Type: application/json' \
-            -d "$json")
-        local put_code
-        put_code=$(echo "$put_resp" | tail -1)
-        if [ "$put_code" != "201" ] && [ "$put_code" != "200" ]; then
-            echo "ERROR [group $group]: SAD object PUT failed (HTTP $put_code): $(echo "$put_resp" | head -1)" >&2
+        local content_json="$tmpdir/content-${i}.json"
+        jq -nc --arg p "$PLACEHOLDER" --arg v "load-test-${group}-${i}-$(date +%s%N)" \
+            '{said: $p, value: $v}' > "$content_json"
+        local content_said
+        content_said=$(put_sad_object "kels-cli $cli_global" "$content_json") || {
+            echo "ERROR [group $group]: content SAD put failed for v${i}" >&2
             rm -rf "$tmpdir"
             return 1
-        fi
-
-        object_saids+=("$said")
+        }
+        content_saids+=("$content_said")
     done
 
-    # 3. Compute SEL prefix (use kels-cli for correctness)
-    # kels-cli sel prefix takes (write_policy, topic) — we use the policy SAID as write_policy
-    local sel_prefix
-    sel_prefix=$(kels-cli sel prefix "$policy_said" "$TOPIC" 2>&1)
-    if [ -z "$sel_prefix" ]; then
-        echo "ERROR [group $group]: SEL prefix computation failed" >&2
-        rm -rf "$tmpdir"
-        return 1
-    fi
-
-    # 4. Pick random n from [1,9]
+    # 4. Pick random n in [1, MAX_CHAIN_VERSIONS]; chain = [Icp, Upd@v1, ..., Upd@vn].
     local n=$(( (RANDOM % MAX_CHAIN_VERSIONS) + 1 ))
 
-    # 5. Build SAD events: v0 (inception, no content) then v1..vN
-    # v0: deterministic inception record (no content for v0)
-    local v0_json
-    v0_json=$(jq -nc --arg p "$PLACEHOLDER" --arg t "$TOPIC" --arg wp "$policy_said" \
-        '{said: $p, prefix: $p, version: 0, topic: $t, kind: "kels/sad/v1/events/icp", writePolicy: $wp}')
-    local v0_prefix
-    v0_prefix=$(compute_prefix "$v0_json")
-    v0_json=$(echo "$v0_json" | jq -c --arg pfx "$v0_prefix" '.prefix = $pfx')
-    local v0_said
-    v0_said=$(compute_said "$v0_json")
-    v0_json=$(echo "$v0_json" | jq -c --arg s "$v0_said" '.said = $s')
+    # 5. Stage atomic [Icp, Upd@v1] via `sel incept`. content_saids[0] is v1.
+    local incept_out
+    incept_out=$(kels-cli $cli_global sel incept "$TOPIC" \
+        --identity "$iel_prefix" --initial-content "${content_saids[0]}" --publish 2>&1) || {
+        echo "ERROR [group $group]: sel incept failed: $incept_out" >&2
+        rm -rf "$tmpdir"
+        return 1
+    }
+    local icp_said upd1_said
+    icp_said=$(echo "$incept_out" | head -1)
+    upd1_said=$(echo "$incept_out" | tail -1)
 
-    # Anchor v0 SAID in the KEL (required for write_policy authorization)
-    if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel anchor --prefix "$prefix" --said "$v0_said" >/dev/null 2>&1; then
-        echo "ERROR [group $group]: failed to anchor v0 SAID $v0_said" >&2
+    # Anchor [Icp, v1].
+    if ! kels-cli $cli_global kel anchor --prefix "$prefix" --said "$icp_said" >/dev/null 2>&1; then
+        echo "ERROR [group $group]: failed to anchor Icp $icp_said" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    if ! kels-cli $cli_global kel anchor --prefix "$prefix" --said "$upd1_said" >/dev/null 2>&1; then
+        echo "ERROR [group $group]: failed to anchor v1 $upd1_said" >&2
         rm -rf "$tmpdir"
         return 1
     fi
 
-    local records_json="[]"
-    records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$v0_json")" '. + [$r]')
+    # Submit the inception batch.
+    if ! kels-cli $cli_global sel submit "$icp_said" "$upd1_said" >/dev/null 2>&1; then
+        echo "ERROR [group $group]: failed to submit [Icp, v1]" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
 
-    local prev_said="$v0_said"
-
-    # Build a governance policy for this chain
-    local chain_gp_said
-    chain_gp_said=$(build_governance_policy "$SADSTORE_URL" "$prefix")
-
-    for i in $(seq 1 "$n"); do
-        local content_said="${object_saids[$((i-1))]}"
-        local vi_json
-        if [ "$i" -eq 1 ]; then
-            # v1: Est (governance_policy declaration — Est forbids writePolicy)
-            vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$TOPIC" --arg cs "$content_said" \
-                --arg gp "$chain_gp_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/est", content: $cs, governancePolicy: $gp}')
-        else
-            # Upd forbids writePolicy
-            vi_json=$(jq -nc --arg p "$PLACEHOLDER" --arg pfx "$v0_prefix" --arg prev "$prev_said" \
-                --argjson ver "$i" --arg t "$TOPIC" --arg cs "$content_said" \
-                '{said: $p, prefix: $pfx, previous: $prev, version: $ver, topic: $t, kind: "kels/sad/v1/events/upd", content: $cs}')
-        fi
+    # 6. For i in [2, n]: stage v_i Upd via sel update with content_saids[i-1],
+    #    anchor, submit.
+    local sel_prefix
+    sel_prefix=$(kels-cli sel prefix "$iel_prefix" "$TOPIC" 2>/dev/null)
+    for i in $(seq 2 "$n"); do
+        local content="${content_saids[$((i-1))]}"
         local vi_said
-        vi_said=$(compute_said "$vi_json")
-        vi_json=$(echo "$vi_json" | jq -c --arg s "$vi_said" '.said = $s')
-
-        # Anchor each version's SAID in the KEL
-        if ! kels-cli --kels-url "$KELS_URL" --config-dir "$tmpdir" kel anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
-            echo "ERROR [group $group]: failed to anchor v${i} SAID $vi_said" >&2
+        vi_said=$(kels-cli $cli_global sel update "$sel_prefix" "$content" --publish 2>&1) || {
+            echo "ERROR [group $group]: sel update v${i} failed: $vi_said" >&2
+            rm -rf "$tmpdir"
+            return 1
+        }
+        if ! kels-cli $cli_global kel anchor --prefix "$prefix" --said "$vi_said" >/dev/null 2>&1; then
+            echo "ERROR [group $group]: failed to anchor v${i} $vi_said" >&2
             rm -rf "$tmpdir"
             return 1
         fi
-
-        records_json=$(echo "$records_json" | jq -c --argjson r "$(echo "$vi_json")" '. + [$r]')
-
-        prev_said="$vi_said"
+        if ! kels-cli $cli_global sel submit "$vi_said" >/dev/null 2>&1; then
+            echo "ERROR [group $group]: failed to submit v${i} $vi_said" >&2
+            rm -rf "$tmpdir"
+            return 1
+        fi
     done
-
-    # 6. Submit all records in one batch
-    local submit_resp
-    submit_resp=$(curl -s -w "\n%{http_code}" -X POST "${SADSTORE_URL}/api/v1/sad/events" \
-        -H 'Content-Type: application/json' \
-        -d "$records_json")
-    local submit_code
-    submit_code=$(echo "$submit_resp" | tail -1)
-    if [ "$submit_code" != "201" ]; then
-        echo "ERROR [group $group]: SAD event submit failed (HTTP $submit_code): $(echo "$submit_resp" | head -1)" >&2
-        echo "  First record: $(echo "$records_json" | jq -c '.[0]')" >&2
-        rm -rf "$tmpdir"
-        return 1
-    fi
 
     rm -rf "$tmpdir"
 }
 
-export -f create_group cesr_blake3 compute_said compute_prefix build_governance_policy
+export -f create_group build_immune_policy setup_iel_identity \
+    setup_iel_identity_with_policy put_sad_object
 export KELS_URL SADSTORE_URL ALGORITHM TOPIC PLACEHOLDER MAX_CHAIN_VERSIONS
 
 start=$(date +%s)

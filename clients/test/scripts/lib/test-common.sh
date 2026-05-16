@@ -100,23 +100,144 @@ compute_prefix() {
     cesr_blake3 "$with_placeholders"
 }
 
-# Build a governance policy and store it as a SAD object.
+# All `kels-cli`-driven helpers below take a **CLI invocation string** as
+# their first argument — typically the caller's pre-assembled
+# `kels-cli --kels-url ... --sadstore-url ... [--config-dir ...]`. Passing
+# the full invocation lets callers wire arbitrary flags (notably
+# `--config-dir` for parallel workers that need isolated key stores)
+# without each helper having to know about every flag the CLI accepts.
+
+# Build a single-endorser immune policy SAD object via `kels-cli sad put`.
+# Used as both auth_policy and governance_policy on IEL chains in tests.
 # Echoes the policy SAID to stdout.
-# Usage: GP_SAID=$(build_governance_policy "$SAD_URL" "$KEL_PREFIX")
-# TODO: Production governance policies should use higher thresholds than write_policy
-# (e.g., threshold(3, [...]) vs threshold(2, [...])). Single-endorser is fine for tests.
-build_governance_policy() {
-    local sad_url="$1"
+# Usage: POLICY_SAID=$(build_immune_policy "$CLI_INVOCATION" "$KEL_PREFIX")
+build_immune_policy() {
+    local cli_invocation="$1"
     local kel_prefix="$2"
-    local gp_json
-    gp_json=$(jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
-        '{said: $p, expression: $expr}')
-    local gp_said
-    gp_said=$(compute_said "$gp_json")
-    gp_json=$(echo "$gp_json" | jq -c --arg s "$gp_said" '.said = $s')
-    curl -s -o /dev/null -X POST "${sad_url}/api/v1/sad" \
-        -H 'Content-Type: application/json' -d "$gp_json"
-    echo "$gp_said"
+    local tmp; tmp=$(mktemp)
+    jq -nc --arg p "$PLACEHOLDER" --arg expr "endorse($kel_prefix)" \
+        '{said: $p, expression: $expr, immune: true}' > "$tmp"
+    local said
+    said=$($cli_invocation sad put "$tmp")
+    local rc=$?
+    rm -f "$tmp"
+    [ "$rc" -eq 0 ] || {
+        echo "build_immune_policy: sad put failed for endorse($kel_prefix)" >&2
+        return "$rc"
+    }
+    echo "$said"
+}
+
+# Build an immune 1-of-2 threshold policy SAD object that accepts either
+# of two endorsers (`threshold(1, [endorse(A), endorse(B)])`). Used by
+# tests that need multiple legitimate authors on the same chain — e.g.,
+# a silent-extension scenario where Bob extends past Alice's
+# authoritative tip. The policy DSL has no infix OR; threshold is the
+# canonical disjunction.
+# Echoes the policy SAID to stdout.
+# Usage: POLICY_SAID=$(build_immune_or_policy "$CLI_INVOCATION" "$KEL_A" "$KEL_B")
+build_immune_or_policy() {
+    local cli_invocation="$1"
+    local kel_a="$2"
+    local kel_b="$3"
+    local tmp; tmp=$(mktemp)
+    jq -nc --arg p "$PLACEHOLDER" \
+        --arg expr "threshold(1, [endorse($kel_a), endorse($kel_b)])" \
+        '{said: $p, expression: $expr, immune: true}' > "$tmp"
+    local said
+    said=$($cli_invocation sad put "$tmp")
+    local rc=$?
+    rm -f "$tmp"
+    [ "$rc" -eq 0 ] || {
+        echo "build_immune_or_policy: sad put failed for threshold(1, [endorse($kel_a), endorse($kel_b)])" >&2
+        return "$rc"
+    }
+    echo "$said"
+}
+
+# Set up a fresh IEL identity for a KEL: builds an immune single-endorser
+# policy (used as both auth_policy and governance_policy), stages an Icp
+# via `kels iel incept --publish`, anchors in the KEL, submits.
+# Echoes IEL_PREFIX to stdout.
+# Usage: IEL_PREFIX=$(setup_iel_identity "$CLI_INVOCATION" "$KEL_PREFIX")
+# Optional 3rd arg: a unique tag for the IEL topic (default: random).
+setup_iel_identity() {
+    local cli_invocation="$1"
+    local kel_prefix="$2"
+    local tag="${3:-${RANDOM}-$$}"
+
+    local policy_said
+    policy_said=$(build_immune_policy "$cli_invocation" "$kel_prefix")
+
+    setup_iel_identity_with_policy "$cli_invocation" "$kel_prefix" "$policy_said" "$tag"
+}
+
+# Set up a fresh IEL identity using a pre-built policy SAID. The same
+# policy serves as both `auth_policy` and `governance_policy`. The IEL
+# Icp is anchored by `anchor_kel` regardless of the policy's expression
+# — the anchor only needs to satisfy the policy at submit time. Used by
+# tests that need multi-endorser policies (e.g., the silent-extension
+# scenario where Alice and Bob are both legitimate endorsers under an
+# OR policy).
+# Echoes IEL_PREFIX to stdout.
+# Usage: IEL_PREFIX=$(setup_iel_identity_with_policy "$CLI_INVOCATION" "$ANCHOR_KEL" "$POLICY_SAID")
+# Optional 4th arg: a unique tag for the IEL topic (default: random).
+setup_iel_identity_with_policy() {
+    local cli_invocation="$1"
+    local anchor_kel="$2"
+    local policy_said="$3"
+    local tag="${4:-${RANDOM}-$$}"
+    local topic="kels/iel/v1/identity/test-${tag}"
+
+    # Error checking is explicit because `local var=$(cmd)` always returns
+    # the exit status of `local`, which is 0. Without these guards a
+    # silent timeout in `iel submit` lets the caller proceed with an
+    # IEL prefix the server never actually committed — the next
+    # `sel incept` then fails with a confusing `IEL not found`.
+    local icp_said
+    icp_said=$($cli_invocation iel incept "$topic" \
+        --auth-policy "$policy_said" \
+        --governance-policy "$policy_said" \
+        --publish) || {
+        echo "setup_iel_identity_with_policy: iel incept failed for tag $tag" >&2
+        return 1
+    }
+
+    $cli_invocation kel anchor --prefix "$anchor_kel" --said "$icp_said" >/dev/null || {
+        echo "setup_iel_identity_with_policy: kel anchor failed for icp $icp_said (anchor KEL $anchor_kel)" >&2
+        return 1
+    }
+
+    # #156: peer-side anchor visibility no longer gates `iel submit`.
+    # Sadstore's typed-422 deferred-deps response + gossip's pending-map
+    # drain handle the cross-chain race; the CLI's deferred-deps poll
+    # absorbs the latency. No convergence wait needed here.
+
+    $cli_invocation iel submit "$icp_said" >/dev/null || {
+        echo "setup_iel_identity_with_policy: iel submit failed for icp $icp_said" >&2
+        return 1
+    }
+
+    local iel_prefix
+    iel_prefix=$($cli_invocation sad get "$icp_said" | jq -r '.prefix') || {
+        echo "setup_iel_identity_with_policy: failed to read icp $icp_said back from SAD store" >&2
+        return 1
+    }
+    if [ -z "$iel_prefix" ] || [ "$iel_prefix" = "null" ]; then
+        echo "setup_iel_identity_with_policy: icp $icp_said missing prefix in SAD payload" >&2
+        return 1
+    fi
+    echo "$iel_prefix"
+}
+
+# Put a JSON content blob as a SAD object via `kels-cli sad put`.
+# The input file should have `said: "############..."` placeholder; the
+# CLI computes the SAID and posts. Echoes the resulting SAID to stdout.
+# Usage: CONTENT_SAID=$(put_sad_object "$CLI_INVOCATION" "$JSON_FILE_PATH")
+put_sad_object() {
+    local cli_invocation="$1"
+    local file="$2"
+    $cli_invocation sad put "$file"
 }
 
 # --- Setup helpers ---

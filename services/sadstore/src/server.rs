@@ -30,7 +30,7 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/health", get(handlers::health))
         .route("/ready", get(handlers::ready))
-        // SAD object store (Layer 1 — MinIO)
+        // SAD object store (Layer 1 — object store)
         .route("/api/v1/sad", post(handlers::post_sad_object))
         .route("/api/v1/sad/fetch", post(handlers::fetch_sad_object))
         .route("/api/v1/sad/exists", post(handlers::sad_object_exists))
@@ -42,6 +42,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/sad/events", post(handlers::submit_sad_events))
         .route("/api/v1/sad/events/fetch", post(handlers::get_sad_events))
+        .route(
+            "/api/v1/sad/events/tail",
+            post(handlers::get_sad_events_tail),
+        )
         .route(
             "/api/v1/sad/events/effective-said",
             post(handlers::get_sel_effective_said),
@@ -59,6 +63,24 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/sad/events/prefixes",
             post(handlers::list_sel_prefixes),
+        )
+        // Identity Event Log (IEL) events
+        .route("/api/v1/iel/events", post(handlers::submit_identity_events))
+        .route(
+            "/api/v1/iel/events/fetch",
+            post(handlers::get_identity_events),
+        )
+        .route(
+            "/api/v1/iel/events/exists",
+            post(handlers::identity_event_exists),
+        )
+        .route(
+            "/api/v1/iel/events/effective-said",
+            post(handlers::get_iel_effective_said),
+        )
+        .route(
+            "/api/v1/iel/events/prefixes",
+            post(handlers::list_iel_prefixes),
         );
 
     if *TEST_ENDPOINTS_ENABLED {
@@ -68,6 +90,10 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
             .route(
                 "/api/test/sad/events/prefixes",
                 post(handlers::test_list_sel_prefixes),
+            )
+            .route(
+                "/api/test/iel/events/prefixes",
+                post(handlers::test_list_iel_prefixes),
             );
     }
 
@@ -109,22 +135,23 @@ pub async fn run(
         None
     };
 
-    let minio_endpoint =
-        std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://minio:9000".to_string());
-    let minio_region = std::env::var("MINIO_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-    let minio_access_key = std::env::var("MINIO_ACCESS_KEY")
-        .map_err(|_| "MINIO_ACCESS_KEY must be set".to_string())?;
-    let minio_secret_key = std::env::var("MINIO_SECRET_KEY")
-        .map_err(|_| "MINIO_SECRET_KEY must be set".to_string())?;
+    let objects_endpoint =
+        std::env::var("OBJECTS_ENDPOINT").unwrap_or_else(|_| "http://objects:9000".to_string());
+    let objects_region =
+        std::env::var("OBJECTS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let objects_access_key = std::env::var("OBJECTS_ACCESS_KEY")
+        .map_err(|_| "OBJECTS_ACCESS_KEY must be set".to_string())?;
+    let objects_secret_key = std::env::var("OBJECTS_SECRET_KEY")
+        .map_err(|_| "OBJECTS_SECRET_KEY must be set".to_string())?;
     let sad_bucket = std::env::var("KELS_SAD_BUCKET").unwrap_or_else(|_| "kels-sad".to_string());
 
-    info!("Connecting to MinIO at {}", minio_endpoint);
+    info!("Connecting to object store at {}", objects_endpoint);
     let object_store = ObjectStore::new(
-        &minio_endpoint,
-        &minio_region,
+        &objects_endpoint,
+        &objects_region,
         &sad_bucket,
-        &minio_access_key,
-        &minio_secret_key,
+        &objects_access_key,
+        &objects_secret_key,
     );
     object_store
         .ensure_bucket()
@@ -147,6 +174,7 @@ pub async fn run(
 
     handlers::spawn_rate_limit_reaper(Arc::clone(&state));
     handlers::spawn_ttl_reaper(Arc::clone(&state));
+    handlers::spawn_pool_depth_logger(Arc::clone(&state));
 
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 

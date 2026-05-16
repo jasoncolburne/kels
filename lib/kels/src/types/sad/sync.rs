@@ -1,19 +1,29 @@
 //! Paginated transfer infrastructure for SAD Event Logs
 //!
-//! Mirrors the KEL `transfer_key_events` pattern: `PagedSadSource` / `PagedSadSink`
-//! traits abstract data movement, and `transfer_sad_events` is the core private
+//! Mirrors the KEL `transfer_key_events` pattern: `PagedSelSource` / `PagedSelSink`
+//! traits abstract data movement, and `transfer_sel_events` is the core private
 //! function that pages through a source, optionally verifies structure, and sends
 //! to a sink.
 //!
+//! For owner-local hydration over a `SadStore` (no server round-trip), use
+//! `SelPageLoader` + `SadStorePageLoader` + `sel_completed_verification` —
+//! parallels KEL's `PageLoader` / `KelStorePageLoader` / `completed_verification`
+//! at `lib/kels/src/types/kel/sync.rs`.
+//!
 //! Public functions:
-//! - `verify_sad_events` — structural + policy verification via `PolicyChecker`
-//! - `forward_sad_events` — forward without verification, supports delta via `since`
+//! - `verify_sel_events` — structural + policy verification via `PolicyChecker`
+//! - `forward_sel_events` — forward without verification, supports delta via `since`
+//! - `sel_completed_verification` — owner-local verification via `SelPageLoader`
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use super::super::error::ErrorCode;
-use super::event::{SadEvent, SadEventPage, SadEventVerification};
+use super::event::{SadEvent, SadEventPage, SelVerification};
 use super::verification::SelVerifier;
+use crate::store::SadStore;
+use crate::types::PolicyChecker;
 use crate::{KelsError, error::read_error_body};
 
 // ==================== Source / Sink Traits ====================
@@ -22,28 +32,152 @@ use crate::{KelsError, error::read_error_body};
 ///
 /// Implementations must return events in `version ASC, said ASC` order.
 #[async_trait]
-pub trait PagedSadSource: Send + Sync {
+pub trait PagedSelSource: Send + Sync {
     async fn fetch_page(
         &self,
         prefix: &cesr::Digest256,
         since: Option<&cesr::Digest256>,
         limit: usize,
     ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+
+    /// Fetch the tail of a chain — the last `limit` events ordered by
+    /// `(version ASC, said ASC)`.
+    ///
+    /// Used by `SadEventBuilder::repair`'s adversary-extension walk-back as
+    /// a single round-trip alternative to forward-paginating the whole chain.
+    /// Default implementation returns `Unsupported` so legacy sources don't
+    /// silently degrade — callers that need tail fetch should depend on a
+    /// source that overrides this. `HttpSelSource` provides the production
+    /// implementation; test mocks override as needed.
+    async fn fetch_tail(
+        &self,
+        _prefix: &cesr::Digest256,
+        _limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        Err(KelsError::OfflineMode(
+            "PagedSelSource::fetch_tail not implemented by this source".into(),
+        ))
+    }
 }
 
 /// Destination for SAD events (e.g., local SADStore).
 #[async_trait]
-pub trait PagedSadSink: Send + Sync {
+pub trait PagedSelSink: Send + Sync {
     async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError>;
+}
+
+// ==================== Owner-local Page Loader ====================
+
+/// Trait for loading offset-paginated SAD events for a given chain prefix.
+///
+/// The offset-based parallel of `PagedSelSource` (which is cursor/`since`-based
+/// for HTTP transfer). Mirrors KEL's `PageLoader`
+/// (`lib/kels/src/types/kel/sync.rs`) — implemented by `SadStorePageLoader`
+/// over a `&dyn SadStore`, or by transaction wrappers that read under
+/// advisory locks.
+#[async_trait]
+pub trait SelPageLoader: Send + Sync {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError>;
+}
+
+/// `SadStore` adapter for `SelPageLoader` — wraps a shared reference to a
+/// `SadStore`. Pairs with the trait's `load_sel_events` method, which is
+/// populated by `store_sel_event` calls during `SadEventBuilder::flush`.
+///
+/// Mirrors KEL's `KelStorePageLoader` (`lib/kels/src/types/kel/sync.rs`).
+pub struct SadStorePageLoader<'a>(&'a dyn SadStore);
+
+impl<'a> SadStorePageLoader<'a> {
+    pub fn new(store: &'a dyn SadStore) -> Self {
+        Self(store)
+    }
+}
+
+#[async_trait]
+impl SelPageLoader for SadStorePageLoader<'_> {
+    async fn load_page(
+        &mut self,
+        prefix: &cesr::Digest256,
+        limit: u64,
+        offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        self.0.load_sel_events(prefix, limit, offset).await
+    }
+}
+
+/// Verify a full SEL using paginated reads from a local store, returning a
+/// trusted owner-local `SelVerification`.
+///
+/// Mirrors KEL's `completed_verification` (`lib/kels/src/types/kel/sync.rs`).
+/// Walks pages via `loader.load_page`, runs `SelVerifier::verify_page` per
+/// page, and returns the proof-of-verification token. `max_pages` limits
+/// resource exhaustion — fails secure if exceeded.
+///
+/// **Owner-local invariant.** Loader-fed pages contain only owner-authored
+/// events (the `store_sel_event` writers populate the prefix index, the
+/// repair flow does not). The resulting `SelVerification` reflects owner's
+/// view; server state is consulted at action time, not here.
+pub async fn sel_completed_verification(
+    loader: &mut dyn SelPageLoader,
+    prefix: &cesr::Digest256,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<SelVerification, KelsError> {
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
+    let mut offset: u64 = 0;
+    let mut exhausted = false;
+    let mut saw_any = false;
+    let limit = page_size as u64;
+
+    for _ in 0..max_pages {
+        let (events, has_more) = loader.load_page(prefix, limit, offset).await?;
+
+        if events.is_empty() {
+            exhausted = true;
+            break;
+        }
+
+        saw_any = true;
+        let advanced = events.len() as u64;
+        verifier.verify_page(&events).await?;
+        offset += advanced;
+
+        if !has_more {
+            exhausted = true;
+            break;
+        }
+    }
+
+    // Fail secure: if we ran out of pages before exhausting the source,
+    // return an error rather than a partial SelVerification.
+    if !exhausted {
+        return Err(KelsError::InvalidKel(format!(
+            "SEL for {} exceeds max_pages limit ({}) — verification incomplete",
+            prefix, max_pages,
+        )));
+    }
+
+    if !saw_any {
+        return Err(KelsError::NotFound(prefix.to_string()));
+    }
+
+    verifier.finish().await
 }
 
 // ==================== Sink Implementations ====================
 
 /// No-op sink that discards events. Used for verify-only flows.
-struct NoOpSadSink;
+struct NoOpSelSink;
 
 #[async_trait]
-impl PagedSadSink for NoOpSadSink {
+impl PagedSelSink for NoOpSelSink {
     async fn store_page(&self, _events: &[SadEvent]) -> Result<(), KelsError> {
         Ok(())
     }
@@ -52,12 +186,12 @@ impl PagedSadSink for NoOpSadSink {
 // ==================== HTTP Source / Sink ====================
 
 /// HTTP-based source of paginated SAD events.
-pub struct HttpSadSource {
+pub struct HttpSelSource {
     base_url: String,
     client: reqwest::Client,
 }
 
-impl HttpSadSource {
+impl HttpSelSource {
     pub fn new(base_url: &str) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -71,7 +205,7 @@ impl HttpSadSource {
 }
 
 #[async_trait]
-impl PagedSadSource for HttpSadSource {
+impl PagedSelSource for HttpSelSource {
     async fn fetch_page(
         &self,
         prefix: &cesr::Digest256,
@@ -96,15 +230,38 @@ impl PagedSadSource for HttpSadSource {
             Err(KelsError::ServerError(text, ErrorCode::InternalError))
         }
     }
+
+    async fn fetch_tail(
+        &self,
+        prefix: &cesr::Digest256,
+        limit: usize,
+    ) -> Result<Vec<SadEvent>, KelsError> {
+        let url = format!("{}/api/v1/sad/events/tail", self.base_url);
+        let body = crate::SadEventTailRequest {
+            prefix: *prefix,
+            limit: Some(limit),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+
+        if resp.status().is_success() {
+            let page: SadEventPage = resp.json().await?;
+            Ok(page.events)
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(Vec::new())
+        } else {
+            let text = read_error_body(resp).await?;
+            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+        }
+    }
 }
 
 /// HTTP-based sink that submits SAD events to a SADStore service.
-pub struct HttpSadSink {
+pub struct HttpSelSink {
     base_url: String,
     client: reqwest::Client,
 }
 
-impl HttpSadSink {
+impl HttpSelSink {
     pub fn new(base_url: &str) -> Result<Self, KelsError> {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -118,7 +275,7 @@ impl HttpSadSink {
 }
 
 #[async_trait]
-impl PagedSadSink for HttpSadSink {
+impl PagedSelSink for HttpSelSink {
     async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
         if events.is_empty() {
             return Ok(());
@@ -127,14 +284,31 @@ impl PagedSadSink for HttpSadSink {
         let url = format!("{}/api/v1/sad/events", self.base_url);
         let resp = self.client.post(&url).json(events).send().await?;
 
-        if resp.status().is_success() {
-            Ok(())
-        } else if resp.status() == reqwest::StatusCode::CONFLICT {
-            // Chain already divergent on remote — that's fine, skip
+        let status = resp.status();
+        if status.is_success() {
+            // Drain the body to honor `SubmitSadEventsResponse`'s `#[must_use]`.
+            // Forwarding/sync isn't owner-driven, so the
+            // divergence/applied/terminal signals aren't actionable here —
+            // owner submission goes through `SadStoreClient::submit_sad_events`,
+            // which surfaces the response. The 200-OK terminal-state-skip
+            // path (#147 follow-up commit 2) lands here too: a
+            // gossip-race-already-terminal remote returns 200 with
+            // `terminal: Some(_)` instead of 4xx, so the sink reads it as
+            // idempotent success.
+            let _ = resp.json::<crate::SubmitSadEventsResponse>().await;
             Ok(())
         } else {
             let text = read_error_body(resp).await?;
-            Err(KelsError::ServerError(text, ErrorCode::InternalError))
+            // 409 is reserved for genuine client-vs-state conflicts (sealed
+            // fork, divergent chain on `save_batch`, repair preconditions
+            // on `truncate_and_replace`). Surface as `ErrorCode::Conflict`
+            // so callers can distinguish from 5xx.
+            let code = if status == reqwest::StatusCode::CONFLICT {
+                ErrorCode::Conflict
+            } else {
+                ErrorCode::InternalError
+            };
+            Err(KelsError::ServerError(text, code))
         }
     }
 }
@@ -147,12 +321,12 @@ impl PagedSadSink for HttpSadSink {
 /// strategy to detect divergence at page boundaries. When divergence is
 /// found (two events at the same version), switches to collection mode,
 /// accumulates all remaining events, then submits them via
-/// `send_divergent_sad_events` in an order the remote can accept.
-async fn transfer_sad_events<'a>(
+/// `send_divergent_sel_events` in an order the remote can accept.
+async fn transfer_sel_events(
     prefix: &cesr::Digest256,
-    source: &(dyn PagedSadSource + Sync),
-    sink: &(dyn PagedSadSink + Sync),
-    mut verifier: Option<&mut SelVerifier<'a>>,
+    source: &(dyn PagedSelSource + Sync),
+    sink: &(dyn PagedSelSink + Sync),
+    mut verifier: Option<&mut SelVerifier>,
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
@@ -273,7 +447,7 @@ async fn transfer_sad_events<'a>(
         return Ok(());
     }
 
-    send_divergent_sad_events(sink, &pre_divergence, post_divergence, page_size).await
+    send_divergent_sel_events(sink, &pre_divergence, post_divergence, page_size).await
 }
 
 /// Separate post-divergence events into two branches by tracing `previous`
@@ -283,8 +457,8 @@ async fn transfer_sad_events<'a>(
 /// Strategy:
 ///   1. Pre-divergence + longer branch (paged, non-divergent appends)
 ///   2. Fork event from shorter branch (creates divergence on remote)
-async fn send_divergent_sad_events(
-    sink: &(dyn PagedSadSink + Sync),
+async fn send_divergent_sel_events(
+    sink: &(dyn PagedSelSink + Sync),
     pre_divergence: &[SadEvent],
     post_divergence: Vec<SadEvent>,
     page_size: usize,
@@ -350,19 +524,20 @@ async fn send_divergent_sad_events(
 /// Verify a SAD Event Log by paging through a source. Returns a verification token.
 ///
 /// Structural + policy verification. Verifies SAID, prefix, topic, chain linkage,
-/// and write_policy authorization via the provided `PolicyChecker`.
-pub async fn verify_sad_events(
+/// and per-event authorization via the provided `PolicyChecker`.
+pub async fn verify_sel_events(
     prefix: &cesr::Digest256,
-    source: &(dyn PagedSadSource + Sync),
-    checker: &(dyn super::verification::PolicyChecker + Sync),
+    source: &(dyn PagedSelSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
     page_size: usize,
     max_pages: usize,
-) -> Result<SadEventVerification, KelsError> {
-    let mut verifier = SelVerifier::new(prefix, checker);
-    transfer_sad_events(
+) -> Result<SelVerification, KelsError> {
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
+    transfer_sel_events(
         prefix,
         source,
-        &NoOpSadSink,
+        &NoOpSelSink,
         Some(&mut verifier),
         page_size,
         max_pages,
@@ -373,38 +548,186 @@ pub async fn verify_sad_events(
     verifier.finish().await
 }
 
-/// Forward SAD events from source to sink without verification. Supports delta via `since`.
-pub async fn forward_sad_events(
+/// Verify a SAD Event Log with a per-batch callback that fires after each
+/// page passes verification. Mirrors `verify_key_events_with` for the SEL
+/// primitive — same `transfer_sel_events` engine with a `CallbackSink` in
+/// place of the `NoOpSelSink`.
+///
+/// Used by the CLI's `kels sel get` to stream events while the verifier
+/// walks the chain. Batches may be smaller than `page_size` due to
+/// divergence handling (see `transfer_sel_events`).
+pub async fn verify_sel_events_with<F>(
     prefix: &cesr::Digest256,
-    source: &(dyn PagedSadSource + Sync),
-    sink: &(dyn PagedSadSink + Sync),
+    source: &(dyn PagedSelSource + Sync),
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn crate::types::IelResolver + Send + Sync>,
+    page_size: usize,
+    max_pages: usize,
+    on_page: F,
+) -> Result<SelVerification, KelsError>
+where
+    F: FnMut(&[SadEvent]) + Send,
+{
+    let mut verifier = SelVerifier::new(Some(prefix), checker, iel_resolver);
+    let sink = CallbackSadSink(std::sync::Mutex::new(on_page));
+    transfer_sel_events(
+        prefix,
+        source,
+        &sink,
+        Some(&mut verifier),
+        page_size,
+        max_pages,
+        None,
+    )
+    .await?;
+    verifier.finish().await
+}
+
+/// Sink that invokes a callback for each batch of events. Mirrors KEL's
+/// `CallbackSink` for the SEL primitive.
+struct CallbackSadSink<F: FnMut(&[SadEvent]) + Send>(std::sync::Mutex<F>);
+
+#[async_trait]
+impl<F: FnMut(&[SadEvent]) + Send> PagedSelSink for CallbackSadSink<F> {
+    async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
+        if let Ok(mut f) = self.0.lock() {
+            (f)(events);
+        }
+        Ok(())
+    }
+}
+
+/// Stream a SEL from `source` and accumulate the unique
+/// `event.identity_event` SAIDs the SEL caller needs from the bound IEL.
+///
+/// Used by SEL consumers (submit handler, builder pre-action verify) to
+/// pre-walk the SEL and collect the queried-IEL-SAID set before
+/// constructing the `IelResolver`. The accumulator is a `BTreeSet<Digest256>`
+/// — events themselves are dropped after each page is processed, so the
+/// in-memory cost is bounded by SAID-level metadata only (proportional to
+/// chain length × 32 B), consistent with the existing aggregation invariant
+/// (see `IelVerification::policy_history`'s shape).
+///
+/// Walk is bounded by `max_pages`; fail-secure when exceeded. Stops early
+/// when the source signals `has_more=false`.
+///
+/// #147 follow-up: paired with
+/// `IelResolver::with_queried_saids` and `is_satisfied` for the
+/// caller-bounded SAID querying pattern (see
+/// `docs/design/sel/verification.md §Caller-bounded SAID querying`).
+pub async fn collect_identity_event_saids(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedSelSource + Sync),
+    page_size: usize,
+    max_pages: usize,
+) -> Result<std::collections::BTreeSet<cesr::Digest256>, KelsError> {
+    let mut collected: std::collections::BTreeSet<cesr::Digest256> =
+        std::collections::BTreeSet::new();
+    let mut since: Option<cesr::Digest256> = None;
+    for _ in 0..max_pages {
+        let (events, has_more) = source.fetch_page(prefix, since.as_ref(), page_size).await?;
+        if events.is_empty() {
+            // Mid-walk empty page is treated as end-of-chain — same
+            // semantics as the loader sibling. Defensive: source-side
+            // pagination cursor anomalies still produce a valid (possibly
+            // partial) set rather than InvalidKel-on-something-unusual.
+            return Ok(collected);
+        }
+        for event in &events {
+            if let Some(said) = event.identity_event {
+                collected.insert(said);
+            }
+        }
+        since = events.last().map(|e| e.said);
+        if !has_more {
+            return Ok(collected);
+        }
+    }
+    Err(KelsError::InvalidKel(format!(
+        "SEL identity_event collection exceeded max_pages limit ({}) for {}",
+        max_pages, prefix,
+    )))
+}
+
+/// Stream a SEL from a local `SelPageLoader` and accumulate the
+/// unique `event.identity_event` SAIDs the SEL caller needs from the bound
+/// IEL. Mirrors [`collect_identity_event_saids`] but for owner-local
+/// verification flows that page through `SadStore` rather than over HTTP.
+///
+/// Same in-memory profile (SAID-level only; events dropped per page) and
+/// same `max_pages` bound.
+pub async fn collect_identity_event_saids_from_loader(
+    loader: &mut dyn SelPageLoader,
+    prefix: &cesr::Digest256,
+    page_size: usize,
+    max_pages: usize,
+) -> Result<std::collections::BTreeSet<cesr::Digest256>, KelsError> {
+    let mut collected: std::collections::BTreeSet<cesr::Digest256> =
+        std::collections::BTreeSet::new();
+    let mut offset: u64 = 0;
+    let limit = page_size as u64;
+    let mut saw_any = false;
+    for _ in 0..max_pages {
+        let (events, has_more) = loader.load_page(prefix, limit, offset).await?;
+        if events.is_empty() {
+            return Ok(collected);
+        }
+        saw_any = true;
+        let advanced = events.len() as u64;
+        for event in &events {
+            if let Some(said) = event.identity_event {
+                collected.insert(said);
+            }
+        }
+        offset += advanced;
+        if !has_more {
+            return Ok(collected);
+        }
+    }
+    if !saw_any {
+        return Ok(collected);
+    }
+    Err(KelsError::InvalidKel(format!(
+        "SEL identity_event collection exceeded max_pages limit ({}) for {}",
+        max_pages, prefix,
+    )))
+}
+
+/// Forward SAD events from source to sink without verification. Supports delta via `since`.
+pub async fn forward_sel_events(
+    prefix: &cesr::Digest256,
+    source: &(dyn PagedSelSource + Sync),
+    sink: &(dyn PagedSelSink + Sync),
     page_size: usize,
     max_pages: usize,
     since: Option<&cesr::Digest256>,
 ) -> Result<(), KelsError> {
-    transfer_sad_events(prefix, source, sink, None, page_size, max_pages, since).await
+    transfer_sel_events(prefix, source, sink, None, page_size, max_pages, since).await
 }
 
 #[cfg(test)]
 #[allow(clippy::panic)]
+// The single test here stages a divergent chain to exercise
+// page-boundary divergence detection. `SadEventBuilder` is single-actor
+// and refuses divergent state by design, so the fixture is hand-built.
 mod tests {
-    use verifiable_storage::Chained;
-
-    use super::super::event::SadEventKind;
     use super::*;
 
     fn test_digest(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
     }
 
-    /// In-memory source that serves events in pages, simulating page-boundary splits.
-    struct VecSadSource {
+    /// In-memory paginated-only source that serves events in pages,
+    /// simulating page-boundary splits for divergence-detection tests.
+    /// Does not implement `fetch_tail` — for repair-walk-back tests that
+    /// need it, see `RepairTestSadSource` in `lib/kels/src/sad_builder.rs`.
+    struct PagedVecSadSource {
         events: Vec<SadEvent>,
         page_size: usize,
     }
 
     #[async_trait]
-    impl PagedSadSource for VecSadSource {
+    impl PagedSelSource for PagedVecSadSource {
         async fn fetch_page(
             &self,
             _prefix: &cesr::Digest256,
@@ -446,42 +769,104 @@ mod tests {
     }
 
     #[async_trait]
-    impl PagedSadSink for CollectingSink {
+    impl PagedSelSink for CollectingSink {
         async fn store_page(&self, events: &[SadEvent]) -> Result<(), KelsError> {
             self.pages.lock().await.push(events.to_vec());
             Ok(())
         }
     }
 
+    /// Wire-level mapping contract: a 409 from the SEL submit endpoint
+    /// surfaces as `KelsError::ServerError(_, ErrorCode::Conflict)`, not
+    /// `InternalError` (silent-skip dropped — #147 follow-up
+    /// commit 2). Production conflict-409 paths in the submit handler
+    /// (`save_batch` sealed-fork, `truncate_and_replace` repair
+    /// preconditions) are pre-screened by the routing matrix; this
+    /// test pins the typed-error mapping the client guarantees to
+    /// callers, so when those defense-in-depth paths fire (or any
+    /// future flow exposes them) callers can branch on `Conflict`
+    /// without parsing the error body.
+    #[tokio::test]
+    async fn http_sad_sink_409_maps_to_conflict_error_code() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(409).set_body_string(
+                    "Cannot fork at version 3 — sealed by evaluation at version 5",
+                ),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpSelSink::new(&mock_server.uri()).expect("sink");
+        let identity = test_digest(b"identity-409");
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
+
+        let result = sink.store_page(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::Conflict)) => {
+                assert!(
+                    body.contains("Cannot fork"),
+                    "body should preserve server message, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, Conflict), got {other:?}"),
+        }
+    }
+
+    /// Wire-level mapping contract for non-409 server errors: 500
+    /// (e.g., `KelsError::ChainVerificationFailed` from the
+    /// `verify_existing_chain` helper) surfaces as
+    /// `ServerError(_, ErrorCode::InternalError)`, with the body
+    /// preserved so callers can prefix-match the variant via Display.
+    #[tokio::test]
+    async fn http_sad_sink_500_with_chain_verification_body_maps_to_internal_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sad/events"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string("Chain verification failed: invalid said in stored event"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let sink = HttpSelSink::new(&mock_server.uri()).expect("sink");
+        let identity = test_digest(b"identity-500");
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
+
+        let result = sink.store_page(&[v0]).await;
+        match result {
+            Err(KelsError::ServerError(body, ErrorCode::InternalError)) => {
+                assert!(
+                    body.starts_with("Chain verification failed:"),
+                    "body should preserve `ChainVerificationFailed` Display prefix, got: {body}"
+                );
+            }
+            other => panic!("expected ServerError(_, InternalError), got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_divergence_detection_at_page_boundary() {
-        let wp = test_digest(b"write-policy");
-        let gp = test_digest(b"governance-policy");
+        let identity = test_digest(b"identity");
+        let iel_evt = test_digest(b"iel-event");
 
-        // Build a chain: v0 (declares governance_policy), v1, then two events at v2 (divergence)
-        let v0 = SadEvent::create(
-            "kels/test".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap();
-
-        let mut v1 = v0.clone();
-        v1.kind = SadEventKind::Upd;
-        v1.content = Some(test_digest(b"content1"));
-        v1.increment().unwrap();
+        // Build a chain: v0 (Icp bound to identity), v1 (Upd), then two
+        // conflicting events at v2 (divergence).
+        let v0 = SadEvent::icp(identity, "kels/test").unwrap();
+        let v1 = SadEvent::upd(&v0, iel_evt, test_digest(b"content1")).unwrap();
 
         // Two conflicting v2 events (same previous = v1.said)
-        let mut v2_a = v1.clone();
-        v2_a.content = Some(test_digest(b"content2a"));
-        v2_a.increment().unwrap();
-
-        let mut v2_b = v1.clone();
-        v2_b.content = Some(test_digest(b"content2b"));
-        v2_b.increment().unwrap();
+        let v2_a = SadEvent::upd(&v1, iel_evt, test_digest(b"content2a")).unwrap();
+        let v2_b = SadEvent::upd(&v1, iel_evt, test_digest(b"content2b")).unwrap();
 
         let prefix = v0.prefix;
 
@@ -489,13 +874,13 @@ mod tests {
         // Divergence is within page 2 — no boundary split.
         // Now test page_size=3: page 1 = [v0, v1, v2_a], held-back = v2_a,
         // page 2 starts with v2_b which has same version → divergence at boundary.
-        let source = VecSadSource {
+        let source = PagedVecSadSource {
             events: vec![v0, v1, v2_a.clone(), v2_b.clone()],
             page_size: 3,
         };
         let sink = CollectingSink::new();
 
-        forward_sad_events(&prefix, &source, &sink, 3, 100, None)
+        forward_sel_events(&prefix, &source, &sink, 3, 100, None)
             .await
             .unwrap();
 

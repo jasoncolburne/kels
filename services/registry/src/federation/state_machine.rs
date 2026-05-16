@@ -23,7 +23,7 @@ async fn verify_member_anchoring_from_repo(
         crate::raft_store::MemberKelRepository::new(repo.pool.clone()),
     ));
     let kel_verification = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&store),
+        &mut kels_core::KelStorePageLoader::new(&store),
         member_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),

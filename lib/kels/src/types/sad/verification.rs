@@ -1,111 +1,192 @@
-//! SAD Event Log verification (structural + policy authorization)
+//! SAD Event Log verification.
+//!
+//! Streaming structural + cross-chain authorization verifier for SAD Event
+//! Logs. #147: chains are identity-rooted and bound to a specific
+//! Identity Event Log (IEL) via `event.identity` (set at Icp) and
+//! `event.identity_event` (set at v1+). Authorization for v1+ events is
+//! resolved by walking the bound IEL event via [`IelResolver`] — `Upd`
+//! evaluates against `auth_policy`, `Sea` / `Rpr` / `Cnt` / `Dec` against
+//! `governance_policy`. Mirrors `IelVerifier` in shape (page-by-page
+//! processing, per-branch state, `resume` for re-hydration).
+//!
+//! Soft / hard mapping (mirrors `lib/kels/src/types/iel/verification.rs`
+//! §"Soft-fail policy"):
+//!
+//! - **Icp** is permissionless — no anchor check; the chain cannot advance
+//!   past Icp without satisfying the IEL-resolved `auth_policy`, so the
+//!   permissionless prefix grants no authority on its own.
+//! - **Upd** auth check is **HARD** — content advancement; same role as
+//!   IEL `Evl` on IEL. Failure aborts verification.
+//! - **Sea** / **Rpr** governance check is **HARD** — privileged-authority
+//!   advancement events.
+//! - **Cnt** / **Dec** governance check is **SOFT** — terminal forensic
+//!   preservation; flags are content-based; auth status conveyed via
+//!   `policy_satisfied`.
+//! - `MissingIelEvent` / `IdentityBindingViolation` (binding doesn't resolve / prefix mismatch) is
+//!   **HARD** for all v1+ kinds — chain integrity beats forensic preservation.
+//! - `IelDivergent` (binding lives on an unstable IEL branch) is **HARD**
+//!   for `Upd` / `Sea` / `Rpr`, **SOFT** for `Cnt` / `Dec`.
+//! - Monotonic ratchet regression is **HARD** for all kinds (chain integrity).
+//! - Content preservation (`Sea` / `Rpr` / `Cnt` / `Dec` carry `previous.content`
+//!   forward unchanged) is **HARD** (structural).
+//!
+//! Terminal flags (`is_contested` / `is_decommissioned`) are set
+//! unconditionally on any landed `Cnt` / `Dec`, regardless of whether the
+//! terminating event passed its governance anchor check. The auth status
+//! is conveyed separately via `policy_satisfied`. This mirrors the
+//! IEL fix that pinned terminal flags to chain content.
 
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use verifiable_storage::{Chained, SelfAddressed};
 
-use super::event::{SadEvent, SadEventKind};
-use crate::KelsError;
+use super::event::{SadBranchTip, SadEvent, SadEventKind, SelVerification};
+use crate::{
+    DeferredFailure, KelsError,
+    types::{IelResolver, PolicyChecker},
+};
 
-// ==================== Policy Checker Trait ====================
-
-/// Trait for checking policy satisfaction during chain verification.
+/// Streaming structural + cross-chain authorization verifier for SAD Event
+/// Logs.
 ///
-/// `SelVerifier` calls this at each generation:
-/// - v0: `self_satisfies(event)` — the inception must be authorized by its own write_policy
-/// - v1+: `satisfies(event, &branch.tracked_write_policy)` — each advance must be authorized
-///   by the branch's currently-tracked write_policy (seeded by v0, updated when Evl carries
-///   a new write_policy *and* the evolution was authorized). Called unconditionally,
-///   whether or not the policy changed. The returned value also gates whether the verifier
-///   advances branch-state (tracked write_policy, tracked governance_policy, establishment
-///   version, last governance version); a returned `false` freezes all policy-related state
-///   on the branch for this event.
+/// Mirrors `IelVerifier`. Tracks per-branch state in a HashMap keyed by tip
+/// SAID; processes events page by page, generation by generation; produces
+/// `SelVerification` on `finish`. `resume` re-hydrates from a prior token.
 ///
-/// Implementations live outside `lib/kels` to avoid circular deps (e.g., `lib/policy`
-/// calls `evaluate_anchored_policy` to check KEL anchoring).
-#[async_trait::async_trait]
-pub trait PolicyChecker: Send + Sync {
-    /// Check if the advance to `new_event` is authorized by `previous_policy`.
-    ///
-    /// Evaluates `previous_policy` via anchoring — the endorsers required by
-    /// `previous_policy` must have anchored `new_event.said` in their KELs.
-    async fn satisfies(
-        &self,
-        new_event: &SadEvent,
-        previous_policy: &cesr::Digest256,
-    ) -> Result<bool, KelsError>;
-
-    /// Check if v0 inception with this event is authorized.
-    ///
-    /// Evaluates `event.write_policy` via anchoring — endorsers must have
-    /// anchored `event.said` in their KELs.
-    async fn self_satisfies(&self, event: &SadEvent) -> Result<bool, KelsError>;
-}
-
-// ==================== Incremental Chain Verification ====================
-
-/// Per-branch state for divergent SAD Event Logs.
-#[derive(Debug, Clone)]
-struct SadBranchState {
-    tip: SadEvent,
-    /// The effective write_policy for this branch.
-    /// Seeded from v0 (Icp always has write_policy) and updated when an Evl
-    /// event carries a new write_policy *and* the evolution was authorized
-    /// by the previous policy. Used to authorize v1+ advances.
-    tracked_write_policy: cesr::Digest256,
-    /// The governance policy SAID tracked on this branch.
-    /// `None` until the first governance_policy is declared.
-    governance_policy: Option<cesr::Digest256>,
-    /// Number of events since the last evaluation (or since chain start).
-    events_since_evaluation: usize,
-    /// Version of the most recent governance evaluation (Evl or Rpr) on this
-    /// branch that passed both the governance check and the soft write_policy
-    /// check. `None` until the first authorized evaluation. Monotonically
-    /// advances (max) within a branch.
-    last_governance_version: Option<u64>,
-}
-
-/// Streaming structural + policy verifier for SAD Event Logs.
-///
-/// Mirrors `KelVerifier` — verifies incrementally page by page without holding
-/// the full chain in memory. Tracks per-branch state so that both forks of a
-/// divergent chain are fully verified (SAID, prefix, topic, chain linkage,
-/// and write_policy authorization via `PolicyChecker`).
-///
-/// The verifier never errors on policy failure — it records the result in
-/// `policy_satisfied`. Structural errors (bad SAID, wrong prefix, etc.)
-/// still return errors. Callers check `policy_satisfied()` on the verification
-/// token to decide what to do (e.g., server returns 403, client logs a warning).
-pub struct SelVerifier<'a> {
-    prefix: cesr::Digest256,
+/// Events must arrive in `(version ASC, kind sort_priority ASC, said ASC)`
+/// order — the canonical chain ordering used by every storage and transfer
+/// path.
+pub struct SelVerifier {
+    prefix: Option<cesr::Digest256>,
     topic: Option<String>,
-    /// Branches keyed by tip SAID. Pre-divergence: one branch.
-    branches: HashMap<cesr::Digest256, SadBranchState>,
+    /// Branches keyed by tip SAID. One entry on linear chains; two on divergent.
+    branches: HashMap<cesr::Digest256, SadBranchTip>,
     /// Events buffered for the current generation (same version).
     generation_buffer: Vec<SadEvent>,
     /// The version of the current buffered generation.
     current_generation_version: Option<u64>,
     saw_any_events: bool,
     policy_satisfied: bool,
-    /// The version at which governance_policy was first established (v0 or v1).
-    /// Chain-wide, set once.
-    establishment_version: Option<u64>,
-    checker: &'a dyn PolicyChecker,
+    is_contested: bool,
+    is_decommissioned: bool,
+    diverged_at_version: Option<u64>,
+    queried_saids: BTreeSet<cesr::Digest256>,
+    satisfied_saids: BTreeSet<cesr::Digest256>,
+    /// Set to false once any branch's `events_since_evaluation` exceeds
+    /// `MAX_NON_EVALUATION_EVENTS`. Mirrors KEL's `proactive_ror_compliant`;
+    /// surface signal only — does not halt the walk.
+    is_proactively_governed: bool,
+    checker: Arc<dyn PolicyChecker + Send + Sync>,
+    iel_resolver: Arc<dyn IelResolver + Send + Sync>,
+    /// #156 collect-mode: when `true`, deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate into
+    /// `deferred_failures` and the walk treats them as soft-fail-style
+    /// (continue with `policy_satisfied=false`); when `false`,
+    /// deferrables propagate as `Err(KelsError)` and halt the walk
+    /// (legacy behavior). Permanent failures always halt.
+    collecting: bool,
+    /// #156: accumulated deferrable failures. Empty in strict mode.
+    /// Caller reads after `finish_collecting` (or via `deferred_failures()`).
+    deferred_failures: Vec<DeferredFailure>,
 }
 
-impl<'a> SelVerifier<'a> {
-    pub fn new(prefix: &cesr::Digest256, checker: &'a dyn PolicyChecker) -> Self {
+impl SelVerifier {
+    pub fn new(
+        prefix: Option<&cesr::Digest256>,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
+        iel_resolver: Arc<dyn IelResolver + Send + Sync>,
+    ) -> Self {
         Self {
-            prefix: *prefix,
+            prefix: prefix.copied(),
             topic: None,
             branches: HashMap::new(),
             generation_buffer: Vec::new(),
             current_generation_version: None,
             saw_any_events: false,
             policy_satisfied: true,
-            establishment_version: None,
+            is_contested: false,
+            is_decommissioned: false,
+            diverged_at_version: None,
+            queried_saids: BTreeSet::new(),
+            satisfied_saids: BTreeSet::new(),
+            is_proactively_governed: true,
             checker,
+            iel_resolver,
+            collecting: false,
+            deferred_failures: Vec::new(),
         }
+    }
+
+    /// Enable #156 collect-mode for this verifier. Deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate instead of
+    /// halting the walk. Permanent failures still halt. Idempotent;
+    /// calling once is sufficient.
+    pub fn enable_collecting(&mut self) -> &mut Self {
+        self.collecting = true;
+        self
+    }
+
+    /// Read accumulated deferrable failures (after running
+    /// `verify_page_collecting`). Empty in strict mode.
+    pub fn deferred_failures(&self) -> &[DeferredFailure] {
+        &self.deferred_failures
+    }
+
+    /// Register SEL event SAIDs the caller cares about for satisfaction
+    /// tracking. Mirrors `KelVerifier::check_anchors`. Call before
+    /// `verify_page` (or before resuming the walk via `resume`). Repeated
+    /// calls union the sets — they don't replace.
+    pub fn check_satisfied(
+        &mut self,
+        saids: impl IntoIterator<Item = cesr::Digest256>,
+    ) -> &mut Self {
+        self.queried_saids.extend(saids);
+        self
+    }
+
+    /// Re-hydrate a verifier from a prior verification token. Subsequent
+    /// `verify_page` calls extend the same per-branch state — including
+    /// each branch's `last_identity_event` ratchet.
+    ///
+    /// Like the IEL parallel, rehydrates `queried_saids` / `satisfied_saids`
+    /// from the prior token (KEL's `resume` resets these; the IEL/SEL
+    /// streaming pre-walk pattern needs them to persist across pages).
+    /// KEL's symmetric fix is deferred to #161.
+    pub fn resume(
+        verification: &SelVerification,
+        checker: Arc<dyn PolicyChecker + Send + Sync>,
+        iel_resolver: Arc<dyn IelResolver + Send + Sync>,
+    ) -> Result<Self, KelsError> {
+        let mut branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
+        for branch in verification.branches() {
+            branches.insert(branch.tip.said, branch.clone());
+        }
+
+        let prefix = *verification.prefix();
+        let topic = verification.topic().to_string();
+
+        Ok(Self {
+            prefix: Some(prefix),
+            topic: Some(topic),
+            branches,
+            generation_buffer: Vec::new(),
+            current_generation_version: None,
+            saw_any_events: !verification.branches().is_empty(),
+            policy_satisfied: verification.policy_satisfied(),
+            is_contested: verification.is_contested(),
+            is_decommissioned: verification.is_decommissioned(),
+            diverged_at_version: verification.diverged_at_version(),
+            queried_saids: verification.queried_saids().clone(),
+            satisfied_saids: verification.satisfied_saids().clone(),
+            is_proactively_governed: verification.is_proactively_governed(),
+            checker,
+            iel_resolver,
+            collecting: false,
+            deferred_failures: Vec::new(),
+        })
     }
 
     pub fn is_divergent(&self) -> bool {
@@ -116,10 +197,12 @@ impl<'a> SelVerifier<'a> {
     fn verify_event(&self, event: &SadEvent) -> Result<(), KelsError> {
         event.verify_said()?;
 
-        if event.prefix != self.prefix {
+        if let Some(ref expected) = self.prefix
+            && event.prefix != *expected
+        {
             return Err(KelsError::VerificationFailed(format!(
                 "SAD event {} prefix {} doesn't match SEL prefix {}",
-                event.said, event.prefix, self.prefix
+                event.said, event.prefix, expected
             )));
         }
 
@@ -135,7 +218,7 @@ impl<'a> SelVerifier<'a> {
         Ok(())
     }
 
-    /// Process a complete generation (all events at the same version).
+    /// Process all events at the current generation (same version).
     async fn flush_generation(&mut self) -> Result<(), KelsError> {
         let events = std::mem::take(&mut self.generation_buffer);
         let version = match self.current_generation_version.take() {
@@ -147,7 +230,7 @@ impl<'a> SelVerifier<'a> {
             return Ok(());
         }
 
-        // Structural validation first — before any chain state reasoning
+        // Structural validation first.
         for event in &events {
             event
                 .validate_structure()
@@ -155,227 +238,600 @@ impl<'a> SelVerifier<'a> {
         }
 
         if self.branches.is_empty() {
-            // First generation — inception (version 0)
+            // First generation — must be a single Icp at v0. Permissionless;
+            // no anchor / immunity check (#147: inception is granted no
+            // authority on its own — the chain cannot advance past Icp
+            // without satisfying the IEL-resolved auth_policy at v1).
             if events.len() != 1 {
                 return Err(KelsError::VerificationFailed(
-                    "Multiple events at version 0".into(),
+                    "Multiple events at version 0 — SEL v0 divergence is not permitted".into(),
                 ));
             }
-
             let event = &events[0];
+            if version != 0 {
+                return Err(KelsError::VerificationFailed(format!(
+                    "First SEL generation must be at version 0, got {}",
+                    version
+                )));
+            }
+            if event.kind != SadEventKind::Icp {
+                return Err(KelsError::VerificationFailed(format!(
+                    "First SEL event must be Icp, got {}",
+                    event.kind
+                )));
+            }
             event.verify_prefix()?;
 
-            // Policy check: v0 must self-satisfy
-            if !self.checker.self_satisfies(event).await? {
-                self.policy_satisfied = false;
-            }
-
-            // Track governance_policy if declared on v0
-            let governance_policy = event.governance_policy;
-            if governance_policy.is_some() {
-                self.establishment_version = Some(0);
-            }
-
-            // Seed tracked_write_policy from v0. validate_structure guarantees
-            // Icp has Some(write_policy).
-            #[allow(clippy::expect_used)]
-            let tracked_write_policy = event
-                .write_policy
-                .expect("Icp event must have write_policy per validate_structure");
+            let identity = event.identity.ok_or_else(|| {
+                KelsError::VerificationFailed(format!(
+                    "SEL Icp {} missing required `identity` field",
+                    event.said
+                ))
+            })?;
 
             self.branches.insert(
                 event.said,
-                SadBranchState {
+                SadBranchTip {
                     tip: event.clone(),
-                    tracked_write_policy,
-                    governance_policy,
+                    identity,
+                    last_identity_event: None,
                     events_since_evaluation: 0,
                     last_governance_version: None,
                 },
             );
+
+            // Satisfied-SAIDs tracking. SEL Icp is permissionless (no anchor
+            // check); landing means it satisfies the SEL auth contract by
+            // construction. v=0 is structurally pre-divergence.
+            if self.queried_saids.contains(&event.said) {
+                self.satisfied_saids.insert(event.said);
+            }
+
+            if self.prefix.is_none() {
+                self.prefix = Some(event.prefix);
+            }
             return Ok(());
         }
 
-        // Max 2 events per generation (owner + adversary fork)
+        // Max 2 events per generation post-Icp (one per branch).
         if events.len() > 2 {
             return Err(KelsError::VerificationFailed(format!(
-                "Generation at version {} has {} events, max 2 allowed",
+                "SEL generation at version {} has {} events, max 2 allowed",
                 version,
                 events.len()
             )));
         }
 
-        let mut new_branches: HashMap<cesr::Digest256, SadBranchState> = HashMap::new();
+        // Detect divergence: more events than branches at this version means
+        // a fork landed.
+        if events.len() > self.branches.len() && self.diverged_at_version.is_none() {
+            self.diverged_at_version = Some(version);
+        }
+
+        // Pre-batch position fetch (plan §Authorization resolution step 0):
+        // collect every v1+ `event.identity_event` plus each branch's
+        // current `last_identity_event` (skip `None`), then fetch IEL
+        // chain positions in one call. All branches share the same
+        // `branch.identity` on a divergent chain (the Icp shared prefix);
+        // we use the first branch's identity for the fetch.
+        let identity = {
+            #[allow(clippy::expect_used)]
+            // Branch invariant: at least one branch (we just checked it's
+            // non-empty above). All branches share the same `identity`
+            // because Icp is shared on divergent chains.
+            let branch = self
+                .branches
+                .values()
+                .next()
+                .expect("flush_generation post-Icp invariant: branches non-empty");
+            branch.identity
+        };
+
+        let mut needed_saids: Vec<cesr::Digest256> =
+            events.iter().filter_map(|e| e.identity_event).collect();
+        for branch in self.branches.values() {
+            if let Some(said) = branch.last_identity_event {
+                needed_saids.push(said);
+            }
+        }
+        // Deduplicate (the resolver also dedups internally but we save one
+        // `clone()` by deduping here too).
+        needed_saids.sort();
+        needed_saids.dedup();
+        let position_batch = self
+            .iel_resolver
+            .iel_chain_positions(&identity, &needed_saids)
+            .await?;
+        // Per-event Step 3 (`is_satisfied`) is the authoritative deferrable
+        // gate for missing IEL events; it sees each event's
+        // `identity_event` in turn and routes through `IelSatisfaction`.
+        // The position-batch's `missing` list is the same set seen from
+        // the bulk-fetch side — strict mode hard-fails on the first miss
+        // here so the chain-integrity error matches the legacy surface;
+        // collect mode accumulates every miss and lets each affected event
+        // soft-fail at Step 3.
+        if !position_batch.missing.is_empty() {
+            if self.collecting {
+                for missing in &position_batch.missing {
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_iel_event(identity, *missing));
+                }
+            } else if let Some(missing) = position_batch.missing.first() {
+                return Err(KelsError::missing_iel_event(identity, *missing));
+            }
+        }
+
+        let mut new_branches: HashMap<cesr::Digest256, SadBranchTip> = HashMap::new();
 
         for event in &events {
             let previous = event.previous.as_ref().ok_or_else(|| {
                 KelsError::VerificationFailed(format!(
-                    "Non-inception SAD event {} has no previous event",
-                    event.said,
+                    "Non-inception SEL event {} has no previous event",
+                    event.said
                 ))
             })?;
 
-            let branch = self.branches.get(previous).ok_or_else(|| {
-                KelsError::VerificationFailed(format!(
-                    "SAD event {} previous {} does not match any branch tip",
-                    event.said, previous,
-                ))
-            })?;
+            // Clone the branch state so we can mutate `self` (e.g.
+            // `record_terminal_landing`) within this loop iteration without
+            // tripping the borrow checker on the parent map.
+            let branch = self
+                .branches
+                .get(previous)
+                .ok_or_else(|| {
+                    KelsError::VerificationFailed(format!(
+                        "SEL event {} previous {} does not match any branch tip",
+                        event.said, previous
+                    ))
+                })?
+                .clone();
+            let branch = &branch;
+
+            // #171 divergent-chain gate (per-event), narrowed by
+            // sealed-vs-unsealed: once a chain is divergent, the
+            // legitimate resolver is determined by whether the
+            // governance seal has advanced past the divergence point.
+            // - **Unsealed-divergent** (`max_seal < div`): only `Rpr` —
+            //   Rpr truncates the adversary branch and resolves cleanly.
+            //   `Cnt` here is premature; the operator should `Rpr`.
+            // - **Sealed-divergent** (`max_seal >= div`): only `Cnt` —
+            //   `Rpr` cannot truncate behind the seal, so `Cnt` is the
+            //   only legitimate move.
+            // The divergence-creating events themselves (at
+            // version == diverged_at_version) bypass this check; only
+            // events at version > diverged_at_version are post-divergence.
+            // See `docs/design/sel/event-log.md §Chain States`.
+            if let Some(div_at) = self.diverged_at_version
+                && event.version > div_at
+            {
+                let max_seal = self
+                    .branches
+                    .values()
+                    .filter_map(|b| b.last_governance_version)
+                    .max();
+                let is_sealed_divergent = max_seal.is_some_and(|s| s >= div_at);
+                let allowed = if is_sealed_divergent {
+                    event.kind == SadEventKind::Cnt
+                } else {
+                    event.kind == SadEventKind::Rpr
+                };
+                if !allowed {
+                    let (state_label, allowed_label) = if is_sealed_divergent {
+                        ("sealed-divergent", "Cnt")
+                    } else {
+                        ("unsealed-divergent", "Rpr")
+                    };
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SEL event {} ({}) cannot extend {} chain at version {} \
+                         (only {} allowed post-divergence)",
+                        event.said, event.kind, state_label, event.version, allowed_label
+                    )));
+                }
+            }
+
+            // #171 terminal-state gate: `Cnt` and `Dec` are tombstones —
+            // extending either tip is structurally invalid. Cnt-supersedes-
+            // Dec (Cnt forking from a pre-Dec ancestor to invalidate a
+            // forced/coerced Dec) requires non-tip parent-lookup and is
+            // deferred to #174; until then post-Dec rejects all
+            // submissions including Cnt. Per-branch (not chain-wide): a
+            // divergent chain with a terminal on one branch doesn't
+            // invalidate independent extensions on another branch — those
+            // extensions resolve `event.previous` to a non-terminal tip
+            // and pass. See `docs/design/sel/event-log.md §Chain States`.
+            if branch.tip.kind.is_terminal() {
+                return Err(KelsError::VerificationFailed(format!(
+                    "SEL event {} cannot extend terminal {} {}",
+                    event.said, branch.tip.kind, branch.tip.said
+                )));
+            }
 
             let expected_version = branch.tip.version + 1;
             if event.version != expected_version {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SAD event {} has version {} but expected {} (branch tip version + 1)",
+                    "SEL event {} has version {} but expected {} (branch tip + 1)",
                     event.said, event.version, expected_version
                 )));
             }
 
-            // Policy check: every v1+ event must satisfy the branch's tracked write_policy.
-            // Defense-in-depth: when this check fails, we also refuse to advance
-            // `tracked_write_policy` below, so subsequent events on the same branch
-            // keep failing against the still-legitimate previous policy. This gives
-            // consumers multiple soft signals instead of relying on a single
-            // `policy_satisfied` flag being checked.
-            let write_policy_satisfied = self
-                .checker
-                .satisfies(event, &branch.tracked_write_policy)
-                .await?;
-            if !write_policy_satisfied {
-                self.policy_satisfied = false;
-            }
-
-            // Guard: all non-Icp/non-Est kinds require governance_policy established
-            if !event.kind.is_inception()
-                && event.kind != SadEventKind::Est
-                && branch.governance_policy.is_none()
+            // Content preservation: Sea / Rpr / Cnt / Dec carry `previous.content`
+            // forward unchanged. Hard structural rule.
+            if matches!(
+                event.kind,
+                SadEventKind::Sea | SadEventKind::Rpr | SadEventKind::Cnt | SadEventKind::Dec
+            ) && event.content != branch.tip.content
             {
                 return Err(KelsError::VerificationFailed(format!(
-                    "SAD event {} kind {} requires governance_policy to be established",
-                    event.said, event.kind,
+                    "SEL {} event {} must preserve content (got {:?}, expected {:?})",
+                    event.kind, event.said, event.content, branch.tip.content
                 )));
             }
 
-            // Kind-specific chain-state logic
-            let (
-                governance_policy,
-                events_since_evaluation,
-                tracked_write_policy,
-                last_governance_version,
-            ) = match event.kind {
-                SadEventKind::Icp => {
-                    // Icp at v1+ is rejected by validate_structure (version != 0)
-                    unreachable!("Icp at v1+ should be rejected by validate_structure")
-                }
-                SadEventKind::Est => {
-                    // Est: governance_policy declaration — only valid when branch has none from v0
-                    if branch.governance_policy.is_some() {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "SAD event {} Est rejected — governance_policy already established from v0",
-                            event.said,
-                        )));
-                    }
-                    // Defense-in-depth: skip state advances on soft wp-fail. See R5/R6 audit.
-                    // events_since_evaluation = 1 stays unconditional — an unauthorized Est
-                    // still occupies a slot in the evaluation window (same as an unauthorized Upd).
-                    // tracked_write_policy unchanged — Est forbids write_policy (validate_structure).
-                    let (new_est_version, new_gp) = if write_policy_satisfied {
-                        (Some(1), event.governance_policy)
+            // Resolve cross-chain authorization. Steps 1–4 from the plan.
+            let identity_event_said = event.identity_event.ok_or_else(|| {
+                KelsError::VerificationFailed(format!(
+                    "Non-inception SEL event {} missing required `identity_event`",
+                    event.said
+                ))
+            })?;
+
+            let is_terminal = matches!(event.kind, SadEventKind::Cnt | SadEventKind::Dec);
+
+            // Two distinct soft-fail rules govern the auth gates below; each
+            // gate (IelDivergent, IEL-satisfied, anchor) consults their union.
+            //
+            //  1. **Terminal-soft** (baseline): Cnt/Dec auth-failures
+            //     soft-fail under any chain state. Terminal flags are
+            //     content-based; auth status surfaces via `policy_satisfied`.
+            //     Mirrors `docs/design/sel/verification.md §Soft-fail policy`.
+            //
+            //  2. **Post-divergence-soft** (#147 follow-up): on
+            //     SELs where Cnt has structurally created divergence
+            //     (`diverged_at_version <= event.version`), ALL v1+ kinds'
+            //     auth-failures soft-fail. The chain is already invalidated
+            //     by the terminal; further auth failures don't add information
+            //     and bouncing the verification would lose pre-divergence
+            //     reads. Mirrors `docs/design/sel/verification.md
+            //     §Post-divergence soft-fail propagation`.
+            //
+            // Structural integrity rules (`MissingIelEvent`/`IdentityBindingViolation`, monotonic
+            // ratchet, content preservation) stay HARD regardless of either
+            // rule — Cnt doesn't change well-formedness.
+            let terminal_soft = is_terminal;
+            let post_divergence_soft = self.diverged_at_version.is_some_and(|d| event.version >= d);
+            let auth_soft_eligible = terminal_soft || post_divergence_soft;
+
+            // Per-event auth gate sequence (β-ordering, see
+            // `docs/design/sel/verification.md §Caller-bounded SAID querying`):
+            //
+            //   1. fetch_iel_event              — chain integrity (HARD always).
+            //   2. resolve_*_at                 — IelDivergent gate (severity per `auth_soft_eligible`).
+            //   3. is_satisfied                 — IEL-side auth + divergence cutoff (severity per `auth_soft_eligible`).
+            //   4. is_anchored                  — SEL-side auth check (severity per `auth_soft_eligible`).
+            //   5. monotonic-ratchet            — chain integrity (HARD always).
+            //
+            // Step 3 lands AFTER `resolve_*_at` so the existing IelDivergent
+            // gate stays as defense-in-depth: `is_satisfied` covers the
+            // auth-fail-pre-divergence case the divergence gate doesn't see;
+            // `resolve_*_at` covers the divergence case `is_satisfied` could
+            // also detect. Both gates remain wired to keep the soundness
+            // surface explicit at each point of failure.
+
+            // Step 1 — fetch IEL event. The IelResolver impl returns
+            // `MissingIelEvent` (deferrable, post-#156) when the SAID
+            // isn't local; `IdentityBindingViolation` (permanent) on
+            // cross-IEL contamination / prefix mismatch. Strict mode
+            // halts on either; collect-mode re-routes `MissingIelEvent`
+            // through the deferrable accumulator with soft-fail-style
+            // state advancement (`IdentityBindingViolation` always halts).
+            match self
+                .iel_resolver
+                .fetch_iel_event(&branch.identity, &identity_event_said)
+                .await
+            {
+                Ok(_) => {}
+                Err(KelsError::MissingIelEvent(_)) if auth_soft_eligible => {
+                    // Soft-eligible (terminal or post-SEL-divergence):
+                    // chain still lands; missing IEL event isn't accumulated
+                    // — soft-fail is the intentional behavior.
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
                     } else {
-                        (self.establishment_version, branch.governance_policy)
-                    };
-                    // Chain-wide assignment (not per-branch): the handler's repair-floor
-                    // guard (services/sadstore/src/handlers.rs) relies on this being the
-                    // earliest establishment point across all branches. In divergent
-                    // scenarios this may not match the tie-break winner's branch state —
-                    // see `SadEventVerification::establishment_version()` docstring.
-                    self.establishment_version = new_est_version;
-                    (
-                        new_gp,
-                        1,
-                        branch.tracked_write_policy,
-                        branch.last_governance_version,
-                    )
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
                 }
-                kind if kind.evaluates_governance() => {
-                    // Evl or Rpr: evaluate against tracked governance_policy
-                    let tracked = branch.governance_policy.as_ref().ok_or_else(|| {
+                Err(KelsError::MissingIelEvent(dep)) if self.collecting => {
+                    // HARD-mode collect path: accumulate + soft-fail-style.
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_iel_event(
+                            dep.iel_prefix,
+                            dep.event_said,
+                        ));
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+
+            // Steps 2 + 3 — pick policy + apply divergence gate.
+            let policy_resolution = match event.kind {
+                SadEventKind::Upd => {
+                    self.iel_resolver
+                        .resolve_auth_policy_at(&branch.identity, &identity_event_said)
+                        .await
+                }
+                SadEventKind::Sea | SadEventKind::Rpr | SadEventKind::Cnt | SadEventKind::Dec => {
+                    self.iel_resolver
+                        .resolve_governance_policy_at(&branch.identity, &identity_event_said)
+                        .await
+                }
+                SadEventKind::Icp => unreachable!("Icp handled in first-generation branch above"),
+            };
+
+            // IelDivergent: HARD pre-divergence on non-terminals; SOFT for
+            // terminals OR post-divergence on the SEL.
+            let resolved_policy = match policy_resolution {
+                Ok(p) => p,
+                Err(KelsError::IelDivergent(_)) if auth_soft_eligible => {
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            // Step 3.5 (β-ordering) — IEL satisfied-check. After resolve_*_at,
+            // before the anchor check. The trait now returns
+            // `IelSatisfaction` (#156); the SEL walk maps each variant per
+            // the documented contract:
+            //   - Satisfied        → continue.
+            //   - AuthFailed       → soft-eligible carve-out (terminals or
+            //                        post-SEL-divergence land soft); else HARD.
+            //   - MissingEvent     → HARD here; Gap 3's collect-mode walk
+            //                        will route this to deferrable accumulation.
+            //   - PermanentFailure → HARD always (chain-integrity).
+            let iel_satisfaction = self
+                .iel_resolver
+                .is_satisfied(&branch.identity, &identity_event_said)
+                .await?;
+            match iel_satisfaction {
+                crate::IelSatisfaction::Satisfied => {}
+                crate::IelSatisfaction::AuthFailed { reason: _ } => {
+                    if auth_soft_eligible {
+                        self.policy_satisfied = false;
+                        if is_terminal {
+                            self.record_terminal_landing(event, &mut new_branches, branch, false);
+                        } else {
+                            Self::record_non_terminal_soft_landing(
+                                event,
+                                &mut new_branches,
+                                branch,
+                            );
+                        }
+                        continue;
+                    }
+                    return Err(KelsError::VerificationFailed(format!(
+                        "SEL {} event {}: bound IEL event {} did not satisfy IEL verification \
+                         (auth-fail; non-terminal pre-SEL-divergence)",
+                        event.kind, event.said, identity_event_said,
+                    )));
+                }
+                crate::IelSatisfaction::MissingEvent {
+                    iel_prefix,
+                    event_said,
+                } => {
+                    // Soft-eligible takes precedence: terminals /
+                    // post-SEL-divergence land soft regardless of
+                    // bound IEL event state.
+                    if auth_soft_eligible {
+                        self.policy_satisfied = false;
+                        if is_terminal {
+                            self.record_terminal_landing(event, &mut new_branches, branch, false);
+                        } else {
+                            Self::record_non_terminal_soft_landing(
+                                event,
+                                &mut new_branches,
+                                branch,
+                            );
+                        }
+                        continue;
+                    }
+                    if self.collecting {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_iel_event(iel_prefix, event_said));
+                        self.policy_satisfied = false;
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                        continue;
+                    }
+                    return Err(KelsError::missing_iel_event(iel_prefix, event_said));
+                }
+                crate::IelSatisfaction::PermanentFailure(violation) => {
+                    return Err(KelsError::IdentityBindingViolation(violation));
+                }
+            }
+
+            // Step 4 — anchor check. HARD pre-divergence on non-terminals;
+            // SOFT for terminals OR post-divergence. Gap 2 consumes only
+            // `evaluation.satisfied` for behavior-equivalence; Gap 3's
+            // collect-mode walk routes `evaluation.missing_anchors` into
+            // the deferrable accumulator. Gap-8 (#156 follow-on): the
+            // checker can also return `KelsError::MissingSadObject` when
+            // the resolved Policy SAD itself hasn't propagated locally;
+            // route that through the same soft-eligible / collect / hard
+            // disposition as the in-band failures.
+            let evaluation = match self.checker.evaluate(&event.said, &resolved_policy).await {
+                Ok(eval) => eval,
+                Err(KelsError::MissingSadObject(_)) if auth_soft_eligible => {
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                Err(KelsError::MissingSadObject(missing)) if self.collecting => {
+                    self.deferred_failures
+                        .push(DeferredFailure::missing_sad_object(missing.said));
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            if !evaluation.satisfied {
+                // Soft-eligible path (terminals + post-SEL-divergence)
+                // takes precedence over collect-mode accumulation.
+                // Terminals are intentionally soft-fail — the chain
+                // still lands as terminal regardless of anchor state;
+                // accumulating their anchors as deferrable would prevent
+                // the expected terminal landing.
+                if auth_soft_eligible {
+                    self.policy_satisfied = false;
+                    if is_terminal {
+                        self.record_terminal_landing(event, &mut new_branches, branch, false);
+                    } else {
+                        Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    }
+                    continue;
+                }
+                // Collect-mode (#156) for the otherwise-HARD path: if the
+                // policy could be satisfied by a missing anchor's
+                // commitment, accumulate each as a deferrable failure and
+                // soft-fail-style continue. Empty `missing_anchors`
+                // (policy permanently unsatisfiable) falls through to
+                // hard-fail.
+                if self.collecting && !evaluation.missing_anchors.is_empty() {
+                    for kel_prefix in &evaluation.missing_anchors {
+                        self.deferred_failures
+                            .push(DeferredFailure::missing_kel_anchor(*kel_prefix, event.said));
+                    }
+                    self.policy_satisfied = false;
+                    Self::record_non_terminal_soft_landing(event, &mut new_branches, branch);
+                    continue;
+                }
+                return Err(KelsError::VerificationFailed(format!(
+                    "SEL {} event {} not anchored under resolved policy {} \
+                     (bound IEL event {})",
+                    event.kind, event.said, resolved_policy, identity_event_said,
+                )));
+            }
+
+            // Step 5 — monotonic ratchet (uses positions fetched above). HARD
+            // for all kinds.
+            let new_position = position_batch.get(&identity_event_said).ok_or_else(|| {
+                KelsError::VerificationFailed(format!(
+                    "SEL event {} identity_event {} missing from prefetched IEL positions \
+                     (resolver invariant breach)",
+                    event.said, identity_event_said,
+                ))
+            })?;
+
+            let new_last_identity_event = match branch.last_identity_event {
+                None => {
+                    // First-set path: hard-passed steps 1–4 means we ratchet.
+                    Some(identity_event_said)
+                }
+                Some(prior_said) => {
+                    let prior_position = position_batch.get(&prior_said).ok_or_else(|| {
                         KelsError::VerificationFailed(format!(
-                            "SAD event {} {} but no governance_policy established",
-                            event.said, event.kind,
+                            "Branch's prior last_identity_event {} missing from prefetched \
+                             IEL positions (resolver invariant breach)",
+                            prior_said,
                         ))
                     })?;
-
-                    if !self.checker.satisfies(event, tracked).await? {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "SAD event {} governance policy not satisfied",
-                            event.said,
-                        )));
+                    use std::cmp::Ordering;
+                    match new_position.try_cmp(prior_position) {
+                        Ok(Ordering::Less) => {
+                            return Err(KelsError::identity_binding_violation(format!(
+                                "SEL event {} identity_event {} regresses prior ratchet {} \
+                                 in IEL chain order (monotonic)",
+                                event.said, identity_event_said, prior_said,
+                            )));
+                        }
+                        Ok(Ordering::Equal) => Some(prior_said),
+                        Ok(Ordering::Greater) => Some(identity_event_said),
+                        Err(_iel_divergent_unreachable) => {
+                            // Defense-in-depth: structurally unreachable given
+                            // the precondition that ratchet only updates after
+                            // hard-pass on steps 1–4 (so we never feed
+                            // post-divergence-different-branch positions).
+                            // If we get here, chain integrity has been breached;
+                            // hard-fail uniformly with the same monotonic
+                            // surface as Less (the trait contract specifies
+                            // `IdentityBindingViolation` for the
+                            // chain-integrity umbrella per #156).
+                            return Err(KelsError::identity_binding_violation(format!(
+                                "SEL event {} identity_event {} compares as IelDivergent \
+                                 against prior ratchet {} (monotonic — chain integrity breach)",
+                                event.said, identity_event_said, prior_said,
+                            )));
+                        }
                     }
-
-                    // Defense-in-depth: when the soft write_policy check above failed,
-                    // skip all branch-state advances driven by this event — even those
-                    // authorized by the governance check that just passed. A consumer
-                    // that bypasses policy_satisfied() then sees unchanged seal/policy
-                    // state for an unauthorized event. (See R5/R6 audit for rationale.)
-                    let new_last_gov_version = if write_policy_satisfied {
-                        Some(match branch.last_governance_version {
-                            Some(existing) => existing.max(event.version),
-                            None => event.version,
-                        })
-                    } else {
-                        branch.last_governance_version
-                    };
-
-                    // Evl allows governance_policy evolution; Rpr forbids it (validate_structure).
-                    let new_gp = if write_policy_satisfied {
-                        event.governance_policy.or(Some(*tracked))
-                    } else {
-                        Some(*tracked)
-                    };
-                    // Evl with Some(write_policy) = policy evolution. None = pure evaluation.
-                    // Rpr forbids write_policy entirely (validate_structure).
-                    let new_wp = if write_policy_satisfied {
-                        event.write_policy.unwrap_or(branch.tracked_write_policy)
-                    } else {
-                        branch.tracked_write_policy
-                    };
-                    (new_gp, 0, new_wp, new_last_gov_version)
                 }
+            };
+
+            // Step 6 — apply per-kind chain-state advancement.
+            let (new_last_governance_version, new_events_since_evaluation) = match event.kind {
                 SadEventKind::Upd => {
-                    // Normal event — increment counter, check bound
-                    let count = branch.events_since_evaluation + 1;
-                    if count > crate::MAX_NON_EVALUATION_EVENTS {
-                        return Err(KelsError::VerificationFailed(format!(
-                            "SAD event {} exceeds evaluation bound ({} non-evaluation events, max {})",
-                            event.said,
-                            count,
-                            crate::MAX_NON_EVALUATION_EVENTS,
-                        )));
+                    // Non-evaluation event; counter advances.
+                    let next = branch.events_since_evaluation + 1;
+                    if next > crate::MAX_NON_EVALUATION_EVENTS {
+                        self.is_proactively_governed = false;
                     }
-                    // tracked_write_policy unchanged — Upd forbids write_policy (validate_structure)
+                    (branch.last_governance_version, next)
+                }
+                SadEventKind::Sea | SadEventKind::Rpr => {
+                    // Authorized governance evaluation; advances seal,
+                    // resets counter.
+                    (Some(event.version), 0)
+                }
+                SadEventKind::Cnt | SadEventKind::Dec => {
+                    // Terminal HARD-passed paths land here. Cnt/Dec do NOT
+                    // advance the seal but DO set the terminal flag.
+                    if event.kind.is_contest() {
+                        self.is_contested = true;
+                    } else {
+                        self.is_decommissioned = true;
+                    }
                     (
-                        branch.governance_policy,
-                        count,
-                        branch.tracked_write_policy,
                         branch.last_governance_version,
+                        branch.events_since_evaluation,
                     )
                 }
-                _ => unreachable!("All SadEventKind variants handled"),
+                SadEventKind::Icp => unreachable!("Icp handled above"),
             };
 
             new_branches.insert(
                 event.said,
-                SadBranchState {
+                SadBranchTip {
                     tip: event.clone(),
-                    tracked_write_policy,
-                    governance_policy,
-                    events_since_evaluation,
-                    last_governance_version,
+                    identity: branch.identity,
+                    last_identity_event: new_last_identity_event,
+                    events_since_evaluation: new_events_since_evaluation,
+                    last_governance_version: new_last_governance_version,
                 },
             );
+
+            // Satisfied-SAIDs tracking. Predicate: SAID was queried, the
+            // event passed every auth-related gate (IelDivergent, satisfied,
+            // anchor) reaching this point, AND the event lives at
+            // `version < first_divergent_version` (or chain non-divergent).
+            // Cnt is structurally always at-or-after divergence — never lands
+            // here. Dec on a clean chain CAN.
+            if !post_divergence_soft && self.queried_saids.contains(&event.said) {
+                self.satisfied_saids.insert(event.said);
+            }
         }
 
-        // Keep un-extended branches
+        // Carry forward branches no event in this generation extended.
         for (said, state) in &self.branches {
             if !events.iter().any(|e| e.previous.as_ref() == Some(said)) {
                 new_branches.insert(*said, state.clone());
@@ -386,7 +842,147 @@ impl<'a> SelVerifier<'a> {
         Ok(())
     }
 
-    /// Verify a page of events incrementally.
+    /// Record a SOFT-passed terminal event (Cnt/Dec that failed its
+    /// IelDivergent guard, satisfied-check, or anchor check). The event
+    /// lands on the chain (replaces the parent branch tip) and sets the
+    /// appropriate terminal flag content-based, but does NOT advance
+    /// `last_identity_event`, `last_governance_version`, or
+    /// `events_since_evaluation` — per the "Update precondition" rule
+    /// that keeps the ratchet pinned to a known-clean position.
+    fn record_terminal_landing(
+        &mut self,
+        event: &SadEvent,
+        new_branches: &mut HashMap<cesr::Digest256, SadBranchTip>,
+        parent: &SadBranchTip,
+        _hard_passed: bool,
+    ) {
+        if event.kind.is_contest() {
+            self.is_contested = true;
+        } else {
+            self.is_decommissioned = true;
+        }
+        new_branches.insert(
+            event.said,
+            SadBranchTip {
+                tip: event.clone(),
+                identity: parent.identity,
+                last_identity_event: parent.last_identity_event,
+                events_since_evaluation: parent.events_since_evaluation,
+                last_governance_version: parent.last_governance_version,
+            },
+        );
+    }
+
+    /// Record a SOFT-passed non-terminal event (Upd/Sea/Rpr that failed an
+    /// auth-related gate post-divergence — IelDivergent, satisfied-check,
+    /// or anchor-fail). The event lands as the new branch tip but preserves
+    /// all other branch state (no ratchet advance, no seal advance, counter
+    /// preserved). Used only on post-divergence soft conversion; pre-divergence
+    /// HARD-fails for these kinds still return Err.
+    fn record_non_terminal_soft_landing(
+        event: &SadEvent,
+        new_branches: &mut HashMap<cesr::Digest256, SadBranchTip>,
+        parent: &SadBranchTip,
+    ) {
+        new_branches.insert(
+            event.said,
+            SadBranchTip {
+                tip: event.clone(),
+                identity: parent.identity,
+                last_identity_event: parent.last_identity_event,
+                events_since_evaluation: parent.events_since_evaluation,
+                last_governance_version: parent.last_governance_version,
+            },
+        );
+    }
+
+    /// #156 collect-mode sibling of [`verify_page`]. Equivalent to
+    /// enabling collecting + calling `verify_page`. Deferrable failures
+    /// (`MissingIelEvent`, `MissingKelAnchor`) accumulate into the
+    /// verifier's internal buffer (read via [`deferred_failures`]) and
+    /// the walk soft-fails the affected events; permanent failures still
+    /// halt with `Err(KelsError)`.
+    pub async fn verify_page_collecting(&mut self, events: &[SadEvent]) -> Result<(), KelsError> {
+        self.collecting = true;
+        self.verify_page(events).await
+    }
+
+    /// #156 collect-mode sibling of [`finish`]. Returns the verification
+    /// token alongside the accumulated deferrable failures. Caller maps
+    /// non-empty `Vec<DeferredFailure>` to a 422 + dep info wire response;
+    /// empty means the chain verified cleanly.
+    pub async fn finish_collecting(
+        mut self,
+    ) -> Result<(SelVerification, Vec<DeferredFailure>), KelsError> {
+        self.collecting = true;
+        self.finish_internal().await
+    }
+
+    /// Shared finalization. `finish` discards the deferred-failures vec;
+    /// `finish_collecting` returns it alongside the verification token.
+    /// Flushing the buffered generation is the side that may push new
+    /// entries into `deferred_failures` (when `collecting=true`), so the
+    /// take-after-flush ordering matters.
+    async fn finish_internal(
+        mut self,
+    ) -> Result<(SelVerification, Vec<DeferredFailure>), KelsError> {
+        self.flush_generation().await?;
+        let deferred = std::mem::take(&mut self.deferred_failures);
+
+        if !self.saw_any_events {
+            return Err(KelsError::VerificationFailed(
+                "SelVerifier::finish: no events were verified".into(),
+            ));
+        }
+        if self.branches.is_empty() {
+            return Err(KelsError::VerificationFailed(
+                "No tip after SEL verification".into(),
+            ));
+        }
+
+        // #147 / #171 inception batch rule: a chain whose tip is still the
+        // Icp never received its paired v1 Upd. Icp is structurally pinned
+        // to v=0 (rejected at any other version in `flush_generation`), so
+        // an Icp tip is sufficient to identify the lone-`[Icp]` chain.
+        // This is a chain-validity rule — every consumer's verifier walk
+        // rejects the same shape.
+        if self
+            .branches
+            .values()
+            .any(|b| b.tip.kind == SadEventKind::Icp)
+        {
+            return Err(KelsError::IncompleteInception(
+                "chain ends at Icp without an Upd at v1".into(),
+            ));
+        }
+
+        let mut branches: Vec<SadBranchTip> = self.branches.into_values().collect();
+        branches.sort_by_key(|b| b.tip.said);
+
+        let last_governance_version = branches
+            .iter()
+            .filter_map(|b| b.last_governance_version)
+            .max();
+
+        Ok((
+            SelVerification::new(
+                branches,
+                self.policy_satisfied,
+                self.is_contested,
+                self.is_decommissioned,
+                last_governance_version,
+                self.diverged_at_version,
+                self.queried_saids,
+                self.satisfied_saids,
+                self.is_proactively_governed,
+            ),
+            deferred,
+        ))
+    }
+
+    /// Verify a page of events. Events must arrive in
+    /// `(version ASC, kind sort_priority ASC, said ASC)` order with complete
+    /// generations within the page.
     pub async fn verify_page(&mut self, events: &[SadEvent]) -> Result<(), KelsError> {
         for event in events {
             self.saw_any_events = true;
@@ -406,1238 +1002,1624 @@ impl<'a> SelVerifier<'a> {
             self.current_generation_version = Some(event.version);
             self.generation_buffer.push(event.clone());
         }
-
         Ok(())
     }
 
-    pub async fn finish(mut self) -> Result<super::event::SadEventVerification, KelsError> {
-        self.flush_generation().await?;
-
-        if !self.saw_any_events {
-            return Err(KelsError::VerificationFailed("Empty SAD Event Log".into()));
-        }
-
-        if self.branches.is_empty() {
-            return Err(KelsError::VerificationFailed(
-                "No tip after verification".into(),
-            ));
-        }
-
-        // Global invariant: at least one branch must have a governance policy established
-        if !self
-            .branches
-            .values()
-            .any(|b| b.governance_policy.is_some())
-        {
-            return Err(KelsError::VerificationFailed(
-                "SAD Event Log has no governance_policy established — Icp or Est must declare one"
-                    .into(),
-            ));
-        }
-
-        // Chain-wide last_governance_version: min across tip branches' per-branch
-        // values. In divergent chains this is the weakest seal — if any branch
-        // has not advanced past version V, repair below V must still be allowed
-        // on that branch. `None` on any branch collapses the chain-wide value to
-        // `None` (no authorized evaluation on at least one branch).
-        let last_governance_version = self
-            .branches
-            .values()
-            .map(|b| b.last_governance_version)
-            .reduce(|acc, v| match (acc, v) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                _ => None,
-            })
-            .flatten();
-
-        // Deterministic tie-break: higher version wins; equal versions break
-        // on lexicographically greater SAID. Matters for divergent chains so
-        // `verification.write_policy()` is reproducible across callers.
-        let winning_branch = self
-            .branches
-            .into_values()
-            .max_by(|a, b| {
-                a.tip
-                    .version
-                    .cmp(&b.tip.version)
-                    .then_with(|| a.tip.said.as_ref().cmp(b.tip.said.as_ref()))
-            })
-            .ok_or_else(|| KelsError::VerificationFailed("No tip after verification".into()))?;
-
-        Ok(super::event::SadEventVerification::new(
-            winning_branch.tip,
-            winning_branch.tracked_write_policy,
-            self.policy_satisfied,
-            last_governance_version,
-            self.establishment_version,
-        ))
+    /// Finish verification and produce the proof token. Strict-mode
+    /// callers ignore any deferrable accumulator (they shouldn't have
+    /// any, since strict-mode halts on the first deferrable).
+    pub async fn finish(self) -> Result<SelVerification, KelsError> {
+        let (verification, _deferred) = self.finish_internal().await?;
+        Ok(verification)
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use verifiable_storage::{Chained, SelfAddressed};
+    use std::collections::{HashMap, HashSet};
 
-    use super::super::event::{SadEvent, SadEventKind};
     use super::*;
+    use crate::types::{
+        AnchorEvaluation, IdentityEvent, IdentityEventKind, IelChainPosition,
+        IelChainPositionBatch, IelSatisfaction,
+    };
 
-    fn test_digest(label: &[u8]) -> cesr::Digest256 {
+    const TEST_TOPIC: &str = "kels/sad/v1/keys/mlkem";
+
+    fn d(label: &[u8]) -> cesr::Digest256 {
         cesr::Digest256::blake3_256(label)
     }
 
-    /// Create a v0 event with governance_policy declared.
-    fn create_v0_with_evaluation(wp: cesr::Digest256) -> SadEvent {
-        let gp = test_digest(b"evaluation-policy");
-        SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            Some(gp),
-        )
-        .unwrap()
-    }
+    // ==================== Test fakes ====================
 
-    /// Create a v0 event without evaluation (prefix stays deterministic).
-    fn create_v0_no_evaluation(wp: cesr::Digest256) -> SadEvent {
-        SadEvent::create(
-            "kels/sad/v1/keys/mlkem".to_string(),
-            SadEventKind::Icp,
-            None,
-            None,
-            Some(wp),
-            None,
-        )
-        .unwrap()
-    }
-
-    /// Declare governance_policy on an event (Est kind) and increment.
-    fn add_governance_declaration(event: &mut SadEvent) {
-        let gp = test_digest(b"evaluation-policy");
-        event.kind = SadEventKind::Est;
-        event.governance_policy = Some(gp);
-        event.write_policy = None; // Est forbids write_policy
-        event.increment().unwrap();
-    }
-
-    /// Set Evl kind and increment (evaluation, no policy evolution).
-    fn add_governance_evaluation(event: &mut SadEvent) {
-        event.kind = SadEventKind::Evl;
-        event.write_policy = None; // pure evaluation
-        event.increment().unwrap();
-    }
-
+    /// `PolicyChecker` that always returns satisfied.
     struct AlwaysPassChecker;
     #[async_trait::async_trait]
     impl PolicyChecker for AlwaysPassChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
-            Ok(true)
+        async fn evaluate(
+            &self,
+            _: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(AnchorEvaluation {
+                satisfied: true,
+                missing_anchors: Vec::new(),
+            })
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
 
-    struct RejectingChecker;
+    /// `PolicyChecker` that returns `satisfied=false` for SAIDs in a
+    /// reject-list, satisfied otherwise. Used to drive soft/hard fail cases
+    /// per kind.
+    struct RejectingChecker {
+        reject: HashSet<cesr::Digest256>,
+    }
     #[async_trait::async_trait]
     impl PolicyChecker for RejectingChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
-            Ok(false)
+        async fn evaluate(
+            &self,
+            said: &cesr::Digest256,
+            _: &cesr::Digest256,
+        ) -> Result<AnchorEvaluation, KelsError> {
+            Ok(AnchorEvaluation {
+                satisfied: !self.reject.contains(said),
+                missing_anchors: Vec::new(),
+            })
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+        async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
             Ok(true)
         }
     }
 
-    struct RejectInceptionChecker;
-    #[async_trait::async_trait]
-    impl PolicyChecker for RejectInceptionChecker {
-        async fn satisfies(&self, _: &SadEvent, _: &cesr::Digest256) -> Result<bool, KelsError> {
-            Ok(true)
-        }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
-            Ok(false)
-        }
+    /// Configurable IEL resolver fake. Holds a SAID-keyed map of fake IEL
+    /// events with `(version, auth_policy, governance_policy, kind)` and an
+    /// optional divergence threshold (`first_divergent_version`).
+    #[derive(Clone)]
+    struct FakeIelResolver {
+        identity: cesr::Digest256,
+        events: HashMap<cesr::Digest256, FakeIelEntry>,
+        first_divergent_version: Option<u64>,
     }
 
-    /// Test-only `PolicyChecker` that accepts governance_policy evaluations
-    /// and rejects write_policy evaluations. Disambiguates the two by comparing
-    /// the requested policy SAID against the stored `governance_policy`.
-    ///
-    /// **Callers must not reuse the same SAID for write_policy and
-    /// governance_policy in the same test** — both checks would then accept,
-    /// masking write_policy rejection. Tests using distinct `test_digest(b"...")`
-    /// labels are already safe.
-    struct AcceptEvaluationRejectWriteChecker {
+    #[derive(Clone)]
+    struct FakeIelEntry {
+        version: u64,
+        kind: IdentityEventKind,
+        auth_policy: cesr::Digest256,
         governance_policy: cesr::Digest256,
     }
+
+    impl FakeIelResolver {
+        fn new(identity: cesr::Digest256) -> Self {
+            Self {
+                identity,
+                events: HashMap::new(),
+                first_divergent_version: None,
+            }
+        }
+
+        fn with_event(
+            mut self,
+            said: cesr::Digest256,
+            version: u64,
+            kind: IdentityEventKind,
+            auth_policy: cesr::Digest256,
+            governance_policy: cesr::Digest256,
+        ) -> Self {
+            self.events.insert(
+                said,
+                FakeIelEntry {
+                    version,
+                    kind,
+                    auth_policy,
+                    governance_policy,
+                },
+            );
+            self
+        }
+
+        fn with_divergence_at(mut self, version: u64) -> Self {
+            self.first_divergent_version = Some(version);
+            self
+        }
+    }
+
     #[async_trait::async_trait]
-    impl PolicyChecker for AcceptEvaluationRejectWriteChecker {
-        async fn satisfies(
+    impl IelResolver for FakeIelResolver {
+        async fn fetch_iel_event(
             &self,
-            _: &SadEvent,
-            policy: &cesr::Digest256,
-        ) -> Result<bool, KelsError> {
-            Ok(*policy == self.governance_policy)
+            identity: &cesr::Digest256,
+            said: &cesr::Digest256,
+        ) -> Result<IdentityEvent, KelsError> {
+            if identity != &self.identity {
+                return Err(KelsError::identity_binding_violation(format!(
+                    "FakeIelResolver: identity mismatch (got {}, expected {})",
+                    identity, self.identity
+                )));
+            }
+            let entry = self
+                .events
+                .get(said)
+                .ok_or_else(|| KelsError::missing_iel_event(*identity, *said))?;
+            // Build a synthetic IEL event with the recorded fields. SAID/prefix
+            // wired up to be self-consistent for the verifier's checks (we
+            // don't go through `IdentityEvent::icp` since that derives prefix
+            // from auth/gov/topic — we want exact control).
+            Ok(IdentityEvent {
+                said: *said,
+                prefix: self.identity,
+                previous: None,
+                version: entry.version,
+                topic: "iel-fake".to_string(),
+                kind: entry.kind,
+                auth_policy: entry.auth_policy,
+                governance_policy: entry.governance_policy,
+            })
         }
-        async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
-            Ok(true)
+
+        async fn resolve_auth_policy_at(
+            &self,
+            identity: &cesr::Digest256,
+            said: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            let event = self.fetch_iel_event(identity, said).await?;
+            if let Some(divergent) = self.first_divergent_version
+                && event.version >= divergent
+            {
+                return Err(KelsError::IelDivergent(format!(
+                    "FakeIelResolver: event {} at version {} is at-or-after divergence {}",
+                    said, event.version, divergent
+                )));
+            }
+            Ok(event.auth_policy)
+        }
+
+        async fn resolve_governance_policy_at(
+            &self,
+            identity: &cesr::Digest256,
+            said: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            let event = self.fetch_iel_event(identity, said).await?;
+            if let Some(divergent) = self.first_divergent_version
+                && event.version >= divergent
+            {
+                return Err(KelsError::IelDivergent(format!(
+                    "FakeIelResolver: event {} at version {} is at-or-after divergence {}",
+                    said, event.version, divergent
+                )));
+            }
+            Ok(event.governance_policy)
+        }
+
+        async fn is_satisfied(
+            &self,
+            identity: &cesr::Digest256,
+            said: &cesr::Digest256,
+        ) -> Result<IelSatisfaction, KelsError> {
+            // Test fake: re-classify fetch errors into the new
+            // `IelSatisfaction` variants per #156. For the satisfied
+            // predicate, mirror the production rule: pre-divergence (or
+            // chain non-divergent) → Satisfied; post-divergence → AuthFailed
+            // (analog of "in-chain but soft-failed"). The fake's `events`
+            // map doesn't record auth-pass-status, so otherwise default to
+            // "auth-passed" — tests that need to pin auth-fail-soft cases
+            // construct chains where the SEL checker rejects, exercising the
+            // SEL-side gate without driving an in-fake IEL verifier.
+            let event = match self.fetch_iel_event(identity, said).await {
+                Ok(e) => e,
+                Err(KelsError::MissingIelEvent(dep)) => {
+                    return Ok(IelSatisfaction::MissingEvent {
+                        iel_prefix: dep.iel_prefix,
+                        event_said: dep.event_said,
+                    });
+                }
+                Err(KelsError::IdentityBindingViolation(violation)) => {
+                    return Ok(IelSatisfaction::PermanentFailure(violation));
+                }
+                Err(other) => return Err(other),
+            };
+            let post_divergence = self
+                .first_divergent_version
+                .is_some_and(|d| event.version >= d);
+            if post_divergence {
+                Ok(IelSatisfaction::AuthFailed {
+                    reason: format!(
+                        "FakeIelResolver: event {} at version {} is post-divergence",
+                        said, event.version,
+                    ),
+                })
+            } else {
+                Ok(IelSatisfaction::Satisfied)
+            }
+        }
+
+        async fn iel_chain_positions(
+            &self,
+            identity: &cesr::Digest256,
+            saids: &[cesr::Digest256],
+        ) -> Result<IelChainPositionBatch, KelsError> {
+            if identity != &self.identity {
+                return Err(KelsError::identity_binding_violation(format!(
+                    "FakeIelResolver: identity mismatch (got {}, expected {})",
+                    identity, self.identity
+                )));
+            }
+            let mut found: Vec<IelChainPosition> = Vec::new();
+            let mut missing: Vec<cesr::Digest256> = Vec::new();
+            for said in saids {
+                let Some(entry) = self.events.get(said) else {
+                    missing.push(*said);
+                    continue;
+                };
+                let branch_marker = match self.first_divergent_version {
+                    Some(d) if entry.version >= d => Some(*said),
+                    _ => None,
+                };
+                found.push(IelChainPosition {
+                    version: entry.version,
+                    kind: entry.kind,
+                    said: *said,
+                    branch_marker,
+                });
+            }
+            Ok(IelChainPositionBatch { found, missing })
+        }
+
+        async fn resolve_identity_for_event(
+            &self,
+            said: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            if self.events.contains_key(said) {
+                Ok(self.identity)
+            } else {
+                // SAID-only fetch — no `iel_prefix` to populate
+                // `MissingIelEvent`; return permanent. Mirrors the
+                // production resolvers' classification at this site.
+                Err(KelsError::identity_binding_violation(format!(
+                    "FakeIelResolver: no event for SAID {}",
+                    said
+                )))
+            }
+        }
+
+        async fn resolve_current_auth_policy(
+            &self,
+            identity: &cesr::Digest256,
+        ) -> Result<cesr::Digest256, KelsError> {
+            if identity != &self.identity {
+                return Err(KelsError::identity_binding_violation(format!(
+                    "FakeIelResolver: identity mismatch (got {}, expected {})",
+                    identity, self.identity
+                )));
+            }
+            // Test fake: pick the highest-version event's auth_policy as the
+            // "current" view. Tests that need terminal/divergent semantics
+            // can set `first_divergent_version` and assert IelDivergent
+            // separately; this stub just feeds back the most recently
+            // declared auth_policy.
+            if let Some(divergent) = self.first_divergent_version {
+                return Err(KelsError::IelDivergent(format!(
+                    "FakeIelResolver: IEL is divergent at {}",
+                    divergent
+                )));
+            }
+            self.events
+                .values()
+                .max_by_key(|e| e.version)
+                .map(|e| e.auth_policy)
+                .ok_or_else(|| {
+                    KelsError::NotFound(format!("FakeIelResolver: IEL {} has no events", identity,))
+                })
         }
     }
 
-    // ==================== Original tests (updated with kinds) ====================
-
-    #[tokio::test]
-    async fn test_sel_verifier_valid_chain() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        assert!(verifier.verify_page(&[v0.clone(), v1]).await.is_ok());
-        assert!(!verifier.is_divergent());
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 1);
+    fn fake_resolver_for_chain(
+        identity: cesr::Digest256,
+        events: &[(cesr::Digest256, u64, IdentityEventKind)],
+        auth_policy: cesr::Digest256,
+        gov_policy: cesr::Digest256,
+    ) -> FakeIelResolver {
+        let mut r = FakeIelResolver::new(identity);
+        for (said, version, kind) in events {
+            r = r.with_event(*said, *version, *kind, auth_policy, gov_policy);
+        }
+        r
     }
 
-    #[tokio::test]
-    async fn test_sel_verifier_empty_fails() {
-        let checker = AlwaysPassChecker;
-        let verifier = SelVerifier::new(&test_digest(b"test"), &checker);
-        assert!(verifier.finish().await.is_err());
+    fn always_pass() -> Arc<dyn PolicyChecker + Send + Sync> {
+        Arc::new(AlwaysPassChecker)
     }
 
-    #[tokio::test]
-    async fn test_sel_verifier_wrong_version_fails() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-        v1.version = 5;
-        v1.derive_said().unwrap();
+    fn rejecting(saids: &[cesr::Digest256]) -> Arc<dyn PolicyChecker + Send + Sync> {
+        Arc::new(RejectingChecker {
+            reject: saids.iter().copied().collect(),
+        })
+    }
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+    // ==================== Helpers to build SELs ====================
+
+    fn make_icp(identity: cesr::Digest256) -> SadEvent {
+        SadEvent::icp(identity, TEST_TOPIC).unwrap()
+    }
+
+    fn make_upd(prev: &SadEvent, iel_evt: cesr::Digest256, content_label: &[u8]) -> SadEvent {
+        SadEvent::upd(prev, iel_evt, d(content_label)).unwrap()
+    }
+
+    // ==================== Tests ====================
+
+    /// Linear chain `[Icp, Upd]` with Upd binding to IEL Icp; expect
+    /// `policy_satisfied=true`, branch ratchet visible, no terminal flags.
+    #[tokio::test]
+    async fn linear_chain_icp_upd_with_iel_icp_binding() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
         verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.policy_satisfied());
+        assert!(!v.is_contested());
+        assert!(!v.is_decommissioned());
+        assert_eq!(v.diverged_at_version(), None);
+        assert_eq!(v.branches().len(), 1);
+        let branch = &v.branches()[0];
+        assert_eq!(branch.identity, identity);
+        assert_eq!(branch.last_identity_event, Some(iel_icp));
+    }
+
+    /// #171: a chain whose only event is `Icp` (branch tip is still Icp at v0)
+    /// is rejected with `IncompleteInception`. The rule lives in the verifier
+    /// so every consumer's walk applies it — a tampered DB serving lone `[Icp]`
+    /// fails end-verification.
+    #[tokio::test]
+    async fn lone_icp_rejected_with_incomplete_inception() {
+        let identity = d(b"identity-lone-icp");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[],
+            d(b"auth-lone"),
+            d(b"gov-lone"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0]).await.unwrap();
+        let err = verifier.finish().await.expect_err("lone Icp must reject");
         assert!(
-            err.to_string().contains("has version 5 but expected 1"),
-            "Expected version error, got: {}",
+            matches!(err, KelsError::IncompleteInception(_)),
+            "expected IncompleteInception, got {:?}",
             err
         );
     }
 
+    /// Upd binding to a later IEL Evl after IEL evolution: ratchet advances.
     #[tokio::test]
-    async fn test_sel_verifier_multi_page() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.increment().unwrap();
+    async fn upd_binding_to_later_iel_evl_advances_ratchet() {
+        let identity = d(b"identity-B");
+        let iel_icp = d(b"iel-icp-B");
+        let iel_evl = d(b"iel-evl-B");
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        assert!(verifier.verify_page(&[v0]).await.is_ok());
-        assert!(verifier.verify_page(&[v1, v2]).await.is_ok());
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-B"),
+            d(b"gov-B"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 2);
-    }
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2 = make_upd(&v1, iel_evl, b"c2");
 
-    #[tokio::test]
-    async fn test_same_write_policy_authorized() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(verification.policy_satisfied());
-    }
-
-    #[tokio::test]
-    async fn test_evolving_write_policy_authorized() {
-        let wp1 = test_digest(b"write-policy-1");
-        let wp2 = test_digest(b"write-policy-2");
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = Some(wp2);
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(verification.policy_satisfied());
-        // Tracked write_policy updated from Evl
-        assert_eq!(verification.write_policy(), &wp2);
-    }
-
-    #[tokio::test]
-    async fn test_rejected_write_policy_evolution() {
-        // An Evl that evolves write_policy must be authorized against the
-        // *previous* write_policy. Use AcceptEvaluationRejectWriteChecker so
-        // the governance_policy evaluation passes (no hard error) but the
-        // write_policy evaluation fails (soft rejection). This cleanly isolates
-        // the write_policy rejection path.
-        let wp1 = test_digest(b"write-policy-1");
-        let wp2 = test_digest(b"write-policy-2");
-        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = Some(wp2);
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(
-            !verification.policy_satisfied(),
-            "Expected policy_satisfied=false — previous write_policy rejected the evolution"
-        );
-        // Defense-in-depth: tracked_write_policy did NOT advance to wp2 because
-        // the soft write_policy check failed. Chain state remains authorized
-        // against the legitimate previous policy.
-        assert_eq!(verification.write_policy(), &wp1);
-    }
-
-    #[tokio::test]
-    async fn test_evl_without_write_policy_inherits_tracked() {
-        let wp1 = test_digest(b"write-policy-1");
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        // Pure evaluation — tracked write_policy inherited from v0
-        assert_eq!(verification.write_policy(), &wp1);
-    }
-
-    #[tokio::test]
-    async fn test_evl_evolution_rejected_does_not_advance_tracked_policy() {
-        // Defense-in-depth: when Evl evolves write_policy but the previous
-        // policy rejects the advance, tracked_write_policy must remain at the
-        // previous value. Any subsequent event on this branch will then be
-        // checked against the legitimate previous policy, not the attacker's
-        // proposed replacement. All three branch-state advances driven by the
-        // event (tracked_write_policy, tracked governance_policy, and
-        // last_governance_version) are gated on the same soft-pass flag.
-        let wp1 = test_digest(b"write-policy-1");
-        let wp2 = test_digest(b"write-policy-2");
-        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = Some(wp2);
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        // Accepts governance_policy evaluation, rejects write_policy authorization.
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(
-            !verification.policy_satisfied(),
-            "Expected policy_satisfied=false because the previous write_policy rejected the evolution"
-        );
-        // tracked_write_policy did NOT advance — advance is gated on the soft check.
-        assert_eq!(verification.write_policy(), &wp1);
-        // last_governance_version did NOT advance either — same gate.
-        assert_eq!(
-            verification.last_governance_version(),
-            None,
-            "last_governance_version must not advance when the event soft-failed the write_policy check"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_evl_rejected_wp_does_not_advance_governance_policy() {
-        // Defense-in-depth: when an Evl soft-fails the write_policy check,
-        // the branch's tracked governance_policy must stay at the previous
-        // value. We verify this indirectly by submitting a v2 Evl whose hard
-        // governance check only succeeds if tracked gp is still gp1 (not the
-        // attacker's gp_attacker that v1 proposed). AcceptEvaluationRejectWriteChecker
-        // only accepts checks against gp1, so if tracked gp had advanced to
-        // gp_attacker, v2's hard governance check would fail and abort verification.
-        let wp1 = test_digest(b"write-policy-1");
-        let wp_attacker = test_digest(b"write-policy-attacker");
-        let gp1 = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
-        let gp_attacker = test_digest(b"evaluation-policy-attacker");
-        let v0 = create_v0_with_evaluation(wp1);
-
-        // v1: attacker-crafted Evl evolving both wp and gp.
-        // wp soft check (against tracked wp1): FAILS.
-        // governance hard check (against tracked gp1): PASSES.
-        // With the gate: tracked gp stays at gp1, last_governance_version stays None.
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = Some(wp_attacker);
-        v1.governance_policy = Some(gp_attacker);
-        v1.increment().unwrap();
-
-        // v2: a following Evl. wp stays attacker (inherited), gp unchanged.
-        // If the v1 gp advance was gated (fix): tracked gp is gp1, v2's hard
-        // governance check against gp1 passes → verification succeeds with
-        // policy_satisfied=false.
-        // If the v1 gp advance was NOT gated (pre-fix): tracked gp is gp_attacker,
-        // v2's hard governance check against gp_attacker fails → HARD ERROR.
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.kind = SadEventKind::Evl;
-        v2.write_policy = None;
-        v2.governance_policy = None;
-        v2.increment().unwrap();
-
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp1,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
-        let verification = verifier
-            .finish()
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.policy_satisfied());
+        assert_eq!(v.branches()[0].last_identity_event, Some(iel_evl));
+    }
+
+    /// #156 collect-mode: a batch with a single `Upd` referencing an
+    /// unknown IEL event accumulates one `DeferredFailure::MissingIelEvent`
+    /// instead of halting with `Err`. `finish_collecting` returns the
+    /// verification token alongside the collected failures; the chain
+    /// soft-failed at the missing-event gate, so `policy_satisfied=false`.
+    #[tokio::test]
+    async fn collect_mode_accumulates_missing_iel_event() {
+        let identity = d(b"identity-collect-mie");
+        let iel_icp = d(b"iel-icp-collect-mie");
+        let unknown = d(b"unknown-iel-event-collect");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-collect-mie"),
+            d(b"gov-collect-mie"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, unknown, b"c1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1])
             .await
-            .expect("verification must succeed — tracked gp should still be gp1 on v2");
-        assert!(
-            !verification.policy_satisfied(),
-            "wp soft-failed on v1 and v2, policy_satisfied must be false"
-        );
-        assert_eq!(verification.write_policy(), &wp1);
-        // last_governance_version stays None: v1's wp soft-fail blocked the seal
-        // advance, and v2's wp soft-fail blocks it again.
-        assert_eq!(verification.last_governance_version(), None);
+            .expect("collect-mode does not halt on missing IEL event");
+        let (verification, deferred) = verifier
+            .finish_collecting()
+            .await
+            .expect("finish_collecting returns token");
+
+        // The walk may emit the same `MissingIelEvent` from multiple
+        // gates (the bulk `iel_chain_positions` partial-results check and
+        // the per-event `fetch_iel_event` Step 1). The wire-format layer
+        // dedupes via `BTreeSet<DepRef>`; the verifier-level accumulator
+        // doesn't, so just assert at least one matching entry exists.
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingIelEvent(dep)
+                if dep.iel_prefix == identity && dep.event_said == unknown
+        )));
+        // Soft-fail-style state advancement: chain landed but policy not satisfied.
+        assert!(!verification.policy_satisfied());
     }
 
+    /// #156 collect-mode: permanent failures (here: monotonic-ratchet
+    /// regression / chain-integrity breach) still halt the walk with
+    /// `Err(KelsError)`; the deferred accumulator is discarded.
     #[tokio::test]
-    async fn test_est_rejected_wp_does_not_establish_governance_policy() {
-        // Defense-in-depth: when an Est soft-fails the write_policy check,
-        // establishment_version and branch.governance_policy must NOT advance.
-        // Mirrors the R5/R6 gate on the Evl/Rpr arm for the Est arm.
-        let wp1 = test_digest(b"write-policy-1");
-        let gp_attacker = test_digest(b"evaluation-policy-attacker");
-        let gp_legit = test_digest(b"evaluation-policy-legit");
+    async fn collect_mode_permanent_failure_still_halts() {
+        let identity = d(b"identity-collect-perm");
+        let iel_icp = d(b"iel-icp-collect-perm");
+        let iel_evl = d(b"iel-evl-collect-perm");
 
-        let v0 = create_v0_no_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Est;
-        v1.write_policy = None;
-        v1.governance_policy = Some(gp_attacker);
-        v1.increment().unwrap();
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-collect-perm"),
+            d(b"gov-collect-perm"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-        // AcceptEvaluationRejectWriteChecker accepts only checks against gp_legit.
-        // The wp check (against tracked wp1) returns false → soft-fail.
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp_legit,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap_err();
-        // finish() rejects: the gate kept branch.governance_policy = None, so
-        // "SAD Event Log has no governance_policy" fires. This proves Est's
-        // governance_policy advance was blocked by the soft wp-fail.
-        assert!(
-            verification.to_string().contains("no governance_policy"),
-            "Expected no-evaluation error because the soft-failed Est did not establish governance_policy, got: {}",
-            verification
-        );
+        let v0 = make_icp(identity);
+        // v1 binds to the later IEL Evl, ratcheting the branch forward.
+        let v1 = make_upd(&v0, iel_evl, b"c1");
+        // v2 binds to the earlier IEL Icp, regressing the ratchet → permanent.
+        let v2 = make_upd(&v1, iel_icp, b"c2");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1, v2])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish_collecting()
+            .await
+            .expect_err("permanent failure halts collect-mode");
+        assert!(matches!(err, KelsError::IdentityBindingViolation(_)));
     }
 
+    /// #156 collect-mode: anchor evaluation that reports a non-empty
+    /// `missing_anchors` list (deferrable: KEL endorsers haven't anchored
+    /// yet) accumulates one `DeferredFailure::MissingKelAnchor` per
+    /// missing endorser. The walk soft-fails the affected event.
     #[tokio::test]
-    async fn test_divergent_est_soft_fail_does_not_poison_other_branch() {
-        // Divergent Est at v1: branch A carries gp_legit and soft-passes the wp
-        // check; branch B carries gp_attacker and soft-fails. The R6 per-branch
-        // gate keeps branch B's `governance_policy = None`, but `establishment_version`
-        // is chain-wide and advances to Some(1) via branch A. This pins the
-        // intentional chain-wide/per-branch asymmetry: consumers reading
-        // `establishment_version()` without gating on `policy_satisfied()` may
-        // see a value that doesn't match the tie-break winner's branch state.
-        let wp1 = test_digest(b"write-policy-1");
-        let gp_legit = test_digest(b"evaluation-policy-legit");
-        let gp_attacker = test_digest(b"evaluation-policy-attacker");
-
-        let v0 = create_v0_no_evaluation(wp1);
-
-        let mut v1_a = v0.clone();
-        v1_a.content = Some(test_digest(b"content_a"));
-        v1_a.kind = SadEventKind::Est;
-        v1_a.write_policy = None;
-        v1_a.governance_policy = Some(gp_legit);
-        v1_a.increment().unwrap();
-
-        let mut v1_b = v0.clone();
-        v1_b.content = Some(test_digest(b"content_b"));
-        v1_b.kind = SadEventKind::Est;
-        v1_b.write_policy = None;
-        v1_b.governance_policy = Some(gp_attacker);
-        v1_b.increment().unwrap();
-
-        // Checker accepts the wp soft check only for events whose
-        // governance_policy is gp_legit. Est doesn't trigger the governance hard
-        // check, so this is the only checker call path exercised per event.
-        struct AcceptLegitEstChecker {
-            legit_gp: cesr::Digest256,
+    async fn collect_mode_accumulates_missing_kel_anchor() {
+        // Custom checker returning a specific missing-anchor for any
+        // (said, policy) lookup.
+        struct MissingAnchorChecker {
+            kel_prefix: cesr::Digest256,
         }
         #[async_trait::async_trait]
-        impl PolicyChecker for AcceptLegitEstChecker {
-            async fn satisfies(
+        impl PolicyChecker for MissingAnchorChecker {
+            async fn evaluate(
                 &self,
-                event: &SadEvent,
                 _: &cesr::Digest256,
-            ) -> Result<bool, KelsError> {
-                Ok(event.governance_policy == Some(self.legit_gp))
+                _: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Ok(AnchorEvaluation {
+                    satisfied: false,
+                    missing_anchors: vec![self.kel_prefix],
+                })
             }
-            async fn self_satisfies(&self, _: &SadEvent) -> Result<bool, KelsError> {
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
                 Ok(true)
             }
         }
 
-        let checker = AcceptLegitEstChecker { legit_gp: gp_legit };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let identity = d(b"identity-collect-mka");
+        let iel_icp = d(b"iel-icp-collect-mka");
+        let kel_prefix = d(b"missing-kel-prefix");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-collect-mka"),
+            d(b"gov-collect-mka"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(MissingAnchorChecker { kel_prefix });
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-mka");
+        let v1_said = v1.said;
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
         verifier
-            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
+            .verify_page_collecting(&[v0, v1])
             .await
-            .unwrap();
-        let verification = verifier.finish().await.unwrap();
+            .expect("collect-mode does not halt on missing anchor");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
 
-        // Branch B soft-failed wp → chain-wide policy_satisfied is false.
-        assert!(
-            !verification.policy_satisfied(),
-            "Branch B soft-failed wp; policy_satisfied must be false"
-        );
-        // Chain-wide: set by branch A's successful Est, not reset by B's soft-fail.
-        assert_eq!(verification.establishment_version(), Some(1));
-        // Est doesn't evaluate, regardless of which branch tie-break picks.
-        assert_eq!(verification.last_governance_version(), None);
-        // tracked_write_policy remains v0's wp (Est forbids wp evolution).
-        assert_eq!(verification.write_policy(), &wp1);
-
-        // Documenting the asymmetry: if tie-break selects branch B (whose per-branch
-        // governance_policy stayed None because of the R6 gate), the token carries
-        // establishment_version=Some(1) alongside a tip whose branch had no gp.
-        // This is intentional; consumers that treat the accessor as branch-scoped
-        // must gate on policy_satisfied() first.
-        let winner_is_b = v1_b.said.as_ref() > v1_a.said.as_ref();
-        assert_eq!(
-            verification.current_event().said,
-            if winner_is_b { v1_b.said } else { v1_a.said }
-        );
+        assert_eq!(deferred.len(), 1);
+        assert!(matches!(
+            &deferred[0],
+            DeferredFailure::MissingKelAnchor(dep)
+                if dep.kel_prefix == kel_prefix && dep.anchor_said == v1_said
+        ));
+        assert!(!verification.policy_satisfied());
     }
 
+    /// Collect-mode (#156 Gap-8): when the `PolicyChecker.evaluate` call
+    /// returns `KelsError::MissingSadObject` (the resolved Policy SAD
+    /// hasn't propagated locally), the SEL verifier accumulates a
+    /// `DeferredFailure::MissingSadObject` and continues the walk
+    /// soft-fail-style. Strict mode would halt; collect mode lets the
+    /// handler emit a typed-422 with `sad_object` deps so gossip can
+    /// park on `pending:said:{policy_said}` and drain when the SAD
+    /// object commits.
     #[tokio::test]
-    async fn test_rpr_inherits_tracked_write_policy() {
-        // Rpr cannot carry write_policy (validate_structure forbids it).
-        // The verifier must leave tracked_write_policy unchanged across Rpr.
-        let wp1 = test_digest(b"write-policy-1");
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Rpr;
-        v1.write_policy = None;
-        v1.governance_policy = None; // Rpr forbids governance_policy
-        v1.increment().unwrap();
+    async fn collect_mode_accumulates_missing_sad_object() {
+        struct MissingSadObjectChecker;
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Err(KelsError::missing_sad_object(*policy))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let identity = d(b"identity-collect-msa");
+        let iel_icp = d(b"iel-icp-collect-msa");
+        let auth = d(b"auth-collect-msa");
+        let gov = d(b"gov-collect-msa");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            auth,
+            gov,
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(MissingSadObjectChecker);
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-msa");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page_collecting(&[v0, v1])
+            .await
+            .expect("collect-mode does not halt on missing SAD object");
+        let (verification, deferred) = verifier.finish_collecting().await.unwrap();
+
+        assert!(deferred.iter().any(|d| matches!(
+            d,
+            DeferredFailure::MissingSadObject(dep) if dep.said == auth
+        )));
+        assert!(!verification.policy_satisfied());
+    }
+
+    /// Strict-mode counterpart: `KelsError::MissingSadObject` from the
+    /// SEL checker propagates through `verify_page` / `finish` as Err.
+    #[tokio::test]
+    async fn strict_mode_halts_on_missing_sad_object() {
+        struct MissingSadObjectChecker;
+        #[async_trait::async_trait]
+        impl PolicyChecker for MissingSadObjectChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                policy: &cesr::Digest256,
+            ) -> Result<AnchorEvaluation, KelsError> {
+                Err(KelsError::missing_sad_object(*policy))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, KelsError> {
+                Ok(true)
+            }
+        }
+
+        let identity = d(b"identity-strict-msa");
+        let iel_icp = d(b"iel-icp-strict-msa");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-strict-msa"),
+            d(b"gov-strict-msa"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(MissingSadObjectChecker);
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1-strict-msa");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
         verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        // Rpr inherits wp1 from branch state
-        assert_eq!(verification.write_policy(), &wp1);
-    }
-
-    #[tokio::test]
-    async fn test_multi_step_write_policy_evolution() {
-        // v0 Icp(wp1) → v1 Est → v2 Evl(wp2) → v3 Evl(wp3).
-        // After verification, tracked_write_policy must equal wp3 — each Evl
-        // advances from the previously-tracked policy, not from v0's seed.
-        let wp1 = test_digest(b"write-policy-1");
-        let wp2 = test_digest(b"write-policy-2");
-        let wp3 = test_digest(b"write-policy-3");
-
-        let v0 = create_v0_no_evaluation(wp1);
-        let mut v1 = v0.clone();
-        add_governance_declaration(&mut v1); // Est @ v1 establishes governance_policy
-
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.kind = SadEventKind::Evl;
-        v2.write_policy = Some(wp2);
-        v2.governance_policy = None;
-        v2.increment().unwrap();
-
-        let mut v3 = v2.clone();
-        v3.content = Some(test_digest(b"content3"));
-        v3.kind = SadEventKind::Evl;
-        v3.write_policy = Some(wp3);
-        v3.governance_policy = None;
-        v3.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier
-            .verify_page(&[v0.clone(), v1, v2, v3])
-            .await
-            .unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(verification.policy_satisfied());
-        assert_eq!(verification.write_policy(), &wp3);
-    }
-
-    #[tokio::test]
-    async fn test_multi_step_evolution_rejected_keeps_seed_policy() {
-        // Chain: v0 Icp(wp1) → v1 Evl(wp2) → v2 Evl(wp3). The checker rejects
-        // every write_policy check. Because advance is gated on the soft check,
-        // neither v1 nor v2 advances tracked_write_policy, and the final
-        // tracked value remains wp1. Combined with
-        // test_multi_step_write_policy_evolution (which proves tracked advances
-        // to wp3 under AlwaysPassChecker), the pair covers the advance-and-check
-        // loop in both directions.
-        let wp1 = test_digest(b"write-policy-1");
-        let wp2 = test_digest(b"write-policy-2");
-        let wp3 = test_digest(b"write-policy-3");
-        let gp = test_digest(b"evaluation-policy"); // matches create_v0_with_evaluation
-
-        let v0 = create_v0_with_evaluation(wp1);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.write_policy = Some(wp2);
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.kind = SadEventKind::Evl;
-        v2.write_policy = Some(wp3);
-        v2.governance_policy = None;
-        v2.increment().unwrap();
-
-        let checker = AcceptEvaluationRejectWriteChecker {
-            governance_policy: gp,
-        };
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
         assert!(
-            !verification.policy_satisfied(),
-            "Both v1 and v2 evolutions must soft-fail under this checker"
+            matches!(err, KelsError::MissingSadObject(_)),
+            "expected MissingSadObject, got {err:?}"
         );
-        // Advance is gated on soft-check — neither v1 nor v2 advanced tracked.
-        assert_eq!(verification.write_policy(), &wp1);
     }
 
+    /// `event.identity_event` referencing an unknown SAID → `MissingIelEvent`
+    /// (deferrable, post-#156 split) from the resolver.
+    ///
+    /// Errors fire at `finish()` because the verifier buffers per-generation
+    /// (see `SelVerifier::flush_generation`) — `verify_page` only flushes
+    /// when the version changes. Tests below follow the same pattern.
     #[tokio::test]
-    async fn test_divergent_branches_tracked_write_policy_tiebreak_deterministic() {
-        // Two divergent Evl branches at v1 carry different new write_policies.
-        // finish() must pick one deterministically regardless of input order.
-        let wp0 = test_digest(b"write-policy-0");
-        let wp_a = test_digest(b"write-policy-a");
-        let wp_b = test_digest(b"write-policy-b");
-        let v0 = create_v0_with_evaluation(wp0);
+    async fn upd_with_unknown_identity_event_rejects() {
+        let identity = d(b"identity-C");
+        let iel_icp = d(b"iel-icp-C");
+        let unknown = d(b"unknown-iel-event");
 
-        let mut v1_a = v0.clone();
-        v1_a.content = Some(test_digest(b"content_a"));
-        v1_a.kind = SadEventKind::Evl;
-        v1_a.write_policy = Some(wp_a);
-        v1_a.governance_policy = None;
-        v1_a.increment().unwrap();
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-C"),
+            d(b"gov-C"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-        let mut v1_b = v0.clone();
-        v1_b.content = Some(test_digest(b"content_b"));
-        v1_b.kind = SadEventKind::Evl;
-        v1_b.write_policy = Some(wp_b);
-        v1_b.governance_policy = None;
-        v1_b.increment().unwrap();
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, unknown, b"c1");
 
-        // Expected tie-break: higher version wins; equal versions break on
-        // lexicographically greater SAID bytes.
-        let expected_wp = if v1_a.said.as_ref() > v1_b.said.as_ref() {
-            wp_a
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::MissingIelEvent(_)),
+            "expected MissingIelEvent, got {err:?}"
+        );
+    }
+
+    /// `event.identity_event` regresses ratchet (older IEL event after newer)
+    /// → HARD reject. Reuses the same resolver across two IEL events.
+    #[tokio::test]
+    async fn upd_with_regressing_ratchet_rejected() {
+        let identity = d(b"identity-D");
+        let iel_icp = d(b"iel-icp-D");
+        let iel_evl = d(b"iel-evl-D");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-D"),
+            d(b"gov-D"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        // v1 binds to the LATER IEL Evl, ratcheting the branch forward.
+        let v1 = make_upd(&v0, iel_evl, b"c1");
+        // v2 binds to the EARLIER IEL Icp, regressing → reject.
+        let v2 = make_upd(&v1, iel_icp, b"c2");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IdentityBindingViolation(_))
+                && err.to_string().contains("regresses prior ratchet"),
+            "expected IdentityBindingViolation(monotonic), got {err:?}"
+        );
+    }
+
+    /// HARD `Upd` anchor failure: chain does not advance (replaces today's
+    /// soft-Upd behavior).
+    #[tokio::test]
+    async fn upd_rejects_when_anchor_check_fails() {
+        let identity = d(b"identity-E");
+        let iel_icp = d(b"iel-icp-E");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-E"),
+            d(b"gov-E"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let checker = rejecting(&[v1.said]);
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            err.to_string().contains("not anchored"),
+            "expected hard anchor-failure error, got {err}"
+        );
+    }
+
+    /// Upd binding to a divergent-IEL post-divergence event: HARD reject
+    /// (advancement events cannot rest on unstable IEL state).
+    #[tokio::test]
+    async fn upd_binding_to_divergent_iel_event_hard_rejects() {
+        let identity = d(b"identity-F");
+        let iel_evl = d(b"iel-evl-F");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_evl,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-F"),
+                    d(b"gov-F"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_evl, b"c1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IelDivergent(_)),
+            "expected IelDivergent, got {err:?}"
+        );
+    }
+
+    /// Cnt without governance auth lands; chain becomes contested;
+    /// `policy_satisfied=false`. Pins the content-based-terminal-flag rule.
+    #[tokio::test]
+    async fn cnt_without_governance_auth_lands_with_policy_unsatisfied() {
+        let identity = d(b"identity-G");
+        let iel_icp = d(b"iel-icp-G");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-G"),
+            d(b"gov-G"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let cnt = SadEvent::cnt(&v1, iel_icp).unwrap();
+        let checker = rejecting(&[cnt.said]);
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier.verify_page(&[v0, v1, cnt]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_contested());
+        assert!(!v.is_decommissioned());
+        assert!(!v.policy_satisfied());
+    }
+
+    /// #171 terminal-state gate: a non-terminal event (`Upd`) extending a
+    /// `Cnt` tip is structurally invalid. Tampered chain shape that the
+    /// verifier rejects on read so consumers can't be tricked into honoring
+    /// post-terminal extensions.
+    #[tokio::test]
+    async fn upd_extending_cnt_tip_rejected_as_post_terminal() {
+        let identity = d(b"identity-post-cnt");
+        let iel_icp = d(b"iel-icp-post-cnt");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-post-cnt"),
+            d(b"gov-post-cnt"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let cnt = SadEvent::cnt(&v1, iel_icp).unwrap();
+        let post = SadEvent::upd(&cnt, iel_icp, d(b"post-terminal")).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, cnt, post]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("post-terminal extension must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot extend terminal"),
+            "expected Cnt-tombstone rejection, got {msg}"
+        );
+    }
+
+    /// #171 SEL divergent-chain gate (unsealed-divergent): on an
+    /// unsealed-divergent chain (no Sea/Rpr advanced past divergence),
+    /// only `Rpr` is allowed post-divergence — `Rpr` truncates the
+    /// adversary branch and resolves cleanly. The legitimate-resolver
+    /// rule.
+    #[tokio::test]
+    async fn rpr_on_unsealed_divergent_accepted() {
+        let identity = d(b"identity-rpr-unsealed");
+        let iel_icp = d(b"iel-icp-rpr-unsealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-rpr-unsealed"),
+            d(b"gov-rpr-unsealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2_a = make_upd_with_content(&v1, iel_icp, b"branch-a");
+        let v2_b = make_upd_with_content(&v1, iel_icp, b"branch-b");
+        let (lo, hi) = if v2_a.said.as_ref() < v2_b.said.as_ref() {
+            (v2_a, v2_b)
         } else {
-            wp_b
+            (v2_b, v2_a)
         };
+        let rpr = SadEvent::rpr(&lo, iel_icp).unwrap();
 
-        // Order 1: a then b
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, lo, hi, rpr]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(2));
+        assert!(v.policy_satisfied());
+    }
+
+    /// #171 SEL divergent-chain gate (sealed-divergent rejects Rpr): once
+    /// the seal has advanced to-or-past the divergence point, `Rpr`
+    /// cannot truncate behind the seal — only `Cnt` is the legitimate
+    /// move.
+    #[tokio::test]
+    async fn rpr_on_sealed_divergent_rejected() {
+        let identity = d(b"identity-rpr-sealed");
+        let iel_icp = d(b"iel-icp-rpr-sealed");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-rpr-sealed"),
+            d(b"gov-rpr-sealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        // Sealed-divergent shape: Sea-creates-divergence at v=2 (Sea and
+        // Upd both extending v=1, both at v=2). Sea's branch advances
+        // last_gov to 2; div_at=2, max_seal=2 → sealed-divergent.
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let upd_v2 = make_upd_with_content(&v1, iel_icp, b"upd-fork");
+        let sea_v2 = SadEvent::sea(&v1, iel_icp).unwrap();
+        let rpr = SadEvent::rpr(&upd_v2, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
         verifier
-            .verify_page(&[v0.clone(), v1_a.clone(), v1_b.clone()])
+            .verify_page(&[v0, v1, upd_v2, sea_v2, rpr])
             .await
             .unwrap();
-        let v1 = verifier.finish().await.unwrap();
-        assert!(v1.policy_satisfied());
-        assert_eq!(v1.write_policy(), &expected_wp);
-
-        // Order 2: b then a — must return the same branch
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1_b, v1_a]).await.unwrap();
-        let v2 = verifier.finish().await.unwrap();
-        assert_eq!(v2.write_policy(), &expected_wp);
-    }
-
-    #[tokio::test]
-    async fn test_rejected_same_write_policy() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
-
-        let checker = RejectingChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(!verification.policy_satisfied());
-    }
-
-    #[tokio::test]
-    async fn test_self_satisfies_failure() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-
-        let checker = RejectInceptionChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert!(!verification.policy_satisfied());
-    }
-
-    // ==================== Governance policy tests ====================
-
-    #[tokio::test]
-    async fn test_v0_with_governance_policy_valid() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 0);
-        assert_eq!(verification.establishment_version(), Some(0));
-    }
-
-    #[tokio::test]
-    async fn test_v0_no_evaluation_v1_est_valid() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 1);
-        assert_eq!(verification.establishment_version(), Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_evaluation_overdue_at_64() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-
-        let mut events = vec![v0.clone()];
-        let mut current = v0.clone();
-        // v1: Est (governance_policy declaration)
-        current.content = Some(test_digest(b"content_1"));
-        current.kind = SadEventKind::Est;
-        current.write_policy = None;
-        current.governance_policy = Some(test_digest(b"evaluation-policy"));
-        current.increment().unwrap();
-        events.push(current.clone());
-
-        // v2..v63: 62 Upd events — within bound (1 Est + 62 Upd = 63 non-evaluation)
-        current.kind = SadEventKind::Upd;
-        current.governance_policy = None;
-        for _ in 2..=63 {
-            current.content = Some(test_digest(
-                format!("content_{}", current.version + 1).as_bytes(),
-            ));
-            current.increment().unwrap();
-            events.push(current.clone());
-        }
-
-        // v64 — should be rejected (overdue: 63 non-evaluation events, max is 63)
-        current.content = Some(test_digest(b"content_64"));
-        current.increment().unwrap();
-        events.push(current.clone());
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&events).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Rpr on sealed-divergent must reject");
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("evaluation bound"),
-            "Expected evaluation overdue error, got: {}",
-            err
+            msg.contains("sealed-divergent") && msg.contains("only Cnt"),
+            "expected sealed-divergent rejection, got {msg}"
         );
     }
 
+    /// #171 SEL divergent-chain gate (sealed-divergent accepts Cnt): the
+    /// only legitimate resolver on a sealed-divergent chain.
     #[tokio::test]
-    async fn test_valid_evaluation_cycle() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
+    async fn cnt_on_sealed_divergent_accepted() {
+        let identity = d(b"identity-cnt-sealed");
+        let iel_icp = d(b"iel-icp-cnt-sealed");
 
-        let mut events = vec![v0.clone()];
-        let mut current = v0.clone();
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-sealed"),
+            d(b"gov-cnt-sealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-        // v1: Est (governance_policy declaration, counts as non-evaluation)
-        current.content = Some(test_digest(b"content_1"));
-        add_governance_declaration(&mut current);
-        events.push(current.clone());
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let upd_v2 = make_upd_with_content(&v1, iel_icp, b"upd-fork");
+        let sea_v2 = SadEvent::sea(&v1, iel_icp).unwrap();
+        let cnt = SadEvent::cnt(&upd_v2, iel_icp).unwrap();
 
-        // v2..v63: 62 more Upd events (total 63 non-evaluation: v1..v63)
-        current.kind = SadEventKind::Upd;
-        current.write_policy = None;
-        current.governance_policy = None;
-        for i in 2..=63 {
-            current.content = Some(test_digest(format!("content_{}", i).as_bytes()));
-            current.increment().unwrap();
-            events.push(current.clone());
-        }
-
-        // v64: first evaluation (resets counter)
-        current.content = Some(test_digest(b"content_64"));
-        add_governance_evaluation(&mut current);
-        events.push(current.clone());
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&events).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 64);
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, v1, upd_v2, sea_v2, cnt])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(2));
+        assert!(v.is_contested());
     }
 
+    /// #171 SEL divergent-chain gate (unsealed-divergent rejects Cnt):
+    /// `Cnt` is reserved for sealed-divergent — on unsealed-divergent
+    /// the operator must `Rpr` instead.
     #[tokio::test]
-    async fn test_governance_policy_evolution_on_evl_valid() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        // Change governance_policy on an Evl event — valid (policy evolution)
-        v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
-        v1.increment().unwrap();
+    async fn cnt_on_unsealed_divergent_rejected() {
+        let identity = d(b"identity-cnt-unsealed");
+        let iel_icp = d(b"iel-icp-cnt-unsealed");
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 1);
-    }
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-unsealed"),
+            d(b"gov-cnt-unsealed"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-    #[tokio::test]
-    async fn test_upd_with_governance_policy_rejected_by_validate_structure() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        // Upd must not set governance_policy — validate_structure rejects
-        v1.governance_policy = Some(test_digest(b"new-evaluation-policy"));
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string().contains("must not have governancePolicy"),
-            "Expected validate_structure error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_evl_without_governance_policy_on_branch_rejected() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("requires governance_policy to be established"),
-            "Expected missing policy error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_chain_with_no_evaluation_rejected_at_finish() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Est;
-        v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"evaluation-policy"));
-        v1.increment().unwrap();
-
-        // Chain has governance_policy established but never evaluated — still passes finish
-        // (finish only checks that governance_policy exists on at least one branch)
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 1);
-    }
-
-    #[tokio::test]
-    async fn test_chain_with_no_governance_policy_at_all_rejected() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-
-        // v0 without governance_policy and no Est — finish should reject
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string().contains("no governance_policy"),
-            "Expected no governance_policy error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_v0_with_governance_policy_changes_prefix() {
-        let wp = test_digest(b"write-policy");
-        let v0_no_gp = create_v0_no_evaluation(wp);
-        let v0_with_gp = create_v0_with_evaluation(wp);
-        assert_ne!(v0_no_gp.prefix, v0_with_gp.prefix);
-    }
-
-    // ==================== Kind-specific chain-state tests ====================
-
-    #[tokio::test]
-    async fn test_est_at_v1_when_v0_had_no_evaluation_accepted() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 1);
-        assert_eq!(verification.establishment_version(), Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_est_at_v1_when_v0_declared_evaluation_rejected() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Est;
-        v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"another-evaluation-policy"));
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string().contains("already established"),
-            "Expected Est rejection, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_est_at_v2_rejected_by_validate_structure() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.kind = SadEventKind::Est;
-        v2.write_policy = None;
-        v2.governance_policy = Some(test_digest(b"another-gp"));
-        v2.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string().contains("Est event must have version 1"),
-            "Expected version error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_upd_at_v1_when_v0_had_no_evaluation_rejected() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Upd;
-        v1.write_policy = None;
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("requires governance_policy to be established"),
-            "Expected governance_policy error, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_rpr_evaluates_governance_policy() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Rpr;
-        v1.write_policy = None;
-        v1.governance_policy = None; // Rpr forbids governance_policy
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.last_governance_version(), Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_rpr_with_governance_policy_rejected_by_validate_structure() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Rpr;
-        v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"rpr-gp"));
-        v1.increment().unwrap();
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
-        assert!(
-            err.to_string().contains("must not have governancePolicy"),
-            "Expected validate_structure error, got: {}",
-            err
-        );
-    }
-
-    // ==================== Evaluation tracking tests ====================
-
-    #[tokio::test]
-    async fn test_last_governance_version_tracked() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        add_governance_evaluation(&mut v2);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1, v2]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.last_governance_version(), Some(2));
-    }
-
-    #[tokio::test]
-    async fn test_last_governance_version_advances_past_first_evl_on_linear_chain() {
-        // Regression: pre-fix, the chain-wide min() logic pinned
-        // last_governance_version to the FIRST Evl's version and never advanced.
-        // Chain: v0 Icp → v1 Est → v2 Evl → v3 Upd → v4 Evl.
-        // Expected: last_governance_version == Some(4) (the most recent Evl).
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        add_governance_evaluation(&mut v2);
-
-        let mut v3 = v2.clone();
-        v3.content = Some(test_digest(b"content3"));
-        v3.kind = SadEventKind::Upd;
-        v3.write_policy = None;
-        v3.governance_policy = None;
-        v3.increment().unwrap();
-
-        let mut v4 = v3.clone();
-        v4.content = Some(test_digest(b"content4"));
-        add_governance_evaluation(&mut v4);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1, v2, v3, v4]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.last_governance_version(), Some(4));
-    }
-
-    #[tokio::test]
-    async fn test_last_governance_version_none_without_evaluation() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        add_governance_declaration(&mut v1);
-
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.last_governance_version(), None);
-    }
-
-    #[tokio::test]
-    async fn test_v0_non_icp_rejected_by_validate_structure() {
-        let wp = test_digest(b"write-policy");
-        let gp = test_digest(b"evaluation-policy");
-        // Manually construct a v0 with Evl kind — should fail validate_structure
-        let mut v0 = SadEvent {
-            said: cesr::Digest256::default(),
-            prefix: cesr::Digest256::default(),
-            previous: None,
-            version: 0,
-            topic: "kels/sad/v1/keys/mlkem".to_string(),
-            kind: SadEventKind::Evl,
-            content: None,
-            custody: None,
-            write_policy: Some(wp),
-            governance_policy: Some(gp),
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2_a = make_upd_with_content(&v1, iel_icp, b"branch-a");
+        let v2_b = make_upd_with_content(&v1, iel_icp, b"branch-b");
+        let (lo, _hi) = if v2_a.said.as_ref() < v2_b.said.as_ref() {
+            (v2_a.clone(), v2_b.clone())
+        } else {
+            (v2_b.clone(), v2_a.clone())
         };
-        v0.derive_said().unwrap();
+        let cnt = SadEvent::cnt(&lo, iel_icp).unwrap();
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0]).await.unwrap();
-        let err = verifier.finish().await.unwrap_err();
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0, v1, v2_a, v2_b, cnt])
+            .await
+            .unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Cnt on unsealed-divergent must reject");
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("Evl event must have version >= 1"),
-            "Expected validate_structure error, got: {}",
-            err
+            msg.contains("unsealed-divergent") && msg.contains("only Rpr"),
+            "expected unsealed-divergent rejection, got {msg}"
         );
     }
 
+    /// #171 terminal-state gate: same shape for `Dec` — a non-terminal event
+    /// extending a `Dec` tip is structurally invalid.
     #[tokio::test]
-    async fn test_evaluation_after_est_accepted() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_no_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Est;
-        v1.write_policy = None;
-        v1.governance_policy = Some(test_digest(b"evaluation-policy"));
-        v1.increment().unwrap();
+    async fn upd_extending_dec_tip_rejected_as_post_terminal() {
+        let identity = d(b"identity-post-dec");
+        let iel_icp = d(b"iel-icp-post-dec");
 
-        let mut v2 = v1.clone();
-        v2.content = Some(test_digest(b"content2"));
-        v2.kind = SadEventKind::Evl;
-        v2.governance_policy = None;
-        v2.increment().unwrap();
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-post-dec"),
+            d(b"gov-post-dec"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
 
-        let checker = AlwaysPassChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_icp).unwrap();
+        let post = SadEvent::upd(&dec, iel_icp, d(b"post-terminal")).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, dec, post]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("post-terminal extension must reject");
+        assert!(err.to_string().contains("cannot extend terminal"));
+    }
+
+    /// #171 terminal-state gate: `Cnt` extending a `Dec` tip is rejected
+    /// uniformly with all other terminal-extensions. The legitimate
+    /// Cnt-supersedes-Dec shape forks from a pre-Dec ancestor (creating
+    /// divergence) — that requires non-tip parent-lookup and is deferred
+    /// to #174. Until then `[..., Dec@N, Cnt@N+1]` (linear-and-contested)
+    /// is structurally invalid; pin the rejection so the deferral surface
+    /// is held by tests.
+    #[tokio::test]
+    async fn cnt_extending_dec_tip_rejected_as_post_terminal() {
+        let identity = d(b"identity-cnt-extends-dec");
+        let iel_icp = d(b"iel-icp-cnt-extends-dec");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-cnt-extends-dec"),
+            d(b"gov-cnt-extends-dec"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_icp).unwrap();
+        let cnt = SadEvent::cnt(&dec, iel_icp).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, dec, cnt]).await.unwrap();
+        let err = verifier
+            .finish()
+            .await
+            .expect_err("Cnt extending Dec tip must reject (Cnt-supersedes-Dec deferred to #174)");
+        assert!(err.to_string().contains("cannot extend terminal"));
+    }
+
+    /// Dec without governance auth: same content-based-terminal-flag rule.
+    #[tokio::test]
+    async fn dec_without_governance_auth_lands_with_policy_unsatisfied() {
+        let identity = d(b"identity-H");
+        let iel_icp = d(b"iel-icp-H");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-H"),
+            d(b"gov-H"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_icp).unwrap();
+        let checker = rejecting(&[dec.said]);
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier.verify_page(&[v0, v1, dec]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_decommissioned());
+        assert!(!v.is_contested());
+        assert!(!v.policy_satisfied());
+    }
+
+    /// Cnt binding to an IEL-divergent post-divergence event: SOFT-passes
+    /// (lands; terminal flag content-based; `policy_satisfied=false`).
+    #[tokio::test]
+    async fn cnt_with_divergent_iel_binding_lands_softly() {
+        let identity = d(b"identity-I");
+        let iel_icp = d(b"iel-icp-I");
+        let iel_evl_div = d(b"iel-evl-div-I");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-I"),
+                    d(b"gov-I"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-I"),
+                    d(b"gov-I"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let cnt = SadEvent::cnt(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, cnt]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_contested());
+        assert!(!v.policy_satisfied());
+        // Ratchet was set by v1 (hard-passed), but the soft-passed Cnt does
+        // NOT advance it.
+        assert_eq!(v.branches()[0].last_identity_event, Some(iel_icp));
+    }
+
+    /// Sea advances `last_governance_version` and ratchets `last_identity_event`.
+    #[tokio::test]
+    async fn sea_advances_seal_and_ratchet() {
+        let identity = d(b"identity-J");
+        let iel_icp = d(b"iel-icp-J");
+        let iel_evl = d(b"iel-evl-J");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-J"),
+            d(b"gov-J"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let v2 = SadEvent::sea(&v1, iel_evl).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
         verifier.verify_page(&[v0, v1, v2]).await.unwrap();
-        let verification = verifier.finish().await.unwrap();
-        assert_eq!(verification.current_event().version, 2);
+        let v = verifier.finish().await.unwrap();
+
+        assert_eq!(v.last_governance_version(), Some(2));
+        assert_eq!(v.branches()[0].last_identity_event, Some(iel_evl));
+        assert!(v.policy_satisfied());
     }
 
+    /// Content preservation: Sea/Rpr/Cnt/Dec must carry `previous.content`
+    /// forward unchanged. A tampered Sea is rejected as a structural error.
     #[tokio::test]
-    async fn test_governance_policy_evaluation_failure() {
-        let wp = test_digest(b"write-policy");
-        let v0 = create_v0_with_evaluation(wp);
-        let mut v1 = v0.clone();
-        v1.content = Some(test_digest(b"content1"));
-        v1.kind = SadEventKind::Evl;
-        v1.governance_policy = None;
-        v1.increment().unwrap();
+    async fn sea_tampering_with_content_rejected_structurally() {
+        let identity = d(b"identity-K");
+        let iel_icp = d(b"iel-icp-K");
 
-        // RejectingChecker returns Ok(false) for all satisfies calls —
-        // governance_policy evaluation is a hard error (unlike write_policy which is soft).
-        let checker = RejectingChecker;
-        let mut verifier = SelVerifier::new(&v0.prefix, &checker);
-        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-K"),
+            d(b"gov-K"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let mut sea = SadEvent::sea(&v1, iel_icp).unwrap();
+        // Tamper: replace content with a different SAID, and re-derive said
+        // so it passes verify_said() but fails the content-preservation rule.
+        sea.content = Some(d(b"tampered-content"));
+        sea.derive_said().unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, sea]).await.unwrap();
         let err = verifier.finish().await.unwrap_err();
         assert!(
-            err.to_string().contains("governance policy not satisfied"),
-            "Expected governance policy error, got: {}",
-            err
+            err.to_string().contains("preserve content"),
+            "expected content-preservation error, got {err}"
         );
+    }
+
+    /// Resume preserves `last_identity_event` ratchet across page boundaries.
+    #[tokio::test]
+    async fn resume_preserves_ratchet_across_pages() {
+        let identity = d(b"identity-L");
+        let iel_icp = d(b"iel-icp-L");
+        let iel_evl = d(b"iel-evl-L");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[
+                (iel_icp, 0, IdentityEventKind::Icp),
+                (iel_evl, 1, IdentityEventKind::Evl),
+            ],
+            d(b"auth-L"),
+            d(b"gov-L"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), Arc::clone(&resolver));
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let token1 = verifier.finish().await.unwrap();
+        assert_eq!(token1.branches()[0].last_identity_event, Some(iel_icp));
+
+        // Resume from the token; verify page 2 carries the ratchet forward.
+        let v2 = make_upd(&v1, iel_evl, b"c2");
+        let mut verifier2 =
+            SelVerifier::resume(&token1, always_pass(), Arc::clone(&resolver)).unwrap();
+        verifier2.verify_page(&[v2]).await.unwrap();
+        let token2 = verifier2.finish().await.unwrap();
+        assert_eq!(token2.branches()[0].last_identity_event, Some(iel_evl));
+    }
+
+    /// Pre-divergence shared IEL events resolve cleanly even when the IEL is
+    /// divergent: an Upd binding to `iel_icp` (pre-divergence) succeeds even
+    /// though the IEL has diverged at version 1.
+    #[tokio::test]
+    async fn pre_divergence_iel_event_resolves_cleanly() {
+        let identity = d(b"identity-M");
+        let iel_icp = d(b"iel-icp-M");
+        let iel_evl_div = d(b"iel-evl-div-M");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-M"),
+                    d(b"gov-M"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-M"),
+                    d(b"gov-M"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+        assert!(v.policy_satisfied());
+    }
+
+    // ==================== Caller-bounded SAID querying ====================
+
+    /// Pre-divergence SEL events that pass auth land in `satisfied_saids`
+    /// when the caller registered them via `check_satisfied`.
+    #[tokio::test]
+    async fn satisfied_saids_populates_for_pre_divergence_se_events() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+    }
+
+    /// SAIDs not registered are absent from `satisfied_saids`, even if
+    /// the events themselves landed and passed auth.
+    #[tokio::test]
+    async fn satisfied_saids_excludes_unqueried_se_events() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        // Only v1 registered; v0 isn't.
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.check_satisfied([v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(!v.is_said_satisfied(&v0.said));
+        assert!(v.is_said_satisfied(&v1.said));
+    }
+
+    /// Resume rehydrates `queried_saids` and `satisfied_saids` from the
+    /// prior token. Diverges from KEL's reset-on-resume; the IEL/SEL
+    /// streaming pre-walk pattern needs registered interest to persist.
+    #[tokio::test]
+    async fn resume_rehydrates_queried_and_satisfied_saids_se() {
+        let identity = d(b"identity-A");
+        let iel_icp = d(b"iel-icp-said");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-policy-A"),
+            d(b"gov-policy-A"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"content-1");
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), Arc::clone(&resolver));
+        verifier.check_satisfied([v0.said, v1.said]);
+        verifier
+            .verify_page(&[v0.clone(), v1.clone()])
+            .await
+            .unwrap();
+        let token = verifier.finish().await.unwrap();
+        assert!(token.is_said_satisfied(&v0.said));
+        assert!(token.is_said_satisfied(&v1.said));
+
+        // Resume preserves the registered set + accumulated satisfied set.
+        let v2 = make_upd(&v1, iel_icp, b"content-2");
+        let mut resumed =
+            SelVerifier::resume(&token, always_pass(), Arc::clone(&resolver)).unwrap();
+        resumed
+            .verify_page(std::slice::from_ref(&v2))
+            .await
+            .unwrap();
+        let extended = resumed.finish().await.unwrap();
+
+        assert!(extended.is_said_satisfied(&v0.said));
+        assert!(extended.is_said_satisfied(&v1.said));
+    }
+
+    // ==================== Post-divergence soft-fail propagation ====================
+
+    /// Building helper: produce an Upd extending `prev` with a fixed
+    /// `iel_event` binding and content. Mirrors `make_upd` shape.
+    fn make_upd_with_content(
+        prev: &SadEvent,
+        iel_evt: cesr::Digest256,
+        content_label: &[u8],
+    ) -> SadEvent {
+        SadEvent::upd(prev, iel_evt, d(content_label)).unwrap()
+    }
+
+    // ==================== #147 follow-up: missing taxonomy ====================
+
+    /// Sea binding to a divergent-IEL post-divergence event: HARD reject
+    /// (advancement event; chain does not advance). Parallel of
+    /// `upd_binding_to_divergent_iel_event_hard_rejects`.
+    #[tokio::test]
+    async fn sea_binding_to_divergent_iel_event_hard_rejects() {
+        let identity = d(b"identity-sea-div");
+        let iel_icp = d(b"iel-icp-sea-div");
+        let iel_evl_div = d(b"iel-evl-sea-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-sea-div"),
+                    d(b"gov-sea-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-sea-div"),
+                    d(b"gov-sea-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        // Sea binds to the post-divergence IEL Evl. HARD reject: SEL
+        // is non-divergent (Sea is the first thing past v=1 that would
+        // touch the divergent IEL), so the auth-fail isn't soft-converted.
+        let sea = SadEvent::sea(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, sea]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IelDivergent(_)),
+            "expected IelDivergent, got {err:?}"
+        );
+    }
+
+    /// Rpr binding to a divergent-IEL post-divergence event: HARD reject.
+    #[tokio::test]
+    async fn rpr_binding_to_divergent_iel_event_hard_rejects() {
+        let identity = d(b"identity-rpr-div");
+        let iel_icp = d(b"iel-icp-rpr-div");
+        let iel_evl_div = d(b"iel-evl-rpr-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-rpr-div"),
+                    d(b"gov-rpr-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-rpr-div"),
+                    d(b"gov-rpr-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        // Rpr binds to the post-divergence IEL Evl. Same HARD path as Sea
+        // — Rpr is an advancement event (resolves divergence on SEL side)
+        // and cannot rest on an unstable IEL state.
+        let rpr = SadEvent::rpr(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, rpr]).await.unwrap();
+        let err = verifier.finish().await.unwrap_err();
+        assert!(
+            matches!(err, KelsError::IelDivergent(_)),
+            "expected IelDivergent, got {err:?}"
+        );
+    }
+
+    /// Dec binding to a divergent-IEL post-divergence event: SOFT-passes
+    /// (lands; chain becomes decommissioned content-based;
+    /// `policy_satisfied=false`). Parallel of
+    /// `cnt_with_divergent_iel_binding_lands_softly`.
+    #[tokio::test]
+    async fn dec_with_divergent_iel_binding_lands_softly() {
+        let identity = d(b"identity-dec-div");
+        let iel_icp = d(b"iel-icp-dec-div");
+        let iel_evl_div = d(b"iel-evl-dec-div");
+
+        let resolver = Arc::new(
+            FakeIelResolver::new(identity)
+                .with_event(
+                    iel_icp,
+                    0,
+                    IdentityEventKind::Icp,
+                    d(b"auth-dec-div"),
+                    d(b"gov-dec-div"),
+                )
+                .with_event(
+                    iel_evl_div,
+                    1,
+                    IdentityEventKind::Evl,
+                    d(b"auth-dec-div"),
+                    d(b"gov-dec-div"),
+                )
+                .with_divergence_at(1),
+        ) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        let v1 = make_upd(&v0, iel_icp, b"c1");
+        let dec = SadEvent::dec(&v1, iel_evl_div).unwrap();
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier.verify_page(&[v0, v1, dec]).await.unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.is_decommissioned());
+        assert!(!v.is_contested());
+        assert!(!v.policy_satisfied());
+        // Ratchet pinned to the hard-passed v1 binding; soft-passed Dec
+        // does NOT advance it.
+        assert_eq!(v.branches()[0].last_identity_event, Some(iel_icp));
+    }
+
+    /// `[Icp, Sea]` content preservation when no Upd has landed: previous
+    /// content is `None`, Sea must preserve `None`. Pins the
+    /// content-preservation rule on the no-Upd branch.
+    #[tokio::test]
+    async fn sea_after_icp_no_upd_preserves_none_content() {
+        let identity = d(b"identity-sea-noupd");
+        let iel_icp = d(b"iel-icp-sea-noupd");
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-sea-noupd"),
+            d(b"gov-sea-noupd"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let v0 = make_icp(identity);
+        // Sea directly after Icp — no Upd in between. v0.content is None
+        // (Icp forbids content), and Sea must carry that forward.
+        let sea = SadEvent::sea(&v0, iel_icp).unwrap();
+        assert!(
+            sea.content.is_none(),
+            "constructor must seed Sea.content from previous (None for Icp)"
+        );
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), always_pass(), resolver);
+        verifier
+            .verify_page(&[v0.clone(), sea.clone()])
+            .await
+            .unwrap();
+        let v = verifier.finish().await.unwrap();
+
+        assert!(v.policy_satisfied());
+        assert_eq!(v.last_governance_version(), Some(1));
+        assert_eq!(v.current_event().said, sea.said);
+        assert!(v.current_content().is_none());
+    }
+
+    // ==================== Post-SEL-divergence taxonomy ====================
+    //
+    // The post-divergence soft-fail rule (#147 follow-up)
+    // converts auth-related failures (IelDivergent / is_satisfied=false /
+    // is_anchored=false) on post-SEL-divergence non-terminals from HARD to
+    // SOFT. Structural integrity rules stay HARD regardless.
+    //
+    // Fixture pattern: divergent SEL at v=1 via two competing Upds (Cnt
+    // would also create divergence; Upd-divergence is simpler to construct
+    // here and exercises the same `event.version >= diverged_at_version`
+    // predicate). Post-divergence event at v=2 extends one branch.
+
+    /// Helper: build a divergent-at-v=1 SEL. Returns (v0, lo_v1_branch_tip,
+    /// hi_v1_branch_tip, iel_icp_said).
+    fn divergent_chain_at_v1() -> (
+        SadEvent,
+        SadEvent,
+        SadEvent,
+        cesr::Digest256,
+        cesr::Digest256,
+    ) {
+        let identity = d(b"identity-postdiv");
+        let iel_icp = d(b"iel-icp-postdiv");
+        let v0 = make_icp(identity);
+        let v1_a = make_upd_with_content(&v0, iel_icp, b"branch-a");
+        let v1_b = make_upd_with_content(&v0, iel_icp, b"branch-b");
+        let (lo, hi) = if v1_a.said.as_ref() < v1_b.said.as_ref() {
+            (v1_a, v1_b)
+        } else {
+            (v1_b, v1_a)
+        };
+        (v0, lo, hi, identity, iel_icp)
+    }
+
+    /// Rpr post-SEL-divergence with anchor-fail soft-lands.
+    #[tokio::test]
+    async fn rpr_post_divergence_anchor_fail_soft_lands_no_err() {
+        let (v0, lo, hi, identity, iel_icp) = divergent_chain_at_v1();
+
+        let resolver = Arc::new(fake_resolver_for_chain(
+            identity,
+            &[(iel_icp, 0, IdentityEventKind::Icp)],
+            d(b"auth-postdiv"),
+            d(b"gov-postdiv"),
+        )) as Arc<dyn IelResolver + Send + Sync>;
+
+        let rpr = SadEvent::rpr(&lo, iel_icp).unwrap();
+        let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(RejectingChecker {
+            reject: HashSet::from([rpr.said]),
+        });
+
+        let mut verifier = SelVerifier::new(Some(&v0.prefix), checker, resolver);
+        verifier
+            .verify_page(&[v0, lo, hi, rpr.clone()])
+            .await
+            .expect("post-SEL-div Rpr anchor-fail should soft-pass");
+        let v = verifier.finish().await.unwrap();
+        assert_eq!(v.diverged_at_version(), Some(1));
+        assert!(!v.policy_satisfied());
     }
 }

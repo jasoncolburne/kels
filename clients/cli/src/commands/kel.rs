@@ -373,27 +373,27 @@ pub(crate) async fn cmd_decommission(cli: &Cli, prefix: &str) -> Result<()> {
 
 pub(crate) fn print_kel_status(kel_verification: &KelVerification, verbose: bool) {
     if verbose {
-        println!("  Verified: Yes");
+        eprintln!("  Verified: Yes");
     }
     if kel_verification.is_contested() {
-        println!("  Status: {}", "CONTESTED".red());
+        eprintln!("  Status: {}", "CONTESTED".red());
     } else if kel_verification.is_decommissioned() {
-        println!("  Status: {}", "DECOMMISSIONED".red());
+        eprintln!("  Status: {}", "DECOMMISSIONED".red());
     } else if kel_verification.is_divergent() {
-        println!("  Status: {}", "DIVERGENT".yellow());
+        eprintln!("  Status: {}", "DIVERGENT".yellow());
     } else {
-        println!("  Status: {}", "OK".green());
+        eprintln!("  Status: {}", "OK".green());
     }
 }
 
 pub(crate) fn print_kel_summary(prefix: &str, kel_verification: &KelVerification) {
-    println!();
-    println!("{}", format!("KEL: {}", prefix).cyan().bold());
-    println!("  Events: {}", kel_verification.event_count());
+    eprintln!();
+    eprintln!("{}", format!("KEL: {}", prefix).cyan().bold());
+    eprintln!("  Events: {}", kel_verification.event_count());
 
     if let Some(tip) = kel_verification.branch_tips().last() {
-        println!("  Latest SAID: {}", tip.tip.event.said);
-        println!("  Latest Type: {}", tip.tip.event.kind);
+        eprintln!("  Latest SAID: {}", tip.tip.event.said);
+        eprintln!("  Latest Type: {}", tip.tip.event.kind);
     }
 }
 
@@ -406,10 +406,15 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
     } else {
         format!("Fetching KEL {}...", prefix)
     };
-    println!("{}", msg.green());
+    // Streaming/diagnostic lines go to stderr; stdout is reserved for the
+    // final JSON so callers can pipe `kel get` through `jq` cleanly.
+    eprintln!("{}", msg.green());
 
-    // Verify and print events in a single pass
+    // Verify and stream summary lines to stderr; collect events for the
+    // JSON dump on stdout.
     let prefix_digest = parse_prefix(prefix)?;
+    let collected: std::sync::Mutex<Vec<kels_core::SignedKeyEvent>> =
+        std::sync::Mutex::new(Vec::new());
     let kel_verification = kels_core::verify_key_events_with(
         &prefix_digest,
         &source,
@@ -419,14 +424,18 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
         |events| {
             for signed_event in events {
                 let event = &signed_event.event;
-                let said_str: &str = event.said.as_ref();
-                println!(
+                eprintln!(
                     "  [{}] {} - {}",
                     event.serial,
                     event.kind.as_str().to_uppercase(),
-                    &said_str[..16]
+                    event.said,
                 );
             }
+            #[allow(clippy::expect_used)]
+            collected
+                .lock()
+                .expect("kel get collector mutex poisoned")
+                .extend_from_slice(events);
         },
     )
     .await
@@ -435,7 +444,7 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
     print_kel_summary(prefix, &kel_verification);
     print_kel_status(&kel_verification, !audit);
 
-    if audit {
+    let audit_records: Option<Vec<_>> = if audit {
         let mut all_records = Vec::new();
         let mut offset = 0u64;
         loop {
@@ -449,25 +458,43 @@ pub(crate) async fn cmd_get(cli: &Cli, prefix: &str, audit: bool) -> Result<()> 
             offset += kels_core::page_size() as u64;
         }
         if !all_records.is_empty() {
-            println!();
-            println!("{}", "Recovery History:".yellow().bold());
+            eprintln!();
+            eprintln!("{}", "Recovery History:".yellow().bold());
             for (i, record) in all_records.iter().enumerate() {
-                println!(
-                    "  [{}] {} ({})",
-                    i,
-                    &record.said.as_ref()[..16],
-                    record.created_at
-                );
-                println!(
+                eprintln!("  [{}] {} ({})", i, record.said, record.created_at);
+                eprintln!(
                     "      diverged_at={} recovery_serial={}",
                     record.diverged_at, record.recovery_serial
                 );
             }
         } else {
-            println!();
-            println!("{}", "Recovery History: (none)".yellow());
+            eprintln!();
+            eprintln!("{}", "Recovery History: (none)".yellow());
         }
+        Some(all_records)
+    } else {
+        None
+    };
+
+    let events = collected
+        .into_inner()
+        .map_err(|e| anyhow!("kel get collector mutex poisoned: {}", e))?;
+    let mut output = serde_json::json!({
+        "prefix": prefix,
+        "events": events,
+        "diverged_at": kel_verification.diverged_at_serial(),
+        "is_divergent": kel_verification.is_divergent(),
+        "is_contested": kel_verification.is_contested(),
+        "is_decommissioned": kel_verification.is_decommissioned(),
+    });
+    if let Some(records) = audit_records {
+        #[allow(clippy::expect_used)]
+        output
+            .as_object_mut()
+            .expect("json object")
+            .insert("audit_records".into(), serde_json::to_value(records)?);
     }
+    println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
 }
@@ -510,7 +537,7 @@ pub(crate) async fn cmd_status(cli: &Cli, prefix: &str) -> Result<()> {
     let kel_store = create_kel_store(cli, prefix).await?;
 
     let kel_verification = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&kel_store),
+        &mut kels_core::KelStorePageLoader::new(&kel_store),
         &prefix_digest,
         kels_core::page_size(),
         kels_core::max_pages(),

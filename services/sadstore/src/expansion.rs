@@ -1,20 +1,20 @@
 //! Schema-free SAD expansion for SADStore.
 //!
 //! Heuristic expansion: any string field that parses as a `cesr::Digest256`
-//! and resolves from MinIO is treated as a compacted reference and expanded.
+//! and resolves from object store is treated as a compacted reference and expanded.
 //! No schema required — mirrors the schema-free compaction in `compaction.rs`.
 
 use async_trait::async_trait;
 use cesr::Matter;
 
 use kels_core::{
-    ExpansionState, KelsError, MAX_EXPANSION_DEPTH, PathToken, SadStore, compact_children_only,
-    compact_recursive, navigate_to_value_mut, parse_disclosure,
+    ExpansionState, KelsError, MAX_EXPANSION_DEPTH, PathToken, SadEvent, SadStore,
+    compact_children_only, compact_recursive, navigate_to_value_mut, parse_disclosure,
 };
 
 use crate::object_store::{ObjectStore, ObjectStoreError};
 
-/// Adapter wrapping MinIO `ObjectStore` as a `SadStore` for disclosure expansion.
+/// Adapter wrapping object store `ObjectStore` as a `SadStore` for disclosure expansion.
 /// Read-only — write/list/delete operations return errors.
 struct ObjectStoreSadAdapter<'a> {
     object_store: &'a ObjectStore,
@@ -58,9 +58,27 @@ impl SadStore for ObjectStoreSadAdapter<'_> {
     async fn delete(&self, _said: &cesr::Digest256) -> Result<(), KelsError> {
         Err(KelsError::StorageError("read-only adapter".to_string()))
     }
+
+    async fn store_sel_event(&self, _event: &SadEvent) -> Result<(), KelsError> {
+        Err(KelsError::StorageError("read-only adapter".to_string()))
+    }
+
+    async fn load_sel_events(
+        &self,
+        _prefix: &cesr::Digest256,
+        _limit: u64,
+        _offset: u64,
+    ) -> Result<(Vec<SadEvent>, bool), KelsError> {
+        // The object store adapter exists for disclosure expansion only — it has no
+        // prefix-keyed iteration. Owner-local hydration paths must use a
+        // proper local SadStore (FileSadStore / InMemorySadStore / similar).
+        Err(KelsError::OfflineMode(
+            "ObjectStoreSadAdapter does not support prefix-keyed SEL iteration".into(),
+        ))
+    }
 }
 
-/// Apply a disclosure expression to a SAD stored in MinIO.
+/// Apply a disclosure expression to a SAD stored in object store.
 ///
 /// Parses the disclosure DSL, loads the root SAD, and applies heuristic
 /// expansion (SAID-detection, no schema). Returns the expanded value.

@@ -42,9 +42,12 @@ pub mod client;
 pub mod crypto;
 pub mod disclosure;
 pub mod error;
+pub mod identity_builder;
+pub mod iel_resolver;
 pub mod merge;
 pub mod repository;
 pub mod sad;
+pub mod sad_builder;
 pub mod serving;
 pub mod store;
 pub mod types;
@@ -76,41 +79,58 @@ pub use crypto::{
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
 pub use disclosure::{PathToken, parse_disclosure};
-pub use error::KelsError;
+pub use error::{
+    AnchorPermanentFailure, DeferredFailure, IdentityBindingViolation, KelsError, MissingIelEvent,
+    MissingKelAnchor, MissingSadObject,
+};
+pub use identity_builder::{FlushIdentityOutcome, IdentityEventBuilder};
+pub use iel_resolver::{AnchoredIelResolver, walk_back_to_branch_identity};
 pub use merge::{MergeOutcome, MergeTransaction};
 pub use repository::{SignedEventRepository, load_signed_history, load_signed_history_tail};
 pub use sad::{
     ExpansionState, MAX_EXPANSION_DEPTH, MAX_EXPANSIONS, compact_at_path, compact_children_only,
     compact_recursive, expand_at_path, navigate_to_value_mut,
 };
+pub use sad_builder::{FlushOutcome, SadEventBuilder};
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
-    FileKelStore, FileSadStore, InMemorySadStore, KelStore, KelStoreSink, RepositoryKelStore,
-    SadStore,
+    FileKelStore, FileSadStore, IdentityStore, InMemoryIdentityStore, InMemorySadStore, KelStore,
+    KelStoreSink, RepositoryKelStore, SadStore,
 };
 pub use types::{
-    AdditionHistory, AdditionWithVotes, AdminRequest, BranchTip, CachedKel,
-    CompletedProposalsResponse, Custody, CustodyValidationError, EffectiveSaidResponse, ErrorCode,
-    ErrorResponse, EventSignature, FederationStatus, HttpKelSink, HttpKelSource, HttpSadSink,
-    HttpSadSource, IdentityKelPageRequest, KelEffectiveSaidRequest, KelEventExistsRequest,
-    KelMergeResult, KelPageRequest, KelRecoveriesRequest, KelRecoveryEvent,
-    KelRecoveryEventsRequest, KelVerification, KelVerifier, KeyEvent, KeyEventKind,
-    KeyEventSignature, NodeSet, PageLoader, PagedKelSink, PagedKelSource, PagedSadSink,
-    PagedSadSource, PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory,
-    PeerRemovalProposal, PeersResponse, PolicyChecker, PrefixListResponse, PrefixState, Proposal,
-    ProposalHistory, ProposalRequest, ProposalResponse, ProposalStatus, ProposalWithVotes,
-    ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord, RaftLogEntry, RaftState,
-    RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory, RemovalWithVotes,
-    SadCustodyContext, SadEvent, SadEventEffectiveSaidRequest, SadEventKind, SadEventPage,
-    SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventVerification, SadFetchRequest,
-    SadObjectEntry, SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SelRepairEvent,
-    SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest, SignedSadFetchRequest,
-    StoreKelSource, StorePageLoader, SubmitKeyEventsResponse, SubmitSadEventsResponse, Vote,
-    completed_verification, compute_approval_threshold, compute_rotation_hash,
-    compute_sad_event_prefix, forward_key_events, forward_sad_events, hash_effective_said,
-    parse_and_validate_custody, single_signer, truncate_incomplete_generation, validate_timestamp,
-    verify_key_events, verify_key_events_collecting_establishment_keys, verify_key_events_with,
-    verify_sad_events,
+    AdditionHistory, AdditionWithVotes, AdminRequest, AnchorEvaluation, Availability, BranchTip,
+    CachedKel, CompletedProposalsResponse, Custody, CustodyValidationError, DeferredDepsResponse,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, EventSignature, FederationStatus, HttpIelSink,
+    HttpIelSource, HttpKelSink, HttpKelSource, HttpSelSink, HttpSelSource, IdentityBranchTip,
+    IdentityEvent, IdentityEventEffectiveSaidRequest, IdentityEventExistsRequest,
+    IdentityEventKind, IdentityEventPage, IdentityEventPageRequest, IdentityEventTerminalState,
+    IdentityKelPageRequest, IdentityStorePageLoader, IelChainPosition, IelChainPositionBatch,
+    IelPageLoader, IelResolver, IelSatisfaction, IelVerification, IelVerifier,
+    KelEffectiveSaidRequest, KelEventExistsRequest, KelMergeResult, KelPageRequest,
+    KelRecoveriesRequest, KelRecoveryEvent, KelRecoveryEventsRequest, KelStorePageLoader,
+    KelVerification, KelVerifier, KeyEvent, KeyEventKind, KeyEventSignature, MissingDependency,
+    NodeSet, PageLoader, PagedIelSink, PagedIelSource, PagedKelSink, PagedKelSource, PagedSelSink,
+    PagedSelSource, PaginatedSelfAddressedRequest, Peer, PeerAdditionProposal, PeerHistory,
+    PeerRemovalProposal, PeersResponse, PolicyChecker, PostSadObjectResponse, PrefixListResponse,
+    PrefixState, Proposal, ProposalHistory, ProposalRequest, ProposalResponse, ProposalStatus,
+    ProposalWithVotes, ProposalWithVotesMethods, REJECTION_THRESHOLD, RaftLogAuditRecord,
+    RaftLogEntry, RaftState, RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory,
+    RemovalWithVotes, SadBranchTip, SadEvent, SadEventEffectiveSaidRequest, SadEventKind,
+    SadEventPage, SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventTailRequest,
+    SadEventTerminalState, SadFetchRequest, SadObjectEntry, SadObjectListResponse,
+    SadRepairPageRequest, SadRepairsRequest, SadStorePageLoader, SelPageLoader, SelRepairEvent,
+    SelVerification, SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
+    SignedSadFetchRequest, StoreKelSource, SubmitIdentityEventsResponse, SubmitKeyEventsResponse,
+    SubmitSadEventsResponse, TransientChainState, Vote, collect_identity_event_saids,
+    collect_identity_event_saids_from_loader, completed_verification, compute_approval_threshold,
+    compute_identity_event_prefix, compute_rotation_hash, compute_sad_event_prefix,
+    forward_identity_events, forward_key_events, forward_sel_events, hash_effective_said,
+    iel_completed_verification, iel_completed_verification_with_queried,
+    parse_and_validate_availability, parse_and_validate_custody, sel_completed_verification,
+    single_signer, truncate_incomplete_generation, validate_timestamp, verify_identity_events,
+    verify_identity_events_with, verify_identity_events_with_queried, verify_key_events,
+    verify_key_events_collecting_establishment_keys, verify_key_events_with, verify_sel_events,
+    verify_sel_events_with,
 };
 
 #[cfg(any(test, feature = "dev-tools"))]

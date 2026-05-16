@@ -14,13 +14,16 @@ use thiserror::Error;
 
 use kels_exchange::MailAnnouncement;
 
-use crate::types::{GossipCommand, GossipEvent, KelAnnouncement, SadAnnouncement};
+use crate::types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement};
 
 /// Default gossip topic name for KEL announcements
 pub const DEFAULT_TOPIC: &str = "kels/gossip/v1/topics/events";
 
 /// Gossip topic name for SAD store announcements
 pub const SAD_TOPIC: &str = "kels/gossip/v1/topics/sad";
+
+/// Gossip topic name for IEL announcements
+pub const IEL_TOPIC: &str = "kels/gossip/v1/topics/iel";
 
 /// Gossip topic name for mail announcements
 pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
@@ -48,10 +51,12 @@ pub fn topic_id_from_name(name: &str) -> TopicId {
 ///
 /// Subscribes to gossip events, processes commands from the sync layer,
 /// and forwards events to the sync handler.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_gossip(
     gossip_handle: Gossip,
     kel_topic: TopicId,
     sad_topic: TopicId,
+    iel_topic: TopicId,
     mail_topic: TopicId,
     mut command_rx: mpsc::Receiver<GossipCommand>,
     event_tx: mpsc::Sender<GossipEvent>,
@@ -78,6 +83,14 @@ pub async fn run_gossip(
                             warn!("Failed to broadcast SAD announcement: {}", e);
                         } else {
                             debug!("Broadcast SAD announcement");
+                        }
+                    }
+                    GossipCommand::Iel(announcement) => {
+                        let data = serde_json::to_vec(&announcement)?;
+                        if let Err(e) = gossip_handle.broadcast(iel_topic, Bytes::from(data), kels_gossip_core::proto::Scope::Swarm).await {
+                            warn!("Failed to broadcast IEL announcement: {}", e);
+                        } else {
+                            debug!("Broadcast IEL announcement for prefix: {}", announcement.prefix);
                         }
                     }
                     GossipCommand::Mail(announcement) => {
@@ -128,6 +141,24 @@ pub async fn run_gossip(
                                 }
                                 Err(e) => {
                                     warn!("Failed to parse SAD announcement: {}", e);
+                                }
+                            }
+                        } else if msg.topic == iel_topic {
+                            match serde_json::from_slice::<IelAnnouncement>(&msg.content) {
+                                Ok(announcement) => {
+                                    debug!(
+                                        "Received IEL announcement via {}: prefix={}, said={}",
+                                        msg.delivered_from,
+                                        announcement.prefix,
+                                        announcement.said
+                                    );
+                                    event_tx
+                                        .send(GossipEvent::IelAnnouncementReceived { announcement })
+                                        .await
+                                        .map_err(|_| GossipError::ChannelClosed)?;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse IEL announcement: {}", e);
                                 }
                             }
                         } else if msg.topic == mail_topic {

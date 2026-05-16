@@ -10,6 +10,14 @@ pub enum PolicyError {
     EvaluationError(String),
     #[error("resolution error: {0}")]
     ResolutionError(String),
+    /// #156: deferrable — the named Policy SAD object isn't present
+    /// locally. Carries the SAID structurally so the verifier can
+    /// classify as `KelsError::MissingSadObject` without parsing the
+    /// `ResolutionError(String)` text. Resolver impls emit this when an
+    /// underlying `ObjectStoreError::ObjectNotFound` lookup miss is
+    /// observed during policy resolution.
+    #[error("policy SAD object not found: {said}")]
+    PolicyNotFound { said: cesr::Digest256 },
     #[error("JSON error: {0}")]
     JsonError(String),
     #[error("storage error: {0}")]

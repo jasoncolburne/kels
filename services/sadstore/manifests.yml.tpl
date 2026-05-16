@@ -26,17 +26,17 @@ spec:
                 sleep 2;
               done;
               echo "PostgreSQL is ready!";
-        - name: wait-for-minio
+        - name: wait-for-objects
           image: busybox:1.36
           command:
             - sh
             - -c
             - |
-              until nc -z minio 9000; do
-                echo "Waiting for MinIO...";
+              until nc -z objects 9000; do
+                echo "Waiting for object store...";
                 sleep 2;
               done;
-              echo "MinIO is ready!";
+              echo "Object store is ready!";
       containers:
         - name: sadstore
           image: ${actions.build.sadstore.outputs.deployment-image-id}
@@ -54,18 +54,20 @@ spec:
               value: "${var.redisUrl}"
             - name: KELS_URL
               value: "${var.kels.url}"
-            - name: MINIO_ENDPOINT
-              value: "http://${var.minio.host}:${var.minio.port}"
-            - name: MINIO_REGION
-              value: "${var.minio.region}"
-            - name: MINIO_ACCESS_KEY
-              value: "${var.minio.accessKey}"
-            - name: MINIO_SECRET_KEY
-              value: "${var.minio.secretKey}"
+            - name: OBJECTS_ENDPOINT
+              value: "http://${var.objects.host}:${var.objects.port}"
+            - name: OBJECTS_REGION
+              value: "${var.objects.region}"
+            - name: OBJECTS_ACCESS_KEY
+              value: "${var.objects.accessKey}"
+            - name: OBJECTS_SECRET_KEY
+              value: "${var.objects.secretKey}"
             - name: KELS_SAD_BUCKET
               value: "${var.sadstore.bucket}"
-            - name: SADSTORE_MAX_EVENTS_PER_EVENT_LOG_PER_DAY
-              value: "${var.sadstore.maxEventsPerEventLogPerDay}"
+            - name: SADSTORE_MAX_SEL_EVENTS_PER_PREFIX_PER_DAY
+              value: "${var.sadstore.maxSelEventsPerPrefixPerDay}"
+            - name: SADSTORE_MAX_IEL_EVENTS_PER_PREFIX_PER_DAY
+              value: "${var.sadstore.maxIelEventsPerPrefixPerDay}"
             - name: SADSTORE_MAX_WRITES_PER_IP_PER_SECOND
               value: "${var.sadstore.maxWritesPerIpPerSecond}"
             - name: SADSTORE_IP_RATE_LIMIT_BURST

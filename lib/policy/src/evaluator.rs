@@ -295,7 +295,16 @@ async fn evaluate_endorser(
                 EndorsementStatus::NotEndorsed
             }
         }
-        Err(e) => EndorsementStatus::KelError(e.to_string()),
+        // #156 I-N1: route contested / decommissioned KELs to the
+        // permanent-fail variant so `AnchoredPolicyChecker.evaluate`
+        // omits them from `missing_anchors` per the AnchorEvaluation
+        // contract. Other KEL errors stay deferrable (chain may catch up).
+        Err(e) => match &e {
+            kels_core::KelsError::ContestedKel(_) | kels_core::KelsError::KelDecommissioned => {
+                EndorsementStatus::KelPermanentFail(e.to_string())
+            }
+            _ => EndorsementStatus::KelError(e.to_string()),
+        },
     };
 
     endorsements.insert(*prefix, status.clone());
@@ -350,7 +359,8 @@ async fn verify_delegation(
 
 /// Evaluate a policy against a set of verified prefixes (no KEL verification).
 ///
-/// Used for `readPolicy` enforcement at fetch time. The caller has already
+/// Used for SAD-object read access-control at fetch time (per #167's
+/// `custody.read` IEL-resolved auth_policy). The caller has already
 /// verified the signers' KELs and collected the verified prefix set.
 /// This function resolves the policy by SAID, walks the AST, and checks
 /// whether the verified prefixes satisfy the threshold — no anchoring,
@@ -444,7 +454,7 @@ fn evaluate_signed_node<'a>(
             PolicyNode::Delegate(_, _) => {
                 // Delegate nodes are an issuance-side concern for scaling credential
                 // issuance via delegation chains (see #77 — delegated signing servers).
-                // They are not meaningful in access-control (readPolicy) context where
+                // They are not meaningful in fetch-time access-control context where
                 // we evaluate against a verified prefix set from a SignedRequest.
                 Err(PolicyError::EvaluationError(
                     "delegate() nodes are not supported in signed policy evaluation \
@@ -1054,7 +1064,7 @@ mod tests {
     #[tokio::test]
     async fn test_signed_policy_rejects_delegate_nodes() {
         // Delegate is an issuance-side concern (#77 — delegated signing servers).
-        // It is not meaningful for access-control (readPolicy) evaluation.
+        // It is not meaningful for fetch-time access-control evaluation.
         let delegator = test_digest("delegator");
         let delegate = test_digest("delegate");
         let policy =

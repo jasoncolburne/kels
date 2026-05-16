@@ -28,8 +28,13 @@ benchmark: clean-garden
 	garden deploy test-client --env=node-a
 	kubectl exec -n kels-node-a -it test-client -- ./bench-kels.sh 40 5
 
+# Optional passthrough: set BUILD_ARGS to forward flags to cargo build.
+# Examples:
+#   make build BUILD_ARGS="-p kels-core"             # build one package
+#   make build BUILD_ARGS="-p kels-core --tests"     # include test binaries
+# When unset, builds the full workspace as before.
 build:
-	cargo build --workspace --all-features
+	cargo build --workspace --all-features $(BUILD_ARGS)
 
 clean:
 	@echo "Cleaning workspace..."
@@ -38,23 +43,20 @@ clean:
 	make -C clients/ios clean
 
 clean-registries:
-	garden cleanup namespace --env=registry-a
-	garden cleanup namespace --env=registry-b
-	garden cleanup namespace --env=registry-c
-	garden cleanup namespace --env=registry-d
+	@for node in a b c d; do \
+		kubectl delete namespace kels-registry-$$node || true; \
+	done
 
 clean-nodes:
-	garden cleanup namespace --env=node-a
-	garden cleanup namespace --env=node-b
-	garden cleanup namespace --env=node-c
-	garden cleanup namespace --env=node-d
-	garden cleanup namespace --env=node-e
-	garden cleanup namespace --env=node-f
+	@for node in a b c d e f; do \
+		kubectl delete namespace kels-node-$$node || true; \
+	done
 
 clean-standalone:
-	garden cleanup namespace --env=standalone
+	kubectl delete namespace kels-standalone || true
 
 clean-garden: clean-standalone clean-nodes clean-registries
+	rm -rf .garden
 
 clean-docker:
 	@echo "Cleaning docker caches..."
@@ -65,14 +67,22 @@ clean-test-containers:
 	@docker ps -q --filter "label=kels-test=true" | xargs -r docker stop 2>/dev/null || true
 	@docker ps -aq --filter "label=kels-test=true" | xargs -r docker rm 2>/dev/null || true
 
+# Optional passthrough: set CHECK_ARGS to forward flags to cargo check.
+# Examples:
+#   make check CHECK_ARGS="-p kels-core"             # check one package
+# When unset, checks the full workspace.
 check:
-	cargo check --workspace --all-targets --all-features
+	cargo check --workspace --all-targets --all-features $(CHECK_ARGS)
 
+# Optional passthrough: set CLIPPY_ARGS to forward flags to cargo clippy.
+# Examples:
+#   make clippy CLIPPY_ARGS="-p kels-core"           # lint one package
+# When unset, lints the full workspace.
 clippy:
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features $(CLIPPY_ARGS) -- -D warnings
 
 clippy-fix:
-	cargo clippy --fix --workspace --all-targets --all-features --allow-dirty --allow-staged
+	cargo clippy --fix --workspace --all-targets --all-features $(CLIPPY_ARGS) --allow-dirty --allow-staged
 
 deny:
 	@if ! command -v cargo-deny &> /dev/null; then \
@@ -101,20 +111,23 @@ install-deny:
 	cargo install cargo-deny
 
 lint-terminology:
-	@if git ls-files -z \
-			':!:docs/claudit' \
-			':!:.terminology-forbidden' \
-			':!:Makefile' \
-		| xargs -0 grep -nE -f <(grep -vE '^(#|$$)' .terminology-forbidden); then \
-		echo "ERROR: forbidden terminology found (see .terminology-forbidden)"; \
-		exit 1; \
-	fi
+	@./scripts/lint-terminology.sh
 
+# Optional passthrough: set TEST_ARGS to forward flags to cargo test.
+# Examples:
+#   make test TEST_ARGS="--test sad_builder_tests"   # run one test binary
+#   make test TEST_ARGS="-p kels-core"               # run one package
+#   make test TEST_ARGS="some_test_name"             # filter by name
+# When unset, runs the full workspace suite as before.
+#
+# Optional RUST_LOG passthrough for tracing output (use with test-verbose):
+#   make test-verbose TEST_ARGS="--test foo" RUST_LOG=debug
+#   make test-verbose TEST_ARGS="--test foo" RUST_LOG="info,kels_sadstore=debug"
 test:
-	cargo test --workspace --all-features
+	cargo test --workspace --release --all-features $(TEST_ARGS)
 
 test-verbose:
-	cargo test --workspace --all-features -- --nocapture
+	RUST_LOG="$(RUST_LOG)" cargo test --workspace --all-features $(TEST_ARGS) -- --nocapture
 
 # Files excluded from coverage (can't be meaningfully unit tested):
 # - Binary mains (main.rs, admin.rs) - entry points only
@@ -188,14 +201,15 @@ restart-gossip-services:
 	scripts/restart-gossip.sh
 
 restart-gossip-services-staggered:
-	@for node in a b c d e f; do \
+	@set -e; for node in a b c d e f; do \
+		accumulator="$${accumulator:+$$accumulator }node-$$node"; \
 		echo "Restarting gossip on node-$$node..."; \
 		kubectl rollout restart deployment/gossip -n kels-node-$$node; \
 		kubectl rollout status deployment/gossip -n kels-node-$$node; \
-		sleep 10; \
+		scripts/wait-for-gossip.sh 120 $$accumulator; \
 	done
 	scripts/dump-gossip-logs.sh
-	! grep -R ERROR logs
+	! grep -R ERROR logs/gossip-*.log
 
 test-resync:
 	scripts/coredns.sh apply
@@ -215,7 +229,7 @@ seed-kels:
 	kubectl exec -n kels-node-a -it test-client -- ./load-kels.sh 500 5 ml-dsa-65 50 
 
 seed-sads:
-	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 50
+	kubectl exec -n kels-node-a -it test-client -- ./load-sad.sh 553 10
 
 wait-for-gossip:
 	scripts/wait-for-gossip.sh 180 node-a node-b node-c node-d node-e node-f
@@ -281,7 +295,7 @@ deploy-fresh-node:
 
 deploy-fresh-federation: configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes vote-nodes restart-gossip-services
 
-test-node: clean-standalone deploy-fresh-node
+test-node: deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- ./test-kels.sh
 	kubectl exec -n kels-standalone -it test-client -- ./test-adversarial.sh
 	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-sadstore.sh
@@ -289,6 +303,9 @@ test-node: clean-standalone deploy-fresh-node
 	kubectl exec -n kels-standalone -it test-client -- env FEDERATED=false ./test-creds.sh
 	kubectl exec -n kels-standalone -it test-client -- ./bench-kels.sh
 
-test-federation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-peer-lifecycle test-sad-consistency test-kel-consistency
+test-federation: configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries test-voting deploy-nodes seed-kels seed-sads rotate-registry-b vote-nodes restart-gossip-services-staggered test-kels-suite test-sad-suite test-exchange-suite test-creds-suite test-grow-shrink test-peer-lifecycle test-kel-consistency test-sad-consistency
 
-test-all-deployments: clean-garden test-node test-federation
+test-all-deployments: clean-garden # clean-standalone is a dep of clean-garden, so bundling these targets won't work
+	$(MAKE) test-node clean-standalone test-federation
+
+test-staggered-mesh-formation: clean-garden configure-dns reset-federation-json deploy-registry-identities fetch-prefixes deploy-registries deploy-nodes seed-kels seed-sads vote-nodes restart-gossip-services-staggered test-sad-consistency

@@ -170,7 +170,7 @@ impl KelsClient {
         } else {
             let err: ErrorResponse = resp.json().await?;
             if err.code == ErrorCode::ContestRequired {
-                Err(KelsError::ContestRequired)
+                Err(KelsError::contest_required_kel(err.error))
             } else {
                 Err(KelsError::ServerError(err.error, err.code))
             }
@@ -649,7 +649,7 @@ mod tests {
             let client = KelsClient::new(&mock_server.uri()).unwrap();
             let result = client.submit_events(&[signed]).await;
 
-            assert!(matches!(result, Err(KelsError::ContestRequired)));
+            assert!(matches!(result, Err(KelsError::ContestRequired { .. })));
         }
 
         #[tokio::test]

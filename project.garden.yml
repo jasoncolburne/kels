@@ -67,7 +67,7 @@ providers:
     buildMode: local-docker
 
 variables:
-  rustLogLevel: info
+  rustLogLevel: info #,sqlx=info,kels_gossip::sync=debug,kels_gossip::bootstrap=debug,kels_gossip::inflight=debug,kels_sadstore::handlers=debug,kels_sadstore::pool=debug
   postgres:
     user: kels_admin
     password: use_something_better_in_production
@@ -113,17 +113,18 @@ variables:
     replicas: 1
     port: "80"
     heartbeatTimeoutSecs: "60"
-  minio:
-    host: minio
+  objects:
+    host: objects
     port: "9000"
     region: "us-east-1"
-    accessKey: "minioadmin"
-    secretKey: "minioadmin"
+    accessKey: "rustfsadmin"
+    secretKey: "rustfsadmin"
   sadstore:
     replicas: 1
     port: "80"
     bucket: "kels-sad"
-    maxEventsPerEventLogPerDay: "8"
+    maxSelEventsPerPrefixPerDay: "256"
+    maxIelEventsPerPrefixPerDay: "8"
     maxWritesPerIpPerSecond: "256"
     ipRateLimitBurst: "1024"
     maxObjectSize: "1048576"

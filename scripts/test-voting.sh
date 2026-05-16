@@ -87,6 +87,6 @@ vote_all "$REMOVAL" registry-a registry-b registry-c
 echo
 
 # Clean up
-garden cleanup namespace --env node-a
+kubectl delete namespace kels-node-a
 
 echo "=== Voting Protocol Tests Complete ==="

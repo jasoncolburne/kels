@@ -59,6 +59,10 @@ enum Commands {
     #[command(subcommand)]
     Sel(SelCommands),
 
+    /// Identity Event Log (IEL) commands
+    #[command(subcommand)]
+    Iel(IelCommands),
+
     /// SAD object store commands (self-addressed data)
     #[command(subcommand)]
     Sad(SadCommands),
@@ -265,11 +269,179 @@ enum SadCommands {
 }
 
 #[derive(Subcommand, Debug)]
-enum SelCommands {
-    /// Submit a SAD event to a SEL
+enum IelCommands {
+    /// Stage an Identity Event Log inception (Icp). Prints the SAID.
+    Incept {
+        /// Identity topic string (e.g., "kels/iel/v1/identity/main")
+        topic: String,
+
+        /// Auth-policy SAID (must already be in SADStore)
+        #[arg(long)]
+        auth_policy: String,
+
+        /// Governance-policy SAID (must already be in SADStore)
+        #[arg(long)]
+        governance_policy: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage an evolution (Evl) extending an existing IEL. Prints the SAID.
+    Evolve {
+        /// IEL prefix to evolve
+        iel_prefix: String,
+
+        /// New auth-policy SAID (carries forward when omitted)
+        #[arg(long)]
+        auth_policy: Option<String>,
+
+        /// New governance-policy SAID (carries forward when omitted)
+        #[arg(long)]
+        governance_policy: Option<String>,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a contest (Cnt) terminal event. Prints the SAID.
+    Contest {
+        /// IEL prefix to contest
+        iel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a decommission (Dec) terminal event. Prints the SAID.
+    Decommission {
+        /// IEL prefix to decommission
+        iel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Fetch and display an Identity Event Log
+    Get {
+        /// IEL prefix to fetch
+        iel_prefix: String,
+    },
+
+    /// Submit one or more staged IEL events by SAID
     Submit {
-        /// Path to JSON file containing SadEvent(s)
-        file: PathBuf,
+        /// SAIDs of events previously published to the SAD object store
+        #[arg(required = true, num_args = 1..)]
+        saids: Vec<String>,
+    },
+
+    /// Compute an IEL prefix from auth/governance policy SAIDs and topic
+    Prefix {
+        /// Auth-policy SAID
+        #[arg(long)]
+        auth_policy: String,
+
+        /// Governance-policy SAID
+        #[arg(long)]
+        governance_policy: String,
+
+        /// Topic string
+        topic: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SelCommands {
+    /// Stage atomic [Icp, Upd] for a fresh SEL bound to an IEL
+    /// identity. Prints the Icp SAID and the Upd SAID, one per line.
+    Incept {
+        /// SEL topic string (e.g., "kels/sad/v1/keys/mlkem")
+        topic: String,
+
+        /// IEL identity (prefix) the chain binds to at inception
+        #[arg(long)]
+        identity: String,
+
+        /// SAID of the initial content payload (must already be in SADStore)
+        #[arg(long)]
+        initial_content: String,
+
+        /// Publish the staged events to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage an Upd extending an existing SEL. Prints the SAID.
+    Update {
+        /// SEL prefix to update
+        sel_prefix: String,
+
+        /// Content SAID to install in this Upd
+        content: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a Sea (degenerate seal marker) at the current tip. Prints the SAID.
+    Seal {
+        /// SEL prefix to seal
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a repair (Rpr) on an unsealed-divergent or
+    /// adversary-extended SEL. Prints the SAID.
+    Repair {
+        /// SEL prefix to repair
+        sel_prefix: String,
+
+        /// Owner KEL prefix. Required to repair silent (linear)
+        /// adversary extensions: the builder walks this KEL to harvest
+        /// `Ixn` anchors and treats the first non-anchored SEL event as
+        /// the rogue boundary. Omit to repair only divergence-driven
+        /// forks.
+        #[arg(long)]
+        owner_prefix: Option<String>,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a contest (Cnt) terminal event. Prints the SAID.
+    Contest {
+        /// SEL prefix to contest
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Stage a decommission (Dec) terminal event. Prints the SAID.
+    Decommission {
+        /// SEL prefix to decommission
+        sel_prefix: String,
+
+        /// Publish the staged event to the SAD object store
+        #[arg(long)]
+        publish: bool,
+    },
+
+    /// Submit one or more staged SEL events by SAID
+    Submit {
+        /// SAIDs of events previously published to the SAD object store
+        #[arg(required = true, num_args = 1..)]
+        saids: Vec<String>,
     },
 
     /// Fetch and display a SAD Event Log
@@ -278,10 +450,10 @@ enum SelCommands {
         prefix: String,
     },
 
-    /// Compute a SEL prefix from a write policy SAID and topic
+    /// Compute a SEL prefix from an IEL identity SAID and topic
     Prefix {
-        /// The write policy SAID
-        write_policy: String,
+        /// The IEL identity (prefix) SAID
+        identity: String,
 
         /// The topic (e.g., "kels/sad/v1/keys/mlkem")
         topic: String,
@@ -291,32 +463,42 @@ enum SelCommands {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::enum_variant_names)]
 enum ExchangeCommands {
-    /// Publish an ML-KEM encapsulation key to the SADStore
+    /// Publish an ML-KEM encapsulation key to the SADStore. Stages,
+    /// anchors, and submits an SEL bound to `--identity`.
     PublishKey {
-        /// KEL prefix whose key to publish
+        /// KEL prefix whose key signs the anchoring Ixn events
         #[arg(long)]
         prefix: String,
+
+        /// IEL identity (prefix) the SEL binds to. Must already
+        /// exist in SADStore with auth/governance policies set.
+        #[arg(long)]
+        identity: String,
 
         /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
         #[arg(long)]
         algorithm: Option<String>,
     },
 
-    /// Rotate the ML-KEM encapsulation key (appends new version to the SEL)
+    /// Rotate the ML-KEM encapsulation key (appends new version to the SEL).
     RotateKey {
-        /// KEL prefix whose key to rotate
+        /// KEL prefix whose key signs the anchoring Ixn event
         #[arg(long)]
         prefix: String,
+
+        /// IEL identity (prefix) the SEL binds to
+        #[arg(long)]
+        identity: String,
 
         /// ML-KEM algorithm (ml-kem-768 or ml-kem-1024; defaults to match signing key)
         #[arg(long)]
         algorithm: Option<String>,
     },
 
-    /// Look up a prefix's encapsulation key from the SADStore
+    /// Look up an identity's encapsulation key from the SADStore
     LookupKey {
-        /// KEL prefix to look up
-        prefix: String,
+        /// IEL identity (prefix) to look up
+        identity: String,
     },
 }
 
@@ -328,9 +510,16 @@ enum MailCommands {
         #[arg(long)]
         prefix: String,
 
-        /// Recipient KEL prefix
+        /// Recipient KEL prefix (routing + ESSR binding)
         #[arg(long)]
         recipient: String,
+
+        /// Recipient IEL identity (encap-key lookup). SEL prefix
+        /// derives from `(identity, ENCAP_KEY_KIND)`; the
+        /// recipient's KEL prefix is the routing handle but does not
+        /// determine the encap-key chain prefix.
+        #[arg(long)]
+        recipient_identity: String,
 
         /// Topic string (e.g., "kels/exchange/v1/topics/exchange")
         #[arg(long, default_value = "kels/exchange/v1/topics/exchange")]
@@ -530,25 +719,118 @@ async fn main() -> Result<()> {
         },
 
         Commands::Sel(sel_cmd) => match sel_cmd {
-            SelCommands::Submit { file } => commands::sel::cmd_sel_submit(&cli, file).await,
-            SelCommands::Get { prefix } => commands::sel::cmd_sel_get(&cli, prefix).await,
-            SelCommands::Prefix {
-                write_policy,
+            SelCommands::Incept {
                 topic,
-            } => commands::sel::cmd_sel_prefix(write_policy, topic),
+                identity,
+                initial_content,
+                publish,
+            } => {
+                commands::sel::cmd_sel_incept(&cli, topic, identity, initial_content, *publish)
+                    .await
+            }
+            SelCommands::Update {
+                sel_prefix,
+                content,
+                publish,
+            } => commands::sel::cmd_sel_update(&cli, sel_prefix, content, *publish).await,
+            SelCommands::Seal {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_seal(&cli, sel_prefix, *publish).await,
+            SelCommands::Repair {
+                sel_prefix,
+                owner_prefix,
+                publish,
+            } => {
+                commands::sel::cmd_sel_repair(&cli, sel_prefix, owner_prefix.as_deref(), *publish)
+                    .await
+            }
+            SelCommands::Contest {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_contest(&cli, sel_prefix, *publish).await,
+            SelCommands::Decommission {
+                sel_prefix,
+                publish,
+            } => commands::sel::cmd_sel_decommission(&cli, sel_prefix, *publish).await,
+            SelCommands::Submit { saids } => commands::sel::cmd_sel_submit(&cli, saids).await,
+            SelCommands::Get { prefix } => commands::sel::cmd_sel_get(&cli, prefix).await,
+            SelCommands::Prefix { identity, topic } => {
+                commands::sel::cmd_sel_prefix(identity, topic)
+            }
+        },
+
+        Commands::Iel(iel_cmd) => match iel_cmd {
+            IelCommands::Incept {
+                topic,
+                auth_policy,
+                governance_policy,
+                publish,
+            } => {
+                commands::iel::cmd_iel_incept(&cli, topic, auth_policy, governance_policy, *publish)
+                    .await
+            }
+            IelCommands::Evolve {
+                iel_prefix,
+                auth_policy,
+                governance_policy,
+                publish,
+            } => {
+                commands::iel::cmd_iel_evolve(
+                    &cli,
+                    iel_prefix,
+                    auth_policy.as_deref(),
+                    governance_policy.as_deref(),
+                    *publish,
+                )
+                .await
+            }
+            IelCommands::Contest {
+                iel_prefix,
+                publish,
+            } => commands::iel::cmd_iel_contest(&cli, iel_prefix, *publish).await,
+            IelCommands::Decommission {
+                iel_prefix,
+                publish,
+            } => commands::iel::cmd_iel_decommission(&cli, iel_prefix, *publish).await,
+            IelCommands::Get { iel_prefix } => commands::iel::cmd_iel_get(&cli, iel_prefix).await,
+            IelCommands::Submit { saids } => commands::iel::cmd_iel_submit(&cli, saids).await,
+            IelCommands::Prefix {
+                auth_policy,
+                governance_policy,
+                topic,
+            } => commands::iel::cmd_iel_prefix(auth_policy, governance_policy, topic),
         },
 
         Commands::Exchange(ex_cmd) => match ex_cmd {
-            ExchangeCommands::PublishKey { prefix, algorithm } => {
-                commands::exchange::cmd_exchange_publish_key(&cli, prefix, algorithm.as_deref())
-                    .await
+            ExchangeCommands::PublishKey {
+                prefix,
+                identity,
+                algorithm,
+            } => {
+                commands::exchange::cmd_exchange_publish_key(
+                    &cli,
+                    prefix,
+                    identity,
+                    algorithm.as_deref(),
+                )
+                .await
             }
-            ExchangeCommands::RotateKey { prefix, algorithm } => {
-                commands::exchange::cmd_exchange_rotate_key(&cli, prefix, algorithm.as_deref())
-                    .await
+            ExchangeCommands::RotateKey {
+                prefix,
+                identity,
+                algorithm,
+            } => {
+                commands::exchange::cmd_exchange_rotate_key(
+                    &cli,
+                    prefix,
+                    identity,
+                    algorithm.as_deref(),
+                )
+                .await
             }
-            ExchangeCommands::LookupKey { prefix } => {
-                commands::exchange::cmd_exchange_lookup_key(&cli, prefix).await
+            ExchangeCommands::LookupKey { identity } => {
+                commands::exchange::cmd_exchange_lookup_key(&cli, identity).await
             }
         },
 
@@ -556,9 +838,20 @@ async fn main() -> Result<()> {
             MailCommands::Send {
                 prefix,
                 recipient,
+                recipient_identity,
                 topic,
                 payload,
-            } => commands::mail::cmd_mail_send(&cli, prefix, recipient, topic, payload).await,
+            } => {
+                commands::mail::cmd_mail_send(
+                    &cli,
+                    prefix,
+                    recipient,
+                    recipient_identity,
+                    topic,
+                    payload,
+                )
+                .await
+            }
             MailCommands::Inbox { prefix } => commands::mail::cmd_mail_inbox(&cli, prefix).await,
             MailCommands::Fetch { prefix, said } => {
                 commands::mail::cmd_mail_fetch(&cli, prefix, said).await

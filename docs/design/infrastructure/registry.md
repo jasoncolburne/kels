@@ -1,0 +1,330 @@
+# KELS Node Registry & Bootstrap Sync
+
+> **⚠️ Design in transition.** This document describes the current registry-service-based discovery model. A redesign replacing the registry service entirely with federation-as-identity (gossip nodes hold the federation IEL locally; discovery via federation `auth_policy` enumeration + per-peer address SELs) is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). When that design lands, this document is substantially trimmed to node-side discovery only.
+
+## Overview
+
+The registry service (`services/registry`) provides peer discovery for KELS gossip deployments. When new nodes come online, they query the registry for peers, bootstrap sync missing KELs, then begin normal gossip operation. Clients discover nodes via the registry and test latency to select optimal nodes.
+
+For multi-cloud/multi-region deployments, multiple registries can be federated using Raft consensus. See [Multi-Registry Federation](federation.md) for details.
+
+## Architecture
+
+### Single Registry
+
+```
+                    ┌─────────────────────┐
+                    │     registry        │  (shared across all deployments)
+                    │   (Standalone)      │
+                    └──────────┬──────────┘
+                               │
+           ┌───────────────────┼───────────────────┐
+           │                   │                   │
+           ▼                   ▼                   ▼
+    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+    │  node-a     │     │  node-b     │     │  node-c...  │
+    │   gossip    │◄───►│   gossip    │◄───►│   gossip    │
+    └─────────────┘     └─────────────┘     └─────────────┘
+           │                   │                   │
+           ▼                   ▼                   ▼
+    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+    │    kels     │     │    kels     │     │    kels     │
+    └─────────────┘     └─────────────┘     └─────────────┘
+```
+
+### Federated Registries
+
+For high availability and multi-party operation, multiple registries can form a federation via Raft consensus. See [federation.md §Architecture](federation.md#architecture) for the federated deployment diagram and trust model; [federation-state-machine.md](federation-state-machine.md) for the Raft state machine and verification layers.
+
+## Data Flow
+
+### Node Startup (Bootstrap Sync)
+
+1. Node starts, queries registry for peers: `GET /api/v1/peers`
+2. If no peers exist:
+   - Start normal gossip operation immediately
+3. If peers exist:
+   - Start listening for gossip updates
+   - For each bootstrap peer (in parallel):
+     - Fetch kel prefix list: `POST /api/v1/kels/prefixes` (signed request)
+     - For each prefix not in local DB:
+       - Fetch KEL via gossip request-response
+       - Submit to local KELS
+4. Continue normal gossip operation
+
+### Client Node Discovery
+
+1. Client queries registry for peers: `GET /api/v1/peers`
+2. Client extracts active peers with their `base_domain` for service URL derivation
+3. Client tests readiness of each node via `/ready` endpoint
+4. Client tests latency to each Ready node via `/health` endpoint
+5. Client selects node with lowest latency
+6. Client caches node kel list with short TTL for retry resilience
+
+## Components
+
+### Service Structure
+
+```
+services/registry/
+├── Cargo.toml
+├── Dockerfile
+├── garden.yml
+├── manifests.yml.tpl
+└── src/
+    ├── main.rs           # Entry point, tracing setup
+    ├── lib.rs            # Module definitions
+    ├── server.rs         # HTTP router and startup
+    ├── handlers.rs       # All handlers (peers, registry KEL, federation)
+    ├── peer_store.rs     # PostgreSQL peer repository
+    ├── raft_store.rs     # Raft persistent storage helpers
+    ├── repository.rs     # Combined repository
+    ├── federation/       # Multi-registry federation (Raft consensus)
+    │   ├── mod.rs        # FederationNode entry point
+    │   ├── config.rs     # Federation configuration
+    │   ├── network.rs    # HTTP transport for Raft RPCs
+    │   ├── state_machine.rs # Raft state machine (peer set)
+    │   ├── storage.rs    # Raft log/vote storage (PostgreSQL)
+    │   ├── sync.rs       # Background sync loops (KEL sync, leader DB sync)
+    │   └── types.rs      # Federation message types
+    └── bin/
+        └── registry-admin.rs # Admin CLI for peer management
+```
+
+### API Endpoints
+
+#### Standalone Endpoints (always available)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+
+#### Federation-Only Endpoints
+
+When federation is configured, the registry additionally serves peer-discovery, member-KEL sync, federation-protocol, and admin endpoints. See [federation.md §API Endpoints](federation.md#api-endpoints) for the catalog and [secure-registration.md](secure-registration.md) for authorization details.
+
+### KELS Prefix Listing
+
+Added to the KELS service for bootstrap sync:
+
+`POST /api/v1/kels/prefixes`
+
+Accepts a `SignedRequest<PaginatedSelfAddressedRequest>` body. Signature and peer verification is enforced. An unauthenticated test endpoint (`POST /api/test/prefixes`) is available when `KELS_TEST_ENDPOINTS=true`.
+
+| Payload Field | Description | Default |
+|---------------|-------------|---------|
+| `timestamp` | Unix timestamp (replay protection, 60s window) | (required) |
+| `cursor` | Cursor (prefix) to start after | `null` (beginning) |
+| `limit` | Max prefixes to return | 100 (max: 1000) |
+
+Response includes prefix:SAID pairs for efficient sync comparison:
+```json
+{
+  "prefixes": [
+    {"prefix": "Eabc123...", "said": "Exyz789..."},
+    {"prefix": "Edef456...", "said": "Eqrs012..."}
+  ],
+  "nextCursor": "Edef456..."
+}
+```
+
+During bootstrap sync, nodes compare remote SAIDs with local SAIDs to determine which KELs need syncing.
+
+## Configuration
+
+### Registry Service
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | HTTP listen port | `80` |
+| `REDIS_URL` | Redis connection URL | `redis://redis:6379` |
+| `DATABASE_URL` | PostgreSQL connection URL | `postgres://postgres:postgres@postgres:5432/kels` |
+| `IDENTITY_URL` | Identity service URL | `http://identity:80` |
+| `RUST_LOG` | Log level | `registry=debug` |
+
+### Gossip Service
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NODE_ID` | Unique node identifier | `node-unknown` |
+| `BASE_DOMAIN` | Base domain for local service URL derivation (KELS, SADStore) | (required) |
+| `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for peer discovery and HA | (required) |
+| `GOSSIP_LISTEN_ADDR` | TCP listen address | `0.0.0.0:4001` |
+| `GOSSIP_ADVERTISE_ADDR` | Advertised gossip address for peer connections | listen address |
+
+## Design Decisions
+
+### Separate namespace deployment
+
+- Registry is shared infrastructure across all node deployments
+- Deployed once in `kels-registry` namespace
+- Nodes in `node-a`, `node-b` etc. connect to shared registry
+- Avoids circular dependencies during node bootstrap
+
+### Bootstrap sync via KELS API (not direct DB)
+
+- Uses existing `KelsClient` for consistency
+- KELS validates all submitted events
+- Paginated prefix listing handles large deployments
+- Parallel fetching from multiple peers for speed
+
+## Kubernetes Deployment
+
+### Namespace layout
+
+```
+kels-registry/     # Shared registry service + Redis
+  └── registry (Deployment)
+  └── redis (Deployment)
+
+node-a/       # Node A deployment
+  └── postgres (databases: kels, kels_gossip)
+  └── redis
+  └── kels
+  └── gossip
+
+node-b/       # Node B deployment
+  └── postgres (databases: kels, kels_gossip)
+  └── redis
+  └── kels
+  └── gossip
+```
+
+### Garden environments
+
+```yaml
+environments:
+  - name: registry
+    defaultNamespace: kels-registry
+  - name: node-a
+    defaultNamespace: node-a
+  - name: node-b
+    defaultNamespace: node-b
+```
+
+### Deployment order
+
+```bash
+garden deploy --env=registry    # Deploy registry first
+garden deploy --env=node-a      # First node starts immediately
+garden deploy --env=node-b      # Bootstrap syncs from node-a
+```
+
+## High Availability
+
+### Registry HA
+
+- Deploy 2+ registry replicas behind Kubernetes Service
+- Peer state in PostgreSQL via Raft consensus
+- Load balancer distributes requests across replicas
+
+### Node resilience
+
+- If registry unavailable at startup, fallback to cached peers from previous connections
+- Peer cache stored in PostgreSQL (`kels_gossip` database) for persistence across restarts
+- Once bootstrapped, node operates via gossip mesh independently
+- Node continues normal gossip during registry reconnection attempts
+- Gossip mesh handles discovery of stale/unavailable cached peers
+
+#### Registry fallback algorithm
+
+1. Try to connect to registry
+2. If registry available:
+   - Fetch peers
+   - Sync peer cache to database
+3. If registry unavailable:
+   - Load cached peers from database
+   - Use cached peers for bootstrap sync
+4. Continue attempting registry connection for discovery
+
+### Client resilience
+
+- Clients cache node kel list locally with short TTL
+- On connection failure, try next node in kel list
+- Periodically refresh node kel list from registry
+
+## Client Discovery
+
+### Rust Client (kels-core)
+
+```rust
+use kels_core::{KelsClient, Peer};
+
+// Discover all nodes from registry, sorted by latency
+let peers: Vec<Peer> = KelsClient::discover_nodes(registry_url).await?;
+
+// Test latency to current node
+let latency: Duration = client.test_latency().await?;
+
+// Create client connected to fastest available node
+let client = KelsClient::with_discovery(registry_url).await?;
+```
+
+### CLI
+
+```bash
+# List registered nodes with latency
+kels-cli --registry http://registry:8092 kel list-nodes
+
+# Auto-select fastest node for commands
+kels-cli --registry http://registry:8092 --auto-select kel incept
+kels-cli --registry http://registry:8092 --auto-select kel list
+```
+
+### iOS Client
+
+```swift
+import KelsCore
+
+// Discover nodes from registry
+let nodes = try await NodeDiscovery.discoverNodes(registryUrl: registryUrl)
+
+// Get fastest ready node
+if let fastest = try await NodeDiscovery.fastestNode(registryUrl: registryUrl) {
+    viewModel.selectNode(fastest)
+}
+```
+
+## Testing
+
+### Manual verification
+
+```bash
+# Deploy registry
+garden deploy --env=registry
+
+# Deploy first node
+garden deploy --env=node-a
+
+# Create KELs on node-a
+kels-cli -u http://kels.node-a.kels kel incept
+kels-cli -u http://kels.node-a.kels kel incept
+
+# Deploy second node (bootstrap syncs from node-a)
+garden deploy --env=node-b
+
+# Verify node-b has the KELs
+kels-cli -u http://kels.node-b.kels kel list
+
+# Test client discovery
+kels-cli --registry http://registry.kels-registry.kels kel list-nodes
+```
+
+### Integration tests
+
+Test script: `clients/test/scripts/test-bootstrap.sh`
+
+- Registry health check
+- CLI node discovery (`kel kel list-nodes`)
+- Prefix listing API with pagination
+- Bootstrap sync verification (KEL propagation between nodes)
+- Auto-select functionality
+
+Run tests:
+```bash
+# From within test-client pod
+./scripts/test-bootstrap.sh
+
+# Or run all tests
+./scripts/run-all-tests.sh
+```

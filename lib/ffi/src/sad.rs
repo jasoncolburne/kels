@@ -11,12 +11,14 @@ use crate::{
 
 // ==================== FFI Functions ====================
 
-/// Compute the deterministic SAD event prefix for a given write policy SAID and topic.
+/// Compute the deterministic SAD event prefix for a given identity SAID and topic.
 ///
-/// This is an offline operation -- no network access needed.
+/// This is an offline operation -- no network access needed. Per #147,
+/// SELs are identity-rooted, so prefix derivation takes the bound IEL
+/// identity rather than a per-chain authorization-policy SAID.
 ///
 /// # Arguments
-/// * `write_policy` - The write policy SAID
+/// * `identity` - The IEL identity SAID the chain is bound to
 /// * `topic` - The event topic (e.g., "kels/sad/v1/keys/mlkem")
 ///
 /// # Returns
@@ -27,13 +29,13 @@ use crate::{
 /// - Both arguments must be valid C strings
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kels_compute_sad_event_prefix(
-    write_policy: *const c_char,
+    identity: *const c_char,
     topic: *const c_char,
 ) -> *mut c_char {
     clear_last_error();
 
-    let Some(policy_str) = from_c_string(write_policy) else {
-        set_last_error("Invalid write policy");
+    let Some(identity_str) = from_c_string(identity) else {
+        set_last_error("Invalid identity");
         return std::ptr::null_mut();
     };
 
@@ -42,15 +44,15 @@ pub unsafe extern "C" fn kels_compute_sad_event_prefix(
         return std::ptr::null_mut();
     };
 
-    let policy_digest = match cesr::Digest256::from_qb64(&policy_str) {
+    let identity_digest = match cesr::Digest256::from_qb64(&identity_str) {
         Ok(d) => d,
         Err(e) => {
-            set_last_error(&format!("Invalid write policy CESR: {e}"));
+            set_last_error(&format!("Invalid identity CESR: {e}"));
             return std::ptr::null_mut();
         }
     };
 
-    match kels_core::compute_sad_event_prefix(policy_digest, &topic_str) {
+    match kels_core::compute_sad_event_prefix(identity_digest, &topic_str) {
         Ok(event_prefix) => to_c_string(event_prefix.as_ref()),
         Err(e) => {
             set_last_error(&format!("Prefix computation failed: {e}"));
@@ -231,8 +233,12 @@ pub unsafe extern "C" fn kels_sad_submit_events(
         }
     };
 
-    match runtime.block_on(client.submit_sad_events(&events)) {
-        Ok(()) => KelsStatus::Ok,
+    match runtime.block_on(client.submit_sel_events(&events)) {
+        // FFI surface stays a single status code — divergence signals on the
+        // response are not currently propagated across the C boundary.
+        // Server-side state is correct; callers that need the divergence
+        // value should query the SEL via `kels_sad_fetch_events` after submit.
+        Ok(_) => KelsStatus::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
             map_error_to_status(&e)
@@ -304,7 +310,7 @@ pub unsafe extern "C" fn kels_sad_fetch_events(
         }
     };
 
-    match runtime.block_on(client.fetch_sad_events(&prefix, since_digest.as_ref())) {
+    match runtime.block_on(client.fetch_sel_events(&prefix, since_digest.as_ref())) {
         Ok(page) => match serde_json::to_string(&page) {
             Ok(json) => to_c_string(&json),
             Err(e) => {

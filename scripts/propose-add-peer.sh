@@ -33,15 +33,24 @@ fi
 echo "Found leader: $LEADER_NS" >&2
 echo "Creating proposal for $NODE_NAME (prefix: $PEER_PREFIX)..." >&2
 
-# Create proposal on leader
+# Create proposal on leader. Capture stdout+stderr without `set -e`
+# eating the failure silently — we want to see the kubectl/registry-admin
+# error surface even when the call returns non-zero.
+set +e
 PROPOSE_OUTPUT=$(kubectl exec -n "kels-$LEADER_NS" deploy/registry -c registry -- \
     /app/registry-admin peer propose \
     --peer-kel-prefix "$PEER_PREFIX" \
     --node-id "$NODE_NAME" \
     --base-domain "$BASE_DOMAIN" \
     --gossip-addr "$GOSSIP_ADDR" 2>&1)
+PROPOSE_RC=$?
+set -e
 
 echo "$PROPOSE_OUTPUT" >&2
+if [ "$PROPOSE_RC" -ne 0 ]; then
+    echo "Error: kubectl exec / registry-admin peer propose exited $PROPOSE_RC" >&2
+    exit "$PROPOSE_RC"
+fi
 
 # Extract proposal prefix from "Proposal created: <id>" line
 PROPOSAL_PREFIX=$(echo "$PROPOSE_OUTPUT" | grep "Proposal created:" | grep -oE 'K[A-Za-z0-9_-]{43}')

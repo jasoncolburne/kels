@@ -19,11 +19,16 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test-common.sh"
 
 # Configuration
 NODE_A_KELS_HOST="${NODE_A_KELS_HOST:-kels}"
+NODE_B_KELS_HOST="${NODE_B_KELS_HOST:-kels.node-b.kels}"
 NODE_A_SADSTORE_HOST="${NODE_A_SADSTORE_HOST:-sadstore}"
 NODE_A_MAIL_HOST="${NODE_A_MAIL_HOST:-mail}"
 NODE_B_MAIL_HOST="${NODE_B_MAIL_HOST:-mail.node-b.kels}"
 NODE_B_SADSTORE_HOST="${NODE_B_SADSTORE_HOST:-sadstore.node-b.kels}"
 FEDERATED="${FEDERATED:-true}"
+CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
+
+NODE_A_KELS_URL="http://${NODE_A_KELS_HOST}"
+NODE_B_KELS_URL="http://${NODE_B_KELS_HOST}"
 
 if [ "$FEDERATED" = "false" ]; then
     CLI="kels-cli --kels-url http://${NODE_A_KELS_HOST} --sadstore-url http://${NODE_A_SADSTORE_HOST} --mail-url http://${NODE_A_MAIL_HOST}"
@@ -96,6 +101,42 @@ BOB_PREFIX=$(cat "$TEMP_DIR/bob_prefix")
 echo ""
 
 # ================================================================
+# Phase 1b: IEL Identity Setup — #147 SEL chains bind to an IEL
+# ================================================================
+
+echo "========================================="
+echo "Phase 1b: IEL Identity Setup"
+echo "========================================="
+
+test_create_alice_iel() {
+    ALICE_IEL=$(setup_iel_identity "$CLI" "$ALICE_PREFIX" "alice-$$")
+    if [ -z "$ALICE_IEL" ]; then
+        echo "Failed to create Alice's IEL identity"
+        return 1
+    fi
+    echo "Alice IEL: $ALICE_IEL"
+    echo "$ALICE_IEL" > "$TEMP_DIR/alice_iel"
+}
+
+test_create_bob_iel() {
+    BOB_IEL=$(setup_iel_identity "$CLI" "$BOB_PREFIX" "bob-$$")
+    if [ -z "$BOB_IEL" ]; then
+        echo "Failed to create Bob's IEL identity"
+        return 1
+    fi
+    echo "Bob IEL: $BOB_IEL"
+    echo "$BOB_IEL" > "$TEMP_DIR/bob_iel"
+}
+
+run_test "Create Alice's IEL identity" test_create_alice_iel
+run_test "Create Bob's IEL identity" test_create_bob_iel
+
+ALICE_IEL=$(cat "$TEMP_DIR/alice_iel")
+BOB_IEL=$(cat "$TEMP_DIR/bob_iel")
+
+echo ""
+
+# ================================================================
 # Phase 2: Key Publication — Publish ML-KEM keys to SADStore
 # ================================================================
 
@@ -104,19 +145,17 @@ echo "Phase 2: Key Publication"
 echo "========================================="
 
 test_alice_publish_key() {
-    $CLI exchange publish-key --prefix "$ALICE_PREFIX" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange publish-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to publish Alice's key"
         return 1
-    fi
+    }
 }
 
 test_bob_publish_key() {
-    $CLI exchange publish-key --prefix "$BOB_PREFIX" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange publish-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1 || {
         echo "Failed to publish Bob's key"
         return 1
-    fi
+    }
 }
 
 run_test "Alice publishes ML-KEM key" test_alice_publish_key
@@ -133,14 +172,14 @@ echo "Phase 3: Key Discovery"
 echo "========================================="
 
 test_lookup_alice_key() {
-    OUTPUT=$($CLI exchange lookup-key "$ALICE_PREFIX" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "$ALICE_IEL" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Algorithm:" || return 1
     echo "$OUTPUT" | grep -q "ML-KEM-768" || return 1
 }
 
 test_lookup_bob_key() {
-    OUTPUT=$($CLI exchange lookup-key "$BOB_PREFIX" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "$BOB_IEL" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Algorithm:" || return 1
 }
@@ -158,12 +197,10 @@ run_test_expect_fail "Look up nonexistent key" test_lookup_nonexistent_key
 
 echo ""
 
-CONVERGENCE_TIMEOUT="${CONVERGENCE_TIMEOUT:-30}"
-
 test_lookup_alice_key_from_node_b() {
     local deadline=$((SECONDS + CONVERGENCE_TIMEOUT))
     while [ $SECONDS -lt $deadline ]; do
-        OUTPUT=$($CLI_B exchange lookup-key "$ALICE_PREFIX" 2>&1)
+        OUTPUT=$($CLI_B exchange lookup-key "$ALICE_IEL" 2>&1)
         if echo "$OUTPUT" | grep -q "Algorithm:"; then
             echo "$OUTPUT"
             return 0
@@ -190,15 +227,14 @@ echo "Phase 4: Key Rotation"
 echo "========================================="
 
 test_alice_rotate_kem_key() {
-    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to rotate Alice's KEM key"
         return 1
-    fi
+    }
 }
 
 test_lookup_alice_rotated_key() {
-    OUTPUT=$($CLI exchange lookup-key "$ALICE_PREFIX" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "$ALICE_IEL" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Algorithm:" || return 1
 }
@@ -223,15 +259,14 @@ test_alice_rotate_signing_key() {
 }
 
 test_alice_rotate_kem_after_signing_rotation() {
-    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$ALICE_PREFIX" --identity "$ALICE_IEL" 2>&1 || {
         echo "Failed to rotate Alice's KEM key after signing key rotation"
         return 1
-    fi
+    }
 }
 
 test_lookup_alice_key_after_rotations() {
-    OUTPUT=$($CLI exchange lookup-key "$ALICE_PREFIX" 2>&1)
+    OUTPUT=$($CLI exchange lookup-key "$ALICE_IEL" 2>&1)
     echo "$OUTPUT"
     echo "$OUTPUT" | grep -q "Algorithm:" || return 1
 }
@@ -243,12 +278,10 @@ test_bob_rotate_signing_key() {
 }
 
 test_bob_publish_key_after_signing_rotation() {
-    # Bob deletes his KEM chain and re-publishes after signing key rotation
-    $CLI exchange rotate-key --prefix "$BOB_PREFIX" 2>&1
-    if [ $? -ne 0 ]; then
+    $CLI exchange rotate-key --prefix "$BOB_PREFIX" --identity "$BOB_IEL" 2>&1 || {
         echo "Failed to rotate Bob's KEM key after signing key rotation"
         return 1
-    fi
+    }
 }
 
 run_test "Alice rotates signing key" test_alice_rotate_signing_key
@@ -274,6 +307,7 @@ test_alice_send_to_bob() {
     OUTPUT=$($CLI mail send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
+        --recipient-identity "$BOB_IEL" \
         --topic "kels/exchange/v1/topics/test" \
         --payload "$TEMP_DIR/payload.json" 2>&1)
     echo "$OUTPUT"
@@ -333,6 +367,7 @@ test_alice_send_cross_node() {
     OUTPUT=$($CLI mail send \
         --prefix "$ALICE_PREFIX" \
         --recipient "$BOB_PREFIX" \
+        --recipient-identity "$BOB_IEL" \
         --topic "kels/exchange/v1/topics/cross-node-test" \
         --payload "$TEMP_DIR/payload.json" 2>&1)
     echo "$OUTPUT"

@@ -323,7 +323,7 @@ pub async fn federation_rpc(
         crate::raft_store::MemberKelRepository::new(state.member_kel_repo.pool.clone()),
     ));
     let local_result = kels_core::completed_verification(
-        &mut kels_core::StorePageLoader::new(&store),
+        &mut kels_core::KelStorePageLoader::new(&store),
         &signed_rpc.sender_prefix,
         kels_core::page_size(),
         kels_core::max_pages(),

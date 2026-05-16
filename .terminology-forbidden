@@ -41,7 +41,11 @@ SAD_CHAIN_PUBSUB_CHANNEL
 /sad/pointers
 kels/sad/v1/pointer/
 "type"[[:space:]]*:[[:space:]]*"pointer"
-:repair\b
+# Match `:repair` as a URL/announcement fragment, NOT Rust's `::repair`.
+# `(^|[^:])` requires the preceding char to not be a colon (allowing
+# start-of-line). Catches `sad-announcement:repair` and similar wire-format
+# strings without false-positiving on Rust paths like `Builder::repair`.
+(^|[^:]):repair\b
 \?repair=
 
 # === KELS-133: Phantom types (referenced in docs but never existed post-rename) ===
@@ -56,5 +60,99 @@ test_sad_chain_verifier_
 \bcp_version\b
 \bchain_cp_said\b
 
+# === KELS-126: Verification token rename (SadEventVerification → SelVerification) ===
+\bSadEventVerification\b
+
+# === KELS-126 round 7: Removed error variants ===
+\bCannotResumeDivergentChain\b
+
+# === KELS-126 round 9: KEL/SEL page-loader rename for parity ===
+# `StorePageLoader` was renamed to `KelStorePageLoader`; SEL gained a parallel
+# `SadStorePageLoader`. The bare token must not regress.
+\bStorePageLoader\b
+
 # === Grammar: common slip introduced by in-place renames ===
 \ba event\b
+
+# === KELS-126 round 12: SEL identity-rooting ===
+# SELs are now bound to IEL identities; auth/governance policies live
+# on the IEL. These tokens were SEL-only; IEL still uses `governance_policy`
+# internally (do NOT blanket-forbid that token). `write_policy` /
+# `writePolicy` are NOT forbidden — Custody legitimately uses them for
+# per-SAD-object write access control (distinct concept from SEL auth).
+\btracked_write_policy\b
+\bestablishment_version\b
+
+# Round-12 (#147) dropped two SEL kinds: `Est` removed; `Evl` renamed to
+# `Sea`. The `Evl → Sea` rename is permanent; the rules below catch
+# residual references in code, scripts, JSON literals, and design docs.
+#
+# `Est` was reintroduced post-#147 as the tier-2 binding-establishment
+# event under anchor tier elevation (see docs/design/protocol-doctrine.md
+# §Anchor Tier Elevation). The `Est` rules previously held here have
+# been removed because `Est` is once again a valid SEL kind.
+\bSadEventKind::Evl\b
+\bSadEvent::evl\b
+kels/sad/v1/events/evl
+
+# === No "round N" labels: cite issue numbers (e.g., #147 / #167) instead ===
+# These are review-iteration counts that bled into source/docs and are
+# untraceable. Mapping for reference: round-12 ↔ #147 (SEL identity-rooting),
+# round 13 ↔ #167 (custody reshape). Only rounds 10–13 are offenders;
+# narrower than \b1[0-9]\b to avoid future false positives. docs/deviations/
+# has its own subtree rule and is exempt; docs/claudit/ is excluded by the
+# lint script.
+\b[rR]ound[- ]?1[0-3]\b
+
+# === Issue #167: Custody reshape (partially superseded) ===
+# Pre-#167 Custody fields included `writePolicy` / `readPolicy` and the
+# `nodes` / `ttl` / `once` keys that relocated from `custody.*` to
+# `availability.*`. The bare `nodes` / `ttl` / `once` tokens are too
+# generic to forbid (they appear in unrelated code), so the camelCase
+# Custody-field forms are the catchable surface here.
+#
+# Note: the redesign after #167 re-canonizes `read_policy` as the read-side
+# field name (policy SAID for read access; same semantic as pre-#167's
+# readPolicy). The write side is now `owner_iel_event`, so writePolicy
+# stays banned.
+\bwritePolicy\b
+\bwrite_policy\b
+# Pre-#167 type forms that don't survive the reshape.
+\bSadCustodyContext\b
+\bCustodyRepository\b
+# Pre-#167 SQL/table names that don't survive the reshape.
+\bcustodies_idx\b
+\bsad_objects_custody_idx\b
+
+# === Issue #154: MinIO → RustFS substitution ===
+# Catches all-caps, proper-noun, and lowercase forms of "minio" plus the
+# `MINIO_*` env-var-key prefix. The deviations subtree exempts itself
+# (empty `.terminology-forbidden` there) so resolved-deviation entries
+# describing the rename remain free to mention `minio/minio:latest` as
+# the prior testcontainer fixture.
+\bMinIO\b
+\bMINIO\b
+\bMINIO_[A-Z_]+\b
+\bminio\b
+
+# === SelStore rename ===
+\bHttpSadSource\b
+\bHttpSadSink\b
+\bPagedSadSource\b
+\bPagedSadSink\b
+\bNoOpSadSink\b
+\bverify_sad_events\b
+\bverify_sad_events_with\b
+\bforward_sad_events\b
+\btransfer_sad_events\b
+\bsend_divergent_sad_events\b
+\bas_sad_source\b
+\bas_sad_sink\b
+
+# === protocol-doctrine.md rename ===
+# `docs/design/security-invariant.md` was renamed to `protocol-doctrine.md`
+# — the file now contains multiple invariants + doctrines + verification
+# mechanics organized into three parts. Cross-references must use the new
+# filename. Anchors are preserved (level-independent in GFM); only the path
+# changed.
+security-invariant\.md

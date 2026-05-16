@@ -1,7 +1,7 @@
 //! S3-compatible blob store for ESSR envelope storage.
 //!
 //! Wraps `aws-sdk-s3` to provide PUT/GET/DELETE/HEAD operations keyed by blob digest.
-//! Envelopes are stored as opaque binary blobs in MinIO.
+//! Envelopes are stored as opaque binary blobs in object store.
 
 use aws_sdk_s3::{
     Client,

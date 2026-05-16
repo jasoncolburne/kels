@@ -161,7 +161,7 @@ pub async fn refresh_allowlist(
         // Update the shared allowlist
         *allowlist.write().await = authorized_peers;
 
-        info!(
+        debug!(
             "Allowlist refreshed with {} verified authorized peers (total {:?})",
             count,
             t0.elapsed()

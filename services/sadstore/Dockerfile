@@ -17,6 +17,10 @@ RUN apt-get update && \
 COPY lib/derive /app/lib/derive
 COPY lib/kels /app/lib/kels
 COPY lib/policy /app/lib/policy
+# services/kels is a dev-dep of sadstore (full-stack integration tests).
+# Cargo resolves dev-deps even for --release --bin builds, so the path
+# manifest must be readable from the build context.
+COPY services/kels /app/services/kels
 COPY services/sadstore /app/services/sadstore
 
 # Build with BuildKit cache mounts for cargo registry and target directory

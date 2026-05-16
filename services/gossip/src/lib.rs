@@ -32,11 +32,14 @@
 
 mod allowlist;
 mod bootstrap;
+mod bootstrap_merge;
 mod gossip_layer;
 mod hsm_signer;
+pub mod pending;
 mod repository;
 mod server;
 mod sync;
+mod telemetry;
 pub(crate) mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
@@ -394,6 +397,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
+        // Wire the deferred-deps pending map into bootstrap so IEL/SEL
+        // preload failures parking on `MissingKelEvent` / `MissingSadObject`
+        // / `MissingIelEvent` get replayed by the live `kel_updates`/`iel_updates`/
+        // `sad_updates` drain subscribers when the awaited dep lands. The
+        // map is shared with the inline POST flow built later in this file
+        // (`pending_map` at the DrainExecutor construction site) — same
+        // Redis backend, same TTL, identical drain mechanism.
+        bootstrap = bootstrap.with_pending(pending::PendingMap::new(redis.clone()));
     }
 
     // Step 2-3: Check allowlist and wait if not authorized
@@ -417,21 +428,53 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                     local_kel_prefix, local_kel_prefix, config.node_id
                 );
 
-                // Preload KELs, SAD objects, and SAD events from Ready peers
-                if let Err(e) = bootstrap.preload_kels().await {
-                    warn!("KEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_objects().await {
-                    warn!("SAD object preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_events().await {
-                    warn!("SEL preload failed: {}", e);
+                // Preload KELs, SAD objects, IELs, and SAD events from Ready peers
+                let mut do_loop = true;
+
+                while do_loop {
+                    do_loop = false;
+
+                    match bootstrap.preload_kels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("KEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_objects().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("SAD preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_iels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("IEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_events().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => warn!("SEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+
+                    if do_loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                            _ = kels_core::shutdown_signal() => {
+                                info!("Shutdown signal received during preload");
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                 }
 
-                // Wait 5 minutes before checking again
-                info!("Sleeping 5 minutes before rechecking allowlist...");
+                // Wait 15 minutes before checking again. The longer cadence
+                // avoids cross-pressure with bootstrap-fetch on later-vote
+                // nodes coming online while earlier nodes are still bootstrapping
+                // (an AE+gossip storm against an under-tuned object store
+                // saturates RustFS+Postgres concurrency; see #157 for the
+                // structural fix).
+                info!("Sleeping 15 minutes before rechecking allowlist...");
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+                    _ = tokio::time::sleep(Duration::from_secs(900)) => {}
                     _ = kels_core::shutdown_signal() => {
                         info!("Shutdown signal received during allowlist wait");
                         std::process::exit(0);
@@ -546,10 +589,29 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         });
     }
 
+    // #156: build the deferred-deps drain executor and the pending map
+    // used by the inbound park flow. Both share the same PendingMap so
+    // park (sync handler) and drain (subscribers) coordinate via Redis.
+    // Both are `None` when Redis is unavailable — graceful degradation
+    // (park flow logs and drops 422; subscribers skip drain dispatch).
+    let pending_map: Option<pending::PendingMap> =
+        redis_conn_manager.clone().map(pending::PendingMap::new);
+    let drain_executor: Option<sync::DrainExecutor> = match pending_map.clone() {
+        Some(pm) => match sync::DrainExecutor::new(&config.sadstore_url(), allowlist.clone(), pm) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                error!("Failed to build DrainExecutor: {}", e);
+                None
+            }
+        },
+        None => None,
+    };
+
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
     let redis_local_kel_prefix = local_kel_prefix;
+    let redis_drain = drain_executor.clone();
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
@@ -557,6 +619,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 redis_local_kel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
+                redis_drain.clone(),
             )
             .await
             {
@@ -573,6 +636,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
     let sad_redis_local_kel_prefix = local_kel_prefix;
+    let sad_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
@@ -580,12 +644,38 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 sad_redis_local_kel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
+                sad_redis_drain.clone(),
             )
             .await
             {
                 error!("SAD Redis subscriber error: {} — reconnecting in 5s", e);
             } else {
                 warn!("SAD Redis subscriber stream ended — reconnecting in 5s");
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+
+    // Start IEL Redis subscriber (listens for IEL updates; broadcasts to gossip)
+    let iel_redis_command_tx = command_tx.clone();
+    let iel_redis_url = config.redis_url.clone();
+    let iel_redis_recently_stored = recently_stored.clone();
+    let iel_redis_local_kel_prefix = local_kel_prefix;
+    let iel_redis_drain = drain_executor.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sync::run_iel_redis_subscriber(
+                &iel_redis_url,
+                iel_redis_local_kel_prefix,
+                iel_redis_command_tx.clone(),
+                iel_redis_recently_stored.clone(),
+                iel_redis_drain.clone(),
+            )
+            .await
+            {
+                error!("IEL Redis subscriber error: {} — reconnecting in 5s", e);
+            } else {
+                warn!("IEL Redis subscriber stream ended — reconnecting in 5s");
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
@@ -639,6 +729,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Derive topic IDs and join with bootstrap peers
     let topic_id = gossip_layer::topic_id_from_name(&config.topic);
     let sad_topic_id = gossip_layer::topic_id_from_name(gossip_layer::SAD_TOPIC);
+    let iel_topic_id = gossip_layer::topic_id_from_name(gossip_layer::IEL_TOPIC);
     let mail_topic_id = gossip_layer::topic_id_from_name(gossip_layer::MAIL_TOPIC);
     gossip_instance
         .join(topic_id, peer_addrs.clone())
@@ -648,6 +739,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .join(sad_topic_id, peer_addrs.clone())
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join SAD gossip topic: {}", e)))?;
+    gossip_instance
+        .join(iel_topic_id, peer_addrs.clone())
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to join IEL gossip topic: {}", e)))?;
     gossip_instance
         .join(mail_topic_id, peer_addrs)
         .await
@@ -662,6 +757,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             gossip_instance_clone,
             topic_id,
             sad_topic_id,
+            iel_topic_id,
             mail_topic_id,
             command_rx,
             event_tx,
@@ -684,6 +780,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
     let sync_signer = registry_signer.clone();
+    let sync_pending = pending_map.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
             kels_url,
@@ -695,6 +792,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             recently_stored,
             sync_redis,
             sync_signer,
+            sync_pending,
             if has_ready_peers {
                 Some(peer_connected_tx)
             } else {
@@ -712,15 +810,55 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Waiting for first peer connection...");
         match tokio::time::timeout(Duration::from_secs(60), peer_connected_rx).await {
             Ok(Ok(())) => {
-                info!("First peer connected — preloading KELs, SAD objects, and SAD events...");
-                if let Err(e) = bootstrap.preload_kels().await {
-                    error!("KEL preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_objects().await {
-                    error!("SAD object preload failed: {}", e);
-                }
-                if let Err(e) = bootstrap.preload_sad_events().await {
-                    error!("SEL preload failed: {}", e);
+                info!(
+                    "First peer connected — preloading KELs, SAD objects, IELs, and SAD events..."
+                );
+
+                // Retry the four preloads as a unit until none of them
+                // surface a `BootstrapError::Sync` failure. Sync failures
+                // include both genuine per-prefix sync errors and chains
+                // parked into the deferred-deps map (drain handles parks
+                // when deps arrive, but bootstrap retry is the poll-based
+                // backstop for the case where drain misses a wake — it's
+                // load-bearing for "we can't start until we're in sync").
+                // Other error variants (Kels / Failed) log and break out
+                // of the inner attempt; the outer match arm continues to
+                // mark-ready below per the original semantics.
+                let mut do_loop = true;
+
+                while do_loop {
+                    do_loop = false;
+
+                    match bootstrap.preload_kels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("KEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_objects().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("SAD object preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_iels().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("IEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+                    match bootstrap.preload_sad_events().await {
+                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
+                        Err(e) => error!("SEL preload failed: {}", e),
+                        Ok(()) => {}
+                    }
+
+                    if do_loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                            _ = kels_core::shutdown_signal() => {
+                                info!("Shutdown signal received during preload");
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                 }
             }
             Ok(Err(_)) => {
@@ -780,6 +918,25 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 sad_ae_signer,
                 sad_ae_sadstore_url,
                 sad_ae_interval,
+            )
+            .await;
+        });
+
+        // IEL anti-entropy loop (#172): closes the structural gap where
+        // SEL→IEL deferred-deps parks could TTL out without the IEL chain
+        // ever propagating to the parking peer.
+        let iel_ae_redis = redis.clone();
+        let iel_ae_allowlist = allowlist.clone();
+        let iel_ae_signer = registry_signer.clone();
+        let iel_ae_sadstore_url = config.sadstore_url().clone();
+        let iel_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
+        tokio::spawn(async move {
+            sync::run_iel_anti_entropy_loop(
+                iel_ae_redis,
+                iel_ae_allowlist,
+                iel_ae_signer,
+                iel_ae_sadstore_url,
+                iel_ae_interval,
             )
             .await;
         });

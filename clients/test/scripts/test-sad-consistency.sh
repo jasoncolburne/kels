@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # test-sad-consistency.sh - Deep SAD Consistency Verification
-# Compares all SAD Event Log prefixes, chain contents, and SAD objects across nodes.
+# Compares all SAD Event Log prefixes, chain contents, IEL prefixes, IEL chain
+# contents, and SAD objects across nodes.
 #
-# For each node with test endpoints, fetches all SEL prefixes and SAD object
-# SAIDs, then for each prefix/object compares across ALL nodes. Verifies:
+# For each node with test endpoints, fetches all SEL/IEL prefixes and SAD
+# object SAIDs, then for each prefix/object compares across ALL nodes.
+# Verifies:
 #   1. All nodes have the same set of SEL prefixes
-#   2. All chains have the same number of events on each node
-#   3. A SHA-256 digest of each chain matches across all nodes
+#   2. All SEL chains have the same number of events on each node
+#   3. A SHA-256 digest of each SEL matches across all nodes
 #   4. All nodes have the same set of SAD objects
+#   5. All nodes have the same set of IEL prefixes (#172)
+#   6. All IEL chains have the same number of events / matching digests (#172)
 #
 # Usage: test-sad-consistency.sh
 #
@@ -68,43 +72,62 @@ echo -e "${YELLOW}Fetching SEL prefixes and SAD object SAIDs from test-endpoint 
 declare -a REACHABLE_NAMES=()
 declare -a REACHABLE_URLS=()
 
-for i in "${!PREFIX_NODE_NAMES[@]}"; do
-    name="${PREFIX_NODE_NAMES[$i]}"
-    url="${PREFIX_NODE_URLS[$i]}"
-    prefix_file="$TEMP_DIR/sad_prefixes_${name}.txt"
-    objects_file="$TEMP_DIR/sad_objects_${name}.txt"
-
-    > "$prefix_file"
-    > "$objects_file"
-
-    # Fetch SEL prefixes
-    cursor=""
-    reachable=true
+# Paginate a prefix-listing endpoint, appending all `.prefixes[].prefix`
+# values to the destination file. Returns 0 on success, 1 if the first
+# request fails (peer unreachable). Used for both SEL and IEL listings —
+# request shape is identical (PaginatedSelfAddressedRequest).
+fetch_prefix_list() {
+    local url="$1"
+    local endpoint="$2"
+    local out_file="$3"
+    local cursor=""
+    local first=true
     while true; do
+        local body
         if [ -n "$cursor" ]; then
             body=$(jq -n --arg cursor "$cursor" --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:$cursor,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         else
             body=$(jq -n --arg nonce "NA$(openssl rand -hex 21)" '{payload:{said:"'"$MOCK_SAID"'",createdAt:"'"$MOCK_CREATED_AT"'",nonce:$nonce,cursor:null,limit:1000},signatures:{"'"$MOCK_PREFIX"'":"'"$MOCK_SIGNATURE"'"}}')
         fi
 
-        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/test/sad/events/prefixes" 2>/dev/null)
+        local response
+        response=$(curl -sf -X POST -H 'Content-Type: application/json' -d "$body" "${url}${endpoint}" 2>/dev/null)
         if [ $? -ne 0 ]; then
-            echo -e "  node-${name}: ${RED}unreachable${NC}"
-            reachable=false
+            $first && return 1
             break
         fi
+        first=false
 
-        echo "$response" | jq -r '.prefixes[].prefix' >> "$prefix_file" 2>/dev/null
+        echo "$response" | jq -r '.prefixes[].prefix' >> "$out_file" 2>/dev/null
 
         cursor=$(echo "$response" | jq -r '.nextCursor // empty' 2>/dev/null)
         if [ -z "$cursor" ]; then
             break
         fi
     done
+    return 0
+}
 
-    if ! $reachable; then
+for i in "${!PREFIX_NODE_NAMES[@]}"; do
+    name="${PREFIX_NODE_NAMES[$i]}"
+    url="${PREFIX_NODE_URLS[$i]}"
+    prefix_file="$TEMP_DIR/sad_prefixes_${name}.txt"
+    iel_prefix_file="$TEMP_DIR/iel_prefixes_${name}.txt"
+    objects_file="$TEMP_DIR/sad_objects_${name}.txt"
+
+    > "$prefix_file"
+    > "$iel_prefix_file"
+    > "$objects_file"
+
+    # Fetch SEL prefixes
+    if ! fetch_prefix_list "$url" "/api/test/sad/events/prefixes" "$prefix_file"; then
+        echo -e "  node-${name}: ${RED}unreachable${NC}"
         continue
     fi
+
+    # Fetch IEL prefixes (#172). The IEL listing endpoint mirrors SEL's
+    # request/response shape, so the same paginator works.
+    fetch_prefix_list "$url" "/api/test/iel/events/prefixes" "$iel_prefix_file" || true
 
     # Fetch SAD object SAIDs
     cursor=""
@@ -132,8 +155,9 @@ for i in "${!PREFIX_NODE_NAMES[@]}"; do
     sort -u -o "$objects_file" "$objects_file"
 
     prefix_count=$(wc -l < "$prefix_file" | tr -d ' ')
+    iel_prefix_count=$(wc -l < "$iel_prefix_file" | tr -d ' ')
     object_count=$(wc -l < "$objects_file" | tr -d ' ')
-    echo -e "  node-${name}: ${GREEN}${prefix_count} SEL prefixes, ${object_count} SAD objects${NC}"
+    echo -e "  node-${name}: ${GREEN}${prefix_count} SEL prefixes, ${iel_prefix_count} IEL prefixes, ${object_count} SAD objects${NC}"
     REACHABLE_NAMES+=("$name")
     REACHABLE_URLS+=("$url")
 done
@@ -196,6 +220,40 @@ fi
 
 echo
 
+# --- Step 2a: Compare IEL prefix sets (#172) ---
+echo -e "${YELLOW}Comparing IEL prefix sets...${NC}"
+
+iel_reference_name="${REACHABLE_NAMES[0]}"
+iel_reference_file="$TEMP_DIR/iel_prefixes_${iel_reference_name}.txt"
+sort -o "$iel_reference_file" "$iel_reference_file"
+
+iel_all_match=true
+for i in "${!REACHABLE_NAMES[@]}"; do
+    [ "$i" -eq 0 ] && continue
+    name="${REACHABLE_NAMES[$i]}"
+    other_file="$TEMP_DIR/iel_prefixes_${name}.txt"
+    sort -o "$other_file" "$other_file"
+
+    if ! diff -q "$iel_reference_file" "$other_file" > /dev/null 2>&1; then
+        iel_all_match=false
+        echo -e "  ${RED}MISMATCH: node-${iel_reference_name} vs node-${name}${NC}"
+
+        only_ref=$(comm -23 "$iel_reference_file" "$other_file" | wc -l | tr -d ' ')
+        only_other=$(comm -13 "$iel_reference_file" "$other_file" | wc -l | tr -d ' ')
+
+        [ "$only_ref" -gt 0 ] && echo -e "    ${only_ref} IEL prefixes only on node-${iel_reference_name}"
+        [ "$only_other" -gt 0 ] && echo -e "    ${only_other} IEL prefixes only on node-${name}"
+        ((FAILURES++))
+    fi
+done
+
+if $iel_all_match; then
+    total=$(wc -l < "$iel_reference_file" | tr -d ' ')
+    echo -e "  ${GREEN}All ${#REACHABLE_NAMES[@]} nodes have the same ${total} IEL prefixes${NC}"
+fi
+
+echo
+
 # --- Step 2b: Compare SAD object sets ---
 echo -e "${YELLOW}Comparing SAD object sets...${NC}"
 
@@ -240,10 +298,15 @@ chain_mismatches=0
 count_mismatches=0
 divergent_consistent=0
 
-# Fetch all events for a SAD Event Log, paginating through all pages.
-fetch_all_sad_events() {
+# Fetch all events for a chain at `endpoint`, paginating until exhaustion.
+# `since_path` is the jq path used to extract the cursor SAID from the last
+# event in each page. SEL pages wrap each event in `{event: ..., signatures: ...}`,
+# while IEL pages return events directly — so the cursor expressions differ.
+fetch_all_chain_events() {
     local url="$1"
-    local prefix="$2"
+    local endpoint="$2"
+    local prefix="$3"
+    local since_path="$4"
     local all_events="[]"
     local since=""
 
@@ -254,7 +317,7 @@ fetch_all_sad_events() {
         fi
 
         local resp
-        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "${url}/api/v1/sad/events/fetch" 2>/dev/null) || break
+        resp=$(curl -s -f -X POST -H 'Content-Type: application/json' -d "$body" "${url}${endpoint}" 2>/dev/null) || break
 
         local events has_more
         events=$(echo "$resp" | jq '.events')
@@ -270,10 +333,20 @@ fetch_all_sad_events() {
             break
         fi
 
-        since=$(echo "$events" | jq -r '.[-1].event.said')
+        since=$(echo "$events" | jq -r "${since_path}")
     done
 
     echo "$all_events"
+}
+
+# Fetch all events for a SAD Event Log.
+fetch_all_sad_events() {
+    fetch_all_chain_events "$1" "/api/v1/sad/events/fetch" "$2" '.[-1].event.said'
+}
+
+# Fetch all events for an Identity Event Log.
+fetch_all_iel_events() {
+    fetch_all_chain_events "$1" "/api/v1/iel/events/fetch" "$2" '.[-1].said'
 }
 
 while IFS= read -r prefix; do
@@ -380,6 +453,123 @@ else
     [ "$count_mismatches" -gt 0 ] && echo -e "  ${RED}${count_mismatches} event count mismatches${NC}"
     [ "$chain_mismatches" -gt 0 ] && echo -e "  ${RED}${chain_mismatches} chain digest mismatches${NC}"
     [ "$divergent_consistent" -gt 0 ] && echo -e "  ${YELLOW}${divergent_consistent} mismatched chain(s) with consistent divergent state${NC}"
+fi
+
+# --- Step 3b: For each IEL prefix, compare event counts and chain digests across ALL nodes (#172) ---
+echo
+echo -e "${YELLOW}Comparing Identity Event Logs across all nodes...${NC}"
+
+cat "$TEMP_DIR"/iel_prefixes_*.txt 2>/dev/null | sort -u > "$TEMP_DIR/all_iel_prefixes.txt"
+total_iel_prefixes=$(wc -l < "$TEMP_DIR/all_iel_prefixes.txt" | tr -d ' ')
+iel_checked=0
+iel_chain_mismatches=0
+iel_count_mismatches=0
+iel_divergent_consistent=0
+
+if [ "$total_iel_prefixes" -gt 0 ]; then
+    while IFS= read -r prefix; do
+        ((iel_checked++))
+        printf "\r  Checking IEL chain %d/%d..." "$iel_checked" "$total_iel_prefixes"
+
+        declare -a iel_digests=()
+        declare -a iel_counts=()
+        declare -a iel_states=()
+        declare -a iel_digest_names=()
+
+        for i in "${!ALL_REACHABLE_NAMES[@]}"; do
+            name="${ALL_REACHABLE_NAMES[$i]}"
+            url="${ALL_REACHABLE_URLS[$i]}"
+
+            all_events=$(fetch_all_iel_events "${url}" "${prefix}")
+            if [ "$(echo "$all_events" | jq 'length')" -eq 0 ]; then
+                iel_digests+=("MISSING")
+                iel_counts+=("0")
+                iel_states+=("missing")
+                iel_digest_names+=("$name")
+                continue
+            fi
+
+            event_count=$(echo "$all_events" | jq 'length' 2>/dev/null)
+            digest=$(echo "$all_events" | jq -cS '.' | sha256sum | awk '{print $1}')
+
+            # Check if divergent (multiple events at the same version)
+            state=$(echo "$all_events" | jq -r '
+                [.[].version] | group_by(.) | if any(length > 1) then "divergent" else "normal" end
+            ' 2>/dev/null)
+
+            iel_digests+=("$digest")
+            iel_counts+=("$event_count")
+            iel_states+=("${state:-unknown}")
+            iel_digest_names+=("$name")
+        done
+
+        unique_states=$(printf '%s\n' "${iel_states[@]}" | sort -u | wc -l | tr -d ' ')
+        all_divergent=false
+        if [ "$unique_states" -eq 1 ] && [ "${iel_states[0]}" = "divergent" ]; then
+            all_divergent=true
+        fi
+
+        unique_counts=$(printf '%s\n' "${iel_counts[@]}" | sort -u | wc -l | tr -d ' ')
+        if [ "$unique_counts" -ne 1 ]; then
+            if $all_divergent; then
+                echo
+                echo -e "  ${YELLOW}IEL RECORD COUNT DIFFERS for divergent ${prefix} (OK — frozen state)${NC}"
+            else
+                echo
+                echo -e "  ${RED}IEL RECORD COUNT MISMATCH for ${prefix}:${NC}"
+                for j in "${!iel_digest_names[@]}"; do
+                    echo -e "    node-${iel_digest_names[$j]}: ${iel_counts[$j]} events"
+                done
+                ((iel_count_mismatches++))
+                ((FAILURES++))
+            fi
+        fi
+
+        unique_digests=$(printf '%s\n' "${iel_digests[@]}" | sort -u | wc -l | tr -d ' ')
+        if [ "$unique_digests" -ne 1 ]; then
+            if $all_divergent; then
+                echo
+                echo -e "  ${YELLOW}IEL CHAIN DIGEST DIFFERS for divergent ${prefix} (OK — frozen state)${NC}"
+                ((iel_divergent_consistent++))
+            else
+                echo
+                echo -e "  ${RED}IEL CHAIN DIGEST MISMATCH for ${prefix}:${NC}"
+                for j in "${!iel_digest_names[@]}"; do
+                    echo -e "    node-${iel_digest_names[$j]}: ${iel_digests[$j]}"
+                done
+                ((iel_chain_mismatches++))
+                ((FAILURES++))
+            fi
+        fi
+
+        if ! $all_divergent && { [ "$unique_counts" -ne 1 ] || [ "$unique_digests" -ne 1 ]; }; then
+            if [ "$unique_states" -eq 1 ]; then
+                echo -e "    ${YELLOW}state consistent: ${iel_states[0]}${NC}"
+                ((iel_divergent_consistent++))
+            else
+                echo
+                echo -e "  ${RED}IEL STATE MISMATCH for ${prefix}:${NC}"
+                for j in "${!iel_digest_names[@]}"; do
+                    echo -e "    node-${iel_digest_names[$j]}: ${iel_states[$j]}"
+                done
+                ((FAILURES++))
+            fi
+        fi
+
+        unset iel_digests iel_counts iel_states iel_digest_names
+    done < "$TEMP_DIR/all_iel_prefixes.txt"
+
+    echo
+    echo -e "  Checked ${total_iel_prefixes} IEL prefixes across ${#ALL_REACHABLE_NAMES[@]} nodes"
+    if [ "$iel_count_mismatches" -eq 0 ] && [ "$iel_chain_mismatches" -eq 0 ]; then
+        echo -e "  ${GREEN}All IEL event counts and chain digests match${NC}"
+    else
+        [ "$iel_count_mismatches" -gt 0 ] && echo -e "  ${RED}${iel_count_mismatches} IEL event count mismatches${NC}"
+        [ "$iel_chain_mismatches" -gt 0 ] && echo -e "  ${RED}${iel_chain_mismatches} IEL chain digest mismatches${NC}"
+        [ "$iel_divergent_consistent" -gt 0 ] && echo -e "  ${YELLOW}${iel_divergent_consistent} mismatched IEL chain(s) with consistent divergent state${NC}"
+    fi
+else
+    echo -e "  ${YELLOW}No IEL prefixes to compare${NC}"
 fi
 
 # --- Step 4: Verify SAD objects exist on all nodes ---

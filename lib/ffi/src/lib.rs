@@ -309,7 +309,8 @@ pub(crate) fn map_error_to_status(err: &KelsError) -> KelsStatus {
         KelsError::KelDecommissioned => KelsStatus::KelFrozen,
         KelsError::ContestedKel(_) => KelsStatus::KelFrozen,
         KelsError::DivergenceDetected { .. } => KelsStatus::DivergenceDetected,
-        KelsError::ContestRequired => KelsStatus::ContestRequired,
+        KelsError::SelDivergent { .. } => KelsStatus::DivergenceDetected,
+        KelsError::ContestRequired { .. } => KelsStatus::ContestRequired,
         KelsError::HttpError(_) | KelsError::ServerError(..) => KelsStatus::NetworkError,
         _ => KelsStatus::Error,
     }
@@ -846,7 +847,7 @@ pub unsafe extern "C" fn kels_reset(state_dir: *const c_char) -> i32 {
         }
     };
 
-    // Delete all SE keys from the app's Keychain before removing state files
+    // Delete all SEL keys from the app's Keychain before removing state files
     #[cfg(all(
         any(target_os = "macos", target_os = "ios"),
         feature = "secure-enclave"
@@ -971,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_map_error_to_status_contest_required() {
-        let err = KelsError::ContestRequired;
+        let err = KelsError::contest_required_kel("test");
         assert_eq!(map_error_to_status(&err), KelsStatus::ContestRequired);
     }
 

@@ -28,3 +28,7 @@ Thumbs.db
 # Swift/iOS
 clients/ios/.build/
 lib/ffi/include/libkels.h
+
+# claude
+.claude/scheduled_tasks.lock
+.working/

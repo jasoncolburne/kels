@@ -2,6 +2,7 @@
 
 use kels_exchange::MailAnnouncement;
 
+use super::iel::IelAnnouncement;
 use super::kel::KelAnnouncement;
 use super::sad::SadAnnouncement;
 
@@ -12,6 +13,8 @@ pub(crate) enum GossipEvent {
     KelAnnouncementReceived { announcement: KelAnnouncement },
     /// Received a SAD announcement from a peer
     SadAnnouncementReceived { announcement: SadAnnouncement },
+    /// Received an IEL announcement from a peer
+    IelAnnouncementReceived { announcement: IelAnnouncement },
     /// Received a mail announcement from a peer
     MailAnnouncementReceived { announcement: MailAnnouncement },
     /// New peer connected
@@ -27,6 +30,8 @@ pub(crate) enum GossipCommand {
     Kel(KelAnnouncement),
     /// Broadcast a SAD announcement to the network
     Sad(SadAnnouncement),
+    /// Broadcast an IEL announcement to the network
+    Iel(IelAnnouncement),
     /// Broadcast a mail announcement to the network
     Mail(MailAnnouncement),
 }

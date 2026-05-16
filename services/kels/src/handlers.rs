@@ -241,7 +241,9 @@ impl From<KelsError> for ApiError {
                 (StatusCode::FORBIDDEN, ErrorCode::Frozen)
             }
             KelsError::ContestedKel(_) => (StatusCode::FORBIDDEN, ErrorCode::Contested),
-            KelsError::ContestRequired => (StatusCode::FORBIDDEN, ErrorCode::ContestRequired),
+            KelsError::ContestRequired { .. } => {
+                (StatusCode::FORBIDDEN, ErrorCode::ContestRequired)
+            }
             KelsError::NotFound(_) => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::NotIncepted => (StatusCode::NOT_FOUND, ErrorCode::NotFound),
             KelsError::InvalidKeyEvent(_)
@@ -425,9 +427,10 @@ pub(crate) async fn submit_events(
             KelsError::ContestedKel(msg) => ApiError::unauthorized(msg),
             // This catches ContestRequired before it reaches the match on
             // outcome.result below, making KelMergeResult::ContestRequired unreachable.
-            KelsError::ContestRequired => ApiError::contest_required(
-                "Contest required: recovery key revealed. Use contest to freeze the KEL.",
-            ),
+            KelsError::ContestRequired { reason } => ApiError::contest_required(format!(
+                "Contest required: {}. Use contest to freeze the KEL.",
+                reason
+            )),
             _ => ApiError::internal_error(e.to_string()),
         })?;
 
@@ -715,7 +718,7 @@ pub(crate) async fn list_prefixes(
             continue;
         }
 
-        let mut loader = kels_core::StorePageLoader::new(state.kel_store.as_ref());
+        let mut loader = kels_core::KelStorePageLoader::new(state.kel_store.as_ref());
         match kels_core::completed_verification(
             &mut loader,
             prefix,

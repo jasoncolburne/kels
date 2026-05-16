@@ -1,13 +1,18 @@
 //! Shared helper functions for CLI commands.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use cesr::Matter;
 use colored::Colorize;
 use kels_core::{
-    FileKelStore, FileSadStore, KelsClient, SoftwareProviderConfig, VerificationKeyCode,
+    DeferredDepsResponse, ErrorCode, FileKelStore, FileSadStore, HttpKelSource, KelsClient,
+    KelsError, MissingDependency, PagedKelSource, PolicyChecker, SadStoreClient,
+    SoftwareProviderConfig, TransientChainState, VerificationKeyCode,
 };
+use verifiable_storage::SelfAddressed;
 
 use crate::Cli;
 
@@ -112,18 +117,245 @@ pub(crate) async fn create_sad_store(cli: &Cli) -> Result<FileSadStore> {
         .context("Failed to create SAD store")
 }
 
-/// Build the write_policy for exchange key publication.
-/// Creates a single-endorser policy from the KEL prefix.
-pub(crate) fn exchange_write_policy(kel_prefix: &cesr::Digest256) -> Result<kels_policy::Policy> {
-    kels_policy::Policy::build(&format!("endorse({})", kel_prefix), None, false)
-        .context("Failed to build exchange write policy")
-}
-
 pub(crate) fn kem_key_path(cli: &Cli, prefix: &str) -> Result<PathBuf> {
     Ok(config_dir(cli)?.join("keys").join(prefix).join("kem.key"))
+}
+
+/// `PolicyResolver` that fetches policies from SADStore via
+/// `get_sad_object`. SAID-verified on read so a tampered server can't
+/// substitute a different policy under the same SAID.
+struct SadStoreSourcedPolicyResolver {
+    client: SadStoreClient,
+}
+
+#[async_trait::async_trait]
+impl kels_policy::PolicyResolver for SadStoreSourcedPolicyResolver {
+    async fn resolve_policy(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<kels_policy::Policy, kels_policy::PolicyError> {
+        let value = self.client.get_sad_object(said).await.map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("fetch {}: {}", said, e))
+        })?;
+        let policy: kels_policy::Policy = serde_json::from_value(value).map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!("parse {}: {}", said, e))
+        })?;
+        policy.verify_said().map_err(|e| {
+            kels_policy::PolicyError::ResolutionError(format!(
+                "SAID verification failed for {}: {}",
+                said, e
+            ))
+        })?;
+        Ok(policy)
+    }
+}
+
+/// Build an `AnchoredPolicyChecker` whose KEL source is the CLI's `kels`
+/// service and whose policy resolver fetches from the CLI's `sadstore`
+/// service. Used by the IEL/SEL stage-and-exit lifecycle commands when
+/// they need to hydrate a builder against the server's verified view.
+pub(crate) fn sad_store_anchored_checker(
+    cli: &Cli,
+    sad_client: &SadStoreClient,
+) -> Result<Arc<dyn PolicyChecker + Send + Sync>> {
+    let kel_source: Arc<dyn PagedKelSource + Send + Sync> = Arc::new(
+        HttpKelSource::new(&cli.kels_url(), "/api/v1/kels/kel/fetch")
+            .context("Failed to build KEL source")?,
+    );
+    let resolver: Arc<dyn kels_policy::PolicyResolver + Send + Sync> =
+        Arc::new(SadStoreSourcedPolicyResolver {
+            client: sad_client.clone(),
+        });
+    Ok(Arc::new(kels_policy::AnchoredPolicyChecker::new(
+        kel_source, resolver,
+    )))
 }
 
 pub(crate) fn load_decap_key(path: &std::path::Path) -> Result<cesr::DecapsulationKey> {
     let data = std::fs::read_to_string(path).context("Failed to read decapsulation key")?;
     cesr::DecapsulationKey::from_qb64(data.trim()).context("Failed to parse decapsulation key")
+}
+
+/// #156: retry a submit operation when sadstore returns a typed-422
+/// deferred-deps response. Applies exponential backoff up to a 30s budget;
+/// surfaces "deferred — polling for arrival" + dep list on first 422 and
+/// the latest deps again on final timeout.
+///
+/// Caller passes `submit` as a closure that constructs and awaits the
+/// submit on each call (so retries don't reuse a consumed future). The
+/// closure typically borrows the same client + events buffer each call;
+/// for `&mut self` flows like `SadEventBuilder::flush`, an FnMut closure
+/// re-borrows on each call.
+pub(crate) async fn submit_with_deferred_deps_poll<F, Fut, T>(
+    label: &str,
+    mut submit: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, KelsError>>,
+{
+    const TOTAL_BUDGET: Duration = Duration::from_secs(30);
+    const INITIAL_DELAY: Duration = Duration::from_millis(250);
+    const MAX_DELAY: Duration = Duration::from_secs(4);
+
+    let start = Instant::now();
+    let mut delay = INITIAL_DELAY;
+    let mut surfaced = false;
+
+    loop {
+        match submit().await {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                let Some(response) = parse_deferred_deps_response(&e) else {
+                    return Err(anyhow!(e));
+                };
+                if !surfaced {
+                    eprintln!(
+                        "{}",
+                        format!("{}: deferred — polling for dependency arrival...", label).yellow()
+                    );
+                    print_deferred_deps(&response);
+                    surfaced = true;
+                }
+                let elapsed = start.elapsed();
+                if elapsed >= TOTAL_BUDGET {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "{}: timed out after {}s — dependencies still missing:",
+                            label,
+                            elapsed.as_secs()
+                        )
+                        .red()
+                    );
+                    print_deferred_deps(&response);
+                    return Err(anyhow!(
+                        "{}: deferred-deps poll timeout; dependencies never arrived",
+                        label
+                    ));
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_DELAY);
+            }
+        }
+    }
+}
+
+/// #156: specialization of the deferred-deps poll for `&mut SadEventBuilder::flush`.
+/// The generic `submit_with_deferred_deps_poll` takes an `FnMut` closure
+/// whose returned future cannot borrow from captures — `flush()` borrows
+/// `&mut self`, so we duplicate the loop here. Each retry calls
+/// `builder.flush()` afresh; on success, the builder absorbs pending and
+/// returns the outcome. On 422-Err, pending stays staged and the next
+/// retry re-attempts.
+pub(crate) async fn flush_with_deferred_deps_poll(
+    label: &str,
+    builder: &mut kels_core::SadEventBuilder,
+) -> Result<kels_core::FlushOutcome> {
+    const TOTAL_BUDGET: Duration = Duration::from_secs(30);
+    const INITIAL_DELAY: Duration = Duration::from_millis(250);
+    const MAX_DELAY: Duration = Duration::from_secs(4);
+
+    let start = Instant::now();
+    let mut delay = INITIAL_DELAY;
+    let mut surfaced = false;
+
+    loop {
+        match builder.flush().await {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                let Some(response) = parse_deferred_deps_response(&e) else {
+                    return Err(anyhow!(e));
+                };
+                if !surfaced {
+                    eprintln!(
+                        "{}",
+                        format!("{}: deferred — polling for dependency arrival...", label).yellow()
+                    );
+                    print_deferred_deps(&response);
+                    surfaced = true;
+                }
+                let elapsed = start.elapsed();
+                if elapsed >= TOTAL_BUDGET {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "{}: timed out after {}s — dependencies still missing:",
+                            label,
+                            elapsed.as_secs()
+                        )
+                        .red()
+                    );
+                    print_deferred_deps(&response);
+                    return Err(anyhow!(
+                        "{}: deferred-deps poll timeout; dependencies never arrived",
+                        label
+                    ));
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_DELAY);
+            }
+        }
+    }
+}
+
+/// Parse a `KelsError::ServerError` body as the typed-422 deferred-deps
+/// response. Returns `None` for any other error or for a body that doesn't
+/// match the wire shape (genuine 5xx, conflict, transport).
+fn parse_deferred_deps_response(e: &KelsError) -> Option<DeferredDepsResponse> {
+    let KelsError::ServerError(body, ErrorCode::InternalError) = e else {
+        return None;
+    };
+    let parsed: DeferredDepsResponse = serde_json::from_str(body).ok()?;
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn print_deferred_deps(response: &DeferredDepsResponse) {
+    let DeferredDepsResponse::Rejected {
+        missing_dependencies,
+        transient_chain_state,
+    } = response;
+    for md in missing_dependencies {
+        match md {
+            MissingDependency::KelAnchor {
+                kel_prefix,
+                anchor_said,
+                ..
+            } => {
+                eprintln!(
+                    "  - kel_anchor: kel_prefix={} anchor_said={}",
+                    kel_prefix, anchor_said
+                );
+            }
+            MissingDependency::IelEvent {
+                iel_prefix,
+                event_said,
+                ..
+            } => {
+                eprintln!(
+                    "  - iel_event: iel_prefix={} event_said={}",
+                    iel_prefix, event_said
+                );
+            }
+            MissingDependency::IelPrefix { iel_prefix } => {
+                eprintln!("  - iel_prefix: {}", iel_prefix);
+            }
+            MissingDependency::SadObject { said } => {
+                eprintln!("  - sad_object: said={}", said);
+            }
+        }
+    }
+    for tcs in transient_chain_state {
+        let TransientChainState {
+            prefix,
+            effective_said,
+        } = tcs;
+        eprintln!(
+            "  - transient_chain: prefix={} effective_said={}",
+            prefix, effective_said
+        );
+    }
 }

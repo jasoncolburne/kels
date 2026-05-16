@@ -482,7 +482,7 @@ pub async fn verify_peer_anchoring(
     // First try from local store
     let authorizing_kel = &peer.authorizing_kel;
 
-    let mut loader = crate::StorePageLoader::new(store);
+    let mut loader = crate::KelStorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
         authorizing_kel,
@@ -502,7 +502,7 @@ pub async fn verify_peer_anchoring(
     let sink = crate::KelStoreSink(store);
     sync_member_kel(authorizing_kel, registry_urls, &sink).await;
 
-    let mut loader = crate::StorePageLoader::new(store);
+    let mut loader = crate::KelStorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
         authorizing_kel,
@@ -649,7 +649,7 @@ async fn verify_anchors_from_store(
     registry_urls: &[String],
 ) -> Result<Option<KelVerification>, KelsError> {
     // First try from local store
-    let mut loader = crate::StorePageLoader::new(store);
+    let mut loader = crate::KelStorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
@@ -669,7 +669,7 @@ async fn verify_anchors_from_store(
     let sink = crate::KelStoreSink(store);
     sync_member_kel(prefix, registry_urls, &sink).await;
 
-    let mut loader = crate::StorePageLoader::new(store);
+    let mut loader = crate::KelStorePageLoader::new(store);
     let kel_verification = crate::completed_verification(
         &mut loader,
         prefix,
@@ -838,7 +838,7 @@ pub async fn peers_sorted_by_latency(
     // Verify each trusted prefix from store
     for prefix_str in &trusted {
         if let Ok(prefix) = cesr::Digest256::from_qb64(prefix_str) {
-            let mut loader = crate::StorePageLoader::new(store);
+            let mut loader = crate::KelStorePageLoader::new(store);
             let _ = crate::completed_verification(
                 &mut loader,
                 &prefix,

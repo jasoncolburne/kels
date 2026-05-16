@@ -1,0 +1,3 @@
+# [Gap 1 → 40c9ef2] `SadEvent::icp` parameter ordering corrected
+
+Gap 1 (commit `baadf7e`) shipped `SadEvent::icp(topic, identity)` — topic first. Plan §Gap 1 line 218 specified `(identity, topic)` — identity first. Every gap from 1 through 11 used the topic-first ordering. The round-12 cleanups commit `40c9ef2` flipped the parameter order to match the plan and rewrote ~20 call sites. Implementation now matches plan. Process deviation: the ordering divergence existed across most of round 12 and was resolved silently — should have been recorded at the time. Logged here per the deviations log's own preamble.

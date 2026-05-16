@@ -1,6 +1,8 @@
 # KELS - Key Event Log System
 
-KELS is a federated decentralized key management infrastructure (DKMI), inspired by [KERI](https://github.com/WebOfTrust/keripy). It provides cryptographically verifiable identity management through key event logs with pre-rotation commitment, divergence detection, and recovery mechanisms — offering protection against key compromise without relying on certificate authorities or centralized trust.
+KELS is a federated decentralized key management infrastructure (DKMI), inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
+
+For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md). **Note**: Design is currently in flux and not guaranteed to be correct. I've worked to try and ensure the primitives/doctrine are well fleshed out, but it needs more review and the features and infrastructure designs are about to undergo many changes.
 
 ## Why a DKMI?
 
@@ -10,76 +12,29 @@ Today, centralized platforms collect and store vast amounts of personal data, mu
 
 This shifts the balance of power. Data is owned and controlled by individuals, not held hostage by corporations. Your identity travels with you across services. Your keys rotate without anyone's permission. And if a service disappears, your identity doesn't disappear with it.
 
-With [federated registries](docs/federation.md), KELS can also serve as a secure identity backbone for multi-cloud, multi-operator applications — independent organizations each run their own registry while sharing a global trust layer, without depending on any single certificate authority or cloud provider.
-
-## How It Works
-
-KELS implements a key event log system where:
-
-- Each event commits to the *next* signing key before it's needed (**pre-rotation commitment**)
-- A separate recovery key enables recovery from signing key compromise (**recovery keys**)
-- Conflicting events at the same serial number are detected and stored (**divergence detection**)
-- Legitimate owners can recover from adversarial events using their recovery key (**recovery protocol**)
-- When both parties perform recovery operations, the KEL is permanently frozen (**contest mechanism**)
-
-All events are self-addressing (content-addressed via SAID) and cryptographically signed, making the entire log tamper-evident and end-verifiable.
-
-### Key Hierarchy
-
-| Level | Key | Purpose |
-|-------|-----|---------|
-| 1 | **Signing key** | Signs normal events (`ixn`, `rot`) |
-| 2 | **Rotation key** | Pre-committed next signing key, revealed during rotation |
-| 3 | **Recovery key** | Used only for recovery events, highest authority |
-
-### Event Types
-
-Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/events/icp`).
-
-| Type | Description | Signatures Required |
-|------|-------------|---------------------|
-| `icp` | Incept — creates the KEL | Signing key |
-| `dip` | Delegated Incept — creates a delegated KEL | Signing key |
-| `rot` | Rotate — rotates signing key | Rotation key |
-| `ixn` | Interact — anchors external data | Signing key |
-| `ror` | Rotate Recovery — rotates recovery key | Rotation + Recovery |
-| `rec` | Recover — recovers from divergence | Rotation + Recovery |
-| `cnt` | Contest — freezes KEL permanently | Rotation + Recovery |
-| `dec` | Decommission — ends the KEL | Rotation + Recovery |
-
-### Compromise Scenarios
-
-| Compromised Key | Adversary Can | Owner Recovery |
-|-----------------|---------------|----------------|
-| Signing only | Sign `ixn` events | `rec` event recovers KEL |
-| Rotation | Sign `rot`, then any events | `rec` event recovers KEL |
-| Rotation + Recovery | Full control | `cnt` event freezes KEL |
+With federated deployments, KELS can also serve as a secure identity backbone for multi-cloud, multi-operator applications — independent organizations each run their own node while sharing a global trust layer, without depending on any single certificate authority or cloud provider.
 
 ## Features
 
-### Core
+### Primitives
 
-- **Key event logs** with full lifecycle: inception, rotation, interaction, delegation, recovery, contest, decommission
-- **Divergence detection and recovery** — conflicting events stored in the KEL with cryptographic resolution
-- **Type-safe verification** — `KelVerification` token enforced at compile time; unverified data cannot be used for security decisions
-- **Self-addressing identifiers (SAIDs)** — content-addressed via Blake3-256 with CESR encoding
+- **KEL** (Key Event Log) — device-level cryptographic chains with pre-rotation commitment, recovery keys, and divergence/contest semantics
+- **IEL** (Identity Event Log) — identity-level chains carrying authorization and governance policies; the authorization root for SELs
+- **SEL** (SAD Event Log) — content-bearing event chains bound to an IEL for per-event authorization
 
-### Credentials and Policy
+### Features built on the primitives
 
-- **Credential framework** ([kels-creds](docs/design/creds.md)) — issuance, schema-aware compacted disclosure, and verification against KEL anchors
-- **Policy engine** ([kels-policy](docs/design/policy.md)) — composable trust policies with `endorse`, `delegate`, `threshold`, `weighted`, and nested `policy` references; soft/hard/immune poisoning
-- **Replicated self-addressed data store** ([sadstore](docs/design/sadstore.md)) — content-addressed objects (MinIO) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
-
-### Encrypted Exchange
-
-- **ESSR authenticated encryption** ([kels-exchange](docs/design/exchange.md)) — Encrypt-Sender-Sign-Receiver providing four unforgeability properties via ML-KEM + AES-GCM-256 + ML-DSA
+- **Credentials** — issuance, schema-aware compacted disclosure, and verification
+- **Composable trust policies** — `endorse`, `delegate`, `threshold`, `weighted`, nested `policy`, and `identity(X)` for identity-rooted endorsement; withdrawal semantics
+- **Replicated self-addressed data store** (SADStore) — content-addressed objects (object store) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
+- **ESSR authenticated encryption** — Encrypt-Sender-Sign-Receiver with four unforgeability properties via ML-KEM + AES-GCM-256 + ML-DSA
 - **Credential exchange messaging** — IPEX-style protocol (Apply/Offer/Agree/Grant/Admit/Reject) with chained, self-addressed exchange threads
-- **Mail service** ([mail](docs/design/mail.md)) — encrypted message delivery with per-sender/per-IP rate limiting, storage caps, blob integrity verification, and gossip-based metadata replication
+- **Mail service** — encrypted message delivery with rate limiting, storage caps, and gossip-based metadata replication
 
 ### Infrastructure
 
-- **Gossip replication** ([gossip](docs/gossip.md)) — HyParView + PlumTree with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 encryption
-- **Federated registries** ([federation](docs/federation.md)) — Raft consensus with multi-party voting for peer lifecycle; compile-time trust anchors
+- **Gossip replication** — HyParView + PlumTree with ML-KEM-768/1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 encryption
+- **Federated deployments** — peer-to-peer mesh with cryptographic governance over membership; deployment-time trust anchors
 - **Automatic key rotation** — HSM-backed services rotate signing keys on a configurable schedule (default 180 days), with every third rotation covering the recovery key
 - **Server-side caching** — Redis + W-TinyLFU local caching for high-throughput deployments
 
@@ -113,7 +68,7 @@ garden deploy --env=standalone
 
 `make deploy-fresh-federation` deploys the entire federation (3+1 registries, 6 gossip nodes) in ~10 minutes. `make test-federation` deploys and runs the full test suite in ~35 minutes, leaving a working stack running in Kubernetes.
 
-See [Deployment](docs/deployment.md) for details on the two-phase deployment process (standalone registries, collect prefixes, recompile with trust anchors, federate).
+See [docs/operations/](docs/operations/) for deployment guides.
 
 ### Building
 
@@ -156,12 +111,12 @@ kels/
 │   └── mock-hsm/       # Mock HSM PKCS#11 cdylib (ML-DSA-65/ML-DSA-87)
 ├── services/
 │   ├── kels/           # KEL HTTP API (event submission, verification, retrieval)
-│   ├── sadstore/       # Replicated self-addressed data store (MinIO + PostgreSQL)
+│   ├── sadstore/       # Replicated self-addressed data store (RustFS + PostgreSQL)
 │   ├── mail/           # Encrypted message delivery service
 │   ├── gossip/         # Gossip service (cross-deployment KEL/SAD/mail sync)
 │   ├── registry/       # Federation registry (Raft consensus, peer voting)
 │   ├── identity/       # Registry identity service (HSM-backed KEL management)
-│   ├── minio/          # MinIO configuration (S3-compatible object storage)
+│   ├── objects/        # Object store configuration (RustFS, S3-compatible)
 │   ├── postgres/       # PostgreSQL configuration
 │   └── redis/          # Redis configuration
 ├── clients/
@@ -180,7 +135,7 @@ Each registry runs: `identity`, `registry`, `postgres`, `redis`
 
 ### Gossip Nodes
 
-Each gossip node runs: `identity`, `kels` (2 replicas), `gossip`, `sadstore`, `mail`, `postgres`, `redis`, `minio`
+Each gossip node runs: `identity`, `kels` (2 replicas), `gossip`, `sadstore`, `mail`, `postgres`, `redis`, `objects`
 
 ## Querying from the Host
 
@@ -223,7 +178,7 @@ make fix-ingress
 
 ## Differences from KERI
 
-For a comprehensive comparison, see the [KERI vs KELS Comparative Analysis](docs/keri-comparison.md).
+For a comprehensive comparison, see the [KERI vs KELS Comparative Analysis](docs/reference/keri-comparison.md).
 
 KELS borrows heavily from KERI's core concepts and terminology. The two things I've found most useful after discovering KERI are the creation of tamper-evident data with self-addressing identifiers, and pre-rotation commitment.
 
@@ -256,12 +211,12 @@ If divergence occurs, a single divergent event is accepted into a KEL, rather th
 
 ### Data Verification Principles
 
-All recorded data in KELS is KEL-backed and verified independently before use:
+All recorded data in KELS is chain-backed (KEL, IEL, or SEL depending on the data) and verified independently before use:
 
-- **Verify at ingestion**: Any time a service ingests data from an external source (peer, federation, network), it verifies the data's authenticity and provenance before caching or persisting. For peer data, this means full verification of the peer record chain, proposal DAG, vote anchoring in registry KELs, and the peer's own KEL structure.
-- **Authenticate at connection**: When a potentially adversarial peer connects, the handshake is backed by already-verified data — the peer's signature is checked against their current public key from their KEL, which was verified at ingestion time.
-- **Re-verify on refresh**: When re-fetching a peer's KEL (e.g. after key rotation), the KEL structure is fully verified before updating any cached state.
-- **Ephemeral data is the exception**: Only transient protocol messages (handshakes, gossip announcements) are exempt from anchoring. Everything persisted is KEL-backed.
+- **Verify at ingestion**: Any time a service ingests data from an external source (peer, federation, network), it verifies the data's authenticity and provenance before caching or persisting. Verification walks the full chain (KEL/IEL/SEL as appropriate), checks anchoring at each binding point, and resolves any cross-chain references.
+- **Authenticate at connection**: When a potentially adversarial peer connects, the handshake is backed by already-verified data — the peer's signature is checked against their current public key, derived from chain state verified at ingestion time.
+- **Re-verify on refresh**: When re-fetching chain data (e.g. after key rotation or policy evolution), the chain is fully verified before updating any cached state.
+- **Ephemeral data is the exception**: Only transient protocol messages (handshakes, gossip announcements) are exempt from anchoring. Everything persisted is chain-backed.
 
 ### Automatic Key Rotation
 
@@ -327,49 +282,7 @@ Best to create an issue and discuss, but PRs are welcome if they are positive ad
 
 ## Documentation
 
-### Architecture and Design
-
-- [KEL Merge Protocol](docs/design/merge.md) — Event submission and merge logic
-- [KEL Verification](docs/design/verification.md) — Integrity and authenticity verification
-- [Streaming Verification](docs/design/streaming-verification-architecture.md) — Paginated verification without full KEL load
-- [Divergence Detection and Recovery](docs/design/divergence-detection.md) — Divergence protocol
-- [Recovery Workflow](docs/design/recovery-workflow.md) — Recovery and reconciliation procedures
-- [Security Invariant](docs/design/security-invariant.md) — DB trust model and verification categories
-
-### Services and Protocols
-
-- [Gossip Protocol](docs/gossip.md) — Cross-deployment synchronization
-- [Node Registry](docs/registry.md) — Node registration, discovery, and bootstrap sync
-- [Multi-Registry Federation](docs/federation.md) — Federated registries with Raft consensus
-- [Federation State Machine](docs/design/federation-state-machine.md) — Raft log, proposals, and voting
-- [Secure Registration](docs/design/secure-registration.md) — HSM-backed identity and peer allowlist
-- [API Endpoints](docs/endpoints.md) — Full endpoint reference
-
-### Credentials and Exchange
-
-- [Credential Framework](docs/design/creds.md) — Issuance, compaction, disclosure, and verification
-- [Policy Framework](docs/design/policy.md) — Composable trust policies and DSL
-- [SAD Store](docs/design/sadstore.md) — Replicated self-addressed data store
-- [Exchange Protocol](docs/design/exchange.md) — ESSR authenticated encryption and credential exchange
-- [Mail Service](docs/design/mail.md) — Encrypted message delivery
-
-### Operations
-
-- [Deployment](docs/deployment.md) — Trust anchors, federation deployment, and configuration
-- [Operations](docs/operations.md) — Day-to-day operational procedures
-- [Registry Removal](docs/design/registry-removal.md) — Federation member decommission
-- [Rejection Threshold](docs/design/rejection-threshold.md) — Peer proposal rejection mechanics
-
-### Security Analysis
-
-- [Node Attack Surface](docs/analysis/node-attack-surface.md) — Security analysis of KELS data-plane services
-- [Registry Attack Surface](docs/analysis/registry-attack-surface.md) — Security analysis of federation and registry
-- [Protocol Attack Surface](docs/analysis/protocol-attack-surface.md) — Security analysis of KEL protocol
-- [KERI vs KELS Comparative Analysis](docs/keri-comparison.md) — Security, architecture, and deployment comparison
-
-### Other
-
-- [Code Audits](docs/claudit/) — Branch-level code audit history
+The design corpus is at [docs/design/](docs/design/). Start with [docs/design/reading-guide.md](docs/design/reading-guide.md) — it's the canonical entry point and TOC. Operational guides live in [docs/operations/](docs/operations/); API and external comparisons in [docs/reference/](docs/reference/); security analysis in [docs/analysis/](docs/analysis/); development guidance in [docs/development/](docs/development/).
 
 ## Production Readiness
 

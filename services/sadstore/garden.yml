@@ -12,6 +12,7 @@ include:
   - lib/kels/**/*
   - lib/derive/**/*
   - lib/policy/**/*
+  - services/kels/**/*  # dev-dep of sadstore for full-stack integration tests
   - services/sadstore/**/*
   - project.garden.yml
 
@@ -30,7 +31,7 @@ disabled: ${var.envType == "registry"}
 dependencies:
   - build.sadstore
   - deploy.postgres
-  - deploy.minio
+  - deploy.objects
 
 variables:
   sadstoreDatabaseUrl: ${var.postgres.url}/sadstore
