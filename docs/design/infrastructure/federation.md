@@ -215,7 +215,7 @@ The general policy DSL stays unconstrained — other IELs (user identities, orga
 
 ### Multi-peer simultaneous compromise
 
-If `N − M` or more member identities are compromised at once, normal governance cannot evolve — the honest members cannot reach the threshold. Recovery is the contested-federation procedure (see [§Recovery](#recovery) below). This is the operationally catastrophic case; it is also the case the threshold formula is sized to make rare.
+If `n − M` or more member identities are compromised at once, normal governance cannot evolve — the honest members cannot reach the threshold. Recovery is the contested-federation procedure (see [§Recovery](#recovery) below). This is the operationally catastrophic case; the threshold formula is sized so that blocking governance requires compromising a non-trivial fraction of the federation, which raises the operational hardness of mounting the attack — but it is operational hardness, not protocol-level prevention.
 
 ## Bootstrap (one-time ceremony)
 

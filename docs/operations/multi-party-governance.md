@@ -20,10 +20,9 @@ For these cases, accidental divergence kills the identity and forces operational
 
 Mitigation is a mechanism that serializes governance submissions so two parties don't reach the chain concurrently. Concrete options:
 
-- **Designated submitter.** One party assembles signatures from the other governance parties offline, then submits the assembled event. Other parties don't submit directly.
+- **Designated submitter.** One party assembles signatures from the other governance parties offline, then submits the assembled event. Other parties don't submit directly. This is the standard pattern for KELS federation membership changes: governance-set members coordinate out-of-band to produce a single signed `Evl`, and one operator submits it.
 - **Leader election among governance parties.** A primary submitter is designated; leadership transfers via out-of-band coordination when needed.
 - **Sequential signing rounds.** Parties sign in turn; the final signer submits.
-- **Consensus protocol (e.g., Raft) over the registry.** The KELS reference federation deployment uses the Raft registry for this purpose. The registry's commit log serializes governance submissions to the federation's identity chain, so two operators committing concurrently are serialized by Raft before reaching the chain. See [../design/infrastructure/registry.md](../design/infrastructure/registry.md).
 
 The choice of synchronization mechanism is operational, not protocol-level — the IEL's protocol rules apply uniformly regardless of how submissions are serialized.
 
@@ -36,5 +35,5 @@ Defense against threshold compromise is a separate concern, addressed via operat
 ## See also
 
 - [../design/primitives/iel/event-log.md §Divergence and Contest-Only Resolution](../design/primitives/iel/event-log.md#divergence-and-contest-only-resolution) — the protocol mechanics that make multi-party-governance races terminal.
-- [../design/infrastructure/registry.md](../design/infrastructure/registry.md) — the Raft registry architecture used as a serialization mechanism in the reference deployment.
+- [../design/infrastructure/federation.md](../design/infrastructure/federation.md) — the federation IEL as a concrete instance of a high-stakes multi-party-governance identity; bootstrap and membership-change ceremonies use the designated-submitter pattern.
 - [enrollment](../development/enrollment.md) — application-developer side of the brand-new chain race.

@@ -55,6 +55,15 @@ weighted(MIN_WEIGHT, [NODE:W, ...])# sum of satisfied weights >= min_weight
 policy(SAID)                       # resolve + evaluate another policy by SAID
 ```
 
+Two threshold aliases for the common boundary cases:
+
+```
+any(NODE_1, ..., NODE_n)           # = threshold(1, [NODE_1, ..., NODE_n])  — at least one
+all(NODE_1, ..., NODE_n)           # = threshold(n, [NODE_1, ..., NODE_n])  — every one
+```
+
+`any(...)` is the standard shape for the "user-style" auth_policy (any device speaks for the identity) and for federation-IEL auth_policy (any member acts at handshake time). `all(...)` is for unanimous-quorum policies. Both are syntactic sugar — they parse to and serialize as the underlying `threshold` node.
+
 Nodes nest freely:
 
 ```
@@ -144,11 +153,11 @@ pub enum PolicyNode {
 }
 ```
 
-`threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])` — threshold is syntactic sugar for equal-weight weighted. `Display` produces `threshold()` syntax when all weights are 1, preserving round-trip identity. `compact()` strips delegates for compaction; `Identity` variants pass through unchanged (the prefix is the stable handle, the resolved policy isn't part of the compacted form).
+`threshold(M, [A, B, C])` in the DSL parses to `Weighted(M, [(A, 1), (B, 1), (C, 1)])` — threshold is syntactic sugar for equal-weight weighted. `any(...)` and `all(...)` are further sugar — `any` resolves to `threshold(1, ...)`, `all` resolves to `threshold(n, ...)` where `n` is the child count, both then desugaring to `Weighted` as above. `Display` produces `threshold()` syntax when all weights are 1, preserving round-trip identity; `any(...)`/`all(...)` are accepted at parse and rendered as `threshold(...)` in canonical form. `compact()` strips delegates for compaction; `Identity` variants pass through unchanged (the prefix is the stable handle, the resolved policy isn't part of the compacted form).
 
 ## Parser
 
-Hand-written recursive descent (no external parser deps). Accepts `endorse(PREFIX)`, `identity(PREFIX)`, and `delegate(DELEGATOR)` as leaves. Validates:
+Hand-written recursive descent (no external parser deps). Accepts `endorse(PREFIX)`, `identity(PREFIX)`, and `delegate(DELEGATOR)` as leaves. Accepts `any(...)` and `all(...)` as sugar for `threshold(1, ...)` and `threshold(n, ...)` respectively (desugared at parse time). Validates:
 - Weighted/threshold min_weight >= 1 and <= total weight
 - Non-empty child lists
 - Weight >= 1 per item

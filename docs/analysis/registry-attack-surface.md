@@ -1,5 +1,7 @@
 # Registry Attack Surface
 
+> **⚠️ Document in transition.** This analysis is anchored on the previous compile-time-registry trust-anchor model. The current design ([#190](https://github.com/jasoncolburne/kels/issues/190)) replaces that model with federation-as-identity (a single shared federation IEL as the chain-rooted trust anchor; runtime-overridable for recovery). The threat model below is preserved for historical context; a refreshed analysis anchored on the federation IEL will replace this document in a follow-up. See [../design/infrastructure/federation.md](../design/infrastructure/federation.md) for the current model.
+
 Analysis of attack vectors against the KELS registry federation and gossip network. See also [protocol-attack-surface.md](protocol-attack-surface.md) for KEL/event-level attacks and [node-attack-surface.md](node-attack-surface.md) for data-plane deployment attacks.
 
 ## Trust Model
