@@ -1,5 +1,7 @@
 # kels-policy: Policy Framework Design
 
+> **⚠️ Design in transition.** Poison/poisoning terminology renaming to withdrawal — see [#177](https://github.com/jasoncolburne/kels/issues/177). When that rename lands, all "poison" references in this document update to "withdrawal" (struct fields, DSL nodes, section names, verifier behavior). Identity-binding via `identity(X)` DSL leaf is landed (per [#134](https://github.com/jasoncolburne/kels/issues/134)).
+
 A composable trust policy framework for defining multi-party endorsement requirements on credentials. Policies replace the single-issuer model — instead of one KEL prefix that must anchor a credential's SAID, a policy defines arbitrary conditions involving multiple endorsers, thresholds, weighted voting, delegation, and nested composition.
 
 ## Core Concepts

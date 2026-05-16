@@ -1,5 +1,7 @@
 # Exchange Protocol: ESSR Authenticated Encryption + Credential Exchange
 
+> **⚠️ Design in transition.** Encap-key publication SEL keyed by identity (rather than KEL) is in flight — see [#137](https://github.com/jasoncolburne/kels/issues/137). Broader identity-binding context (KEL-prefix → identity-prefix migration across user-facing references): [#140](https://github.com/jasoncolburne/kels/issues/140). Poison/poisoning terminology rename to withdrawal pending: [#177](https://github.com/jasoncolburne/kels/issues/177).
+
 ESSR (Encrypt-Sender-Sign-Receiver) provides authenticated encryption for point-to-point messaging between KELS identities. The exchange protocol layers IPEX-style credential negotiation on top. Implemented in `lib/exchange` (`kels-exchange`).
 
 ## ESSR Construction

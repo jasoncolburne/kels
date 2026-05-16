@@ -1,5 +1,7 @@
 # Mail Service: General-Purpose ESSR Messaging
 
+> **⚠️ Design in transition.** Sender and recipient references migrating from KEL prefix to identity prefix — see [#138](https://github.com/jasoncolburne/kels/issues/138). Broader identity-binding context: [#140](https://github.com/jasoncolburne/kels/issues/140). When the identity-binding rework lands, references to `recipient_kel_prefix` / similar fields become identity-prefix references throughout this document.
+
 A general-purpose encrypted messaging layer for KELS identities. Stores and delivers ESSR-encrypted envelopes without inspecting payloads. Deployed as `services/mail` alongside other KELS node services.
 
 ## Architecture

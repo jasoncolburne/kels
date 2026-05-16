@@ -1,5 +1,7 @@
 # kels-creds: Credential Framework Design
 
+> **⚠️ Design in transition.** Subject and issuer migration to identity-event SAIDs is landed (per [#135](https://github.com/jasoncolburne/kels/issues/135)). Remaining transition: poison/poisoning terminology renames to withdrawal — see [#177](https://github.com/jasoncolburne/kels/issues/177). When that rename lands, section names and verifier behavior descriptions in this document update accordingly. Broader identity-binding context: [#140](https://github.com/jasoncolburne/kels/issues/140).
+
 A purely computational library for issuing, compacting, disclosing (via compacted disclosure), and verifying credentials anchored in KELs. Uses the `SadStore` trait from kels-core for content-addressable storage — production storage is the caller's responsibility. Data (credentials, schemas, claims, edges, rules) can be stored in the `SadStore` as content-addressable chunks keyed by SAID.
 
 All JSON-serializable types use `#[serde(rename_all = "camelCase")]` for consistent field naming across the FFI boundary.
