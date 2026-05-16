@@ -14,9 +14,9 @@ The federation answers three operational questions:
 
 Identity primitives already answer the first two:
 
-- An IEL's `auth_policy` declares a set of identities — that is exactly a membership set.
-- An IEL's `governance_policy` constrains how the `auth_policy` evolves — that is exactly a membership-change protocol.
-- The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees that past authorizations stay final — so a former member's past gossip cannot be retroactively repudiated.
+- An IEL's `auth_policy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `auth_policy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
+- An IEL's `governance_policy` is the policy an `Evl` must satisfy to evolve `auth_policy` (or `governance_policy` itself). Under the federation convention, `governance_policy` is shaped as `threshold(max(3, ceil(n/3)), identity(X_1), …, identity(X_n))` over the *same* member set. The membership-change protocol is exactly this threshold check.
+- The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
 
 The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
 
@@ -41,7 +41,7 @@ The third question — network addresses — is answered by per-peer SELs, one p
    (peer-owned)   (peer-owned)    (peer-owned)    that peer's identity)
 ```
 
-- The **federation IEL** is a single IEL whose `auth_policy` enumerates member identities. Every gossip node holds a local copy and syncs it through the normal anti-entropy machinery.
+- The **federation IEL** is a single IEL whose `auth_policy` enumerates member identities. Every gossip node holds a local copy. Propagation uses the normal gossip mechanics: PlumTree announcement-driven primary path, dependency tracking for events whose parents haven't arrived yet, and anti-entropy as fallback for gaps.
 - Each member identity is a **gossip-service identity** — a KEL holding the gossip service's HSM-backed signing key, wrapped in a single-KEL IEL (`auth_policy = endorse(gossip_kel_prefix)`). "Peer" throughout this doc means a gossip-service instance.
 - Each member publishes its current network endpoints via a **per-peer address SEL**, owned and signed by that member.
 
@@ -49,26 +49,32 @@ The mesh is symmetric: every peer holds the federation IEL, every peer's own ide
 
 ## The federation IEL
 
-### Membership = `auth_policy`
+### Same membership, different thresholds
 
-The current `auth_policy` of the federation IEL **is** the membership list. Typical shape:
+The federation IEL follows a strict policy-shape convention:
 
 ```
-auth_policy = threshold(M, [
-  identity(F_node_a),
-  identity(F_node_b),
-  identity(F_node_c),
-  ...
-])
+auth_policy       = any(identity(X_1), …, identity(X_n))           // = threshold(1, …)
+governance_policy = threshold(max(3, ceil(n/3)),
+                              identity(X_1), …, identity(X_n))
 ```
 
-- `identity(X)` is satisfied when an event is anchored under the current `auth_policy` of IEL `X`. So an `auth_policy` over `identity()` leaves over member identities means "this federation event is authorized if M of N member identities currently endorse it."
-- The same `auth_policy` is consulted at the handshake (does this connecting peer's identity appear?) and at every `Evl` (does the proposed change carry M endorsements?).
-- There is **no denormalized member list** — the policy itself is the canonical record. Anything that wants to enumerate members reads the current `auth_policy`.
+Same membership set in both. Different thresholds:
 
-### `governance_policy` controls how membership evolves
+- **`auth_policy = any(...)`** — any single member can act for the federation. Used at every handshake. Low bar, high frequency.
+- **`governance_policy = threshold(M, ...)`** — M of n members must endorse changes to `auth_policy` (or `governance_policy` itself). High bar, low frequency.
 
-An `Evl` event evolving `auth_policy` (or `governance_policy` itself) must satisfy the federation IEL's current `governance_policy`. Typical operator choice is to make `governance_policy = auth_policy` — the same M-of-N quorum that authorizes federation operations also authorizes membership changes — but the two can be set independently if an operator wants a different bar for governance vs. authorization (e.g., a higher threshold for membership changes than for routine operations).
+The two policies share the same member set and differ only in threshold shape. This is the property a consumer can structurally verify (see [§Federation policy shape verification](#federation-policy-shape-verification) below).
+
+### The `identity(...)` leaf
+
+`identity(X)` is a DSL leaf that is satisfied when an event is anchored under the current `auth_policy` of IEL `X`. It resolves through the IEL prefix at evaluation time, so member identities can evolve their internal `auth_policy` (e.g., rotating gossip-service keys) without invalidating the federation `auth_policy` that references them.
+
+`identity(X)` is distinct from `endorse(KEL_PREFIX)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `identity(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
+
+### Membership is the policy
+
+There is **no denormalized member list**. Enumeration of the current membership walks the `identity(...)` leaves of the current `auth_policy`. Anything that wants to know "who's currently a member" reads the policy and extracts the leaves.
 
 ### Immunity is mandatory
 
@@ -160,8 +166,8 @@ Adding or removing a member is the same primitive in both directions: an `Evl` e
 
 There is no asymmetry between add and remove. Both use `Evl` against `governance_policy`. The procedural difference is operational, not structural:
 
-- **Adding peer X:** M of the current N members endorse an `Evl` that includes `identity(X)` in the new `auth_policy`. X itself does not need to endorse.
-- **Removing peer X:** M of the *other* `N − 1` members endorse an `Evl` that excludes `identity(X)` from the new `auth_policy`. X itself, predictably, does not endorse its own removal.
+- **Adding peer X:** `max(3, ceil(n/3))` of the current n members endorse an `Evl` that includes `identity(X)` in the new `auth_policy` and updates `governance_policy`'s threshold value if n crossed a formula boundary. X itself does not need to endorse.
+- **Removing peer X:** `max(3, ceil((n−1)/3))` of the *other* `n − 1` members endorse an `Evl` that excludes `identity(X)` from both `auth_policy` and `governance_policy` (and updates the threshold value if `n − 1` crossed a formula boundary). X itself, predictably, does not endorse its own removal.
 
 Whether the burn is a clean drop ("X retired, please remove") or an adversarial expulsion ("X compromised, drop now") is the same chain operation; only the operator urgency differs.
 
@@ -171,13 +177,13 @@ The federation `auth_policy` and `governance_policy` are `immune: true` (mandato
 
 ### Threshold formula (application-level)
 
-The threshold `M` in `threshold(M, [identity(...)])` is operator/tooling convention, not protocol. The node and CLI tooling that constructs membership-change `Evl`s uses:
+The threshold value in the federation's `governance_policy` is `max(3, ceil(n/3))`. The `auth_policy` stays at `any(...)` regardless of n — any single member can act at handshake time. The governance threshold is what scales with federation size.
 
 ```
-M = max(3, ceil(N / 3))
+governance threshold M = max(3, ceil(n / 3))
 ```
 
-| N | M |
+| n | M |
 |---|---|
 | 3 | 3 |
 | 9 | 3 |
@@ -187,9 +193,25 @@ M = max(3, ceil(N / 3))
 
 - Floor of 3 prevents trivial collusion in small federations.
 - One-third-quorum scaling at larger sizes is KERI-inspired (`F+1` immunity bound).
-- When `N` crosses a formula boundary (e.g., 9 → 10 brings M from 3 to 4), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
+- When n crosses a formula boundary (e.g., 9 → 10 brings M from 3 to 4), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
 
-**The IEL verifier does not enforce the formula.** A federation that chose a different `M` would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the CLI tooling — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol.
+**The IEL verifier does not enforce the formula.** A federation that chose a different M would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the libkels federation-policy-shape helper (next subsection) — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol, at the cost of consumers no longer being able to verify the standard shape.
+
+### Federation policy shape verification
+
+libkels provides a helper that verifies a federation IEL's `(auth_policy, governance_policy)` pair conforms to the convention. The helper:
+
+- Walks `auth_policy`; confirms it's `any(...)` (i.e., `threshold(1, ...)`) over `identity(...)` leaves only; extracts the member set.
+- Walks `governance_policy`; confirms it's `threshold(M, ...)` over `identity(...)` leaves only; extracts the member set and M.
+- Confirms set equality between the two member sets.
+- Confirms `M == max(3, ceil(n/3))` where `n = |members|`.
+- Confirms both policies have `immune: true`.
+
+Application code calls this helper on every federation IEL it loads (compile-time default at startup; runtime override on env-var set). A federation that doesn't conform fails the check and the node refuses to start.
+
+Consumer-side: anyone evaluating a federation's trust posture runs the same helper and additionally verifies that the identities they care about appear in the member set. The structural conformance check + member-set inspection is the full "should I trust this federation?" workflow — no need to reason about arbitrary policy shapes.
+
+The general policy DSL stays unconstrained — other IELs (user identities, organizational identities, etc.) use whatever shape they need. Only the federation IEL is structurally restricted to this convention.
 
 ### Multi-peer simultaneous compromise
 
@@ -207,7 +229,7 @@ A new federation is born via a single Icp event on a fresh federation IEL. The c
 - **Signature collection.** Each founding member submits its signature on the Icp candidate to the coordinator's `kels` and `sadstore` services via standard HTTP submit endpoints. When all required signatures are present, the Icp event is accepted on the coordinator's node.
 - **Redistribution.** The coordinator pushes the accepted federation IEL to every other founding node via the `transfer_*_events` CLI (the existing point-to-point event-transfer abstractions, parameterized with the coordinator's stores as the source).
 - **Address SELs.** Each founding member's address SEL (`Icp` + initial `Upd` carrying that member's endpoints) flows through the same `transfer_*_events` mechanism — either bundled with the federation IEL push, or as a follow-up pass.
-- **Mesh formation.** Once every founding node holds the federation IEL and every other member's address SEL, each node can compute peer SEL prefixes and resolve endpoints locally. The HyParView initial-view set populates from this resolution, and gossip mesh formation proceeds normally. Subsequent syncing flows through anti-entropy.
+- **Mesh formation.** Once every founding node holds the federation IEL and every other member's address SEL, each node can compute peer SEL prefixes and resolve endpoints locally. The HyParView initial-view set populates from this resolution, and gossip mesh formation proceeds normally. From there, propagation runs as announcements (PlumTree) with dependency tracking for out-of-order arrivals and anti-entropy filling any remaining gaps.
 
 The Icp's `auth_policy` and `governance_policy` are agreed out-of-band by the founding operators. There is no protocol-level "voting" on the Icp — the chain begins with whatever shape its founders cryptographically commit to, and consumers of the federation accept that shape on the strength of the founders' identities.
 

@@ -27,7 +27,7 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd` (or `Icp` if no `Upd` has landed yet).
 5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
 
-All four reads (federation IEL, address SELs) hit local storage; no network calls are needed for the discovery itself. The freshness of the answer depends on gossip anti-entropy, which is what keeps the local chains current.
+All four reads (federation IEL, address SELs) hit local storage; no network calls are needed for the discovery itself. The freshness of the answer is the freshness of the local chains, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
 
 ## Where initial state comes from
 
@@ -51,7 +51,7 @@ A node refreshes its discovery view in three situations:
 
 Per-peer address SEL refreshes are also gossip-driven: when a new `Upd` lands on an address SEL the node holds, the node updates its cached endpoints for that peer.
 
-Stale endpoints for a still-authorized peer cause connection failures, not authorization failures — the gossip mesh routes around them, and anti-entropy fetches the latest address SEL state on the next chance.
+Stale endpoints for a still-authorized peer cause connection failures, not authorization failures — the gossip mesh routes around them, and the latest address SEL state arrives on the next announcement (or anti-entropy fallback) and is merged locally.
 
 ## Removed members
 

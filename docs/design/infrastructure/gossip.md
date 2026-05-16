@@ -188,7 +188,7 @@ Gossip nodes use persistent HSM-backed identities. Development deployments load 
 
 - Nodes hold the federation IEL locally and enumerate authorized peers from its current `auth_policy`
 - Each peer publishes its current network endpoints via a per-peer address SEL; nodes walk those SELs to resolve addresses
-- Initial cold-start bootstrap uses a small `INITIAL_PEER_ADDRESSES` config (one or more known endpoints) to fetch the federation IEL via anti-entropy; after that, discovery is purely local
+- Initial state on a fresh node arrives via `transfer_*_events` (operator-coordinated, point-to-point) during the federation bootstrap ceremony or peer-onboarding; after that, the node participates in the gossip mesh and propagation runs normally
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
 - See [discovery.md](discovery.md) for the full node-side discovery flow and [federation.md](federation.md) for the federation-as-identity model
 

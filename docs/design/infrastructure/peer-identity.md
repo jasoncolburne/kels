@@ -14,9 +14,13 @@ The federation IEL itself, the per-peer address SELs, and the discovery flow tha
 A gossip identity is structurally a normal KELS identity, with two simplifying conventions:
 
 - **One KEL.** The KEL holds the gossip service's signing key — an ML-DSA-65 or ML-DSA-87 key generated inside an HSM. The KEL goes through standard inception, rotation, and recovery via the existing key-event flow; the only special property is that the private key never leaves the HSM.
-- **A single-KEL IEL wrapping it.** The IEL declares `auth_policy = endorse(gossip_kel_prefix)` and a `governance_policy` of the operator's choosing. The IEL prefix is the **peer identity** referenced from the federation IEL's `auth_policy`.
+- **A single-KEL IEL wrapping it.** The IEL declares:
+  - `auth_policy = endorse(gossip_kel_prefix)`
+  - `governance_policy = endorse(gossip_kel_prefix)`
 
-The IEL is intentionally "degenerate" — it has one KEL under it. The IEL layer is there because the federation IEL's `auth_policy` references identities (IEL prefixes), not raw KEL prefixes — and because the operator may later want to evolve auth (e.g., adding a backup key) without changing the peer identity from the federation's point of view.
+  Both policies are the same `endorse` over the single HSM-backed KEL. For a degenerate single-KEL identity, the same-set-different-thresholds convention used by user and federation IELs collapses — there's only one identity in the set, so `threshold(1) = any`. The two policies stay structurally distinct so the same evolution machinery (`Evl`, immunity, governance authorization) applies. The IEL prefix is the **peer identity** referenced from the federation IEL's `auth_policy`.
+
+The IEL is intentionally "degenerate" — it has one KEL under it. The IEL layer is there because the federation IEL's `auth_policy` references identities (IEL prefixes via `identity(...)`), not raw KEL prefixes — and because the operator may later want to evolve auth (e.g., adding a backup key) without changing the peer identity from the federation's point of view.
 
 ## HSM-backed identity ceremony
 
@@ -63,7 +67,7 @@ The federation IEL is the authoritative source for who's authorized, and it prop
 - A peer dropped from `auth_policy` → existing sessions with that peer are torn down at the next session re-check (or sooner, on policy-refresh tick); new handshakes from that peer fail.
 - A peer added to `auth_policy` → new handshakes from that peer succeed.
 
-The freshness of the authorization view is the freshness of the federation IEL's local replica, which is the freshness gossip anti-entropy provides.
+The freshness of the authorization view is the freshness of the federation IEL's local replica, which the gossip mesh keeps current — announcements (PlumTree) drive primary propagation, dependency tracking handles out-of-order arrivals, and anti-entropy catches anything the primary path missed.
 
 ## Identity properties
 
