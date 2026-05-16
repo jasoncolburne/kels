@@ -7,7 +7,8 @@ This document compares KERI (Key Event Receipt Infrastructure) and KELS (Key Eve
 KERI is a DKMI (Decentralized Key Management Infrastructure). KELS started as one and grew into a **DVTI (Decentralized Verifiable Trust Infrastructure)** — keys, identity, and content all live as self-addressed event chains under a unified verification model. Where KERI stops at the Key Event Log, KELS layers:
 
 - **KEL** — the DKMI primitive. Direct KERI analogue; the focus of most of this document.
-- **SEL** (SAD Event Log) — a general append-only verifiable event log for arbitrary Self-Addressing Data, governed by a policy DSL. No KERI analogue. Identity chains, exchange-key chains, custody envelopes, and credential-anchor chains are all SELs.
+- **IEL** (Identity Event Log) — aggregates one or more KELs into an identity via `auth_policy` and `governance_policy`. No KERI analogue (KERI overloads the KEL with identity semantics; KELS separates them). User identities, organizational identities, and the federation itself are all IELs.
+- **SEL** (SAD Event Log) — a general append-only verifiable event log for arbitrary Self-Addressing Data, governed by a policy DSL. No KERI analogue. Identity-rooted content chains: exchange-key chains, custody envelopes, mail metadata, per-peer address publications, credential-anchor chains.
 - **Policy DSL** — `endorse`, `threshold`, `weighted`, `delegate`, nested `policy` references, with soft/hard/immune poisoning. Governance composes *across* independent identities rather than being embedded as a multisig threshold *within* one identifier.
 - **Credentials, exchange, mail, federation** — layered consumers of the above, not built-in DKMI features.
 
