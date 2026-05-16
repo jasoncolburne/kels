@@ -122,14 +122,14 @@ The `content` field of each `Upd` on the address SEL carries:
 ```
 {
   "endpoints": [
-    { "addr": "203.0.113.4:4001", "region": "us-east" },
-    { "addr": "[2001:db8::4]:4001", "region": "us-east" }
+    { "address": "203.0.113.4:4001", "region": "us-east" },
+    { "address": "[2001:db8::4]:4001", "region": "us-east" }
   ]
 }
 ```
 
 - `endpoints` is an array. Multi-address support is first-class — peers commonly publish IPv4/IPv6 pairs, regional alternates, or transitional endpoints during a migration.
-- `addr` is a TCP gossip endpoint, `host:port`. Gossip carries its own transport (ML-KEM-1024 key exchange, ML-DSA-65/87 signatures, AES-GCM-256 sessions); the published address is the network endpoint only.
+- `address` is a TCP gossip endpoint, `host:port`. Gossip carries its own transport (ML-KEM-1024 key exchange, ML-DSA-65/87 signatures, AES-GCM-256 sessions); the published address is the network endpoint only.
 - `region` is optional, opaque, free-form (`"us-east"`, `"eu-west"`, etc.). Latency-aware clients may prefer in-region endpoints; absence is meaningful (peer didn't tag region).
 - **No `role` field, by design.** Role-bearing self-declarations would let an identity holder elevate their own privileges without going through the federation `governance_policy`. Capabilities are determined by what the federation IEL authorizes the peer to do; a peer cannot self-declare additional capabilities.
 
