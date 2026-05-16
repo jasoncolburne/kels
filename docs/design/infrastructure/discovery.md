@@ -27,7 +27,7 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd` (or `Icp` if no `Upd` has landed yet).
 5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
 
-All four reads (federation IEL, address SELs) go to the local sadstore service on the same node — gossip doesn't query peers or external infrastructure for discovery state. The freshness of the answer is the freshness of the chain state the local sadstore holds, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
+All four reads (federation IEL, address SELs, supporting KELs) go to the local sadstore and kels services on the same node — gossip doesn't query peers or external infrastructure for discovery state. The freshness of the answer is the freshness of the chain state the local sadstore and kels holds, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
 
 ## Where initial state comes from
 
