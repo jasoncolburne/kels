@@ -308,13 +308,13 @@ Anchor tier elevation is a **verifier-side rule**. The verifier walks each IEL/S
 
 This is an **application-protocol convention, not a protocol invariant** — the verifier does not require `Sea`-trailing structure. Applications that want the properties below enforce the convention at their construction layer.
 
-An application protocol can require trailing SEL `Upd`s be followed by `Sea`, batching `[Upd..., Sea]` as the atomic application operation. Plain `Upd`-tailed chains are application-invalid; the next event must be `Sea` before the SEL is treated as complete by governance-aware consumers.
+An application protocol can require trailing SEL `Upd`s be followed by `Sea`, batching `[Upd..., Sea]` as the atomic application operation. Plain `Upd`-tailed chains are application-invalid by construction — conforming tooling never produces them, and consumers reject any chain whose tip is an unsealed `Upd`.
 
 `Sea` is tier-2 anchored — it must anchor in a KEL `Rot`. So the pattern forces a key rotation on every sealed batch. Three layered properties result:
 
 - **Exposure-window bounding (cryptographic).** Each operating signing key is exposed to operations for at most one batch. Pre-rotation hides the next key behind its hash until `Rot` reveals it: the next public key is structurally unreachable from cryptanalysis on the current key (offline signature analysis, side-channel observation, harvest-now-decrypt-later quantum attacks against the signature stream all operate on the current key's public bytes; the next key's bytes have not been observed). By the time the current key would be vulnerable, the chain has already rotated to a key the adversary has never seen. The property holds independent of custody arrangement — pre-rotation defends through *exposure surface*, not through where the keys are stored.
 - **Policy-layer separation (when `auth_policy ≠ governance_policy`).** `Sea` is governance-authorized. An auth-key-only holder can produce `Upd`s but not `Sea`. Multi-device or otherwise composed identities get real cryptographic separation between "auth-set wrote this" and "governance-set sealed this."
-- **Consumer-visibility.** A chain ending in unsealed `Upd`s is structurally identifiable as pending. Consumers that need to know "has governance acknowledged this state?" detect the absence of a trailing `Sea`.
+- **Consumer-visibility.** Conforming tooling batches `[Upd..., Sea]` atomically, so an Upd-tailed chain is structurally invalid under the convention — not a legitimate intermediate state. Consumers that observe an unsealed `Upd` at the tip detect a convention violation (tooling bypass, buggy producer, or a producer that cannot produce the `Sea`) and reject the chain.
 
 The exposure-window property is the load-bearing one and applies even to degenerate single-KEL IELs where `auth_policy = governance_policy`. KERI's entire security story leans on pre-rotation for the same reason; KELS inherits it and the Sea-after-Upd ratchet makes the rotation cadence application-driven rather than operator-paced.
 
