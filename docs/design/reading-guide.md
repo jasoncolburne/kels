@@ -8,18 +8,7 @@ If you haven't read [../../AGENTS.md §System Thesis](../../AGENTS.md#system-the
 
 ## Foundation
 
-[protocol-doctrine.md](protocol-doctrine.md) — the doctrine:
-
-- Compromise is permanent (past-state authority has zero structural force)
-- Forks are seal-bounded
-- Privileged divergence is terminal
-- Cnt overrides Dec
-- Anchor tier elevation (privileged IEL/SEL events require higher-tier KEL anchors — Rot for tier 2, Ror for tier 3 — closing the signing-only adversarial pathway)
-- Ordering without timestamps
-- Federation convergence
-- Extension discipline
-- Trust model on contested chains
-- Limit of the doctrine
+[protocol-doctrine.md](protocol-doctrine.md) — three parts: Security Invariants, Cross-Cutting Doctrines, Verification Mechanics. Full TOC at the top of the doc.
 
 Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
 

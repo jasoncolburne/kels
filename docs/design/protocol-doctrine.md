@@ -2,11 +2,30 @@
 
 The structural rules that govern KELS — security invariants, cross-cutting doctrines, and verification mechanics. Each part below is load-bearing for protocol correctness; per-primitive design docs cross-reference these as the upstream source rather than re-deriving them.
 
-The document is organized in three parts:
+**[Part 1 — Security Invariants](#part-1-security-invariants):**
+- [Operation Categories](#operation-categories)
+- [Compromise is Permanent](#compromise-is-permanent) — the doctrine, and the structural mechanisms that enforce it:
+  - [Forks are Seal-Bounded](#forks-are-seal-bounded)
+  - [Per-Event Parent-Monotonic Ratchet (SEL-specific)](#per-event-parent-monotonic-ratchet-sel-specific)
+  - [Privileged Divergence is Terminal; Cnt Triggers It Uniformly](#privileged-divergence-is-terminal-cnt-triggers-it-uniformly)
+  - [One Divergent Generation at a Time](#one-divergent-generation-at-a-time)
+  - [Cnt Overrides Dec](#cnt-overrides-dec)
+  - [Anchor Tier Elevation](#anchor-tier-elevation)
+  - [Trust Model on Contested Chains](#trust-model-on-contested-chains)
+  - [Limit of the Doctrine](#limit-of-the-doctrine)
 
-1. **[Security Invariants](#part-1-security-invariants)** — the database-untrusted operation categories, the compromise-is-permanent doctrine and the structural mechanisms that enforce it (seal-cap, privileged divergence, Cnt override, contested-chain trust model, limits).
-2. **[Cross-Cutting Doctrines](#part-2-cross-cutting-doctrines)** — properties that govern how the protocol composes across nodes and across event kinds: ordering without timestamps, federation convergence, extension discipline.
-3. **[Verification Mechanics](#part-3-verification-mechanics)** — the verification-token + advisory-lock pattern that makes the security invariants enforceable in practice.
+**[Part 2 — Cross-Cutting Doctrines](#part-2-cross-cutting-doctrines):**
+- [Ordering Without Timestamps](#ordering-without-timestamps)
+- [Federation Convergence](#federation-convergence)
+- [Extension Discipline](#extension-discipline)
+
+**[Part 3 — Verification Mechanics](#part-3-verification-mechanics):**
+- [Verification tokens as proof of verification](#verification-tokens-as-proof-of-verification)
+- [Streaming](#streaming)
+- [Merge Verification](#merge-verification)
+- [Inline reference checking](#inline-reference-checking)
+- [Advisory Locking](#advisory-locking)
+- [Effective-SAID synthetic comparison](#effective-said-synthetic-comparison)
 
 ---
 
