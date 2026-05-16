@@ -41,7 +41,7 @@ The third question — network addresses — is answered by per-peer SELs, one p
    (peer-owned)   (peer-owned)    (peer-owned)    that peer's identity)
 ```
 
-- The **federation IEL** is a single IEL whose `auth_policy` enumerates member identities. On each node, the federation IEL is replicated into the local sadstore service — gossip's source of truth for federation state. Propagation uses the normal gossip mechanics: PlumTree announcement-driven primary path, dependency tracking for events whose parents haven't arrived yet, and anti-entropy as fallback for gaps.
+- The **federation IEL** is a single IEL whose `auth_policy` enumerates member identities. On each node, the federation IEL is replicated into the local sadstore service; the supporting member KELs (used for anchor checks during verification) live in the local kels service. Both are gossip's sources of truth for federation state. Propagation uses the normal gossip mechanics: PlumTree announcement-driven primary path, dependency tracking for events whose parents haven't arrived yet, and anti-entropy as fallback for gaps.
 - Each member identity is a **gossip-service identity** — a KEL holding the gossip service's HSM-backed signing key, wrapped in a single-KEL IEL (`auth_policy = endorse(gossip_kel_prefix)`). "Peer" throughout this doc means a gossip-service instance.
 - Each member publishes its current network endpoints via a **per-peer address SEL**, owned and signed by that member.
 
@@ -144,7 +144,7 @@ When a node joins or refreshes its peer view:
 3. Walk that address SEL to its tip and read the current `endpoints` array.
 4. Connect.
 
-The federation IEL is replicated to the sadstore on every gossip node, so step 1 is a local-service read (gossip → sadstore over HTTP, same-node). The address SELs are also in the sadstore; step 3 is a normal SEL read against the same local service.
+The federation IEL is replicated to the sadstore on every gossip node, so step 1 is a local-service read (gossip → sadstore over HTTP, same-node). The address SELs are also in the sadstore; step 3 is a normal SEL read against the same local service. Chain verification (IEL/SEL anchor checks) additionally reads the supporting member KELs from the local kels service — also same-node HTTP.
 
 This steady-state flow assumes the node already holds the federation IEL and every member's address SEL. Initial state arrives during the federation ceremony (or during a peer onboarding) via `transfer_*_events` — see [§Bootstrap](#bootstrap-one-time-ceremony) below. There is no runtime-config-driven cold-start discovery surface; if a node has no state at all, it isn't yet a federation participant.
 
@@ -229,7 +229,7 @@ A new federation is born via a single Icp event on a fresh federation IEL. The c
 - **Signature collection.** Each founding member submits its signature on the Icp candidate to the coordinator's `kels` and `sadstore` services via standard HTTP submit endpoints. When all required signatures are present, the Icp event is accepted on the coordinator's node.
 - **Redistribution.** The coordinator pushes the accepted federation IEL to every other founding node via the `transfer_*_events` CLI (the existing point-to-point event-transfer abstractions, parameterized with the coordinator's stores as the source).
 - **Address SELs.** Each founding member's address SEL (`Icp` + initial `Upd` carrying that member's endpoints) flows through the same `transfer_*_events` mechanism — either bundled with the federation IEL push, or as a follow-up pass.
-- **Mesh formation.** Once every founding node's sadstore holds the federation IEL and every other member's address SEL, each node's gossip service can compute peer SEL prefixes and resolve endpoints by querying its local sadstore. The HyParView initial-view set populates from this resolution, and gossip mesh formation proceeds normally. From there, propagation runs as announcements (PlumTree) with dependency tracking for out-of-order arrivals and anti-entropy filling any remaining gaps.
+- **Mesh formation.** Once every founding node's sadstore holds the federation IEL and every other member's address SEL — and the founding members' KELs are in the local kels service for anchor verification — each node's gossip service can compute peer SEL prefixes and resolve endpoints by querying its local services. The HyParView initial-view set populates from this resolution, and gossip mesh formation proceeds normally. From there, propagation runs as announcements (PlumTree) with dependency tracking for out-of-order arrivals and anti-entropy filling any remaining gaps.
 
 The Icp's `auth_policy` and `governance_policy` are agreed out-of-band by the founding operators. There is no protocol-level "voting" on the Icp — the chain begins with whatever shape its founders cryptographically commit to, and consumers of the federation accept that shape on the strength of the founders' identities.
 

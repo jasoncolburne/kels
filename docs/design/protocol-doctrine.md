@@ -473,7 +473,7 @@ Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/ke
 
 #### Worked example: the federation IEL
 
-The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `auth_policy` declares the set of member identities authorized to participate in the gossip mesh. On every node, the federation IEL is replicated to the local sadstore service; gossip queries that local service as its source of truth for federation state. Propagation uses the normal gossip mechanics — PlumTree announcement-driven primary path, dependency tracking for out-of-order arrivals, anti-entropy as fallback. The federation has no separate consensus algorithm and no central state machine.
+The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `auth_policy` declares the set of member identities authorized to participate in the gossip mesh. On every node, the federation IEL is replicated to the local sadstore service and the supporting member KELs to the local kels service; gossip queries those local services as its sources of truth for federation state. Propagation uses the normal gossip mechanics — PlumTree announcement-driven primary path, dependency tracking for out-of-order arrivals, anti-entropy as fallback. The federation has no separate consensus algorithm and no central state machine.
 
 Convergence is what makes this work:
 

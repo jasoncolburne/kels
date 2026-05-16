@@ -67,7 +67,7 @@ The federation IEL is the authoritative source for who's authorized, and it prop
 - A peer dropped from `auth_policy` → existing sessions with that peer are torn down at the next session re-check (or sooner, on policy-refresh tick); new handshakes from that peer fail.
 - A peer added to `auth_policy` → new handshakes from that peer succeed.
 
-The freshness of the authorization view is the freshness of the federation IEL as held by the local sadstore service on the node, which the gossip mesh keeps current — announcements (PlumTree) drive primary propagation, dependency tracking handles out-of-order arrivals, and anti-entropy catches anything the primary path missed.
+The freshness of the authorization view is the freshness of the federation IEL and the supporting member KELs as held by the local sadstore and kels services on the node, which the gossip mesh keeps current — announcements (PlumTree) drive primary propagation, dependency tracking handles out-of-order arrivals, and anti-entropy catches anything the primary path missed.
 
 ## Identity properties
 
