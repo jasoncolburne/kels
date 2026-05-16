@@ -101,7 +101,7 @@ The KELS core service additionally accepts P-256 (ECDSA), ML-DSA-65, and ML-DSA-
 ### What is operator policy
 
 - Choice of `auth_policy` shape (threshold, weighted, etc.).
-- Threshold value `M` (recommended `max(3, ceil(N/3))`, application-level — see [federation.md §Threshold formula](federation.md#threshold-formula-application-level)).
+- Threshold value M(n) (stair function — see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); application-level).
 - Coordination protocol for collecting `Evl` endorsements.
 - HSM selection and operational hardening.
 

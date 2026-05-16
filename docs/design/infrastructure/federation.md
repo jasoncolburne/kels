@@ -15,7 +15,7 @@ The federation answers three operational questions:
 Identity primitives already answer the first two:
 
 - An IEL's `auth_policy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `auth_policy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
-- An IEL's `governance_policy` is the policy an `Evl` must satisfy to evolve `auth_policy` (or `governance_policy` itself). Under the federation convention, `governance_policy` is shaped as `threshold(max(3, ceil(n/3)), identity(X_1), …, identity(X_n))` over the *same* member set. The membership-change protocol is exactly this threshold check.
+- An IEL's `governance_policy` is the policy an `Evl` must satisfy to evolve `auth_policy` (or `governance_policy` itself). Under the federation convention, `governance_policy` is shaped as `threshold(M(n), identity(X_1), …, identity(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
 - The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
 
 The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
@@ -55,7 +55,7 @@ The federation IEL follows a strict policy-shape convention:
 
 ```
 auth_policy       = any(identity(X_1), …, identity(X_n))           // = threshold(1, …)
-governance_policy = threshold(max(3, ceil(n/3)),
+governance_policy = threshold(M(n),
                               identity(X_1), …, identity(X_n))
 ```
 
@@ -166,8 +166,8 @@ Adding or removing a member is the same primitive in both directions: an `Evl` e
 
 There is no asymmetry between add and remove. Both use `Evl` against `governance_policy`. The procedural difference is operational, not structural:
 
-- **Adding peer X:** `max(3, ceil(n/3))` of the current n members endorse an `Evl` that includes `identity(X)` in the new `auth_policy` and updates `governance_policy`'s threshold value if n crossed a formula boundary. X itself does not need to endorse.
-- **Removing peer X:** `max(3, ceil((n−1)/3))` of the *other* `n − 1` members endorse an `Evl` that excludes `identity(X)` from both `auth_policy` and `governance_policy` (and updates the threshold value if `n − 1` crossed a formula boundary). X itself, predictably, does not endorse its own removal.
+- **Adding peer X:** M(n) of the current n members endorse an `Evl` that includes `identity(X)` in the new `auth_policy` and updates `governance_policy`'s threshold value if n crossed a stair boundary. X itself does not need to endorse.
+- **Removing peer X:** M(n−1) of the *other* `n − 1` members endorse an `Evl` that excludes `identity(X)` from both `auth_policy` and `governance_policy` (and updates the threshold value if `n − 1` crossed a stair boundary). X itself, predictably, does not endorse its own removal.
 
 Whether the burn is a clean drop ("X retired, please remove") or an adversarial expulsion ("X compromised, drop now") is the same chain operation; only the operator urgency differs.
 
@@ -177,25 +177,31 @@ The federation `auth_policy` and `governance_policy` are `immune: true` (mandato
 
 ### Threshold formula (application-level)
 
-The threshold value in the federation's `governance_policy` is `max(3, ceil(n/3))`. The `auth_policy` stays at `any(...)` regardless of n — any single member can act at handshake time. The governance threshold is what scales with federation size.
+The threshold value in the federation's `governance_policy` is a stair function of the federation size n. The `auth_policy` stays at `any(...)` regardless of n — any single member can act at handshake time. The governance threshold is what scales with federation size.
 
 ```
-governance threshold M = max(3, ceil(n / 3))
+governance threshold M(n) =
+  3            if n ≤ 5
+  4            if 6 ≤ n ≤ 9
+  ⌈n / 3⌉      if n ≥ 10
 ```
 
-| n | M |
+| n | M(n) |
 |---|---|
 | 3 | 3 |
-| 9 | 3 |
+| 5 | 3 |
+| 6 | 4 |
+| 9 | 4 |
 | 10 | 4 |
 | 21 | 7 |
 | 25 | 9 |
 
 - Floor of 3 prevents trivial collusion in small federations.
+- The 6-member step bumps the bar to 4 before one-third scaling takes over.
 - One-third-quorum scaling at larger sizes is KERI-inspired (`F+1` immunity bound).
-- When n crosses a formula boundary (e.g., 9 → 10 brings M from 3 to 4), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
+- When n crosses a stair boundary (5 → 6 or 9 → 10), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
 
-**The IEL verifier does not enforce the formula.** A federation that chose a different M would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the libkels federation-policy-shape helper (next subsection) — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol, at the cost of consumers no longer being able to verify the standard shape.
+**The IEL verifier does not enforce the formula.** A federation that chose a different M(n) would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the libkels federation-policy-shape helper (next subsection) — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol, at the cost of consumers no longer being able to verify the standard shape.
 
 ### Federation policy shape verification
 
@@ -204,7 +210,7 @@ libkels provides a helper that verifies a federation IEL's `(auth_policy, govern
 - Walks `auth_policy`; confirms it's `any(...)` (i.e., `threshold(1, ...)`) over `identity(...)` leaves only; extracts the member set.
 - Walks `governance_policy`; confirms it's `threshold(M, ...)` over `identity(...)` leaves only; extracts the member set and M.
 - Confirms set equality between the two member sets.
-- Confirms `M == max(3, ceil(n/3))` where `n = |members|`.
+- Confirms `M == M(n)` where `n = |members|` (per the stair function defined above).
 - Confirms both policies have `immune: true`.
 
 Application code calls this helper on every federation IEL it loads (compile-time default at startup; runtime override on env-var set). A federation that doesn't conform fails the check and the node refuses to start.
