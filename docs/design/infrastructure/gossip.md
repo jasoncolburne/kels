@@ -192,48 +192,13 @@ Gossip nodes use persistent HSM-backed identities. Development deployments load 
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
 - See [discovery.md](discovery.md) for the full node-side discovery flow and [federation.md](federation.md) for the federation-as-identity model
 
-## Kubernetes Deployment
+## Transport reachability
 
-### Cross-namespace communication
+The gossip protocol is TCP-based. Each peer publishes its advertised gossip endpoint (`host:port`) in its per-peer address SEL (see [discovery.md](discovery.md)). Other peers connect to that endpoint to gossip.
 
-Gossip nodes in different namespaces connect directly over TCP using the advertised gossip addresses each peer publishes in its address SEL. CoreDNS rewrites (below) translate `.kels` domains into in-cluster service names so the same URLs work for both internal services and external clients.
+Production deployments must ensure each peer's advertised endpoint is reachable from every other peer in the federation — by whatever mechanism the deployment provides (public IPs, mesh routing, NAT traversal, LoadBalancer / NodePort / Gateway API TCPRoute in Kubernetes, etc.). The endpoint published in the address SEL must be the externally-routable one, not a local-only address; the gossip service surfaces this via `GOSSIP_ADVERTISE_ADDR`.
 
-### Services
-
-Each namespace has:
-- `gossip` - ClusterIP service for gossip TCP connections
-
-**Cross-cluster note:** The test harness colocates all nodes in one Kubernetes cluster with cross-namespace routing via CoreDNS rewrites. In a production deployment where nodes are in separate clusters or networks, each node's gossip TCP port must be externally reachable — e.g., via a LoadBalancer service, NodePort, or Gateway API TCPRoute. The gossip advertise address (`GOSSIP_ADVERTISE_ADDR`) should be set to the externally routable hostname and port.
-
-### CoreDNS Configuration for `.kels` Domains
-
-Nodes advertise URLs using `.kels` domains (e.g., `http://kels.node-a.kels`) so that the same URLs work for both:
-- **External clients** (iOS, CLI) - resolved via `/etc/hosts` or local DNS
-- **Internal services** - resolved via CoreDNS inside the cluster
-
-To enable internal resolution, CoreDNS must be configured with rewrite rules:
-
-```bash
-scripts/coredns.sh apply
-```
-
-This applies rewrite rules that translate `.kels` domains to `.svc.cluster.kels`:
-
-```
-rewrite name regex (.*)\.node-(.)\.kels {1}.node-{2}.svc.cluster.kels
-```
-
-**Platform-specific notes:**
-
-| Platform | Notes |
-|----------|-------|
-| Docker Desktop | Works as-is with the provided script |
-| minikube | May need to edit the `coredns` ConfigMap in `kube-system` namespace manually |
-| kind | CoreDNS config is in `coredns` ConfigMap; may need cluster recreation to apply |
-| EKS/GKE/AKS | Use cluster-specific DNS customization (e.g., CoreDNS ConfigMap or NodeLocal DNSCache) |
-| k3s | Uses CoreDNS by default; same ConfigMap approach works |
-
-If your Kubernetes distribution uses a different DNS provider or configuration method, adapt the rewrite rules accordingly. The key requirement is that `*.node-X.kels` resolves to `*.node-X.svc.cluster.kels` inside the cluster.
+The in-repo Kubernetes test harness (see [`../../validation/k8s-test-harness.md`](../../validation/k8s-test-harness.md)) configures cross-namespace TCP via ClusterIP services and CoreDNS rewrites inside a single cluster. That is a test setup, not a production deployment recipe.
 
 ## Anti-Entropy Repair
 
