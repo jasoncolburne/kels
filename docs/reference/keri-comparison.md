@@ -85,7 +85,7 @@ The compositional surface is wider:
 
 - **SEL** is a third primitive — an append-only linear chain of SADs (Self-Addressed Data) bound at inception to a specific IEL via `identity` and resolving authorization per-event through that IEL's evolving `auth_policy`. SELs carry content (credentials are not SELs, but exchange-key publications, custody envelopes, mail metadata, per-peer address publications, and federation membership are all SELs or SEL-shaped).
 - **Cred** is a credential-specific SAD format, optionally chainable as a graph via edges (similar shape to ACDC).
-- **Policy DSL** composes across all of the above — a policy expression can reference KEL prefixes, IEL prefixes, SEL events, credentials, or any combination, and can nest other policies.
+- **Policy DSL** is the composition surface that ties the identity layers together. A policy expression references KEL prefixes (via `endorse`/`delegate`), IEL prefixes (via `identity`), or other policies by SAID (via `policy(...)`), composed under `threshold`/`weighted` aggregators.
 
 The same primitives carry every content-bearing chain and every authorization decision in the system. Adding a new domain (e.g., custody envelopes, mail metadata) doesn't introduce a new event log type — it's a new SEL topic or SAD shape over the existing primitives.
 
@@ -197,9 +197,9 @@ KELS provides general primitives that credentials are one consumer of:
 - **SAD** (Self-Addressed Data) is the underlying content-addressed-data primitive. Credentials are SADs with credential-specific structure; the same SAD primitive underpins exchange-key publications, custody envelopes, mail metadata, federation per-peer addresses, and every other content-bearing object in the system.
 - **SEL** is an append-only linear chain of SADs, bound at inception to an IEL via `identity` and resolving authorization per-event through that IEL's `auth_policy`. SELs carry ongoing-state-evolution domains.
 - **Cred** is a SAD-shaped credential, optionally chainable as a graph via edges (similar in shape to ACDC's edge sections). Cred edges are graph-shaped; SEL chaining is linear append-only. The two primitives have different chaining shapes for different purposes.
-- **Policy DSL** composes across all of the above — a policy expression can reference KEL prefixes, IEL prefixes, credentials, or any combination, and can nest other policies.
+- **Policy DSL** is the composition surface that ties these primitives together. A policy expression references KEL prefixes (via `endorse`/`delegate`), IEL prefixes (via `identity`), or other policies by SAID (via `policy(...)`), composed under `threshold`/`weighted` aggregators.
 
-Composition between cred and SEL is open: a cred can embed a SEL prefix to anchor against ongoing chain state; a SEL `Upd` can reference a cred or its SAID. Authorization for either side is expressed in the same policy DSL.
+Composition between cred and SEL is open: a cred can embed a SEL prefix to anchor against ongoing chain state; a SEL `Upd` can reference a cred or its SAID.
 
 The credential mechanics themselves remain expressive:
 
