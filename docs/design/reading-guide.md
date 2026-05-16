@@ -19,7 +19,7 @@ If you haven't read [../../AGENTS.md §System Thesis](../../AGENTS.md#system-the
 - Federation convergence
 - Extension discipline
 - Trust model on contested chains
-- Limit of the doctrine.
+- Limit of the doctrine
 
 Read in full before the primitives — every per-primitive doc cross-references this doc heavily, and reasoning about the primitives without the doctrine forces you to reconstruct invariants from worked examples rather than pick them up directly.
 
