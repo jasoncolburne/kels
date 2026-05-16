@@ -110,7 +110,7 @@ Address publication is **per-peer, self-managed**, using a SEL chain bound to ea
 Each peer's address SEL prefix is:
 
 ```
-compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/address")
+compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
 ```
 
 This is fully deterministic. Given the peer's identity prefix (which the federation IEL's `auth_policy` lists), any node can compute the address SEL prefix and fetch the chain — no separate lookup, no directory service.
@@ -140,7 +140,7 @@ The current address is whatever the latest accepted `Upd` on the chain says. Add
 When a node joins or refreshes its peer view:
 
 1. Read the federation IEL's current `auth_policy` to enumerate authorized member identities.
-2. For each member identity, compute the address SEL prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/address")`).
+2. For each member identity, compute the address SEL prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`).
 3. Walk that address SEL to its tip and read the current `endpoints` array.
 4. Connect.
 

@@ -23,9 +23,9 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
 2. **Enumerate authorized identities.** Walk the `auth_policy` expression and collect the set of `identity(...)` leaves. Each leaf is a peer-identity prefix.
 3. **For each peer identity, compute the address SEL prefix.**
    ```
-   address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/address")
+   address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
    ```
-   The topic string `"kels/sel/v1/peer/address"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
+   The topic string `"kels/sel/v1/peer/addresses"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd`. Per the federation address-SEL application convention, that `Upd` is sealed by a trailing `Sea`; a chain whose tip is an unsealed `Upd` is treated as pending and ignored by discovery (the peer is unreachable until the `Sea` lands).
 5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
 
@@ -42,7 +42,7 @@ A new federation is created by, first, bringing at least three nodes online. Onc
 1. The federation IEL `Icp` event is drafted in the [allowed shape](federation.md#same-membership-different-thresholds), composed of the peer IELs, using identity service CLI tooling on the coordinating node.
 2. All peers invoke their identity service CLI to anchor the `Icp` SAID in their KEL via a `Rot` (tier-2). The `Icp` event is delivered out of band.
 3. All peers invoke their identity service CLI to create and anchor address SEL events `[Icp, Upd, Sea]`. The tooling should enforce batched submission of all three events. Shape:
-  - `Icp(identity_prefix, 'kels/sel/v1/peer/address')` — unsigned; chain prefix is `compute_sel_prefix(identity_prefix, "kels/sel/v1/peer/address")`
+  - `Icp(identity_prefix, "kels/sel/v1/peer/addresses")` — unsigned; chain prefix is `compute_sel_prefix(identity_prefix, "kels/sel/v1/peer/addresses")`
   - `Upd(address_object_prefix)` — tier-1
   - `Sea` — tier-2 (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern))
 4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and address SELs to the coordinator's services.

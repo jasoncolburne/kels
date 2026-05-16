@@ -31,7 +31,7 @@ When a node is provisioned, the following happens once per node:
    - Production: a real HSM's PKCS#11 module (CloudHSM, Luna, etc.) via the `PKCS11_LIBRARY_PATH` env var.
 2. **KEL inception.** Standard KEL `Icp` with the HSM-backed public key as the signing key, signed via the HSM. Produces `gossip_kel_prefix`.
 3. **IEL inception.** Standard IEL `Icp` with `auth_policy = endorse(gossip_kel_prefix)` and an operator-chosen `governance_policy`. The Icp is anchored in the KEL per the standard inception ceremony. Produces the peer identity prefix.
-4. **Address SEL inception.** Standard SEL `Icp` at the deterministic prefix `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/address")`, followed by an initial `Upd` carrying the node's initial endpoints. Anchored under the peer identity's `auth_policy`.
+4. **Address SEL inception.** Standard SEL `Icp` at the deterministic prefix `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`, followed by an initial `Upd` carrying the node's initial endpoints. Anchored under the peer identity's `auth_policy`.
 5. **Distribute the new peer identity to federation operators.** Out-of-band — by whatever channel the operators use to coordinate federation membership changes. The new identity is added to the federation IEL via a normal `Evl` (subject to the federation's `governance_policy`); see [federation.md §Membership evolution](federation.md#membership-evolution).
 
 After the ceremony, the node holds:
@@ -75,7 +75,7 @@ The freshness of the authorization view is the freshness of the federation IEL a
 
 - **Peer identity prefix** is the IEL prefix. Stable across all key rotations and restarts. This is what the federation IEL's `auth_policy` references.
 - **Gossip signing key** is the KEL tip's public key. Rotates on every KEL `Rot`. Other peers re-fetch the KEL tip on signature-verification mismatch (key rotation flow).
-- **Address SEL prefix** is `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/address")`. Stable across address changes — only the `Upd` content changes.
+- **Address SEL prefix** is `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`. Stable across address changes — only the `Upd` content changes.
 
 ### Key custody
 
