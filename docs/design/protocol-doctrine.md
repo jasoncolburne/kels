@@ -453,6 +453,23 @@ Convergence is among gossip-participating nodes. **Permanent node loss before pr
 
 Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/kel/reconciliation.md), [primitives/iel/reconciliation.md](primitives/iel/reconciliation.md), and [primitives/sel/reconciliation.md](primitives/sel/reconciliation.md) demonstrate convergence holds for each primitive under all state × submission × gossip combinations.
 
+#### Worked example: the federation IEL
+
+The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `auth_policy` declares the set of member identities authorized to participate in the gossip mesh. Every gossip node holds the federation IEL locally and syncs it through anti-entropy; the federation has no separate consensus algorithm and no central state machine.
+
+Convergence is what makes this work:
+
+- **Identical `auth_policy` view across nodes.** Every gossip node deterministically resolves the federation IEL's tip from the events it holds. If two nodes hold the same event set, they compute the same effective SAID and read the same current `auth_policy`. Anti-entropy converges any two nodes whose effective SAIDs differ.
+- **Handshake authorization is path-agnostic.** A connecting peer's identity is checked against the federation IEL's current `auth_policy` via `evaluate_signed_policy`. Two nodes that both hold the federation IEL's authentic tip produce identical authorization decisions. The "which node did the handshake reach?" question doesn't change the answer.
+- **Membership evolution converges.** A governance-authorized `Evl` event evolving `auth_policy` propagates via the standard IEL gossip channel. Two nodes that have both received the `Evl` see identical post-evolution policy.
+- **Contested-terminal is also convergent.** If two governance-authorized `Evl`s land concurrently at the same serial, IEL divergence makes the chain contested-terminal across all nodes (per [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal-cnt-triggers-it-uniformly), trivially on IEL since every IEL event is privileged). The federation dies under that prefix; recovery is a fresh federation IEL inception, propagated again via gossip. The catastrophic outcome converges; convergence is not contingent on the chain's success.
+
+The per-peer address SEL pattern is the resolution-side companion. Each member identity owns a SEL bound to its own IEL at a deterministic prefix (`compute_sel_prefix(peer_identity, "kels/sad/v1/peers/address")`); each peer publishes its current network endpoints there. Discovery on any node reads the federation IEL's `auth_policy`, enumerates the member identities, walks each peer's address SEL, and connects. Convergence applies twice: once to the federation IEL (members agree on who's authorized), once per peer's address SEL (everyone resolves the same current endpoints for each peer).
+
+The federation IEL therefore relies on convergence for the same reason any IEL does — convergent identity state under gossip — but its operational role makes the dependency especially visible: a federation with divergent `auth_policy` views across nodes would have nodes accepting different sets of peers as "current members," and the gossip mesh would partition along those views. The protocol's convergence guarantee, combined with the IEL primitive's structural properties, prevents that partition from ever forming under healthy gossip.
+
+Full design: [infrastructure/federation.md](infrastructure/federation.md).
+
 ### Extension Discipline
 
 The protocol cannot — and does not — prevent any currently-authorized party from chaining a new event onto any existing chain event. `previous` validates against the structural parent (the event whose SAID is named), not against "who authored the parent." A current-authority holder can technically point `previous` at any prior event the verifier would accept as a parent.
