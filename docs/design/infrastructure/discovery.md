@@ -20,7 +20,7 @@ Both layers — and the anchoring KELs they verify against — live in primitive
 When a node refreshes its peer view (on startup, on a configurable interval, or on demand):
 
 1. **Read the federation IEL's tip locally.** The federation IEL prefix is configured (compile-time default + runtime `FEDERATION_IEL_PREFIX` env-var override — see [federation.md §Configuration](federation.md#configuration)). Verify the chain via `IelVerifier`, take the current `authPolicy`.
-2. **Enumerate authorized identities.** Walk the `authPolicy` expression and collect the set of `identity(...)` leaves. Each leaf is a peer-identity prefix.
+2. **Enumerate authorized identities.** Walk the `authPolicy` expression and collect the set of `iel(...)` leaves. Each leaf is a peer-identity prefix.
 3. **For each peer identity, compute the address SEL prefix.**
    ```
    address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
@@ -47,7 +47,7 @@ A new federation is created by, first, bringing at least three nodes online. Onc
   - `Sea` — tier-2 (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern))
 4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and address SELs to the coordinator's services.
 5. The coordinating node submits the original federation IEL `Icp`. The peers' KEL `Rot` anchors are already on the coordinator from step 4, so the `Icp` is accepted on submission.
-6. The coordinating node enumerates the `identity(...)` leaves of the federation IEL's `authPolicy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and SELs involved) to each peer, using the peer's address SEL to resolve the destination.
+6. The coordinating node enumerates the `iel(...)` leaves of the federation IEL's `authPolicy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and SELs involved) to each peer, using the peer's address SEL to resolve the destination.
 7. `FEDERATION_IEL_PREFIX` is set for all nodes and all gossip services are restarted.
 
 ### Adding a new peer

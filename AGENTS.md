@@ -90,7 +90,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
-**Policy** — DSL for authorization: `endorse(PREFIX)`, `delegate(DELEGATOR, DELEGATE)`, `threshold(MIN, [NODES])`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. See `docs/design/features/policy.md`.
+**Policy** — DSL for authorization: `kel(KEL_PREFIX)`, `iel(IEL_PREFIX)`, `delegate(DELEGATOR)`, `threshold(MIN, [NODES])`, `any(...)` / `all(...)` shorthand for `threshold(1, …)` / `threshold(n, …)`, `weighted(MIN_WEIGHT, [NODE:W])`, `policy(SAID)` nesting; per-policy `poison` / `immune` modes. See `docs/design/features/policy.md`.
 
 **Credentials** — verifiable claims issued under a policy, anchored in KELs. See `docs/design/features/creds.md`.
 

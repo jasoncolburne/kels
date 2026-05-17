@@ -14,8 +14,8 @@ The federation answers three operational questions:
 
 Identity primitives already answer the first two:
 
-- An IEL's `authPolicy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `authPolicy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
-- An IEL's `governancePolicy` is the policy an `Evl` must satisfy to evolve `authPolicy` (or `governancePolicy` itself). Under the federation convention, `governancePolicy` is shaped as `threshold(M(n), identity(X_1), …, identity(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
+- An IEL's `authPolicy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `authPolicy` is shaped as `any(iel(X_1), …, iel(X_n))` — any single member identity may speak for the federation at handshake time. The set of `iel(...)` leaves *is* the membership set.
+- An IEL's `governancePolicy` is the policy an `Evl` must satisfy to evolve `authPolicy` (or `governancePolicy` itself). Under the federation convention, `governancePolicy` is shaped as `threshold(M(n), iel(X_1), …, iel(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
 - The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
 
 The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
@@ -42,7 +42,7 @@ The third question — network addresses — is answered by per-peer SELs, one p
 ```
 
 - The **federation IEL** is a single IEL whose `authPolicy` enumerates member identities. On each node, the federation IEL is replicated into the local sadstore service; the supporting member KELs (used for anchor checks during verification) live in the local kels service. Both are gossip's sources of truth for federation state. Propagation uses the normal gossip mechanics: PlumTree announcement-driven primary path, dependency tracking for events whose parents haven't arrived yet, and anti-entropy as fallback for gaps.
-- Each member identity is a **gossip-service identity** — a KEL holding the gossip service's HSM-backed signing key, wrapped in a single-KEL IEL (`authPolicy = endorse(gossip_kel_prefix)`). "Peer" throughout this doc means a gossip-service instance.
+- Each member identity is a **gossip-service identity** — a KEL holding the gossip service's HSM-backed signing key, wrapped in a single-KEL IEL (`authPolicy = kel(gossip_kel_prefix)`). "Peer" throughout this doc means a gossip-service instance.
 - Each member publishes its current network endpoints via a **per-peer address SEL**, owned and signed by that member.
 
 The mesh is symmetric: every peer holds the federation IEL, every peer's own identity is listed in the IEL's `authPolicy`, every peer manages its own address SEL. No node has a special role.
@@ -54,9 +54,9 @@ The mesh is symmetric: every peer holds the federation IEL, every peer's own ide
 The federation IEL follows a strict policy-shape convention:
 
 ```
-authPolicy       = any(identity(X_1), …, identity(X_n))           // = threshold(1, …)
+authPolicy       = any(iel(X_1), …, iel(X_n))                     // = threshold(1, …)
 governancePolicy = threshold(M(n),
-                              identity(X_1), …, identity(X_n))
+                              iel(X_1), …, iel(X_n))
 ```
 
 Same membership set in both. Different thresholds:
@@ -66,15 +66,15 @@ Same membership set in both. Different thresholds:
 
 The two policies share the same member set and differ only in threshold shape. This is the property a consumer can structurally verify (see [§Federation policy shape verification](#federation-policy-shape-verification) below).
 
-### The `identity(...)` leaf
+### The `iel(...)` leaf
 
-`identity(X)` is a DSL leaf that is satisfied when an event is anchored under the current `authPolicy` of IEL `X`. It resolves through the IEL prefix at evaluation time, so member identities can evolve their internal `authPolicy` (e.g., rotating gossip-service keys) without invalidating the federation `authPolicy` that references them.
+`iel(X)` is a DSL leaf that is satisfied when an event is anchored under the current `authPolicy` of IEL `X`. It resolves through the IEL prefix at evaluation time, so member identities can evolve their internal `authPolicy` (e.g., rotating gossip-service keys) without invalidating the federation `authPolicy` that references them.
 
-`identity(X)` is distinct from `endorse(kel_prefix)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `identity(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
+`iel(X)` is distinct from `kel(KEL_PREFIX)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `iel(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
 
 ### Membership is the policy
 
-There is **no denormalized member list**. Enumeration of the current membership walks the `identity(...)` leaves of the current `authPolicy`. Anything that wants to know "who's currently a member" reads the policy and extracts the leaves.
+There is **no denormalized member list**. Enumeration of the current membership walks the `iel(...)` leaves of the current `authPolicy`. Anything that wants to know "who's currently a member" reads the policy and extracts the leaves.
 
 ### Immunity is mandatory
 
@@ -88,7 +88,7 @@ The IEL policy-immunity rule requires every policy referenced as `authPolicy` or
 Each node runs a gossip service. That service is a **degenerate single-KEL identity**:
 
 - One KEL holds the gossip service's signing key (HSM-backed; ML-DSA-65 or ML-DSA-87).
-- One IEL declares `authPolicy = endorse(gossip_kel_prefix)` and a `governancePolicy` of the operator's choosing.
+- One IEL declares `authPolicy = kel(gossip_kel_prefix)` and a `governancePolicy` of the operator's choosing.
 - The IEL prefix is the **peer identity** referenced from the federation IEL's `authPolicy`.
 
 The gossip service is the only service on a node that participates in federation authentication. Other services on the same node (`sadstore`, `mail`, the `kels` service, identity service) are workers; they don't carry federation identities and don't authenticate with peers themselves. When this doc says "peer," it means a gossip-service instance — not a host, not a deployment, not an operator.
@@ -133,7 +133,7 @@ The `content` field of each `Upd` on the address SEL is the SAID of an address S
 - `endpoints` is an array. Multi-address support is first-class — peers commonly publish IPv4/IPv6 pairs, regional alternates, or transitional endpoints during a migration.
 - `address` is a TCP gossip endpoint, `host:port`. Gossip carries its own transport (ML-KEM-1024 key exchange, ML-DSA-65/87 signatures, AES-GCM-256 sessions); the published address is the network endpoint only.
 - `region` is optional, opaque, free-form (`"us-east"`, `"eu-west"`, etc.) — the IPv6 entry above omits it for illustration. Latency-aware clients may prefer in-region endpoints; absence is meaningful (peer didn't tag region).
-- `readPolicy` is the SAID of a policy SAD with expression `identity(FEDERATION_IEL_PREFIX)`. Per [sadstore.md §Custody](sadstore.md#custody-per-sad-object-authority), this gates fetch-time access via `evaluate_signed_policy` against a `SignedRequest`'s verified prefix set — `identity(FED_IEL)` resolves to the federation IEL's current `authPolicy`, so only currently-authorized federation members can fetch the endpoints body. The SEL chain itself (`Icp`, `Upd`, `Sea`) still gossips publicly (custody is forbidden on chain events per `sadstore.md`); only the per-object SAD content is gated. External observers can verify the chain shape and the federation IEL but cannot enumerate peer endpoints.
+- `readPolicy` is the SAID of a policy SAD with expression `iel(FEDERATION_IEL_PREFIX)`. Per [sadstore.md §Custody](sadstore.md#custody-per-sad-object-authority), this gates fetch-time access via `evaluate_signed_policy` against a `SignedRequest`'s verified prefix set — `iel(FED_IEL)` resolves to the federation IEL's current `authPolicy`, so only currently-authorized federation members can fetch the endpoints body. The SEL chain itself (`Icp`, `Upd`, `Sea`) still gossips publicly (custody is forbidden on chain events per `sadstore.md`); only the per-object SAD content is gated. External observers can verify the chain shape and the federation IEL but cannot enumerate peer endpoints.
 - **No `role` field, by design.** Role-bearing self-declarations would let an identity holder elevate their own privileges without going through the federation `governancePolicy`. Capabilities are determined by what the federation IEL authorizes the peer to do; a peer cannot self-declare additional capabilities.
 
 The current address is whatever the latest accepted `Upd` on the chain says. Address rotation is `[Upd, Sea]` per the Sea-after-Upd ratchet (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern)); revocation is implicit (publish a new `Upd`, sealed by the trailing `Sea`). Conforming tooling never produces an Upd-tailed address SEL.
@@ -169,8 +169,8 @@ Adding or removing a member is the same primitive in both directions: an `Evl` e
 
 There is no asymmetry between add and remove. Both use `Evl` against `governancePolicy`. The procedural difference is operational, not structural:
 
-- **Adding peer X:** M(n) of the current n members endorse an `Evl` that includes `identity(X)` in the new `authPolicy` and updates `governancePolicy`'s threshold value if n crossed a stair boundary. X itself does not need to endorse.
-- **Removing peer X:** M(n−1) of the *other* `n − 1` members endorse an `Evl` that excludes `identity(X)` from both `authPolicy` and `governancePolicy` (and updates the threshold value if `n − 1` crossed a stair boundary). X itself, predictably, does not endorse its own removal.
+- **Adding peer X:** M(n) of the current n members endorse an `Evl` that includes `iel(X)` in the new `authPolicy` and updates `governancePolicy`'s threshold value if n crossed a stair boundary. X itself does not need to endorse.
+- **Removing peer X:** M(n−1) of the *other* `n − 1` members endorse an `Evl` that excludes `iel(X)` from both `authPolicy` and `governancePolicy` (and updates the threshold value if `n − 1` crossed a stair boundary). X itself, predictably, does not endorse its own removal.
 
 Whether the burn is a clean drop ("X retired, please remove") or an adversarial expulsion ("X compromised, drop now") is the same chain operation; only the operator urgency differs.
 
@@ -210,8 +210,8 @@ governance threshold M(n) =
 
 libkels provides a helper that verifies a federation IEL's `(authPolicy, governancePolicy)` pair conforms to the convention. The helper:
 
-- Walks `authPolicy`; confirms it's `any(...)` (i.e., `threshold(1, ...)`) over `identity(...)` leaves only; extracts the member set.
-- Walks `governancePolicy`; confirms it's `threshold(M, ...)` over `identity(...)` leaves only; extracts the member set and M.
+- Walks `authPolicy`; confirms it's `any(...)` (i.e., `threshold(1, ...)`) over `iel(...)` leaves only; extracts the member set.
+- Walks `governancePolicy`; confirms it's `threshold(M, ...)` over `iel(...)` leaves only; extracts the member set and M.
 - Confirms set equality between the two member sets.
 - Confirms `M == M(n)` where `n = |members|` (per the stair function defined above).
 - Confirms both policies have `immune: true`.
@@ -289,7 +289,7 @@ If the federation IEL goes contested (concurrent `Evl`s land, divergence is dete
 3. **Bootstrap a fresh federation IEL.** Same ceremony as initial bootstrap: choose a primary, collect Icp signatures from the participating operators, assemble the new Icp, distribute the new federation IEL to all founding nodes via `transfer_*_events`.
 4. **Distribute the new prefix as runtime override.** Every gossip node sets `FEDERATION_IEL_PREFIX` to the new prefix and restarts. Each node logs a startup warning (runtime value differs from compile-time default); this is expected and acknowledged.
 5. **Verify mesh comes up against new prefix.** Discovery flow on each node now reads the new federation IEL's `authPolicy`, walks the founding members' address SELs (unchanged — they're under the peers' own identities, not under the federation IEL), and reconnects.
-6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `readPolicy` references the *new* federation IEL prefix. Existing address SADs reference a `readPolicy` SAD naming the old (now contested-terminal) federation IEL; `identity(OLD_FED_IEL)` resolves to a dead policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
+6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `readPolicy` references the *new* federation IEL prefix. Existing address SADs reference a `readPolicy` SAD naming the old (now contested-terminal) federation IEL; `iel(OLD_FED_IEL)` resolves to a dead policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
 7. **Schedule a binary rebuild.** At leisure, rebuild binaries with the compile-time default updated to the new prefix and roll the deployment. Once defaults align, `FEDERATION_IEL_PREFIX` can be unset.
 
 ### What survives recovery

@@ -44,9 +44,9 @@ This constructs the v0 inception event (which has only deterministic fields), de
 Per-SAD authority via two independent fields, each optional. Inline-on-parent (no separate SAID):
 
 - `ownerIelEvent` — IEL event SAID, the writer's identity at write time. Write attestation derives from this event: a verifier can ask either "was the writer authorized under the `authPolicy` at *this event*?" (historical lookup against the event's policy) or "is the writer's identity still authorized at the *current* tip?" (dereference → extract IEL prefix → walk to tip → resolve current `authPolicy`). Both modes derive from one SAID. `None` for unsigned (anonymous) writes.
-- `readPolicy` — policy SAID. At read time, the policy is fetched and evaluated against a verified prefix set from a `SignedRequest`. The policy can compose identities arbitrarily — e.g., `threshold(2, [identity(X), identity(Y), identity(Z)])` permits any 2 of 3 identities without those three needing to form a shared IEL. `None` for publicly readable content.
+- `readPolicy` — policy SAID. At read time, the policy is fetched and evaluated against a verified prefix set from a `SignedRequest`. The policy can compose identities arbitrarily — e.g., `threshold(2, [iel(X), iel(Y), iel(Z)])` permits any 2 of 3 identities without those three needing to form a shared IEL. `None` for publicly readable content.
 
-The asymmetry between the two fields is intentional: writes are single-identity-bound (one writer at one moment); reads are composable (any DSL expression). Typical `readPolicy` uses `identity(X)` leaves to gate by identity-current state; `endorse(KEL)` is allowed but rare since most read-side gating is identity-oriented rather than device-oriented.
+The asymmetry between the two fields is intentional: writes are single-identity-bound (one writer at one moment); reads are composable (any DSL expression). Typical `readPolicy` uses `iel(X)` leaves to gate by identity-current state; `kel(KEL_PREFIX)` is allowed but rare since most read-side gating is identity-oriented rather than device-oriented.
 
 Four valid combinations:
 
@@ -109,17 +109,17 @@ Two distinct policy evaluation modes exist for different contexts:
 Used for credential issuance and endorsement verification. Evaluates a policy against KEL state for a given credential SAID.
 
 - Checks KEL anchors: each endorser must have anchored the credential SAID in their KEL via an `ixn` event
-- Supports `Endorse`, `Weighted`, `Delegate`, and `Policy` (nested) nodes
-- `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
+- Supports `Kel`, `Iel`, `Weighted`, `Delegate`, and `Policy` (nested) nodes
+- `Delegate(delegator)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
 - Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
 
 ### `evaluate_signed_policy` — Access Control Context (`readPolicy` enforcement)
 
-Used for SAD-object read enforcement at fetch time, against the policy referenced by `readPolicy`. The policy is fetched and evaluated against the verified prefix set from a `SignedRequest`; `identity(X)` leaves in the policy resolve to X's current `authPolicy` (walk to tip), while `endorse(KEL)` leaves check the KEL's current state.
+Used for SAD-object read enforcement at fetch time, against the policy referenced by `readPolicy`. The policy is fetched and evaluated against the verified prefix set from a `SignedRequest`; `iel(X)` leaves in the policy resolve to X's current `authPolicy` (walk to tip), while `kel(KEL_PREFIX)` leaves check the KEL's current state.
 
 - Checks prefix set membership: the caller has already verified the signers' KELs and collected verified prefixes
-- Supports `Endorse`, `Identity`, `Weighted`, and `Policy` (nested) nodes
-- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. Read-gating policies should use direct `endorse()` or `identity()` nodes for any party that needs read access
+- Supports `Kel`, `Iel`, `Weighted`, and `Policy` (nested) nodes
+- **`Delegate` nodes are rejected with an error** — delegation is an issuance concern for scaling credential signing, not an access-control concern. Read-gating policies should use direct `kel()` or `iel()` nodes for any party that needs read access
 - No poison checks, no async KEL calls — synchronous evaluation against the verified set
 
 ## API
@@ -236,4 +236,4 @@ kels-cli sel prefix <identity> <topic>           # Compute SEL prefix offline
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
 - **Ephemeral objects** — `availability.once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
-- **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a composable policy (typically `identity(X)` leaves resolving identity-current state).
+- **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a composable policy (typically `iel(X)` leaves resolving identity-current state).
