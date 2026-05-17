@@ -23,15 +23,12 @@ use tracing::info;
 use verifiable_storage::{ChainedRepository, StorageError};
 
 use kels_core::{
-    IdentityEvent, KeyEventBuilder, PeerServicesSad, SadEvent, SadEventKind,
+    IdentityEvent, KeyEventBuilder, KeyProvider, PeerServicesSad, SadEvent, SadEventKind,
     compute_peer_services_sel_prefix,
 };
 use kels_policy::Policy;
 
-use crate::{
-    hsm::HsmKeyProvider,
-    repository::{IdentityRepository, SadObjectEntry},
-};
+use crate::repository::{IdentityRepository, SadObjectEntry};
 
 /// Topic for the node's own peer-identity IEL chain. Single value across
 /// all KELS deployments; the chain prefix is derived from
@@ -64,38 +61,45 @@ pub enum ReconciliationError {
 /// Reconcile the peer-identity IEL. Returns the IEL prefix (the node's
 /// peer identity).
 ///
-/// Idempotent: if the IEL chain is already present locally, returns the
-/// existing prefix without re-incepting.
+/// Idempotent: the IEL prefix is deterministic from `(kel_prefix,
+/// PEER_IDENTITY_IEL_TOPIC)` — we compute it directly from a tentative
+/// Icp and check whether the chain already has an effective SAID at that
+/// prefix. If present (linear or contested), return; otherwise incept.
 ///
-/// If absent, constructs the degenerate policy `kel(KEL_prefix)` (immune),
-/// stores it locally as a SAD body, incepts the IEL with that policy as
-/// both `authPolicy` and `governancePolicy`, persists the Icp event, and
-/// anchors the Icp SAID in the KEL.
-pub async fn reconcile_iel(
+/// On first boot: persists the cached policy body, persists the Icp event,
+/// and anchors the Icp SAID in the KEL via `Ixn`.
+pub async fn reconcile_iel<K: KeyProvider>(
     repo: &IdentityRepository,
-    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    builder: &mut KeyEventBuilder<K>,
     kel_prefix: Digest256,
 ) -> Result<Digest256, ReconciliationError> {
-    if let Some(existing) = repo
-        .iel
-        .latest_prefix_for_topic(PEER_IDENTITY_IEL_TOPIC)
-        .await?
-    {
-        info!(iel_prefix = %existing, "Reusing existing IEL");
-        return Ok(existing);
+    // 1. Degenerate policy: `kel(KEL_prefix)`, immune. Identity is
+    // single-KEL, so the same policy serves both authPolicy and
+    // governancePolicy on the IEL Icp. Deterministic from `kel_prefix`.
+    let policy = Policy::build(&format!("kel({})", kel_prefix), None, true)?;
+
+    // 2. Build the (tentative) IEL Icp to derive its prefix. The Icp is
+    // deterministic from `(policy.said, policy.said, topic)` — the same
+    // KEL boots will always produce the same Icp + the same prefix.
+    let icp = IdentityEvent::icp(policy.said, policy.said, PEER_IDENTITY_IEL_TOPIC)?;
+    let iel_prefix = icp.prefix;
+
+    // 3. Restart check (sync decision, not trust): does this chain
+    // already have events locally? Effective SAID at the deterministic
+    // prefix is `Some` iff the chain is present.
+    if repo.iel.effective_said(&iel_prefix).await?.is_some() {
+        info!(iel_prefix = %iel_prefix, "Reusing existing IEL");
+        return Ok(iel_prefix);
     }
 
     info!(
         kel_prefix = %kel_prefix,
+        iel_prefix = %iel_prefix,
+        policy_said = %policy.said,
         "No IEL present — incepting peer-identity IEL"
     );
 
-    // 1. Degenerate policy: `kel(KEL_prefix)`, immune. Identity is
-    // single-KEL, so the same policy serves both authPolicy and
-    // governancePolicy on the IEL Icp.
-    let policy = Policy::build(&format!("kel({})", kel_prefix), None, true)?;
-
-    // 2. Cache the policy body locally. The gossip service will push to
+    // 4. Cache the policy body locally. The gossip service will push to
     // sadstore at its own startup; meanwhile readers walking the IEL
     // chain locally can resolve `authPolicy` / `governancePolicy` against
     // this cached body.
@@ -103,22 +107,13 @@ pub async fn reconcile_iel(
     let entry = SadObjectEntry::create(policy.said, policy_value)?;
     repo.sad_objects.store(entry).await?;
 
-    // 3. Build the IEL Icp event.
-    let icp = IdentityEvent::icp(policy.said, policy.said, PEER_IDENTITY_IEL_TOPIC)?;
-    let iel_prefix = icp.prefix;
-    info!(
-        iel_prefix = %iel_prefix,
-        policy_said = %policy.said,
-        "Built IEL Icp"
-    );
+    // 5. Persist the Icp in identity_iel_events.
+    let icp_said = icp.said;
+    repo.iel.insert(icp).await?;
 
-    // 4. Persist the Icp in identity_iel_events.
-    repo.iel.insert(icp.clone()).await?;
-
-    // 5. Anchor the IEL Icp SAID in the KEL via an `Ixn` (tier-1) — the
+    // 6. Anchor the IEL Icp SAID in the KEL via an `Ixn` (tier-1) — the
     // server's `kel(K)` policy check resolves to "is this SAID in K's
     // anchor history?" which an Ixn satisfies.
-    let icp_said = icp.said;
     builder
         .interact(&icp_said)
         .await
@@ -143,9 +138,9 @@ pub async fn reconcile_iel(
 /// single-KEL IEL, that event's `authPolicy` = `governancePolicy` =
 /// `kel(KEL_prefix)`, satisfied by anchoring each SEL SAID in the KEL via
 /// `Ixn`.
-pub async fn reconcile_peer_services_sel(
+pub async fn reconcile_peer_services_sel<K: KeyProvider>(
     repo: &IdentityRepository,
-    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    builder: &mut KeyEventBuilder<K>,
     iel_prefix: Digest256,
     config: &ReconcileConfig,
 ) -> Result<(), ReconciliationError> {
@@ -216,9 +211,9 @@ async fn read_services_domain_from_tip(
     Ok(Some(sad.domain))
 }
 
-async fn incept_peer_services(
+async fn incept_peer_services<K: KeyProvider>(
     repo: &IdentityRepository,
-    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    builder: &mut KeyEventBuilder<K>,
     iel_prefix: Digest256,
     iel_event_said: Digest256,
     domain: &str,
@@ -240,9 +235,9 @@ async fn incept_peer_services(
     Ok(())
 }
 
-async fn rotate_peer_services(
+async fn rotate_peer_services<K: KeyProvider>(
     repo: &IdentityRepository,
-    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    builder: &mut KeyEventBuilder<K>,
     tip: &SadEvent,
     iel_event_said: Digest256,
     new_domain: &str,
@@ -277,27 +272,181 @@ async fn cache_services_body(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::repository::tests::get_harness;
+    use crate::repository::{IdentityRepository, KeyEventRepository, tests::get_harness};
+    use cesr::VerificationKeyCode;
+    use kels_core::{KelStore, RepositoryKelStore, SoftwareKeyProvider};
+    use std::sync::Arc;
 
+    /// Build a fresh KEL via `SoftwareKeyProvider` against the harness pool;
+    /// returns the builder + the derived KEL prefix. Each test gets its own
+    /// signing keys → unique KEL prefix → unique IEL prefix (which means
+    /// `effective_said` lookups are scoped per-test by construction, no
+    /// cross-test contamination on the shared database).
+    async fn fresh_kel(
+        repo: &IdentityRepository,
+    ) -> (KeyEventBuilder<SoftwareKeyProvider>, cesr::Digest256) {
+        let kel_repo = Arc::new(KeyEventRepository {
+            pool: repo.kel.pool.clone(),
+        });
+        let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(kel_repo));
+        let provider =
+            SoftwareKeyProvider::new(VerificationKeyCode::MlDsa65, VerificationKeyCode::MlDsa65);
+        let mut builder =
+            KeyEventBuilder::with_dependencies(provider, None, Some(kel_store), None)
+                .await
+                .expect("build builder");
+        let icp = builder.incept().await.expect("incept KEL");
+        let prefix = icp.event.prefix;
+        (builder, prefix)
+    }
+
+    /// `reconcile_iel` lands the chain on first call; second call short-circuits
+    /// via `effective_said` and returns the same prefix without adding events.
     #[tokio::test]
     async fn reconcile_iel_is_idempotent() {
         let Some(harness) = get_harness().await else {
             return;
         };
         let repo = harness.repo().await;
+        let (mut builder, kel_prefix) = fresh_kel(&repo).await;
 
-        // Pre-populate an IEL prefix in iel_repo under the peer-identity
-        // topic. `latest_prefix_for_topic` filters by topic so cross-test
-        // pollution under other topics doesn't interfere.
-        let policy_said = cesr::Digest256::blake3_256(b"reconcile-test-policy");
-        let icp = IdentityEvent::icp(policy_said, policy_said, PEER_IDENTITY_IEL_TOPIC).unwrap();
-        repo.iel.insert(icp.clone()).await.unwrap();
+        let first = reconcile_iel(&repo, &mut builder, kel_prefix)
+            .await
+            .expect("first reconcile_iel succeeds");
 
-        let latest = repo
-            .iel
-            .latest_prefix_for_topic(PEER_IDENTITY_IEL_TOPIC)
+        // After inception: one event (the Icp) at the IEL prefix.
+        let chain_after_first = repo.iel.fetch_chain(&first).await.unwrap();
+        assert_eq!(chain_after_first.len(), 1, "Icp landed");
+
+        let second = reconcile_iel(&repo, &mut builder, kel_prefix)
+            .await
+            .expect("second reconcile_iel succeeds");
+        assert_eq!(second, first, "deterministic prefix");
+
+        let chain_after_second = repo.iel.fetch_chain(&first).await.unwrap();
+        assert_eq!(
+            chain_after_second.len(),
+            1,
+            "no new events on idempotent re-run"
+        );
+    }
+
+    /// `reconcile_peer_services_sel` lands `[Icp, Upd, Sea]` on first call,
+    /// caches the published SAD body, and the Sea tip's content SAID
+    /// resolves to a `PeerServicesSad` carrying the configured domain.
+    #[tokio::test]
+    async fn reconcile_peer_services_sel_incepts_when_absent() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+        let (mut builder, kel_prefix) = fresh_kel(&repo).await;
+        let iel_prefix = reconcile_iel(&repo, &mut builder, kel_prefix)
             .await
             .unwrap();
-        assert_eq!(latest, Some(icp.prefix));
+        let config = ReconcileConfig {
+            domain: "alice.example.com".to_string(),
+        };
+
+        reconcile_peer_services_sel(&repo, &mut builder, iel_prefix, &config)
+            .await
+            .unwrap();
+
+        let sel_prefix = compute_peer_services_sel_prefix(iel_prefix).unwrap();
+        let chain = repo.sel.fetch_chain(&sel_prefix).await.unwrap();
+        assert_eq!(chain.len(), 3, "[Icp, Upd, Sea] inception batch");
+        let tip = chain.last().unwrap();
+        assert_eq!(tip.kind, SadEventKind::Sea, "tip is Sea");
+
+        let content_said = tip.content.expect("Sea carries content SAID");
+        let entry = repo
+            .sad_objects
+            .get_by_object_said(&content_said)
+            .await
+            .unwrap()
+            .expect("peer/services body is cached locally");
+        let sad: PeerServicesSad = serde_json::from_value(entry.object).unwrap();
+        assert_eq!(sad.domain, "alice.example.com");
+    }
+
+    /// `reconcile_peer_services_sel` is a no-op when the tip's domain
+    /// already matches the configured one — chain length unchanged.
+    #[tokio::test]
+    async fn reconcile_peer_services_sel_is_no_op_when_domain_matches() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+        let (mut builder, kel_prefix) = fresh_kel(&repo).await;
+        let iel_prefix = reconcile_iel(&repo, &mut builder, kel_prefix)
+            .await
+            .unwrap();
+        let config = ReconcileConfig {
+            domain: "alice.example.com".to_string(),
+        };
+
+        // First call: incept.
+        reconcile_peer_services_sel(&repo, &mut builder, iel_prefix, &config)
+            .await
+            .unwrap();
+        let sel_prefix = compute_peer_services_sel_prefix(iel_prefix).unwrap();
+        let chain_before = repo.sel.fetch_chain(&sel_prefix).await.unwrap();
+        assert_eq!(chain_before.len(), 3);
+
+        // Second call with the same domain: no-op.
+        reconcile_peer_services_sel(&repo, &mut builder, iel_prefix, &config)
+            .await
+            .unwrap();
+        let chain_after = repo.sel.fetch_chain(&sel_prefix).await.unwrap();
+        assert_eq!(
+            chain_after.len(),
+            3,
+            "no rotation when domain is unchanged"
+        );
+    }
+
+    /// `reconcile_peer_services_sel` rotates `[Upd, Sea]` onto the chain
+    /// when the configured domain differs from the tip's. New tip's content
+    /// SAID resolves to a SAD carrying the new domain.
+    #[tokio::test]
+    async fn reconcile_peer_services_sel_rotates_on_domain_change() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+        let (mut builder, kel_prefix) = fresh_kel(&repo).await;
+        let iel_prefix = reconcile_iel(&repo, &mut builder, kel_prefix)
+            .await
+            .unwrap();
+        let initial = ReconcileConfig {
+            domain: "alice.example.com".to_string(),
+        };
+        reconcile_peer_services_sel(&repo, &mut builder, iel_prefix, &initial)
+            .await
+            .unwrap();
+        let sel_prefix = compute_peer_services_sel_prefix(iel_prefix).unwrap();
+        assert_eq!(repo.sel.fetch_chain(&sel_prefix).await.unwrap().len(), 3);
+
+        // Operator changes PEER_DOMAIN between boots: rotation lands.
+        let rotated = ReconcileConfig {
+            domain: "alice-new.example.com".to_string(),
+        };
+        reconcile_peer_services_sel(&repo, &mut builder, iel_prefix, &rotated)
+            .await
+            .unwrap();
+
+        let chain = repo.sel.fetch_chain(&sel_prefix).await.unwrap();
+        assert_eq!(chain.len(), 5, "rotation appends [Upd, Sea] → 5 events");
+        let new_tip = chain.last().unwrap();
+        assert_eq!(new_tip.kind, SadEventKind::Sea);
+        let content_said = new_tip.content.expect("Sea carries content");
+        let entry = repo
+            .sad_objects
+            .get_by_object_said(&content_said)
+            .await
+            .unwrap()
+            .expect("rotated SAD body cached");
+        let sad: PeerServicesSad = serde_json::from_value(entry.object).unwrap();
+        assert_eq!(sad.domain, "alice-new.example.com");
     }
 }

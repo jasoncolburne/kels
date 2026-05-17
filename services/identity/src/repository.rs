@@ -5,8 +5,10 @@ use async_trait::async_trait;
 use kels_core::{IdentityEvent, KeyEvent, SadEvent};
 use kels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
+use cesr::Matter;
 use verifiable_storage::{
-    SelfAddressed, StorageDatetime, StorageError, TransactionExecutor, UnchainedRepository,
+    CorrelatedSubquery, Filter, SelfAddressed, StorageDatetime, StorageError, TransactionExecutor,
+    UnchainedRepository, Value,
 };
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
@@ -182,8 +184,9 @@ impl kels_core::PageLoader for LockedKelTransaction {
 
 /// Local IEL events — the node's own IEL chain. Identity is the source of
 /// truth; sadstore holds the infrastructure-distributed copy. Single-author
-/// chain (the node never diverges its own IEL), so no divergence/contest
-/// handling here — those live in sadstore.
+/// chain; divergence is impossible by construction (the identity service is
+/// the sole author of its own IEL), but if it ever happens it's contested
+/// per the project-wide rule.
 #[derive(Stored)]
 #[stored(item_type = IdentityEvent, table = "identity_iel_events", chained = true)]
 pub struct IelRepository {
@@ -214,19 +217,45 @@ impl IelRepository {
         self.pool.fetch_optional(query).await
     }
 
-    /// Latest IEL prefix the node knows about under a given topic. Identity
-    /// is single-author for its own IEL so at most one prefix exists per
-    /// topic at a time; returns `None` before the first IEL inception
-    /// (or for an unknown topic). Used by reconciliation to decide whether
-    /// to incept or restore the node's own IEL.
-    pub async fn latest_prefix_for_topic(
+    /// Effective SAID for a chain prefix.
+    ///
+    /// Fast sync-decision lookup (single SQL query). Finds tip events via a
+    /// NOT EXISTS subquery — events at this prefix that no other event
+    /// supersedes (`previous = this.said`). Mirrors the KEL-side
+    /// `compute_prefix_effective_said` pattern.
+    ///
+    /// - 0 tips → `None` (chain absent locally; first-boot path).
+    /// - 1 tip → tip's SAID (linear chain).
+    /// - More than 1 tip → `hash_effective_said("contested:{prefix}")` per project-wide rule that divergence ≡ contested for identity-authored IELs.
+    ///
+    /// Use this for sync decisions ("do I already have this chain?"), not
+    /// trust decisions (which require a verified-walk through the chain).
+    pub async fn effective_said(
         &self,
-        topic: &str,
+        prefix: &cesr::Digest256,
     ) -> Result<Option<cesr::Digest256>, StorageError> {
         let query = Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
-            .eq("topic", topic)
-            .limit(1);
-        Ok(self.pool.fetch_optional(query).await?.map(|e| e.prefix))
+            .eq("prefix", prefix.as_ref())
+            .not_exists(CorrelatedSubquery::new(
+                Self::TABLE_NAME,
+                "_cs",
+                Self::TABLE_NAME,
+                vec![("previous".to_string(), "said".to_string())],
+                vec![Filter::Eq(
+                    "_cs.prefix".to_string(),
+                    Value::String(prefix.qb64()),
+                )],
+            ))
+            .order_by("said", Order::Asc);
+
+        let tips: Vec<IdentityEvent> = self.pool.fetch(query).await?;
+        match tips.as_slice() {
+            [] => Ok(None),
+            [tip] => Ok(Some(tip.said)),
+            _ => Ok(Some(kels_core::hash_effective_said(&format!(
+                "contested:{prefix}"
+            )))),
+        }
     }
 }
 
@@ -265,6 +294,36 @@ impl SelRepository {
             .order_by("version", Order::Desc)
             .limit(1);
         self.pool.fetch_optional(query).await
+    }
+
+    /// Effective SAID for a chain prefix. Same shape as
+    /// [`IelRepository::effective_said`] — see that doc-comment.
+    pub async fn effective_said(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<cesr::Digest256>, StorageError> {
+        let query = Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix.as_ref())
+            .not_exists(CorrelatedSubquery::new(
+                Self::TABLE_NAME,
+                "_cs",
+                Self::TABLE_NAME,
+                vec![("previous".to_string(), "said".to_string())],
+                vec![Filter::Eq(
+                    "_cs.prefix".to_string(),
+                    Value::String(prefix.qb64()),
+                )],
+            ))
+            .order_by("said", Order::Asc);
+
+        let tips: Vec<SadEvent> = self.pool.fetch(query).await?;
+        match tips.as_slice() {
+            [] => Ok(None),
+            [tip] => Ok(Some(tip.said)),
+            _ => Ok(Some(kels_core::hash_effective_said(&format!(
+                "contested:{prefix}"
+            )))),
+        }
     }
 }
 
