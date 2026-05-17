@@ -42,6 +42,8 @@ mod repository;
 mod server;
 mod sync;
 mod telemetry;
+#[cfg(test)]
+mod testing;
 pub(crate) mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
@@ -674,6 +676,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let iel_redis_recently_stored = recently_stored.clone();
     let iel_redis_local_iel_prefix = local_iel_prefix;
     let iel_redis_drain = drain_executor.clone();
+    let iel_redis_federation_evaluator = Arc::clone(&federation_evaluator);
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_iel_redis_subscriber(
@@ -682,6 +685,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 iel_redis_command_tx.clone(),
                 iel_redis_recently_stored.clone(),
                 iel_redis_drain.clone(),
+                federation_iel_prefix,
+                Arc::clone(&iel_redis_federation_evaluator),
             )
             .await
             {
@@ -794,6 +799,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let mail_url = config.mail_url().clone();
     let sync_command_tx = command_tx.clone();
     let sync_address_resolver = Arc::clone(&address_resolver);
+    let sync_federation_evaluator = Arc::clone(&federation_evaluator);
     let sync_redis = redis_for_sync.clone();
     let sync_signer = peer_request_signer.clone();
     let sync_pending = pending_map.clone();
@@ -805,6 +811,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             event_rx,
             sync_command_tx,
             sync_address_resolver,
+            federation_iel_prefix,
+            sync_federation_evaluator,
             recently_stored,
             sync_redis,
             sync_signer,

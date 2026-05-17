@@ -120,6 +120,14 @@ pub async fn run_gossip(
                             debug!("Broadcast mail announcement");
                         }
                     }
+                    GossipCommand::RetainPeers(allowed) => {
+                        let count = allowed.len();
+                        if let Err(e) = gossip_handle.retain_peers(allowed).await {
+                            warn!("Failed to apply retain_peers (allowed={}): {}", count, e);
+                        } else {
+                            debug!("Applied retain_peers (allowed={})", count);
+                        }
+                    }
                 }
             }
 

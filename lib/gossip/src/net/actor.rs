@@ -7,7 +7,7 @@
 //! - Application commands (join, broadcast, leave)
 //! - Event dispatch to subscribers
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,6 +66,12 @@ pub(crate) enum Command {
     },
     /// Leave a topic.
     Leave { topic: TopicId },
+    /// Retain only the listed peer identities. Drops connections,
+    /// pending dials, and cached peer addresses for any peer not in the
+    /// allowed set. Used by the application layer to enact eager
+    /// teardown when membership policy evolves (e.g., a federation IEL
+    /// `Evl` removes a peer).
+    RetainPeers { allowed: HashSet<cesr::Digest256> },
     /// Shut down the actor.
     Shutdown,
 }
@@ -282,9 +288,51 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
                 let events: Vec<_> = self.state.handle(in_event, now).collect();
                 self.process_out_events(events);
             }
+            Command::RetainPeers { allowed } => {
+                self.handle_retain_peers(allowed);
+            }
             Command::Shutdown => return true,
         }
         false
+    }
+
+    /// Disconnect any peer not in `allowed`. Used by the application
+    /// layer to enact eager membership teardown — see
+    /// [`Command::RetainPeers`]. Removes from `peers` (in-memory active
+    /// connection table), `pending_dials` (queued outbound dials), and
+    /// `peer_addrs` (cached advertised addresses) so the peer can't be
+    /// reached via on-demand redial either.
+    ///
+    /// The peer's reader/writer tasks observe the channel drop and
+    /// terminate; the corresponding `PeerMessage::Disconnected` from
+    /// those tasks is ignored because the peer is no longer in
+    /// `self.peers` (`is_current = false`).
+    ///
+    /// Hot-path: returns cheaply when every peer (active, pending,
+    /// known-addr) is already in `allowed`. Membership-preserving
+    /// federation `Evl`s (the common case in steady state) thus pay
+    /// only a short-circuit scan, not a full teardown loop.
+    fn handle_retain_peers(&mut self, allowed: HashSet<cesr::Digest256>) {
+        let needs_work = self.peers.keys().any(|p| !allowed.contains(p))
+            || self.pending_dials.keys().any(|p| !allowed.contains(p))
+            || self.peer_addrs.keys().any(|p| !allowed.contains(p));
+        if !needs_work {
+            return;
+        }
+        let dropped: Vec<cesr::Digest256> = self
+            .peers
+            .keys()
+            .copied()
+            .filter(|p| !allowed.contains(p))
+            .collect();
+        for peer in &dropped {
+            self.peers.remove(peer);
+            debug!(%peer, "retain_peers: dropped non-allowed peer");
+        }
+        // Sweep dial queues + address cache for any non-allowed peer
+        // (including peers we hadn't established a connection to yet).
+        self.pending_dials.retain(|p, _| allowed.contains(p));
+        self.peer_addrs.retain(|p, _| allowed.contains(p));
     }
 
     /// Handle the join flow: store bootstrap addresses and join the topic.
