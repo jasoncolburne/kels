@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let identity_client = kels_core::IdentityClient::new(&identity_url)?;
     let node_prefix = identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .map_err(|e| format!("Failed to fetch node prefix from identity service: {}", e))?;
     info!("Node prefix: {}", node_prefix);

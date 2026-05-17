@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let prefix = identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get prefix: {}", e))?;
 

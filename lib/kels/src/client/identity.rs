@@ -9,7 +9,12 @@ use crate::{KelsError, SignedKeyEventPage};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityInfo {
-    pub prefix: cesr::Digest256,
+    /// The node's gossip-service KEL prefix.
+    pub kel_prefix: cesr::Digest256,
+    /// The node's identity (IEL) prefix. `None` until the IEL has been
+    /// incepted (post-reconciliation in identity startup).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub iel_prefix: Option<cesr::Digest256>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,11 +148,27 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn get_prefix(&self) -> Result<cesr::Digest256, KelsError> {
+    /// Full identity info: KEL prefix (always present) and IEL prefix
+    /// (`None` until the IEL has been incepted by the identity service's
+    /// reconciliation step). One HTTP round-trip.
+    pub async fn get_info(&self) -> Result<IdentityInfo, KelsError> {
         let url = format!("{}/api/v1/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
-        let info: IdentityInfo = self.parse_response(response).await?;
-        Ok(info.prefix)
+        self.parse_response(response).await
+    }
+
+    /// The node's gossip-service KEL prefix. Always present after KEL
+    /// inception (the very first step of identity startup).
+    pub async fn get_kel_prefix(&self) -> Result<cesr::Digest256, KelsError> {
+        Ok(self.get_info().await?.kel_prefix)
+    }
+
+    /// The node's identity (IEL) prefix. `None` until the IEL has been
+    /// incepted by the identity service's reconciliation step. Callers that
+    /// need the canonical peer identifier should use this rather than the
+    /// KEL prefix.
+    pub async fn get_iel_prefix(&self) -> Result<Option<cesr::Digest256>, KelsError> {
+        Ok(self.get_info().await?.iel_prefix)
     }
 
     pub async fn get_key_events(
@@ -162,6 +183,68 @@ impl IdentityClient {
         };
         let response = self.client.post(&url).json(&body).send().await?;
         self.parse_response(response).await
+    }
+
+    /// Fetch the node's own IEL events, paginated. Used at gossip startup
+    /// to propagate the IEL to the local sadstore service (mirrors how
+    /// `get_key_events` + the existing gossip KEL-push step propagates the
+    /// KEL to the local kels service).
+    pub async fn get_identity_events(
+        &self,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<crate::IdentityEventPage, KelsError> {
+        let url = format!("{}/api/v1/identity/iel", self.base_url);
+        let body = crate::IdentityKelPageRequest {
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
+        self.parse_response(response).await
+    }
+
+    /// Fetch a page of the node's own SEL events for a given chain prefix
+    /// (e.g. the peer/services or peer/gossip chain). Used at gossip
+    /// startup to propagate per-peer SEL chains to the local sadstore.
+    pub async fn get_sel_events(
+        &self,
+        prefix: &cesr::Digest256,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<crate::SadEventPage, KelsError> {
+        let url = format!("{}/api/v1/identity/sel", self.base_url);
+        let body = crate::SadEventPageRequest {
+            prefix: *prefix,
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
+        self.parse_response(response).await
+    }
+
+    /// Fetch a cached SAD body from the identity service by its SAID.
+    /// Used at gossip startup to push the SAD bodies referenced by SEL
+    /// `Upd` events to the local sadstore before pushing the chain
+    /// events themselves (sadstore's submit handler rejects Upd events
+    /// whose content body isn't already present).
+    pub async fn get_sad_object(
+        &self,
+        said: &cesr::Digest256,
+    ) -> Result<serde_json::Value, KelsError> {
+        let url = format!("{}/api/v1/identity/sad/fetch", self.base_url);
+        let body = crate::SadFetchRequest {
+            said: *said,
+            disclosure: None,
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
+
+        if response.status().is_success() {
+            Ok(response.json().await?)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(KelsError::NotFound(said.to_string()))
+        } else {
+            Err(self.request_error(response).await)
+        }
     }
 
     pub async fn anchor(&self, said: &cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
@@ -202,7 +285,7 @@ impl IdentityClient {
         &self,
         request: &ManageKelRequest,
     ) -> Result<ManageKelResponse, KelsError> {
-        let prefix = self.get_prefix().await?;
+        let prefix = self.get_kel_prefix().await?;
 
         // as_ref() returns the QB64 &str — same bytes as qb64b() but the identity
         // sign endpoint takes &str, not &[u8].

@@ -29,6 +29,7 @@ macro_rules! retry_once {
 }
 
 #[cfg(feature = "redis")]
+pub mod address_resolver;
 pub mod cache;
 
 #[cfg(feature = "server")]
@@ -78,6 +79,9 @@ pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
 };
+pub use address_resolver::{
+    AddressResolver, ClientAddressResolver, resolve_peer_services_domain, service_url,
+};
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::{
     AnchorPermanentFailure, DeferredFailure, IdentityBindingViolation, KelsError, MissingIelEvent,
@@ -94,13 +98,14 @@ pub use sad::{
 pub use sad_builder::{FlushOutcome, SadEventBuilder};
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
-    FileKelStore, FileSadStore, IdentityStore, InMemoryIdentityStore, InMemorySadStore, KelStore,
-    KelStoreSink, RepositoryKelStore, SadStore,
+    CascadingSadStore, FileKelStore, FileSadStore, IdentityStore, InMemoryIdentityStore,
+    InMemorySadStore, KelStore, KelStoreSink, RemoteSadStore, RepositoryKelStore, SadStore,
 };
 pub use types::{
     AdditionHistory, AdditionWithVotes, AdminRequest, AnchorEvaluation, Availability, BranchTip,
     CachedKel, CompletedProposalsResponse, Custody, CustodyValidationError, DeferredDepsResponse,
-    EffectiveSaidResponse, ErrorCode, ErrorResponse, EventSignature, FederationStatus, HttpIelSink,
+    EffectiveSaidResponse, ErrorCode, ErrorResponse, EventSignature, FederationStatus,
+    HttpIelSink,
     HttpIelSource, HttpKelSink, HttpKelSource, HttpSelSink, HttpSelSource, IdentityBranchTip,
     IdentityEvent, IdentityEventEffectiveSaidRequest, IdentityEventExistsRequest,
     IdentityEventKind, IdentityEventPage, IdentityEventPageRequest, IdentityEventTerminalState,
@@ -117,14 +122,18 @@ pub use types::{
     RaftLogEntry, RaftState, RaftVote, RecoveryRecord, RecoveryRecordPage, RemovalHistory,
     RemovalWithVotes, SadBranchTip, SadEvent, SadEventEffectiveSaidRequest, SadEventKind,
     SadEventPage, SadEventPageRequest, SadEventRepair, SadEventRepairPage, SadEventTailRequest,
-    SadEventTerminalState, SadFetchRequest, SadObjectEntry, SadObjectListResponse,
-    SadRepairPageRequest, SadRepairsRequest, SadStorePageLoader, SelPageLoader, SelRepairEvent,
-    SelVerification, SelVerifier, SignedKeyEvent, SignedKeyEventPage, SignedRequest,
-    SignedSadFetchRequest, StoreKelSource, SubmitIdentityEventsResponse, SubmitKeyEventsResponse,
-    SubmitSadEventsResponse, TransientChainState, UnavailableIelResolver, Vote,
-    collect_identity_event_saids, collect_identity_event_saids_from_loader, completed_verification,
-    compute_federation_governance_threshold, compute_identity_event_prefix, compute_rotation_hash,
-    compute_sad_event_prefix, forward_identity_events, forward_key_events, forward_sel_events,
+    PEER_GOSSIP_SEL_TOPIC, PEER_SERVICES_SEL_TOPIC, PeerGossipSad, PeerSelInceptionBatch,
+    PeerSelRotationBatch, PeerServicesSad, SadEventTerminalState, SadFetchRequest, SadObjectEntry,
+    SadObjectListResponse, SadRepairPageRequest, SadRepairsRequest, SadStorePageLoader,
+    SelPageLoader, SelRepairEvent, SelVerification, SelVerifier, SignedKeyEvent, SignedKeyEventPage,
+    SignedRequest, SignedSadFetchRequest, StoreKelSource, SubmitIdentityEventsResponse,
+    SubmitKeyEventsResponse, SubmitSadEventsResponse, TransientChainState, UnavailableIelResolver,
+    Vote, collect_identity_event_saids, collect_identity_event_saids_from_loader,
+    completed_verification, compute_federation_governance_threshold,
+    compute_identity_event_prefix, compute_peer_gossip_sel_prefix,
+    compute_peer_services_sel_prefix, compute_rotation_hash, compute_sad_event_prefix,
+    forward_identity_events, forward_key_events, forward_sel_events, incept_peer_gossip_sel,
+    incept_peer_services_sel, rotate_peer_gossip_sel, rotate_peer_services_sel,
     hash_effective_said, iel_completed_verification, iel_completed_verification_with_queried,
     parse_and_validate_availability, parse_and_validate_custody, sel_completed_verification,
     single_signer, truncate_incomplete_generation, validate_timestamp, verify_identity_events,

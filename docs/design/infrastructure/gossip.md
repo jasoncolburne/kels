@@ -144,7 +144,6 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 | `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
-| `AUTH_POLICY_REFRESH_INTERVAL_SECS` | Background interval to re-check the federation IEL `authPolicy` (defense against missed gossip-driven invalidations) | `60` |
 
 ## Design Decisions
 
@@ -185,16 +184,16 @@ Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (
 ### Federation-IEL-based discovery (not hardcoded bootstrap peers)
 
 - Nodes hold the federation IEL locally and enumerate authorized peers from its current `authPolicy`
-- Each peer publishes its current network endpoints via a per-peer address SEL; nodes walk those SELs to resolve addresses
+- Each peer publishes via two per-peer SELs: a public `peer/services` chain (service base domain; clients derive URLs via the subdomain convention) and a federation-gated `peer/gossip` chain (gossip mesh `host:port`). Nodes walk both for federation members; end-user clients walk only `peer/services`
 - Initial state on a fresh node arrives via `transfer_*_events` (operator-coordinated, point-to-point) during the federation bootstrap ceremony or peer-onboarding; after that, the node participates in the gossip mesh and propagation runs normally
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
 - See [discovery.md](discovery.md) for the full node-side discovery flow and [federation.md](federation.md) for the federation-as-identity model
 
 ## Transport reachability
 
-The gossip protocol is TCP-based. Each peer publishes its advertised gossip endpoint (`host:port`) in its per-peer address SEL (see [discovery.md](discovery.md)). Other peers connect to that endpoint to gossip.
+The gossip protocol is TCP-based. Each peer publishes its advertised gossip endpoint (`host:port`) in its `peer/gossip` SEL (see [discovery.md](discovery.md)). Other peers connect to that endpoint to gossip.
 
-Production deployments must ensure each peer's advertised endpoint is reachable from every other peer in the federation — by whatever mechanism the deployment provides (public IPs, mesh routing, NAT traversal, LoadBalancer / NodePort / Gateway API TCPRoute in Kubernetes, etc.). The endpoint published in the address SEL must be the externally-routable one, not a local-only address; the gossip service surfaces this via `GOSSIP_ADVERTISE_ADDR`.
+Production deployments must ensure each peer's advertised endpoint is reachable from every other peer in the federation — by whatever mechanism the deployment provides (public IPs, mesh routing, NAT traversal, LoadBalancer / NodePort / Gateway API TCPRoute in Kubernetes, etc.). The endpoint published in the `peer/gossip` SEL must be the externally-routable one, not a local-only address; the gossip service surfaces this via `GOSSIP_ADVERTISE_ADDR`.
 
 The in-repo Kubernetes test harness (see [`../../validation/k8s-test-harness.md`](../../validation/k8s-test-harness.md)) configures cross-namespace TCP via ClusterIP services and CoreDNS rewrites inside a single cluster. That is a test setup, not a production deployment recipe.
 

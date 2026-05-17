@@ -51,6 +51,9 @@ pub struct AppState {
     pub forward_url: Option<String>,
     pub forward_path_prefix: String,
     pub http_client: reqwest::Client,
+    /// Populated by the reconciliation step once the node's IEL has been
+    /// incepted. `None` before that (initial cold boot, mid-reconciliation).
+    pub iel_prefix: RwLock<Option<cesr::Digest256>>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -96,11 +99,16 @@ pub async fn get_identity(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<IdentityInfo>, ApiError> {
     let builder = state.builder.read().await;
-    let prefix = builder
+    let kel_prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    Ok(Json(IdentityInfo { prefix: *prefix }))
+    let iel_prefix = *state.iel_prefix.read().await;
+
+    Ok(Json(IdentityInfo {
+        kel_prefix: *kel_prefix,
+        iel_prefix,
+    }))
 }
 
 pub async fn get_status(
@@ -167,6 +175,128 @@ pub async fn get_key_events(
     .await?;
 
     Ok(Json(page))
+}
+
+/// Serving endpoint — returns paginated IEL events for the node's own
+/// peer-identity IEL. No verification needed; the receiver verifies.
+///
+/// `since` cursor is honored; `prefix` is ignored (the identity service
+/// holds exactly one IEL chain — its own — so the prefix is implicit).
+pub async fn get_identity_events(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::IdentityKelPageRequest>,
+) -> Result<Json<kels_core::IdentityEventPage>, ApiError> {
+    let iel_prefix = state.iel_prefix.read().await.ok_or_else(|| {
+        ApiError::internal("Identity service has not yet reconciled its IEL")
+    })?;
+
+    // Fetch the full chain (single-author, single chain — bounded by the
+    // node's authoring activity). `limit` clamps the result; `since`
+    // advances the cursor by SAID.
+    let chain = state
+        .repo
+        .iel
+        .fetch_chain(&iel_prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("IEL fetch: {e}")))?;
+
+    let limit = request
+        .limit
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size());
+
+    let start = match request.since.as_ref() {
+        Some(cursor) => chain
+            .iter()
+            .position(|e| &e.said == cursor)
+            .map(|i| i + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    let end_inclusive = start.saturating_add(limit);
+    let has_more = end_inclusive < chain.len();
+    let end = end_inclusive.min(chain.len());
+
+    let page = kels_core::IdentityEventPage {
+        events: if start >= chain.len() {
+            Vec::new()
+        } else {
+            chain[start..end].to_vec()
+        },
+        has_more,
+    };
+    Ok(Json(page))
+}
+
+/// Serving endpoint — returns paginated SEL events for a given chain
+/// prefix the identity service owns (peer/services or peer/gossip). No
+/// verification needed; the receiver verifies.
+pub async fn get_sel_events(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadEventPageRequest>,
+) -> Result<Json<kels_core::SadEventPage>, ApiError> {
+    let chain = state
+        .repo
+        .sel
+        .fetch_chain(&request.prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("SEL fetch: {e}")))?;
+
+    let limit = request
+        .limit
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size());
+
+    let start = match request.since.as_ref() {
+        Some(cursor) => chain
+            .iter()
+            .position(|e| &e.said == cursor)
+            .map(|i| i + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    let end_inclusive = start.saturating_add(limit);
+    let has_more = end_inclusive < chain.len();
+    let end = end_inclusive.min(chain.len());
+
+    let page = kels_core::SadEventPage {
+        events: if start >= chain.len() {
+            Vec::new()
+        } else {
+            chain[start..end].to_vec()
+        },
+        has_more,
+    };
+    Ok(Json(page))
+}
+
+/// Serving endpoint — returns a cached SAD body by its SAID. Used at
+/// gossip startup to fetch the SAD bodies the node authored (so gossip
+/// can push them to sadstore before pushing the referencing SEL `Upd`
+/// events).
+///
+/// Returns `404` if the SAD is not in the local cache (i.e. not authored
+/// by this node).
+pub async fn get_sad_object(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadFetchRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let entry = state
+        .repo
+        .sad_objects
+        .get_by_object_said(&request.said)
+        .await
+        .map_err(|e| ApiError::internal(format!("SAD object fetch: {e}")))?;
+
+    match entry {
+        Some(e) => Ok(Json(e.object)),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("SAD {} not found", request.said),
+            }),
+        )),
+    }
 }
 
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
@@ -386,11 +516,30 @@ mod tests {
 
     #[test]
     fn test_identity_info_serialization() {
-        let prefix = test_digest("prefix-123");
-        let info = IdentityInfo { prefix };
+        let kel_prefix = test_digest("kel-prefix-123");
+        let iel_prefix = test_digest("iel-prefix-123");
+        let info = IdentityInfo {
+            kel_prefix,
+            iel_prefix: Some(iel_prefix),
+        };
         let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("prefix"));
-        assert!(json.contains(prefix.as_ref()));
+        assert!(json.contains("kelPrefix"));
+        assert!(json.contains("ielPrefix"));
+        assert!(json.contains(kel_prefix.as_ref()));
+        assert!(json.contains(iel_prefix.as_ref()));
+    }
+
+    #[test]
+    fn test_identity_info_serialization_pre_iel_inception() {
+        let kel_prefix = test_digest("kel-prefix-only");
+        let info = IdentityInfo {
+            kel_prefix,
+            iel_prefix: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("kelPrefix"));
+        // iel_prefix is skip_serializing_if = None → absent on the wire.
+        assert!(!json.contains("ielPrefix"));
     }
 
     #[test]
@@ -461,10 +610,12 @@ mod tests {
     #[test]
     fn test_identity_info_roundtrip() {
         let original = IdentityInfo {
-            prefix: test_digest("prefix"),
+            kel_prefix: test_digest("kel"),
+            iel_prefix: Some(test_digest("iel")),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.prefix, parsed.prefix);
+        assert_eq!(original.kel_prefix, parsed.kel_prefix);
+        assert_eq!(original.iel_prefix, parsed.iel_prefix);
     }
 }

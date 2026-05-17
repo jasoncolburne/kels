@@ -1,28 +1,34 @@
 //! Bootstrap synchronization for new gossip nodes.
 //!
 //! When a new node joins the network, it needs to sync existing KELs from peers.
-//! The bootstrap process handles the allowlist authorization check and avoids
-//! missing events during the transition from unauthorized to authorized state.
+//! The bootstrap process handles the authorization check and avoids missing
+//! events during the transition from unauthorized to authorized state.
 //!
 //! # Algorithm
 //!
-//! 1. **Authorization check**: Check if peer is in allowlist via `/api/v1/peers`
-//! 2. **If NOT authorized**: Loop:
-//!    - Log alert with PeerId (so admin can add it)
-//!    - **preload_kels()**: Sync KELs from Ready peers (read-only via HTTP)
-//!    - Sleep 15 minutes and recheck allowlist (#157 cross-pressure
-//!      mitigation; see `lib.rs:437-442` for rationale)
+//! 1. **Authorization check**: federation IEL `authPolicy` membership lookup
+//!    (`crate::authorization::is_peer_authorized`).
+//! 2. **If NOT authorized**: log alert with the peer's IEL prefix, sleep 15
+//!    minutes, recheck.
 //! 3. **Once authorized**:
-//!    - **discover_peers()**: Query registry, register as Bootstrapping
-//!    - Start gossip swarm with discovered peers
-//! 4. **If Ready peers exist**: Wait for first `PeerConnected` event
-//!    - **resync_kels()**: Catch events missed between preload and connection
-//! 5. **If no Ready peers**: Skip resync (we're the first/only node)
-//! 6. **mark_ready()**: Update status to Ready
+//!    - **discover_peers()**: returns the set of peers to dial.
+//!    - Start gossip swarm with discovered peers.
+//! 4. **If Ready peers exist**: Wait for first `PeerConnected` event.
+//!    - **resync_kels()**: Catch events missed between preload and connection.
+//! 5. **If no Ready peers**: Skip resync (we're the first/only node).
+//! 6. **mark_ready()**: Update status to Ready.
 //!
 //! The resync in step 4 is critical: while the node was unauthorized, it could
 //! preload KELs via HTTP. But events occurring between the last preload and
 //! joining the gossip network would be missed. The resync catches these events.
+//!
+//! **Current state (#195)**: peer URL discovery is migrating from the
+//! registry-driven allowlist to per-peer `peer/services` SEL chains
+//! (resolved via the `kels_core::AddressResolver` trait — see
+//! `services/gossip/src/address_resolver.rs`). The bootstrap preload paths
+//! are currently structural no-ops (`get_ready_peers` returns empty); a
+//! follow-up gap wires `BootstrapSync` to the resolver for cold-start
+//! catch-up via direct HTTP sync from `peer/services`-published peers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,13 +105,17 @@ pub struct DiscoveryResult {
 /// Pre-#194 this was wired to the registry-fetched allowlist for both peer
 /// discovery and authorization. #194 (federation-as-identity) moves the
 /// authority to the federation IEL — see `crate::authorization`. Peer URL
-/// discovery (the address-list side) waits on #195's address SELs; through
-/// the #194 window the `allowlist` field is structurally an empty map, and
-/// preload paths degrade to no-ops.
+/// discovery (the address-list side) moves to #195's `peer/services` SEL
+/// chains via the `kels_core::AddressResolver` trait. Until `BootstrapSync`
+/// is wired to the resolver in a follow-up gap, preload paths are
+/// structural no-ops — `get_ready_peers` returns empty and each
+/// `preload_*` short-circuits on the empty list.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    allowlist: crate::authorization::SharedAllowlist,
     signer: Arc<dyn PeerSigner>,
+    /// HTTP client for peer `/ready` probes. Currently unused — see
+    /// `is_peer_ready` and `BootstrapSync`'s docstring.
+    #[allow(dead_code)]
     http_client: reqwest::Client,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
     /// Shared deferred-deps pending map. When set, IEL/SEL preload failures
@@ -117,11 +127,9 @@ pub struct BootstrapSync {
 }
 
 impl BootstrapSync {
-    /// Create a new BootstrapSync with the shared peer-address map and the
-    /// node's identity signer.
+    /// Create a new BootstrapSync with the node's identity signer.
     pub fn new(
         config: BootstrapConfig,
-        allowlist: crate::authorization::SharedAllowlist,
         signer: Arc<dyn PeerSigner>,
     ) -> Result<Self, BootstrapError> {
         let http_client = reqwest::Client::builder()
@@ -132,7 +140,6 @@ impl BootstrapSync {
 
         Ok(Self {
             config,
-            allowlist,
             signer,
             http_client,
             redis: None,
@@ -155,25 +162,19 @@ impl BootstrapSync {
         self
     }
 
-    /// Phase 1: Discover peers from the allowlist.
-    /// Returns peers to connect to for gossip. Call this BEFORE starting the gossip swarm.
+    /// Phase 1: Discover peers to connect to for gossip. Call this BEFORE
+    /// starting the gossip swarm.
+    ///
+    /// Currently returns an empty set — see `BootstrapSync`'s docstring.
+    /// The follow-up gap wires the `AddressResolver` here.
     pub async fn discover_peers(&self) -> Result<DiscoveryResult, BootstrapError> {
         info!("Discovering peers for node {}", self.config.node_id);
-
-        let allowlist = self.allowlist.read().await;
-        let peers: Vec<kels_core::Peer> = allowlist.values().cloned().collect();
-        info!("Found {} peer(s) in allowlist", peers.len());
-
-        Ok(DiscoveryResult { peers })
+        Ok(DiscoveryResult { peers: Vec::new() })
     }
 
-    /// Preload KELs from Ready peers while not yet in the allowlist.
-    ///
-    /// This allows unauthorized nodes to stay in sync with KEL data while waiting
-    /// to be added to the allowlist. Called in the unauthorized wait loop.
-    /// No registration is performed - just HTTP-based KEL sync.
+    /// Preload KELs from Ready peers via HTTP. Called once authorized to
+    /// catch up on missed events before joining the gossip mesh.
     pub async fn preload_kels(&self) -> Result<(), BootstrapError> {
-        // Get Ready peers from allowlist
         let ready_peers = self.get_ready_peers().await;
 
         if ready_peers.is_empty() {
@@ -818,27 +819,15 @@ impl BootstrapSync {
         Ok(())
     }
 
-    /// Get peers from allowlist that are ready (respond to /ready with success).
+    /// Get the discovered peers that are ready (respond to `/ready` with
+    /// success). Currently returns empty — see `BootstrapSync`'s docstring.
     async fn get_ready_peers(&self) -> Vec<kels_core::Peer> {
-        let allowlist = self.allowlist.read().await;
-        let mut ready_peers = Vec::new();
-        for peer in allowlist.values() {
-            if self.is_peer_ready(peer).await {
-                ready_peers.push(peer.clone());
-            }
-        }
-        ready_peers
+        Vec::new()
     }
 
-    /// Check if there are Ready peers we should resync from.
-    /// Queries each peer's HTTP /ready endpoint directly.
+    /// Check if there are Ready peers we should resync from. Currently
+    /// returns false — see `BootstrapSync`'s docstring.
     pub async fn has_ready_peers(&self) -> bool {
-        let allowlist = self.allowlist.read().await;
-        for peer in allowlist.values() {
-            if self.is_peer_ready(peer).await {
-                return true;
-            }
-        }
         false
     }
 
@@ -846,6 +835,10 @@ impl BootstrapSync {
     ///
     /// Constructs the URL from the peer's gossip address hostname and the
     /// configured HTTP port (all gossip services share the same HTTP port).
+    /// Currently unreachable — `get_ready_peers` returns empty. Kept around
+    /// for the follow-up gap that wires `BootstrapSync` to the address
+    /// resolver.
+    #[allow(dead_code)]
     async fn is_peer_ready(&self, peer: &kels_core::Peer) -> bool {
         let host = peer
             .gossip_addr

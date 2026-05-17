@@ -145,7 +145,7 @@ impl AdminContext {
             std::env::var("REGISTRY_URL").unwrap_or_else(|_| "http://localhost".to_string());
 
         let identity_client = IdentityClient::new(&identity_url)?;
-        let self_prefix = identity_client.get_prefix().await?;
+        let self_prefix = identity_client.get_kel_prefix().await?;
         let registry_client = KelsRegistryClient::new(&registry_url)?;
 
         Ok(Self {
@@ -239,7 +239,7 @@ async fn propose_peer(
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .context("Failed to get proposer prefix")?;
 
@@ -284,7 +284,7 @@ async fn propose_removal(ctx: &AdminContext, peer_kel_prefix: &str) -> anyhow::R
     // Get this registry's prefix as proposer
     let proposer = ctx
         .identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .context("Failed to get proposer prefix")?;
 
@@ -327,7 +327,7 @@ async fn vote_proposal(
     // Get this registry's prefix
     let voter = ctx
         .identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .context("Failed to get voter prefix")?;
 
@@ -716,7 +716,7 @@ async fn show_identity_status(
 ) -> anyhow::Result<()> {
     let prefix = ctx
         .identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .context("Failed to get identity prefix")?;
     let mut all_events = Vec::new();

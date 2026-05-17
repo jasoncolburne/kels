@@ -27,6 +27,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/identity", get(handlers::get_identity))
         .route("/api/v1/identity/status", get(handlers::get_status))
         .route("/api/v1/identity/kel", post(handlers::get_key_events))
+        .route("/api/v1/identity/iel", post(handlers::get_identity_events))
+        .route("/api/v1/identity/sel", post(handlers::get_sel_events))
+        .route("/api/v1/identity/sad/fetch", post(handlers::get_sad_object))
         .route("/api/v1/identity/kel/manage", post(handlers::manage_kel))
         .route("/api/v1/identity/anchor", post(handlers::anchor))
         .route("/api/v1/identity/sign", post(handlers::sign))
@@ -55,6 +58,8 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         std::env::var("NEXT_SIGNING_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
     let next_recovery_algorithm =
         std::env::var("NEXT_RECOVERY_ALGORITHM").unwrap_or_else(|_| "ml-dsa-65".to_string());
+    let peer_domain = std::env::var("PEER_DOMAIN")
+        .map_err(|_| "PEER_DOMAIN must be set (base domain for this peer's published services)")?;
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
@@ -82,7 +87,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     ));
     let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(kel_repo.clone()));
 
-    let builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
+    let mut builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
     {
         let prefix = mapping.kel_prefix;
         info!("Found identity prefix: {}", prefix);
@@ -207,6 +212,30 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         builder
     };
 
+    // Reconcile peer-identity primitives — incept what's absent, restore
+    // what's present, rotate when config drifts. Identity stores locally;
+    // gossip pushes to sadstore at its own startup (matches the KEL push
+    // pattern). Operates against `builder` directly so anchors land before
+    // AppState wraps it in a lock.
+    let kel_prefix = *builder.prefix().ok_or("builder missing KEL prefix")?;
+    let iel_prefix = crate::reconciliation::reconcile_iel(&repo, &mut builder, kel_prefix)
+        .await
+        .map_err(|e| format!("IEL reconciliation: {e}"))?;
+    info!(iel_prefix = %iel_prefix, "IEL reconciliation complete");
+
+    let reconcile_config = crate::reconciliation::ReconcileConfig {
+        domain: peer_domain,
+    };
+    crate::reconciliation::reconcile_peer_services_sel(
+        &repo,
+        &mut builder,
+        iel_prefix,
+        &reconcile_config,
+    )
+    .await
+    .map_err(|e| format!("peer/services SEL reconciliation: {e}"))?;
+    info!("peer/services SEL reconciliation complete");
+
     let state = Arc::new(AppState {
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
@@ -214,6 +243,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         forward_url,
         forward_path_prefix,
         http_client,
+        iel_prefix: RwLock::new(Some(iel_prefix)),
     });
 
     let rotation_state = state.clone();

@@ -154,6 +154,26 @@ impl Gossip {
             .map_err(|_| Error::Shutdown)
     }
 
+    /// Retain only the listed peer identities. Connections, pending
+    /// dials, and cached addresses for any peer not in `allowed` are
+    /// dropped synchronously inside the actor; on-demand redial of those
+    /// peers is also blocked (their cached address is purged).
+    ///
+    /// Used by the application layer to enact eager membership teardown
+    /// when authorization policy evolves (e.g., a federation IEL `Evl`
+    /// removes a peer). The application is responsible for computing the
+    /// allowed set fresh from authoritative state on each call — no
+    /// caching at this layer.
+    pub async fn retain_peers(
+        &self,
+        allowed: std::collections::HashSet<cesr::Digest256>,
+    ) -> Result<(), Error> {
+        self.cmd_tx
+            .send(Command::RetainPeers { allowed })
+            .await
+            .map_err(|_| Error::Shutdown)
+    }
+
     /// Subscribe to gossip events.
     ///
     /// Returns a broadcast receiver that yields [`Event`]s from all topics.

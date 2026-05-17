@@ -191,8 +191,25 @@ impl PeerVerifier for KelsPeerVerifier {
         data: &[u8],
         signature: &[u8],
     ) -> Result<(), GossipError> {
-        // Phase 1: authenticate signature against the peer's local KEL tip.
-        let kel_key = self.public_key_from_key_events(peer).await?;
+        // `peer` is the peer's identity (IEL prefix) — what the gossip
+        // protocol transmits as the identity claim. The KEL prefix is a
+        // signing-key custody detail bundled internally below; callers
+        // never reference it.
+
+        // Phase 1: resolve the peer's IEL → its current signing KEL
+        // (via the degenerate single-KEL identity convention), then walk
+        // that KEL for the current public key and verify the signature.
+        let signing_kel = crate::authorization::resolve_peer_signing_kel(
+            peer,
+            &self.federation_evaluator,
+        )
+        .await
+        .map_err(|e| {
+            GossipError::VerificationFailed(format!(
+                "resolve signing KEL for peer {peer}: {e}"
+            ))
+        })?;
+        let kel_key = self.public_key_from_key_events(&signing_kel).await?;
         verify_signature(data, signature, &kel_key)?;
 
         // Phase 2: walk the federation IEL fresh from the local sadstore.
@@ -208,15 +225,9 @@ impl PeerVerifier for KelsPeerVerifier {
                     ))
                 })?;
 
-        // Phase 3: authorize via federation IEL's current authPolicy.
-        let authorized = is_peer_authorized(&federation_state, peer, &self.federation_evaluator)
-            .await
-            .map_err(|e| {
-                GossipError::VerificationFailed(format!(
-                    "federation authorization check for {peer}: {e}"
-                ))
-            })?;
-        if !authorized {
+        // Phase 3: direct membership check — is the peer's IEL in the
+        // federation's current `authPolicy` member set?
+        if !is_peer_authorized(&federation_state, peer) {
             return Err(GossipError::VerificationFailed(format!(
                 "Peer {peer} is not authorized by the federation IEL's current authPolicy"
             )));

@@ -24,7 +24,6 @@ use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::{
-    authorization::SharedAllowlist,
     pending::{DepRef, ParkRecord, ParkSubject, PendingMap},
     types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement},
 };
@@ -58,7 +57,7 @@ pub enum SyncError {
 /// and broadcasts them to the gossip network.
 pub async fn run_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
@@ -88,7 +87,7 @@ pub async fn run_redis_subscriber(
         // otherwise (contested-synthetic, normal-tip, Dec'd-tip)
         // re-evaluate every park enrolled on this prefix.
         // Spec line 184 — re-eval, not drop-on-contested.
-        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix);
         if let (Some(ann), Some(drain)) = (parsed.as_ref(), drain.as_ref()) {
             let divergent_synthetic = hash_effective_said(&format!("divergent:{}", ann.prefix));
             if ann.said != divergent_synthetic {
@@ -139,7 +138,7 @@ const SEL_PUBSUB_CHANNEL: &str = "sel_updates";
 /// Broadcasts announcements to the gossip network on the SAD topic.
 pub async fn run_sad_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
@@ -188,10 +187,10 @@ pub async fn run_sad_redis_subscriber(
             }
             SadAnnouncement::Object {
                 said: said_digest,
-                origin: local_kel_prefix,
+                origin: local_iel_prefix,
             }
         } else if channel == SEL_PUBSUB_CHANNEL {
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix) {
                 // #156: synthetic-SAID dispatch — divergent → no-op,
                 // everything else (contested-synthetic, normal-tip,
                 // Dec'd-tip) → re-eval every park (spec line 184).
@@ -210,7 +209,7 @@ pub async fn run_sad_redis_subscriber(
                 SadAnnouncement::Event {
                     prefix: ann.prefix,
                     said: ann.said,
-                    origin: local_kel_prefix,
+                    origin: local_iel_prefix,
                 }
             } else {
                 warn!(channel = %channel, payload = %payload, "Failed to parse SAD Event Log update");
@@ -260,10 +259,12 @@ const IEL_PUBSUB_CHANNEL: &str = "iel_updates";
 /// `IelAnnouncement` over the gossip network.
 pub async fn run_iel_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
+    federation_iel_prefix: cesr::Digest256,
+    federation_evaluator: Arc<crate::authorization::FederationEvaluator>,
 ) -> Result<(), SyncError> {
     let client = redis::Client::open(redis_url)?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -283,7 +284,7 @@ pub async fn run_iel_redis_subscriber(
 
         debug!(payload = %payload, "IEL Redis message received");
 
-        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix);
 
         // #156: synthetic-SAID dispatch — divergent → no-op, everything
         // else (contested-synthetic, normal-tip, Dec event SAID) →
@@ -319,8 +320,52 @@ pub async fn run_iel_redis_subscriber(
         let announcement = IelAnnouncement {
             prefix: ann.prefix,
             said: ann.said,
-            origin: local_kel_prefix,
+            origin: local_iel_prefix,
         };
+
+        // Federation membership-change parallel trigger: when the
+        // payload carries the federation IEL prefix, walk it fresh and
+        // dispatch `RetainPeers`. The inbound `handle_iel_announcement`
+        // path catches remote-originated changes; this subscriber path
+        // catches locally-originated changes (the local sadstore just
+        // accepted an Evl), since the rebroadcast we emit below never
+        // arrives back at our own `handle_iel_announcement`.
+        if ann.prefix == federation_iel_prefix {
+            match crate::authorization::walk_federation_iel(
+                &federation_iel_prefix,
+                federation_evaluator.as_ref(),
+            )
+            .await
+            {
+                Ok(state) => {
+                    let allowed: std::collections::HashSet<cesr::Digest256> =
+                        state.members.into_iter().collect();
+                    let count = allowed.len();
+                    if command_tx
+                        .send(GossipCommand::RetainPeers(allowed))
+                        .await
+                        .is_err()
+                    {
+                        error!(
+                            "Failed to send RetainPeers from iel_updates subscriber - \
+                             channel closed"
+                        );
+                        return Err(SyncError::ChannelClosed);
+                    }
+                    debug!(
+                        allowed = count,
+                        "iel_updates: dispatched RetainPeers for local federation IEL update"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        federation_iel = %federation_iel_prefix,
+                        error = %e,
+                        "federation IEL re-walk after local update failed; skipping retain"
+                    );
+                }
+            }
+        }
 
         if command_tx
             .send(GossipCommand::Iel(announcement))
@@ -533,7 +578,7 @@ pub(crate) fn deferred_deps_to_park_inputs(
 #[derive(Clone)]
 pub struct DrainExecutor {
     sadstore_client: kels_core::SadStoreClient,
-    allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     pending: PendingMap,
     permits: Arc<tokio::sync::Semaphore>,
 }
@@ -541,13 +586,13 @@ pub struct DrainExecutor {
 impl DrainExecutor {
     pub fn new(
         sadstore_url: &str,
-        allowlist: SharedAllowlist,
+        address_resolver: Arc<dyn kels_core::AddressResolver>,
         pending: PendingMap,
     ) -> Result<Self, KelsError> {
         let n = kels_core::env_usize("KELS_DEFERRED_DRAIN_PERMITS", 8);
         Ok(Self {
             sadstore_client: kels_core::SadStoreClient::new(sadstore_url)?,
-            allowlist,
+            address_resolver,
             pending,
             permits: Arc::new(tokio::sync::Semaphore::new(n)),
         })
@@ -601,10 +646,16 @@ impl DrainExecutor {
         });
     }
 
-    async fn peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
-        let guard = self.allowlist.read().await;
-        let peer = guard.get(peer_kel_prefix)?;
-        Some(format!("http://sadstore.{}", peer.base_domain))
+    async fn peer_sadstore_url(&self, peer_iel_prefix: &cesr::Digest256) -> Option<String> {
+        let domain = self
+            .address_resolver
+            .resolve_domain(peer_iel_prefix)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(peer = %peer_iel_prefix, error = %e, "address resolver failed for peer/services");
+                None
+            })?;
+        Some(kels_core::service_url("sadstore", &domain))
     }
 
     /// Drain a single parked record: read → look up origin URL → acquire
@@ -620,12 +671,13 @@ impl DrainExecutor {
         };
 
         let Some(sadstore_url) = self.peer_sadstore_url(&record.origin).await else {
-            // Origin not in allowlist (yet) — AE backstop applies; record
-            // TTLs out at 5 min if origin doesn't reappear.
+            // Origin not resolvable by the address resolver (yet) — AE
+            // backstop applies; record TTLs out at 5 min if origin
+            // doesn't reappear.
             debug!(
                 record_said = %record.said,
                 origin = %record.origin,
-                "drain: no allowlist entry for origin, falling through to AE backstop"
+                "drain: address resolver returned no URL for origin, falling through to AE backstop"
             );
             return;
         };
@@ -755,11 +807,23 @@ pub struct SyncHandler {
     signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<cesr::Digest256, cesr::Digest256>,
-    /// Shared allowlist for peer URL lookups
-    allowlist: SharedAllowlist,
+    /// Federation-aware peer URL resolver. Keyed by peer IEL prefix.
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
+    /// Federation IEL prefix — used to detect when an IEL announcement
+    /// reflects a federation-membership change and trigger eager
+    /// teardown via `GossipCommand::RetainPeers`.
+    federation_iel_prefix: cesr::Digest256,
+    /// Federation evaluator for fresh re-walks of the federation IEL
+    /// after the local sadstore has the new state. Shared with the
+    /// address resolver + handshake verifier.
+    federation_evaluator: Arc<crate::authorization::FederationEvaluator>,
+    /// Outbound command channel — used by the federation re-walk
+    /// trigger to send `GossipCommand::RetainPeers` after observing a
+    /// federation IEL membership change.
+    command_tx: mpsc::Sender<GossipCommand>,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
-    /// Per-peer fetch rate limiting: maps peer_kel_prefix -> (count, window_start)
+    /// Per-peer fetch rate limiting: maps peer IEL prefix -> (count, window_start)
     peer_fetch_counts: HashMap<cesr::Digest256, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
@@ -778,7 +842,10 @@ impl SyncHandler {
         kels_url: &str,
         sadstore_url: &str,
         mail_url: &str,
-        allowlist: SharedAllowlist,
+        address_resolver: Arc<dyn kels_core::AddressResolver>,
+        federation_iel_prefix: cesr::Digest256,
+        federation_evaluator: Arc<crate::authorization::FederationEvaluator>,
+        command_tx: mpsc::Sender<GossipCommand>,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
         signer: Arc<dyn kels_core::PeerSigner>,
@@ -792,7 +859,10 @@ impl SyncHandler {
             mail_client,
             signer,
             local_saids: HashMap::new(),
-            allowlist,
+            address_resolver,
+            federation_iel_prefix,
+            federation_evaluator,
+            command_tx,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             redis,
@@ -879,13 +949,20 @@ impl SyncHandler {
         }
     }
 
-    /// Get all peer KELS URLs from the allowlist
+    /// Enumerate `(peer_iel_prefix, kels_url)` for every currently-resolvable
+    /// federation peer. URL via the subdomain convention applied to the
+    /// peer's published base domain.
     async fn get_peer_kels_urls(&self) -> Vec<(cesr::Digest256, String)> {
-        let guard = self.allowlist.read().await;
-        guard
-            .values()
-            .map(|peer| (peer.kel_prefix, format!("http://kels.{}", peer.base_domain)))
-            .collect()
+        match self.address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("kels", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "address resolver list_domains failed; returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Process a gossip event
@@ -1321,6 +1398,7 @@ impl SyncHandler {
         let forward_err = match forward_result {
             Ok(()) => {
                 debug!(iel_prefix = %iel_prefix, "IEL replicated successfully");
+                self.maybe_fire_federation_retain(&iel_prefix).await;
                 return;
             }
             Err(e) => {
@@ -1362,8 +1440,57 @@ impl SyncHandler {
         };
         if retry.is_err() {
             self.recently_stored.write().await.remove(&cache_key);
+        } else {
+            self.maybe_fire_federation_retain(&iel_prefix).await;
         }
         self.handle_retry_outcome(&record, retry).await;
+    }
+
+    /// If `iel_prefix` is the federation IEL, walk it fresh from the
+    /// local sadstore and dispatch `GossipCommand::RetainPeers` with the
+    /// new member set. Idempotent at this layer — emits the command on
+    /// every federation IEL replication; the transport applies the set
+    /// (a no-op when membership didn't change). Walk failure (contested,
+    /// decommissioned, divergent, NotFound) → log + skip; preserves
+    /// "fail-closed-against-peers, fail-open-against-teardown": never
+    /// tear down all connections because the federation IEL became
+    /// unwalkable mid-stream.
+    async fn maybe_fire_federation_retain(&self, iel_prefix: &cesr::Digest256) {
+        if iel_prefix != &self.federation_iel_prefix {
+            return;
+        }
+        let state = match crate::authorization::walk_federation_iel(
+            &self.federation_iel_prefix,
+            self.federation_evaluator.as_ref(),
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    federation_iel = %self.federation_iel_prefix,
+                    error = %e,
+                    "federation IEL re-walk after replication failed; skipping retain_peers"
+                );
+                return;
+            }
+        };
+        let allowed: std::collections::HashSet<cesr::Digest256> =
+            state.members.into_iter().collect();
+        let count = allowed.len();
+        if self
+            .command_tx
+            .send(GossipCommand::RetainPeers(allowed))
+            .await
+            .is_err()
+        {
+            warn!("failed to dispatch RetainPeers (allowed={}): channel closed", count);
+        } else {
+            debug!(
+                allowed = count,
+                "dispatched RetainPeers after federation IEL replication"
+            );
+        }
     }
 
     /// Handle a mail gossip announcement — replicate metadata or process removal.
@@ -1396,11 +1523,18 @@ impl SyncHandler {
         }
     }
 
-    /// Derive a peer's SADStore URL from their base domain.
-    async fn get_peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
-        let guard = self.allowlist.read().await;
-        let peer = guard.get(peer_kel_prefix)?;
-        Some(format!("http://sadstore.{}", peer.base_domain))
+    /// Derive a peer's SADStore URL from its published base domain via
+    /// the subdomain convention.
+    async fn get_peer_sadstore_url(&self, peer_iel_prefix: &cesr::Digest256) -> Option<String> {
+        let domain = self
+            .address_resolver
+            .resolve_domain(peer_iel_prefix)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(peer = %peer_iel_prefix, error = %e, "address resolver failed for peer/services");
+                None
+            })?;
+        Some(kels_core::service_url("sadstore", &domain))
     }
 
     /// Handle an announcement from a peer.
@@ -1629,7 +1763,9 @@ pub async fn run_sync_handler(
     mail_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
-    allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
+    federation_iel_prefix: cesr::Digest256,
+    federation_evaluator: Arc<crate::authorization::FederationEvaluator>,
     recently_stored: RecentlyStoredFromGossip,
     redis: OptionalRedis,
     signer: Arc<dyn kels_core::PeerSigner>,
@@ -1640,7 +1776,10 @@ pub async fn run_sync_handler(
         &kels_url,
         &sadstore_url,
         &mail_url,
-        allowlist,
+        address_resolver,
+        federation_iel_prefix,
+        federation_evaluator,
+        command_tx.clone(),
         recently_stored,
         redis,
         signer,
@@ -1985,7 +2124,7 @@ async fn drain_stale_prefixes(
 /// If Phase 1 finds stale entries, Phase 2 is skipped for that cycle.
 pub async fn run_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     local_kels_url: String,
     signer: Arc<dyn PeerSigner>,
     interval: Duration,
@@ -2001,12 +2140,15 @@ pub async fn run_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://kels.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("kels", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -2281,7 +2423,7 @@ pub async fn record_sad_stale_prefix(
 /// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a random peer.
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
@@ -2297,12 +2439,15 @@ pub async fn run_sad_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://sadstore.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("sadstore", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "SAD AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -2745,7 +2890,7 @@ pub async fn record_iel_stale_prefix(
 /// because IELs lacked an AE phase to converge them (#172).
 pub async fn run_iel_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
@@ -2761,12 +2906,15 @@ pub async fn run_iel_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://sadstore.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("sadstore", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "IEL AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -3130,6 +3278,7 @@ pub async fn run_iel_anti_entropy_loop(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use cesr::test_digest;
 
@@ -3151,20 +3300,151 @@ mod tests {
     }
 
     fn create_test_handler() -> SyncHandler {
-        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
         let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
+        let address_resolver: Arc<dyn kels_core::AddressResolver> =
+            Arc::new(TestAddressResolver);
+        let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
         SyncHandler::new(
             "http://localhost:8080",
             "http://localhost:8081",
             "http://localhost:8083",
-            allowlist,
+            address_resolver,
+            test_digest("test-federation"),
+            stub_federation_evaluator(),
+            command_tx,
             recently_stored,
             None,
             signer,
             None,
         )
         .unwrap()
+    }
+
+    /// Stub `FederationEvaluator` for tests that don't exercise the
+    /// federation re-walk path. Each trait impl errors on use; sync-handler
+    /// tests that don't trigger an IEL replication never reach them.
+    fn stub_federation_evaluator() -> Arc<crate::authorization::FederationEvaluator> {
+        use async_trait::async_trait;
+
+        struct StubPolicyResolver;
+        #[async_trait]
+        impl kels_policy::PolicyResolver for StubPolicyResolver {
+            async fn resolve_policy(
+                &self,
+                _: &cesr::Digest256,
+            ) -> Result<kels_policy::Policy, kels_policy::PolicyError> {
+                Err(kels_policy::PolicyError::ResolutionError(
+                    "stub policy resolver".into(),
+                ))
+            }
+        }
+
+        struct StubIelResolver;
+        #[async_trait]
+        impl kels_core::IelResolver for StubIelResolver {
+            async fn fetch_iel_event(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<kels_core::IdentityEvent, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn resolve_auth_policy_at(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<cesr::Digest256, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn resolve_governance_policy_at(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<cesr::Digest256, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn iel_chain_positions(
+                &self,
+                _: &cesr::Digest256,
+                _: &[cesr::Digest256],
+            ) -> Result<kels_core::IelChainPositionBatch, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn is_satisfied(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<kels_core::IelSatisfaction, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn resolve_identity_for_event(
+                &self,
+                _: &cesr::Digest256,
+            ) -> Result<cesr::Digest256, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn resolve_current_auth_policy(
+                &self,
+                _: &cesr::Digest256,
+            ) -> Result<cesr::Digest256, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+        }
+
+        struct StubPolicyChecker;
+        #[async_trait]
+        impl kels_core::PolicyChecker for StubPolicyChecker {
+            async fn evaluate(
+                &self,
+                _: &cesr::Digest256,
+                _: &cesr::Digest256,
+            ) -> Result<kels_core::AnchorEvaluation, kels_core::KelsError> {
+                Err(kels_core::KelsError::NotFound("stub".into()))
+            }
+            async fn is_immune(&self, _: &cesr::Digest256) -> Result<bool, kels_core::KelsError> {
+                Ok(true)
+            }
+        }
+
+        struct StubIelSource;
+        #[async_trait]
+        impl kels_core::PagedIelSource for StubIelSource {
+            async fn fetch_page(
+                &self,
+                _: &cesr::Digest256,
+                _: Option<&cesr::Digest256>,
+                _: usize,
+            ) -> Result<(Vec<kels_core::IdentityEvent>, bool), kels_core::KelsError> {
+                Ok((Vec::new(), false))
+            }
+        }
+
+        Arc::new(crate::authorization::FederationEvaluator {
+            policy_resolver: Arc::new(StubPolicyResolver),
+            iel_resolver: Arc::new(StubIelResolver),
+            iel_aware_checker: Arc::new(StubPolicyChecker),
+            iel_source: Arc::new(StubIelSource),
+        })
+    }
+
+    /// Empty resolver for unit tests — always returns None / empty
+    /// pairs. Test handlers don't exercise URL lookup paths.
+    struct TestAddressResolver;
+
+    #[async_trait::async_trait]
+    impl kels_core::AddressResolver for TestAddressResolver {
+        async fn resolve_domain(
+            &self,
+            _peer_identity: &cesr::Digest256,
+        ) -> Result<Option<String>, kels_core::KelsError> {
+            Ok(None)
+        }
+        async fn list_domains(
+            &self,
+        ) -> Result<Vec<(cesr::Digest256, String)>, kels_core::KelsError> {
+            Ok(Vec::new())
+        }
     }
 
     // ==================== Constants Tests ====================
@@ -3230,8 +3510,9 @@ mod tests {
     async fn test_run_sync_handler_closes_on_receiver_close() {
         let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
         let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(10);
-        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
+        let address_resolver: Arc<dyn kels_core::AddressResolver> =
+            Arc::new(TestAddressResolver);
 
         // Drop the sender to close the channel
         drop(event_tx);
@@ -3244,7 +3525,9 @@ mod tests {
             "http://localhost:8083".to_string(),
             event_rx,
             command_tx,
-            allowlist,
+            address_resolver,
+            test_digest("test-federation"),
+            stub_federation_evaluator(),
             recently_stored,
             None,
             signer,
@@ -3253,5 +3536,137 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
+    }
+
+    // ==================== Gap 9: federation retain trigger ====================
+
+    use crate::testing::FederationFixture;
+
+    /// Build a `SyncHandler` wired to the supplied federation fixture
+    /// and a fresh command channel. The handler's runtime fields (kels
+    /// client, sadstore client, etc.) are constructed against dummy
+    /// localhost URLs — the federation re-walk only exercises the
+    /// federation_evaluator field, not the network surfaces.
+    fn handler_for_fixture(
+        fixture: &FederationFixture,
+    ) -> (SyncHandler, mpsc::Receiver<GossipCommand>) {
+        let recently_stored = Arc::new(RwLock::new(HashMap::new()));
+        let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
+        let address_resolver: Arc<dyn kels_core::AddressResolver> = Arc::new(TestAddressResolver);
+        let (command_tx, command_rx) = mpsc::channel::<GossipCommand>(16);
+        let handler = SyncHandler::new(
+            "http://localhost:8080",
+            "http://localhost:8081",
+            "http://localhost:8083",
+            address_resolver,
+            fixture.federation_iel_prefix,
+            Arc::clone(&fixture.evaluator),
+            command_tx,
+            recently_stored,
+            None,
+            signer,
+            None,
+        )
+        .unwrap();
+        (handler, command_rx)
+    }
+
+    /// `maybe_fire_federation_retain` is a no-op for non-federation
+    /// IEL prefixes: the trigger is keyed by prefix-match, not by
+    /// "the chain advanced."
+    #[tokio::test]
+    async fn federation_retain_skipped_for_non_federation_prefix() {
+        let fixture = FederationFixture::new(&[
+            ("alice", "alice.example.net"),
+            ("bob", "bob.example.net"),
+            ("charlie", "charlie.example.net"),
+        ])
+        .await;
+        let (handler, mut rx) = handler_for_fixture(&fixture);
+
+        let unrelated_prefix = cesr::Digest256::blake3_256(b"some-peer-identity-iel");
+        handler.maybe_fire_federation_retain(&unrelated_prefix).await;
+
+        // Channel should be empty — no RetainPeers (or any other command) emitted.
+        assert!(
+            rx.try_recv().is_err(),
+            "non-federation IEL prefix must not trigger a command"
+        );
+    }
+
+    /// On a federation IEL prefix match, the handler walks the
+    /// federation IEL and dispatches `RetainPeers` carrying the current
+    /// member set.
+    #[tokio::test]
+    async fn federation_retain_emits_command_with_current_members() {
+        let fixture = FederationFixture::new(&[
+            ("alice", "alice.example.net"),
+            ("bob", "bob.example.net"),
+            ("charlie", "charlie.example.net"),
+        ])
+        .await;
+        let expected_members: std::collections::HashSet<cesr::Digest256> =
+            fixture.members.iter().map(|m| m.iel_prefix).collect();
+        let (handler, mut rx) = handler_for_fixture(&fixture);
+
+        handler
+            .maybe_fire_federation_retain(&fixture.federation_iel_prefix)
+            .await;
+
+        let cmd = rx.try_recv().expect("RetainPeers dispatched");
+        match cmd {
+            GossipCommand::RetainPeers(allowed) => {
+                assert_eq!(
+                    allowed, expected_members,
+                    "allowed set matches federation authPolicy members"
+                );
+            }
+            other => panic!("expected RetainPeers, got {:?}", other),
+        }
+    }
+
+    /// When the federation walk fails (e.g., the federation IEL isn't
+    /// locally replicated yet), the handler logs + skips — it must not
+    /// dispatch `RetainPeers([])`, which would tear down all
+    /// connections. Preserves "fail-open against teardown."
+    #[tokio::test]
+    async fn federation_retain_skipped_on_walk_failure() {
+        // Build a fixture for the prefix shape, but point the handler
+        // at a *different* federation prefix the in-memory IEL source
+        // doesn't know about. The walk returns `NotFound` / verification
+        // failure → handler should skip the dispatch.
+        let fixture = FederationFixture::new(&[
+            ("alice", "alice.example.net"),
+            ("bob", "bob.example.net"),
+            ("charlie", "charlie.example.net"),
+        ])
+        .await;
+        let recently_stored = Arc::new(RwLock::new(HashMap::new()));
+        let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
+        let address_resolver: Arc<dyn kels_core::AddressResolver> = Arc::new(TestAddressResolver);
+        let (command_tx, mut command_rx) = mpsc::channel::<GossipCommand>(16);
+
+        let unknown_fed = cesr::Digest256::blake3_256(b"unknown-federation");
+        let handler = SyncHandler::new(
+            "http://localhost:8080",
+            "http://localhost:8081",
+            "http://localhost:8083",
+            address_resolver,
+            unknown_fed,
+            Arc::clone(&fixture.evaluator),
+            command_tx,
+            recently_stored,
+            None,
+            signer,
+            None,
+        )
+        .unwrap();
+
+        handler.maybe_fire_federation_retain(&unknown_fed).await;
+
+        assert!(
+            command_rx.try_recv().is_err(),
+            "walk failure must not dispatch RetainPeers"
+        );
     }
 }

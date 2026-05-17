@@ -265,7 +265,7 @@ impl SharedHarness {
 
 // ==================== Per-test setup helpers ====================
 
-/// A KEL prefix + builder-with-anchoring + the immune `endorse(prefix)` policy
+/// A KEL prefix + builder-with-anchoring + the immune `kel(prefix)` policy
 /// uploaded to the sadstore. Mirrors `setup_kel_and_policy` from
 /// `sad_builder_tests.rs` but returns an immune policy (IEL requires immune).
 async fn setup_kel_and_immune_policy(
@@ -288,7 +288,7 @@ async fn setup_kel_and_immune_policy(
 
     // Immune `kel(prefix)` — IEL submit handler rejects non-immune policies.
     let policy = Policy::build(&format!("kel({})", prefix), None, true)
-        .expect("build immune endorse policy");
+        .expect("build immune kel policy");
 
     let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
     let policy_json = serde_json::to_value(&policy).unwrap();
@@ -843,7 +843,7 @@ async fn divergent_chain_accepts_cnt_terminates() {
     // satisfiability), so v1_a's auth differs from both v0 and v1_b.
     let kel_prefix_str = kel_builder.prefix().unwrap().to_string();
     let policy_c = Policy::build(
-        &format!("threshold(1, [endorse({})])", kel_prefix_str),
+        &format!("threshold(1, [kel({})])", kel_prefix_str),
         None,
         true,
     )
@@ -1000,7 +1000,7 @@ async fn submit_rejects_icp_not_anchored_under_declared_governance_policy() {
         setup_kel_and_immune_policy(harness, "icp-anchor-gate").await;
 
     // Submit Icp WITHOUT calling kel_builder.interact — the governance_policy
-    // requires `endorse(KEL_PREFIX)` to anchor the Icp.said in this KEL,
+    // requires `kel(KEL_PREFIX)` to anchor the Icp.said in this KEL,
     // and we deliberately skip that step. Per #156 collect-mode, the
     // missing anchor surfaces as a deferrable `kel_anchor` dep on a
     // typed 422 `DeferredDepsResponse` (the gossip park layer would
@@ -1015,7 +1015,7 @@ async fn submit_rejects_icp_not_anchored_under_declared_governance_policy() {
 
 /// Positive companion to the anchor-gate test above: an Icp whose
 /// `governance_policy` is satisfied by the Icp.said's anchor lands cleanly
-/// even when the declared `auth_policy` is unsatisfied (its endorse() target
+/// even when the declared `auth_policy` is unsatisfied (its kel() target
 /// is a different KEL the inceptor never anchors in). Pins that the IEL Icp
 /// gate is the *governance_policy*, not the auth_policy: auth_policy at Icp
 /// is a per-event policy declaration consumed downstream by SEL Upd via
@@ -1028,7 +1028,7 @@ async fn submit_accepts_icp_anchored_under_governance_with_unsatisfied_auth_poli
     };
     let (_kel_prefix, mut kel_builder, gov_policy, sad_client) =
         setup_kel_and_immune_policy(harness, "icp-gov-gate-positive").await;
-    // `upload_immune_policy` mints a fresh KEL and an `endorse(<that-kel>)`
+    // `upload_immune_policy` mints a fresh KEL and an `kel(<that-kel>)`
     // policy, so anchors in our `kel_builder`'s KEL do NOT satisfy this
     // policy. Use it as the declared auth_policy — verifier should still
     // accept the Icp because the gate is governance_policy, not auth_policy.
@@ -1221,7 +1221,7 @@ async fn submit_rejects_dec_with_evolved_governance_policy() {
 
 // ==================== Helper: upload immune policy ====================
 
-/// Spin up a second KEL and upload an immune `endorse(<that-kel-prefix>)`
+/// Spin up a second KEL and upload an immune `kel(<that-kel-prefix>)`
 /// policy. Used to give a divergent IEL a *different* auth_policy on its
 /// second branch — building a second policy off the same KEL prefix would
 /// collide with the first policy's SAID and make the two competing Evls

@@ -2488,3 +2488,173 @@ async fn custody_read_unauthenticated_fetch_rejected() {
         .expect("send fetch");
     assert_eq!(resp.status(), 403);
 }
+
+// ==================== Per-peer SEL helpers (#195) ====================
+//
+// End-to-end coverage of the two per-peer SEL chains
+// (`kels/sel/v1/peer/services` and `kels/sel/v1/peer/gossip`) driven through
+// the real KELS + sadstore services. The helpers stage `[Icp, Upd, Sea]`
+// (or `[Upd, Sea]`) atomically and publish the referenced SAD body via the
+// cascade. Each chain has its own incept + rotate test.
+
+#[tokio::test]
+#[serial]
+async fn peer_services_sel_incept_then_rotate_lands_five_events() {
+    use kels_core::{
+        CascadingSadStore, InMemorySadStore, PeerServicesSad, RemoteSadStore, SadStore,
+        compute_peer_services_sel_prefix, incept_peer_services_sel, rotate_peer_services_sel,
+    };
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "peer-services").await;
+
+    let initial_sad = PeerServicesSad::create("node-a.example.net".to_string()).unwrap();
+
+    // Two-layer cascade with an observable local layer.
+    let local: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+    let remote: Arc<dyn SadStore> = Arc::new(RemoteSadStore::new(setup.sad_client.clone()));
+    let cascade = CascadingSadStore::new(vec![Arc::clone(&local), remote]);
+
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        Some(Arc::clone(&local)),
+        Some(Arc::clone(&setup.checker)),
+    );
+
+    // ---- Inception ----
+    let incept =
+        incept_peer_services_sel(&mut builder, &cascade, setup.iel_prefix, &initial_sad)
+            .await
+            .expect("incept_peer_services_sel stages [Icp, Upd, Sea]");
+
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 3, "[Icp, Upd, Sea] staged");
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Icp);
+    assert_eq!(pending[0].said, incept.icp);
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[1].said, incept.upd);
+    assert_eq!(pending[1].content, Some(initial_sad.said));
+    assert_eq!(pending[2].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(pending[2].said, incept.sea);
+
+    // SAD body is in both cascade layers.
+    let local_body = local.load(&initial_sad.said).await.unwrap().unwrap();
+    assert_eq!(local_body, serde_json::to_value(&initial_sad).unwrap());
+    let remote_body = setup
+        .sad_client
+        .get_sad_object(&initial_sad.said)
+        .await
+        .expect("fetch services body from remote");
+    assert_eq!(remote_body, serde_json::to_value(&initial_sad).unwrap());
+
+    setup.kel_builder.interact(&incept.icp).await.unwrap();
+    setup.kel_builder.interact(&incept.upd).await.unwrap();
+    setup.kel_builder.interact(&incept.sea).await.unwrap();
+    assert!(builder.flush().await.expect("flush incept").applied);
+
+    // ---- Rotation ----
+    let rotated_sad = PeerServicesSad::create("node-a.relocated.example.net".to_string()).unwrap();
+    let rotation = rotate_peer_services_sel(&mut builder, &cascade, &rotated_sad)
+        .await
+        .expect("rotate_peer_services_sel stages [Upd, Sea]");
+
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[0].said, rotation.upd);
+    assert_eq!(pending[0].content, Some(rotated_sad.said));
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(pending[1].said, rotation.sea);
+
+    setup.kel_builder.interact(&rotation.upd).await.unwrap();
+    setup.kel_builder.interact(&rotation.sea).await.unwrap();
+    assert!(builder.flush().await.expect("flush rotation").applied);
+
+    // Chain on server: [Icp, Upd, Sea, Upd, Sea] at the peer/services prefix.
+    let prefix = compute_peer_services_sel_prefix(setup.iel_prefix).unwrap();
+    let events = fetch_chain(&setup.sad_client, &prefix).await;
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[4].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(events[4].content, Some(rotated_sad.said));
+}
+
+#[tokio::test]
+#[serial]
+async fn peer_gossip_sel_incept_then_rotate_lands_five_events() {
+    use kels_core::{
+        CascadingSadStore, InMemorySadStore, PeerGossipSad, RemoteSadStore, SadStore,
+        compute_peer_gossip_sel_prefix, incept_peer_gossip_sel, rotate_peer_gossip_sel,
+    };
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "peer-gossip").await;
+
+    // Re-use the test policy's SAID as readPolicy (already uploaded by the
+    // harness; a real federation would use a policy SAD with expression
+    // `iel(FEDERATION_IEL_PREFIX)`).
+    let initial_sad =
+        PeerGossipSad::create(setup.policy.said, "203.0.113.4:4001".to_string()).unwrap();
+
+    let local: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+    let remote: Arc<dyn SadStore> = Arc::new(RemoteSadStore::new(setup.sad_client.clone()));
+    let cascade = CascadingSadStore::new(vec![Arc::clone(&local), remote]);
+
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        Some(Arc::clone(&local)),
+        Some(Arc::clone(&setup.checker)),
+    );
+
+    // ---- Inception ----
+    let incept = incept_peer_gossip_sel(&mut builder, &cascade, setup.iel_prefix, &initial_sad)
+        .await
+        .expect("incept_peer_gossip_sel stages [Icp, Upd, Sea]");
+
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 3);
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Icp);
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[1].content, Some(initial_sad.said));
+    assert_eq!(pending[2].kind, kels_core::SadEventKind::Sea);
+
+    let local_body = local.load(&initial_sad.said).await.unwrap().unwrap();
+    assert_eq!(local_body, serde_json::to_value(&initial_sad).unwrap());
+    let remote_body = setup
+        .sad_client
+        .get_sad_object(&initial_sad.said)
+        .await
+        .expect("fetch gossip body from remote");
+    assert_eq!(remote_body, serde_json::to_value(&initial_sad).unwrap());
+
+    setup.kel_builder.interact(&incept.icp).await.unwrap();
+    setup.kel_builder.interact(&incept.upd).await.unwrap();
+    setup.kel_builder.interact(&incept.sea).await.unwrap();
+    assert!(builder.flush().await.expect("flush incept").applied);
+
+    // ---- Rotation ----
+    let rotated_sad =
+        PeerGossipSad::create(setup.policy.said, "10.0.0.2:4001".to_string()).unwrap();
+    let rotation = rotate_peer_gossip_sel(&mut builder, &cascade, &rotated_sad)
+        .await
+        .expect("rotate_peer_gossip_sel stages [Upd, Sea]");
+
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[0].content, Some(rotated_sad.said));
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Sea);
+
+    setup.kel_builder.interact(&rotation.upd).await.unwrap();
+    setup.kel_builder.interact(&rotation.sea).await.unwrap();
+    assert!(builder.flush().await.expect("flush rotation").applied);
+
+    let prefix = compute_peer_gossip_sel_prefix(setup.iel_prefix).unwrap();
+    let events = fetch_chain(&setup.sad_client, &prefix).await;
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[4].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(events[4].content, Some(rotated_sad.said));
+}

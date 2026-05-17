@@ -17,9 +17,9 @@ pub(crate) enum GossipEvent {
     IelAnnouncementReceived { announcement: IelAnnouncement },
     /// Received a mail announcement from a peer
     MailAnnouncementReceived { announcement: MailAnnouncement },
-    /// New peer connected
+    /// New peer connected — carries the peer's identity (IEL prefix).
     PeerConnected(cesr::Digest256),
-    /// Peer disconnected
+    /// Peer disconnected — carries the peer's identity (IEL prefix).
     PeerDisconnected(cesr::Digest256),
 }
 
@@ -34,4 +34,9 @@ pub(crate) enum GossipCommand {
     Iel(IelAnnouncement),
     /// Broadcast a mail announcement to the network
     Mail(MailAnnouncement),
+    /// Retain only the listed peer identities on the gossip transport.
+    /// Forwarded to `Gossip::retain_peers`. Used by the sync layer to
+    /// enact eager membership teardown when the federation IEL's
+    /// `authPolicy` evolves to remove peers.
+    RetainPeers(std::collections::HashSet<cesr::Digest256>),
 }

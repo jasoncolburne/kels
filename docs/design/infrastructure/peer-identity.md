@@ -7,7 +7,7 @@ This document covers two things:
 - The **HSM-backed identity ceremony** that produces each node's gossip identity.
 - The **handshake authorization check** that gates mesh participation.
 
-The federation IEL itself, the per-peer address SELs, and the discovery flow that resolves them are in [federation.md](federation.md) and [discovery.md](discovery.md).
+The federation IEL itself, the per-peer SELs (`peer/services` + `peer/gossip`), and the discovery flow that resolves them are in [federation.md](federation.md) and [discovery.md](discovery.md).
 
 ## Gossip identity = degenerate IEL over an HSM-backed KEL
 
@@ -31,7 +31,7 @@ When a node is provisioned, the following happens once per node:
    - Production: a real HSM's PKCS#11 module (CloudHSM, Luna, etc.) via the `PKCS11_LIBRARY_PATH` env var.
 2. **KEL inception.** Standard KEL `Icp` with the HSM-backed public key as the signing key, signed via the HSM. Produces `gossip_kel_prefix`.
 3. **IEL inception.** Standard IEL `Icp` with `authPolicy = kel(gossip_kel_prefix)` and an operator-chosen `governancePolicy`. The Icp is anchored in the KEL per the standard inception ceremony. Produces the peer identity prefix.
-4. **Address SEL inception.** Standard SEL `[Icp, Upd, Sea]` batch at the deterministic prefix `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`. The `Upd` carries the node's initial endpoints (tier-1, anchored under the peer identity's `authPolicy`); the trailing `Sea` (tier-2) is required by the Sea-after-Upd ratchet so the chain is sealed at every publication boundary. Conforming tooling never produces an Upd-tailed address SEL. See [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern).
+4. **Per-peer SEL inceptions (two chains).** Standard SEL `[Icp, Upd, Sea]` batches for both per-peer chains — `peer/services` (public, `{ said, domain }`) and `peer/gossip` (federation-gated, `{ said, readPolicy, address }`). Each chain's deterministic prefix is `compute_sel_prefix(peer_identity, TOPIC)` with the respective topic string (see [federation.md §Per-peer publication](federation.md#per-peer-publication)). The trailing `Sea` (tier-2) on each chain is required by the Sea-after-Upd ratchet so the chain is sealed at every publication boundary. Conforming tooling never produces an Upd-tailed chain on either topic. See [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern).
 5. **Distribute the new peer identity to federation operators.** Out-of-band — by whatever channel the operators use to coordinate federation membership changes. The new identity is added to the federation IEL via a normal `Evl` (subject to the federation's `governancePolicy`); see [federation.md §Membership evolution](federation.md#membership-evolution).
 
 After the ceremony, the node holds:
@@ -39,7 +39,8 @@ After the ceremony, the node holds:
 - An HSM with its private key.
 - A KEL whose tip's public key is the HSM key.
 - An IEL whose `authPolicy` resolves to that KEL.
-- An address SEL with its initial endpoints.
+- A `peer/services` SEL with its initial published domain.
+- A `peer/gossip` SEL with its initial gossip endpoint.
 
 The node's gossip identity is **stable across restarts and key rotations**. Rotating the gossip signing key produces a new KEL `Rot` event but does not change the peer identity prefix (the IEL prefix is unchanged). The federation does not need to be notified of routine key rotations — peer authorization is identity-current, not key-current.
 
@@ -64,7 +65,7 @@ The authorization check is symmetric: B's identity is independently checked by A
 The federation IEL is the authoritative source for who's authorized, and it propagates to every node via standard IEL gossip. The local view updates automatically:
 
 - A new `Evl` on the federation IEL lands locally → the node's next handshake check sees the new `authPolicy` and behaves accordingly.
-- A peer dropped from `authPolicy` → existing sessions with that peer are torn down at the next session re-check (or sooner, on policy-refresh tick); new handshakes from that peer fail.
+- A peer dropped from `authPolicy` → existing sessions with that peer are torn down synchronously when the federation IEL `Evl` arrives. The federation IEL announcement path re-walks the chain fresh and dispatches an eager teardown across active connections, pending dials, and cached addresses; handshake re-check stays as defense-in-depth, not the primary mechanism.
 - A peer added to `authPolicy` → new handshakes from that peer succeed.
 
 The freshness of the authorization view is the freshness of the federation IEL and the supporting member KELs as held by the local sadstore and kels services on the node, which the gossip mesh keeps current — announcements (PlumTree) drive primary propagation, dependency tracking handles out-of-order arrivals, and anti-entropy catches anything the primary path missed.
@@ -75,7 +76,7 @@ The freshness of the authorization view is the freshness of the federation IEL a
 
 - **Peer identity prefix** is the IEL prefix. Stable across all key rotations and restarts. This is what the federation IEL's `authPolicy` references.
 - **Gossip signing key** is the KEL tip's public key. Rotates on every KEL `Rot`. Other peers re-fetch the KEL tip on signature-verification mismatch (key rotation flow).
-- **Address SEL prefix** is `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`. Stable across address changes — only the `Upd` content changes.
+- **Per-peer SEL prefixes** are `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/services")` and `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/gossip")`. Both stable across rotations — only the `Upd` content changes.
 
 ### Key custody
 
@@ -113,7 +114,8 @@ The gossip-handshake authorization gate covers participation in the gossip mesh.
 |---|---|
 | Read KELS data | None (data is end-verifiable; signature chains are the trust mechanism) |
 | Read federation IEL | None (chain is end-verifiable) |
-| Read per-peer address SEL | None (SEL is end-verifiable) |
+| Read per-peer `peer/services` SEL | None (chain and body are public; body fetch is unauthenticated) |
+| Read per-peer `peer/gossip` SEL | Chain end-verifiable (no auth); SAD body fetch gated by `readPolicy` = `iel(FEDERATION_IEL_PREFIX)` |
 | Gossip handshake | Federation IEL `authPolicy` satisfaction at handshake time |
 | Federation IEL `Evl` submission | Federation IEL `governancePolicy` satisfaction |
 

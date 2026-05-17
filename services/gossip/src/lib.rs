@@ -30,9 +30,11 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
+mod address_resolver;
 mod authorization;
 mod bootstrap;
 mod bootstrap_merge;
+mod discovery;
 mod gossip_layer;
 mod hsm_signer;
 pub mod pending;
@@ -40,6 +42,8 @@ mod repository;
 mod server;
 mod sync;
 mod telemetry;
+#[cfg(test)]
+mod testing;
 pub(crate) mod types;
 
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
@@ -53,8 +57,8 @@ use redis::AsyncCommands;
 use thiserror::Error;
 
 use authorization::{
-    FederationAuthError, FederationEvaluator, SharedAllowlist, is_peer_authorized,
-    resolve_federation_iel_prefix, walk_federation_iel,
+    FederationAuthError, FederationEvaluator, is_peer_authorized, resolve_federation_iel_prefix,
+    walk_federation_iel,
 };
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
@@ -247,15 +251,35 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         error!("Failed to clear ready state in Redis: {}", e);
     }
 
-    // Step 1: Fetch identity prefix and KEL from the identity service
-    info!("Fetching identity prefix...");
+    // Step 1: Fetch identity prefixes from the identity service.
+    // - `local_kel_prefix` is the gossip-service KEL prefix (signing-key
+    //   custody of the moment).
+    // - `local_iel_prefix` is the canonical peer identity — what
+    //   federation `authPolicy` references and what the gossip mesh uses
+    //   to identify "this node" externally. See
+    //   `feedback_node_refs_by_iel`: anywhere we name a node, it's the
+    //   IEL prefix; the KEL prefix is only the current signing key
+    //   holder for that identity.
+    info!("Fetching identity prefixes...");
     let identity_client = kels_core::IdentityClient::new(&config.identity_url)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
-    let local_kel_prefix = identity_client
-        .get_prefix()
+    let identity_info = identity_client
+        .get_info()
         .await
-        .map_err(|e| ServiceError::Config(format!("Failed to get identity prefix: {}", e)))?;
-    info!("Local PeerPrefix: {}", local_kel_prefix);
+        .map_err(|e| ServiceError::Config(format!("Failed to get identity info: {}", e)))?;
+    let local_kel_prefix = identity_info.kel_prefix;
+    let local_iel_prefix = identity_info.iel_prefix.ok_or_else(|| {
+        ServiceError::Config(
+            "Identity service has not yet reconciled its IEL (peer identity); \
+             gossip cannot start without one"
+                .to_string(),
+        )
+    })?;
+    info!(
+        kel_prefix = %local_kel_prefix,
+        iel_prefix = %local_iel_prefix,
+        "Local identity",
+    );
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
@@ -278,6 +302,49 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Identity KEL submitted to local KELS service");
     }
 
+    // Submit identity IEL to local sadstore so federation members can
+    // resolve it (mirror of the KEL push above). Identity reconciles its
+    // IEL at startup (#195 Gap 8b-1); gossip propagates it. Best-effort:
+    // on first boot before identity has finished reconciling, the IEL
+    // page is empty and the push no-ops — subsequent boots catch up.
+    let identity_iel_page = identity_client
+        .get_identity_events(None, kels_core::page_size())
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to get identity IEL: {}", e)))?;
+    let local_sadstore_client = kels_core::SadStoreClient::new(&config.sadstore_url())
+        .map_err(|e| ServiceError::Config(format!("Failed to build sadstore client: {}", e)))?;
+    let iel_events = identity_iel_page.events;
+    if !iel_events.is_empty() {
+        if let Err(e) = local_sadstore_client
+            .submit_identity_events(&iel_events)
+            .await
+        {
+            // 409 (already present) is benign — the IEL Icp is idempotent
+            // on subsequent boots. Log and continue.
+            warn!(
+                "Identity IEL submission to local sadstore returned: {} (continuing)",
+                e
+            );
+        } else {
+            info!("Identity IEL submitted to local sadstore");
+        }
+    }
+
+    // Propagate the peer/services SEL chain (and the SAD bodies it
+    // references) to local sadstore. Identity reconciles the chain at its
+    // startup (#195 Gap 8b-3); gossip pushes it here. SAD bodies are
+    // pushed first because sadstore's submit handler rejects `Upd`
+    // events whose content body is absent.
+    let services_prefix = kels_core::compute_peer_services_sel_prefix(local_iel_prefix)
+        .map_err(|e| ServiceError::Config(format!("Failed to derive peer/services prefix: {}", e)))?;
+    push_peer_sel_to_sadstore(
+        &identity_client,
+        &local_sadstore_client,
+        &services_prefix,
+        "peer/services",
+    )
+    .await;
+
     // Identity signer for authenticated peer-to-peer requests (signs via
     // identity service). Used by sync paths for cross-peer fetches when an
     // address-source supplies peer URLs (#195 address SELs replace what
@@ -298,14 +365,32 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // iel-aware PolicyChecker, all bound to the local sadstore + kels
     // HTTP surfaces. Used for both federation IEL chain validation
     // (load_federation_state) and handshake authorization (is_peer_authorized).
-    let federation_evaluator =
-        FederationEvaluator::new(&config.sadstore_url(), &config.kels_url())?;
+    let federation_evaluator = Arc::new(FederationEvaluator::new(
+        &config.sadstore_url(),
+        &config.kels_url(),
+    )?);
 
-    // Transitional empty allowlist. Source of peer URLs (`base_domain`,
-    // `gossip_addr`) was the registry-fetch path pre-#194; #195's address
-    // SELs supply the replacement. Sync paths that look up peer URLs
-    // gracefully no-op under the empty map.
-    let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
+    // Federation-aware address resolver: per-call walks the federation
+    // IEL → enumerates members → walks each member's peer/services chain
+    // → returns `(peer_iel_prefix, base_domain)` pairs (excluding self).
+    // Source of peer URLs for sync handlers and AE loops; replaces the
+    // pre-#194 registry-driven allowlist.
+    let resolver_sadstore_store: Arc<dyn kels_core::SadStore> = Arc::new(
+        kels_core::RemoteSadStore::new(
+            kels_core::SadStoreClient::new(&config.sadstore_url()).map_err(|e| {
+                ServiceError::Config(format!(
+                    "Failed to build sadstore client for address resolver: {e}"
+                ))
+            })?,
+        ),
+    );
+    let address_resolver: Arc<dyn kels_core::AddressResolver> =
+        Arc::new(address_resolver::FederationAddressResolver::new(
+            federation_iel_prefix,
+            Arc::clone(&federation_evaluator),
+            resolver_sadstore_store,
+            Some(local_iel_prefix),
+        ));
 
     // Create Redis connection manager early — used by both bootstrap and retry/anti-entropy loops
     let redis_conn_manager: Option<Arc<redis::aio::ConnectionManager>> =
@@ -381,11 +466,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         page_size: 100,
     };
 
-    let mut bootstrap = BootstrapSync::new(
-        bootstrap_config.clone(),
-        allowlist.clone(),
-        peer_request_signer.clone(),
-    )?;
+    let mut bootstrap = BootstrapSync::new(bootstrap_config.clone(), peer_request_signer.clone())?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
         // Wire the deferred-deps pending map into bootstrap so IEL/SEL
@@ -410,14 +491,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         let auth_check = match walk_federation_iel(&federation_iel_prefix, &federation_evaluator)
             .await
         {
-            Ok(state) => is_peer_authorized(&state, &local_kel_prefix, &federation_evaluator).await,
+            Ok(state) => Ok(is_peer_authorized(&state, &local_iel_prefix)),
             Err(e) => Err(e),
         };
         match auth_check {
             Ok(true) => {
                 info!(
                     "Peer {} is authorized by the federation IEL's current authPolicy",
-                    local_kel_prefix
+                    local_iel_prefix
                 );
                 break;
             }
@@ -425,12 +506,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 warn!(
                     "=======================================================================\n\
                      AUTHORIZATION REQUIRED: This node is not in the federation IEL's current authPolicy.\n\
-                     Peer prefix: {}\n\
+                     Peer IEL prefix: {}\n\
                      Add this peer via an `Evl` on the federation IEL that includes\n\
-                     `identity(<this-peer's IEL prefix>)` in the new authPolicy.\n\
+                     `iel(<this peer's IEL prefix>)` in the new authPolicy.\n\
                      Sleeping 15 minutes before re-checking.\n\
                      =======================================================================",
-                    local_kel_prefix
+                    local_iel_prefix
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(900)) => {}
@@ -473,23 +554,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Probe peer KELS readiness before discovery. This gives peer services
     // time to finish starting — without it, gossip nodes race ahead and try
     // to dial peers before they're listening. Fire-and-forget parallel checks
-    // with a 2s per-request timeout.
-    {
-        let peers: Vec<_> = allowlist.read().await.values().cloned().collect();
-        let readiness_futures = peers.iter().filter(|p| p.active).map(|peer| {
-            let kels_url = format!("http://kels.{}", peer.base_domain);
-            async move {
-                if let Ok(client) =
-                    kels_core::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
-                {
-                    let _ = client.check_ready_status().await;
-                }
-            }
-        });
-        futures::future::join_all(readiness_futures).await;
-    }
+    // with a 2s per-request timeout. Skipped under #195 until `BootstrapSync`
+    // is wired to the address resolver (peer URLs come from `peer/services`).
 
-    // Step 4: Now authorized - discover peers from allowlist and build peer addresses
+    // Step 4: Now authorized - discover peers and build peer addresses
     let discovery = bootstrap.discover_peers().await?;
 
     let mut peer_addrs: Vec<kels_gossip_core::addr::PeerAddr> = Vec::new();
@@ -539,7 +607,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let pending_map: Option<pending::PendingMap> =
         redis_conn_manager.clone().map(pending::PendingMap::new);
     let drain_executor: Option<sync::DrainExecutor> = match pending_map.clone() {
-        Some(pm) => match sync::DrainExecutor::new(&config.sadstore_url(), allowlist.clone(), pm) {
+        Some(pm) => match sync::DrainExecutor::new(
+            &config.sadstore_url(),
+            Arc::clone(&address_resolver),
+            pm,
+        ) {
             Ok(d) => Some(d),
             Err(e) => {
                 error!("Failed to build DrainExecutor: {}", e);
@@ -552,13 +624,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
-    let redis_local_kel_prefix = local_kel_prefix;
+    let redis_local_iel_prefix = local_iel_prefix;
     let redis_drain = drain_executor.clone();
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
                 &redis_url,
-                redis_local_kel_prefix,
+                redis_local_iel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
                 redis_drain.clone(),
@@ -577,13 +649,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
-    let sad_redis_local_kel_prefix = local_kel_prefix;
+    let sad_redis_local_iel_prefix = local_iel_prefix;
     let sad_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
                 &sad_redis_url,
-                sad_redis_local_kel_prefix,
+                sad_redis_local_iel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
                 sad_redis_drain.clone(),
@@ -602,16 +674,19 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let iel_redis_command_tx = command_tx.clone();
     let iel_redis_url = config.redis_url.clone();
     let iel_redis_recently_stored = recently_stored.clone();
-    let iel_redis_local_kel_prefix = local_kel_prefix;
+    let iel_redis_local_iel_prefix = local_iel_prefix;
     let iel_redis_drain = drain_executor.clone();
+    let iel_redis_federation_evaluator = Arc::clone(&federation_evaluator);
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_iel_redis_subscriber(
                 &iel_redis_url,
-                iel_redis_local_kel_prefix,
+                iel_redis_local_iel_prefix,
                 iel_redis_command_tx.clone(),
                 iel_redis_recently_stored.clone(),
                 iel_redis_drain.clone(),
+                federation_iel_prefix,
+                Arc::clone(&iel_redis_federation_evaluator),
             )
             .await
             {
@@ -644,14 +719,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Create gossip signer and verifier (signer uses identity service;
-    // verifier authenticates the handshake signature against the peer's
-    // local KEL tip and authorizes via federation IEL `authPolicy`
-    // satisfaction).
-    let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
+    // Create gossip signer and verifier. The signer signs with the
+    // identity service's KEL key but claims this node's IEL prefix —
+    // peers identify by identity (IEL), not by current signing-key
+    // custody (KEL). The verifier bundles the IEL → current-KEL
+    // resolution internally, then checks federation membership.
+    let signer = IdentityGossipSigner::new(&config.identity_url, local_iel_prefix)?;
     let verifier = KelsPeerVerifier::new(
         federation_iel_prefix,
-        federation_evaluator.clone(),
+        (*federation_evaluator).clone(),
         config.kels_url(),
     );
 
@@ -689,7 +765,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
-    let local_node_prefix = local_kel_prefix;
+    // Gossip transport's "self" identifier — the IEL prefix is the peer
+    // identity in the federation-as-identity model. Receivers see this
+    // as `delivered_from` on inbound messages and as the announcement
+    // `origin` on outbound broadcasts.
+    let local_node_prefix = local_iel_prefix;
 
     // Start gossip event loop in background
     let gossip_instance_clone = gossip_instance.clone();
@@ -718,7 +798,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sadstore_url = config.sadstore_url().clone();
     let mail_url = config.mail_url().clone();
     let sync_command_tx = command_tx.clone();
-    let sync_allowlist = allowlist.clone();
+    let sync_address_resolver = Arc::clone(&address_resolver);
+    let sync_federation_evaluator = Arc::clone(&federation_evaluator);
     let sync_redis = redis_for_sync.clone();
     let sync_signer = peer_request_signer.clone();
     let sync_pending = pending_map.clone();
@@ -729,7 +810,9 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             mail_url,
             event_rx,
             sync_command_tx,
-            sync_allowlist,
+            sync_address_resolver,
+            federation_iel_prefix,
+            sync_federation_evaluator,
             recently_stored,
             sync_redis,
             sync_signer,
@@ -831,14 +914,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Spawn periodic anti-entropy loops (repairs silent divergence and failed gossip fetches)
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
-        let ae_allowlist = allowlist.clone();
+        let ae_resolver = Arc::clone(&address_resolver);
         let ae_kels_url = config.kels_url().clone();
         let ae_signer = peer_request_signer.clone();
         let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_anti_entropy_loop(
                 ae_redis,
-                ae_allowlist,
+                ae_resolver,
                 ae_kels_url,
                 ae_signer,
                 ae_interval,
@@ -848,14 +931,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
-        let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_resolver = Arc::clone(&address_resolver);
         let sad_ae_signer = peer_request_signer.clone();
         let sad_ae_sadstore_url = config.sadstore_url().clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_sad_anti_entropy_loop(
                 sad_ae_redis,
-                sad_ae_allowlist,
+                sad_ae_resolver,
                 sad_ae_signer,
                 sad_ae_sadstore_url,
                 sad_ae_interval,
@@ -867,14 +950,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SEL→IEL deferred-deps parks could TTL out without the IEL chain
         // ever propagating to the parking peer.
         let iel_ae_redis = redis.clone();
-        let iel_ae_allowlist = allowlist.clone();
+        let iel_ae_resolver = Arc::clone(&address_resolver);
         let iel_ae_signer = peer_request_signer.clone();
         let iel_ae_sadstore_url = config.sadstore_url().clone();
         let iel_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_iel_anti_entropy_loop(
                 iel_ae_redis,
-                iel_ae_allowlist,
+                iel_ae_resolver,
                 iel_ae_signer,
                 iel_ae_sadstore_url,
                 iel_ae_interval,
@@ -911,6 +994,84 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync_handle.abort();
             Ok(())
         }
+    }
+}
+
+/// Push a per-peer SEL chain owned by the local identity to the local
+/// sadstore. Pushes the SAD bodies referenced by each `Upd` event first
+/// (sadstore's submit handler rejects `Upd` events whose content body is
+/// absent), then submits the SEL events themselves.
+///
+/// Best-effort across the board — failures are warned, not propagated.
+/// On first boot before identity has incepted the chain, the page is
+/// empty and this no-ops. On subsequent boots the sadstore returns 409
+/// for already-present events; treated as success.
+async fn push_peer_sel_to_sadstore(
+    identity_client: &kels_core::IdentityClient,
+    sadstore_client: &kels_core::SadStoreClient,
+    sel_prefix: &cesr::Digest256,
+    label: &str,
+) {
+    use tracing::{debug, info, warn};
+
+    let page = match identity_client
+        .get_sel_events(sel_prefix, None, kels_core::page_size())
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(label, error = %e, "Failed to fetch identity SEL events; skipping push");
+            return;
+        }
+    };
+    let events = page.events;
+    if events.is_empty() {
+        debug!(label, "Identity SEL chain empty; nothing to push");
+        return;
+    }
+
+    // Push the SAD bodies referenced by each event's `content` field.
+    // Deduplicate by SAID — the same content can be referenced by Sea +
+    // its preceding Upd.
+    let mut pushed_bodies: std::collections::HashSet<cesr::Digest256> =
+        std::collections::HashSet::new();
+    for event in &events {
+        let Some(content_said) = event.content else {
+            continue;
+        };
+        if !pushed_bodies.insert(content_said) {
+            continue;
+        }
+        let body = match identity_client.get_sad_object(&content_said).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    label,
+                    said = %content_said,
+                    error = %e,
+                    "Failed to fetch SAD body from identity; skipping"
+                );
+                continue;
+            }
+        };
+        if let Err(e) = sadstore_client.post_sad_object(&body).await {
+            warn!(
+                label,
+                said = %content_said,
+                error = %e,
+                "SAD body submission to sadstore returned an error (continuing)"
+            );
+        }
+    }
+
+    if let Err(e) = sadstore_client.submit_sel_events(&events).await {
+        warn!(
+            label,
+            error = %e,
+            "Identity SEL submission to sadstore returned an error (continuing)"
+        );
+    } else {
+        info!(label, count = events.len(), "Identity SEL submitted to local sadstore");
     }
 }
 

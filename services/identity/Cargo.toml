@@ -25,6 +25,7 @@ verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storag
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 kels-core = { path = "../../lib/kels", features = ["server"] }
 kels-derive = { path = "../../lib/derive" }
+kels-policy = { path = "../../lib/policy" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

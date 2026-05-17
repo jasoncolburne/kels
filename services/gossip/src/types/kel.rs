@@ -8,15 +8,18 @@ use serde::{Deserialize, Serialize};
 /// Gossipsub announcement message.
 ///
 /// PlumTree handles deduplication and epidemic broadcast to all mesh nodes.
-/// The `origin` field identifies the peer that stored the event, so receivers
-/// know where to fetch the event data from (looked up via allowlist).
+/// The `origin` field identifies the originating peer's *identity*
+/// (IEL prefix). Receivers route through `AddressResolver` to find
+/// where to fetch the event data from — never via signing-key custody
+/// (KEL prefix).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct KelAnnouncement {
-    /// The KEL prefix that was updated
+    /// The KEL prefix that was updated (the chain identifier this
+    /// announcement is about — legitimately a KEL prefix here).
     pub prefix: cesr::Digest256,
     /// The SAID of the latest event
     pub said: cesr::Digest256,
-    /// The peer prefix of the node that stored this event
+    /// The originating peer's IEL prefix (identity).
     pub origin: cesr::Digest256,
 }
 
