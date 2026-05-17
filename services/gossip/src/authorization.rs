@@ -394,4 +394,295 @@ mod tests {
             COMPILE_TIME_FEDERATION_IEL_PREFIX
         );
     }
+
+    // ==================== is_peer_authorized tests ====================
+    //
+    // Behavioral coverage of the handshake-time authorization check. The
+    // federation-shaped policy graph is built in-memory: the federation
+    // `auth_policy` is `any(iel(member_1), ..., iel(member_n))`, each
+    // member IEL's current `auth_policy` is `kel(peer_kel)`, and
+    // `is_peer_authorized` evaluates against a verified-KEL-prefix set
+    // (simulating what `KelsPeerVerifier::verify_peer` extracts from the
+    // handshake signature).
+    //
+    // `load_federation_state` / chain-walk coverage is deferred to the
+    // e2e harness (see `docs/audit/deviations/README.md`).
+
+    use async_trait::async_trait;
+    use kels_core::{
+        IdentityEvent, IdentityEventKind, IelChainPositionBatch, IelSatisfaction,
+    };
+    use kels_policy::{InMemoryPolicyResolver, Policy};
+    use std::collections::BTreeMap;
+
+    /// In-memory `IelResolver`: maps `iel_prefix → current authPolicy SAID`.
+    /// Only `resolve_current_auth_policy` is implemented — the only method
+    /// the policy evaluator's `iel(...)` branch calls.
+    struct InMemoryIelResolver {
+        auth_policies: BTreeMap<Digest256, Digest256>,
+    }
+
+    #[async_trait]
+    impl IelResolver for InMemoryIelResolver {
+        async fn fetch_iel_event(
+            &self,
+            _: &Digest256,
+            _: &Digest256,
+        ) -> Result<IdentityEvent, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn resolve_auth_policy_at(
+            &self,
+            _: &Digest256,
+            _: &Digest256,
+        ) -> Result<Digest256, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn resolve_governance_policy_at(
+            &self,
+            _: &Digest256,
+            _: &Digest256,
+        ) -> Result<Digest256, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn iel_chain_positions(
+            &self,
+            _: &Digest256,
+            _: &[Digest256],
+        ) -> Result<IelChainPositionBatch, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn is_satisfied(
+            &self,
+            _: &Digest256,
+            _: &Digest256,
+        ) -> Result<IelSatisfaction, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn resolve_identity_for_event(
+            &self,
+            _: &Digest256,
+        ) -> Result<Digest256, KelsError> {
+            Err(KelsError::NotFound("not used".to_string()))
+        }
+        async fn resolve_current_auth_policy(
+            &self,
+            identity: &Digest256,
+        ) -> Result<Digest256, KelsError> {
+            self.auth_policies.get(identity).copied().ok_or_else(|| {
+                KelsError::NotFound(format!("IEL {identity} not in test resolver"))
+            })
+        }
+    }
+
+    /// Dummy `PolicyChecker` — never invoked by the signed-policy path
+    /// (`is_peer_authorized` consumes only the policy + iel resolvers).
+    struct DummyPolicyChecker;
+
+    #[async_trait]
+    impl kels_core::PolicyChecker for DummyPolicyChecker {
+        async fn evaluate(
+            &self,
+            _: &Digest256,
+            _: &Digest256,
+        ) -> Result<kels_core::AnchorEvaluation, KelsError> {
+            Err(KelsError::NotFound(
+                "DummyPolicyChecker invoked from is_peer_authorized — should not happen"
+                    .to_string(),
+            ))
+        }
+        async fn is_immune(&self, _: &Digest256) -> Result<bool, KelsError> {
+            Ok(true)
+        }
+    }
+
+    /// Dummy IEL source — `is_peer_authorized` doesn't walk via the
+    /// source, so any access here surfaces a test misconfiguration.
+    struct DummyIelSource;
+
+    #[async_trait]
+    impl kels_core::PagedIelSource for DummyIelSource {
+        async fn fetch_page(
+            &self,
+            _: &Digest256,
+            _: Option<&Digest256>,
+            _: usize,
+        ) -> Result<(Vec<IdentityEvent>, bool), KelsError> {
+            Err(KelsError::NotFound(
+                "DummyIelSource invoked from is_peer_authorized — should not happen".to_string(),
+            ))
+        }
+    }
+
+    fn d(label: &str) -> Digest256 {
+        cesr::Digest256::blake3_256(label.as_bytes())
+    }
+
+    /// Construct a federation-shaped test fixture. Returns the
+    /// `FederationState`, a `FederationEvaluator` wired to in-memory
+    /// resolvers, and the verified-KEL prefixes that satisfy each member
+    /// (indexed by member IEL prefix for assertion convenience).
+    #[allow(clippy::type_complexity)]
+    fn fixture(
+        members: &[(&str, &str)],
+    ) -> (FederationState, FederationEvaluator, BTreeMap<Digest256, Digest256>) {
+        let mut policies = Vec::new();
+        let mut iel_to_policy_said = BTreeMap::new();
+        let mut iel_to_kel = BTreeMap::new();
+        let mut member_iels = Vec::new();
+
+        for (iel_label, kel_label) in members {
+            let iel = d(iel_label);
+            let kel = d(kel_label);
+            // Each peer IEL's current authPolicy is `kel(peer_kel)`.
+            let peer_policy = Policy::build(&format!("kel({kel})"), None, true)
+                .expect("peer policy builds");
+            iel_to_policy_said.insert(iel, peer_policy.said);
+            iel_to_kel.insert(iel, kel);
+            policies.push(peer_policy);
+            member_iels.push(iel);
+        }
+
+        // Federation authPolicy is `any(iel(X1), ..., iel(Xn))`.
+        let inner: Vec<String> = member_iels.iter().map(|i| format!("iel({i})")).collect();
+        let fed_auth_policy =
+            Policy::build(&format!("any({})", inner.join(", ")), None, true)
+                .expect("federation authPolicy builds");
+        let fed_auth_policy_said = fed_auth_policy.said;
+        policies.push(fed_auth_policy);
+
+        let policy_resolver: Arc<dyn PolicyResolver + Send + Sync> =
+            Arc::new(InMemoryPolicyResolver::new(policies));
+        let iel_resolver: Arc<dyn IelResolver + Send + Sync> =
+            Arc::new(InMemoryIelResolver {
+                auth_policies: iel_to_policy_said,
+            });
+        let iel_aware_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+            Arc::new(DummyPolicyChecker);
+        let iel_source: Arc<dyn kels_core::PagedIelSource + Send + Sync> =
+            Arc::new(DummyIelSource);
+
+        let evaluator = FederationEvaluator {
+            policy_resolver,
+            iel_resolver,
+            iel_aware_checker,
+            iel_source,
+        };
+        let state = FederationState {
+            iel_prefix: d("fed-iel"),
+            current_auth_policy_said: fed_auth_policy_said,
+            members: member_iels.into_iter().collect(),
+            governance_threshold: 3,
+        };
+        (state, evaluator, iel_to_kel)
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_member_kel_admitted() {
+        // Three-member federation; presenting member 1's KEL prefix
+        // satisfies `any(iel(...))` via the iel(member-1) → kel(M1_kel)
+        // resolution path.
+        let (state, evaluator, iel_to_kel) = fixture(&[
+            ("iel-alice", "kel-alice"),
+            ("iel-bob", "kel-bob"),
+            ("iel-charlie", "kel-charlie"),
+        ]);
+        let alice_kel = *iel_to_kel.get(&d("iel-alice")).expect("alice kel");
+
+        let ok = is_peer_authorized(&state, &alice_kel, &evaluator)
+            .await
+            .expect("evaluation completes");
+        assert!(ok, "alice's KEL should satisfy the federation authPolicy");
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_unknown_kel_rejected() {
+        // KEL prefix that isn't named by any member IEL's authPolicy →
+        // none of the `iel(...)` leaves resolve to a kel(...) that
+        // contains this KEL → `any(...)` evaluates false.
+        let (state, evaluator, _) = fixture(&[
+            ("iel-alice", "kel-alice"),
+            ("iel-bob", "kel-bob"),
+            ("iel-charlie", "kel-charlie"),
+        ]);
+        let stranger_kel = d("kel-stranger");
+
+        let ok = is_peer_authorized(&state, &stranger_kel, &evaluator)
+            .await
+            .expect("evaluation completes");
+        assert!(!ok, "unauthorized KEL must not be admitted");
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_any_single_member_satisfies() {
+        // The `any(...)` shape: any single member's KEL match suffices.
+        // Verify each of the three members independently.
+        let (state, evaluator, iel_to_kel) = fixture(&[
+            ("iel-alice", "kel-alice"),
+            ("iel-bob", "kel-bob"),
+            ("iel-charlie", "kel-charlie"),
+        ]);
+        for member_label in ["iel-alice", "iel-bob", "iel-charlie"] {
+            let kel = *iel_to_kel.get(&d(member_label)).expect("member kel");
+            let ok = is_peer_authorized(&state, &kel, &evaluator)
+                .await
+                .expect("evaluation completes");
+            assert!(ok, "{member_label}'s KEL should be admitted");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_single_member_federation() {
+        // Degenerate-but-valid case: federation with a single member.
+        // `any(iel(X))` → resolves to that member's kel(K) → matches.
+        let (state, evaluator, iel_to_kel) = fixture(&[("iel-solo", "kel-solo")]);
+        let solo_kel = *iel_to_kel.get(&d("iel-solo")).expect("solo kel");
+
+        let ok = is_peer_authorized(&state, &solo_kel, &evaluator)
+            .await
+            .expect("evaluation completes");
+        assert!(ok, "single-member federation admits its sole member");
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_authorized_loud_fail_on_unresolvable_iel() {
+        // A federation authPolicy that names an IEL the resolver doesn't
+        // know about must surface a loud error, not silently evaluate
+        // false (per `docs/design/features/policy.md §Identity
+        // Resolution` fail-loudly trust model).
+        let unknown_iel = d("iel-not-in-resolver");
+        let auth_policy = Policy::build(&format!("any(iel({unknown_iel}))"), None, true)
+            .expect("authPolicy builds");
+        let auth_policy_said = auth_policy.said;
+        let policy_resolver: Arc<dyn PolicyResolver + Send + Sync> =
+            Arc::new(InMemoryPolicyResolver::new(vec![auth_policy]));
+        let iel_resolver: Arc<dyn IelResolver + Send + Sync> =
+            Arc::new(InMemoryIelResolver {
+                auth_policies: BTreeMap::new(),
+            });
+        let evaluator = FederationEvaluator {
+            policy_resolver,
+            iel_resolver,
+            iel_aware_checker: Arc::new(DummyPolicyChecker),
+            iel_source: Arc::new(DummyIelSource),
+        };
+        let state = FederationState {
+            iel_prefix: d("fed-iel"),
+            current_auth_policy_said: auth_policy_said,
+            members: std::iter::once(unknown_iel).collect(),
+            governance_threshold: 3,
+        };
+        let result = is_peer_authorized(&state, &d("kel-doesnt-matter"), &evaluator).await;
+        assert!(
+            result.is_err(),
+            "unresolvable iel(...) must surface a loud error, got: {result:?}"
+        );
+    }
+
+    // Suppress dead_code on IdentityEventKind import in tests that don't
+    // construct events.
+    #[allow(dead_code)]
+    fn _silence_event_kind() -> IdentityEventKind {
+        IdentityEventKind::Evl
+    }
 }

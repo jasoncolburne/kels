@@ -335,6 +335,25 @@ When `clients/test/scripts/test-sadstore.sh` (the k8s deployment-test script) ge
 
 Both groups depend on the test harness having ≥2 sadstore nodes (the existing FEDERATED=true mode does); just need the scenario logic added.
 
+### [Issue #194 → Issue #197] Federation IEL load/verify behavioral tests deferred to e2e
+
+#194's acceptance criteria call for "tests for federation IEL load/verify, handshake authorization, threshold formula, policy-shape helper, any/all DSL parsing." Four of the five buckets shipped with unit coverage in-PR:
+
+- **Threshold formula** — `lib/kels/src/types/federation/member.rs` tests for the M(n) stair function across n=0/3/5/6/9/10/13/21/25/100 + the never-exceeds-member-count invariant for realistic federations.
+- **Policy-shape helper** — 14 tests in `lib/policy/src/federation_shape.rs` covering happy paths at n=3/6/10/21 and every failure mode (not-immune, wrong shape, kel leaf in auth, weighted in gov, member-set mismatch, duplicate members, threshold-vs-M(n) mismatch, `all(...)` used on auth).
+- **`any/all` DSL parsing** — 9 tests in `lib/policy/src/parser.rs`.
+- **Handshake authorization** — `services/gossip/src/authorization.rs` tests cover `is_peer_authorized` behaviorally with in-memory `PolicyResolver` + `IelResolver` stubs: member admitted, unknown KEL rejected, `any(...)` shape single-member-suffices, single-member federation, loud-fail on unresolvable `iel(...)`.
+
+The fifth bucket — **federation IEL load/verify** (`load_federation_state`, `FederationEvaluator::new`, the federation-IEL chain walk) — ships with config-shape smoke tests only. Building it out as a unit test would require ~100 LoC of in-memory IEL chain scaffolding (incepted KELs, IEL Icp/Evl events shaped per the federation convention, an in-memory `PagedIelSource`) whose primary failure mode would shadow the production HTTP-source path that's the actually-interesting failure shape. Per Jason's direction the value-add is debatable, and the e2e harness at #197 exercises the real chain walk against real services (live sadstore + live IEL replication via gossip), which is where regressions on this surface would actually surface.
+
+When #197 lands the federation-IEL e2e harness, that harness implicitly covers:
+- Federation IEL replicates from one node's sadstore to a peer's via gossip.
+- Each gossip node successfully runs `load_federation_state` against its local sadstore at startup.
+- A `(auth_policy, governance_policy)` pair that fails `verify_federation_policy_shape` is refused at startup (negative case — a deliberately-misshapen federation IEL planted via the operator CLI).
+- The refresh loop picks up an `Evl`-driven membership change and the next handshake's authorization decision flips accordingly.
+
+If the e2e harness surfaces a regression that would have been catchable at unit scope, revisit and add the in-memory test then. Until then this is documented work-deferred, not work-missed.
+
 ---
 
 ## Resolved
