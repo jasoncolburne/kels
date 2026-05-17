@@ -18,12 +18,16 @@ pub struct FederationStatus {
     pub members: Vec<cesr::Digest256>,
 }
 
-/// Compute the approval threshold for peer proposals given federation member count.
+/// Compute the federation-IEL `governance_policy` threshold M(n) for member
+/// count `n`. The convention is federation-specific (see
+/// `docs/design/infrastructure/federation.md §Threshold formula`); other
+/// identities choose their own governance thresholds and are not expected
+/// to use this function.
 ///
 /// - n in [0,5]: 3
 /// - n in [6,9]: 4
 /// - n >= 10:    ceil(n/3)
-pub fn compute_approval_threshold(n: usize) -> usize {
+pub fn compute_federation_governance_threshold(n: usize) -> usize {
     match n {
         0..=5 => 3,
         6..=9 => 4,

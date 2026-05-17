@@ -758,7 +758,7 @@ incept(), rotate(), recover(), contest(), decommission()
 verify_signatures(), verify_inception(), verify_chain_event()
 is_establishment(), reveals_recovery_key(), requires_dual_signature()
 transfer_key_events(), forward_key_events(), verify_key_events()
-compute_rotation_hash(), compute_approval_threshold()
+compute_rotation_hash(), compute_federation_governance_threshold()
 ```
 
 **Error variants:** Descriptive English:
