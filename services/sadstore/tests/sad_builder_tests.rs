@@ -2488,3 +2488,217 @@ async fn custody_read_unauthenticated_fetch_rejected() {
         .expect("send fetch");
     assert_eq!(resp.status(), 403);
 }
+
+// ==================== Address SEL helpers (#195) ====================
+//
+// End-to-end coverage of `kels_core::incept_address_sel` / `rotate_address_sel`
+// driving the federation address-SEL convention through the real KELS +
+// sadstore services. The helpers stage `[Icp, Upd, Sea]` (or `[Upd, Sea]`)
+// atomically and publish the referenced AddressSad body via the supplied
+// cascade — these tests pin the post-conditions (chain landed, body
+// fetchable, local cache populated, SEL tip's content is the address SAD's
+// SAID).
+
+#[tokio::test]
+#[serial]
+async fn incept_address_sel_via_helper_publishes_body_and_lands_three_event_batch() {
+    use kels_core::{
+        AddressSad, CascadingSadStore, Endpoint, InMemorySadStore, RemoteSadStore, SadStore,
+        compute_address_sel_prefix, incept_address_sel,
+    };
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "address-incept").await;
+
+    // Address SAD body. Re-use the test policy's SAID as the readPolicy
+    // reference — the harness already uploaded that policy, so any later
+    // fetch resolves it.
+    let address_sad = AddressSad::create(
+        setup.policy.said,
+        vec![Endpoint {
+            address: "203.0.113.4:4001".to_string(),
+            region: Some("us-east".to_string()),
+        }],
+    )
+    .unwrap();
+
+    // Two-layer cascade with an observable local layer.
+    let local: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+    let remote: Arc<dyn SadStore> = Arc::new(RemoteSadStore::new(setup.sad_client.clone()));
+    let cascade = CascadingSadStore::new(vec![Arc::clone(&local), remote]);
+
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        Some(Arc::clone(&local)),
+        Some(Arc::clone(&setup.checker)),
+    );
+
+    let batch = incept_address_sel(&mut builder, &cascade, setup.iel_prefix, &address_sad)
+        .await
+        .expect("incept_address_sel stages [Icp, Upd, Sea]");
+
+    // Pending events: [Icp, Upd, Sea] in version order, SAIDs match the
+    // batch struct.
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 3, "[Icp, Upd, Sea] staged");
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Icp);
+    assert_eq!(pending[0].said, batch.icp);
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[1].said, batch.upd);
+    assert_eq!(pending[1].content, Some(address_sad.said));
+    assert_eq!(pending[2].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(pending[2].said, batch.sea);
+
+    // SAD body is in the local cascade layer (write-side fan-out).
+    let local_body = local
+        .load(&address_sad.said)
+        .await
+        .expect("load body")
+        .expect("body present locally");
+    assert_eq!(local_body, serde_json::to_value(&address_sad).unwrap());
+
+    // SAD body is on the remote sadstore (other side of the cascade).
+    let remote_body = setup
+        .sad_client
+        .get_sad_object(&address_sad.said)
+        .await
+        .expect("fetch body from remote");
+    assert_eq!(remote_body, serde_json::to_value(&address_sad).unwrap());
+
+    // Anchor each SAID in the peer-identity KEL, then flush.
+    setup
+        .kel_builder
+        .interact(&batch.icp)
+        .await
+        .expect("anchor icp");
+    setup
+        .kel_builder
+        .interact(&batch.upd)
+        .await
+        .expect("anchor upd");
+    setup
+        .kel_builder
+        .interact(&batch.sea)
+        .await
+        .expect("anchor sea");
+    let outcome = builder.flush().await.expect("flush");
+    assert!(outcome.applied, "fresh chain should commit");
+
+    // The chain on the server is `[Icp, Upd, Sea]` at the deterministic
+    // address-SEL prefix.
+    let prefix = compute_address_sel_prefix(setup.iel_prefix).unwrap();
+    let events = fetch_chain(&setup.sad_client, &prefix).await;
+    assert_eq!(events.len(), 3, "Icp + Upd + Sea on server");
+    assert_eq!(events[0].kind, kels_core::SadEventKind::Icp);
+    assert_eq!(events[1].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(events[2].kind, kels_core::SadEventKind::Sea);
+    // Sea preserves the Upd's content; the address SAD's SAID is what
+    // discovery walkers read at the tip.
+    assert_eq!(events[2].content, Some(address_sad.said));
+}
+
+#[tokio::test]
+#[serial]
+async fn rotate_address_sel_via_helper_extends_chain_with_upd_sea_pair() {
+    use kels_core::{
+        AddressSad, CascadingSadStore, Endpoint, InMemorySadStore, RemoteSadStore, SadStore,
+        compute_address_sel_prefix, incept_address_sel, rotate_address_sel,
+    };
+
+    let Some(harness) = get_harness().await else {
+        return;
+    };
+    let mut setup = setup_kel_iel_policy(harness, "address-rotate").await;
+
+    let initial_sad = AddressSad::create(
+        setup.policy.said,
+        vec![Endpoint {
+            address: "10.0.0.1:4001".to_string(),
+            region: None,
+        }],
+    )
+    .unwrap();
+
+    let local: Arc<dyn SadStore> = Arc::new(InMemorySadStore::new());
+    let remote: Arc<dyn SadStore> = Arc::new(RemoteSadStore::new(setup.sad_client.clone()));
+    let cascade = CascadingSadStore::new(vec![Arc::clone(&local), remote]);
+
+    let mut builder = SadEventBuilder::new(
+        Some(setup.sad_client.clone()),
+        Some(Arc::clone(&local)),
+        Some(Arc::clone(&setup.checker)),
+    );
+
+    // First: incept the chain (so a tip exists to rotate against).
+    let incept = incept_address_sel(&mut builder, &cascade, setup.iel_prefix, &initial_sad)
+        .await
+        .expect("incept_address_sel");
+    setup.kel_builder.interact(&incept.icp).await.unwrap();
+    setup.kel_builder.interact(&incept.upd).await.unwrap();
+    setup.kel_builder.interact(&incept.sea).await.unwrap();
+    let outcome = builder.flush().await.expect("flush incept");
+    assert!(outcome.applied);
+
+    // Rotate to a new endpoint set.
+    let rotated_sad = AddressSad::create(
+        setup.policy.said,
+        vec![
+            Endpoint {
+                address: "10.0.0.2:4001".to_string(),
+                region: Some("us-east".to_string()),
+            },
+            Endpoint {
+                address: "[2001:db8::2]:4001".to_string(),
+                region: None,
+            },
+        ],
+    )
+    .unwrap();
+
+    let rotation = rotate_address_sel(&mut builder, &cascade, &rotated_sad)
+        .await
+        .expect("rotate_address_sel stages [Upd, Sea]");
+
+    // Pending after rotation: [Upd, Sea] (the incept batch was absorbed by
+    // the prior flush; only the new rotation events remain pending).
+    let pending = builder.pending_events();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].kind, kels_core::SadEventKind::Upd);
+    assert_eq!(pending[0].said, rotation.upd);
+    assert_eq!(pending[0].content, Some(rotated_sad.said));
+    assert_eq!(pending[1].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(pending[1].said, rotation.sea);
+
+    // Rotated SAD body is fetchable from the remote.
+    let rotated_body = setup
+        .sad_client
+        .get_sad_object(&rotated_sad.said)
+        .await
+        .expect("fetch rotated body");
+    assert_eq!(rotated_body, serde_json::to_value(&rotated_sad).unwrap());
+
+    // Anchor + flush the rotation batch.
+    setup
+        .kel_builder
+        .interact(&rotation.upd)
+        .await
+        .expect("anchor rotated upd");
+    setup
+        .kel_builder
+        .interact(&rotation.sea)
+        .await
+        .expect("anchor rotated sea");
+    let outcome = builder.flush().await.expect("flush rotation");
+    assert!(outcome.applied);
+
+    // Chain on server is `[Icp, Upd, Sea, Upd, Sea]` (5 events). Tip's
+    // content is the rotated AddressSad's SAID — what the discovery walker
+    // reads next refresh.
+    let prefix = compute_address_sel_prefix(setup.iel_prefix).unwrap();
+    let events = fetch_chain(&setup.sad_client, &prefix).await;
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[4].kind, kels_core::SadEventKind::Sea);
+    assert_eq!(events[4].content, Some(rotated_sad.said));
+}

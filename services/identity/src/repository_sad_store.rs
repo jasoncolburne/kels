@@ -14,7 +14,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use verifiable_storage::{ChainedRepository, StorageError};
 
-use kels_core::{KelsError, SadEvent, SadStore};
+use kels_core::{
+    CascadingSadStore, KelsError, RemoteSadStore, SadEvent, SadStore, SadStoreClient,
+};
 
 use crate::repository::{SadObjectEntry, SadObjectRepository, SelRepository};
 
@@ -35,6 +37,24 @@ impl RepositorySadStore {
     pub fn new(sad_objects: Arc<SadObjectRepository>, sel: Arc<SelRepository>) -> Self {
         Self { sad_objects, sel }
     }
+}
+
+/// Build the identity service's two-layer cascade.
+///
+/// Layer 0 is [`RepositorySadStore`] (local Postgres cache + SEL events).
+/// Layer 1 is [`RemoteSadStore`] (the federation's sadstore service).
+///
+/// Reads first-hit-wins with cache-back to layer 0; writes fan out to both.
+/// The shape matches `docs/design/infrastructure/federation.md §Per-peer
+/// address publication` — local authorship + automatic remote submission.
+pub fn build_cascade(
+    sad_objects: Arc<SadObjectRepository>,
+    sel: Arc<SelRepository>,
+    sad_client: SadStoreClient,
+) -> CascadingSadStore {
+    let local: Arc<dyn SadStore> = Arc::new(RepositorySadStore::new(sad_objects, sel));
+    let remote: Arc<dyn SadStore> = Arc::new(RemoteSadStore::new(sad_client));
+    CascadingSadStore::new(vec![local, remote])
 }
 
 #[async_trait]

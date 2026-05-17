@@ -15,7 +15,10 @@
 use serde::{Deserialize, Serialize};
 use verifiable_storage::SelfAddressed;
 
-use crate::{error::KelsError, types::sad::compute_sad_event_prefix};
+use crate::{
+    SadEventBuilder, error::KelsError, store::sad::SadStore,
+    types::sad::compute_sad_event_prefix,
+};
 
 /// SEL chain topic for per-peer address publication. Embedded in the chain's
 /// `topic` field at `Icp` and participates in chain-prefix derivation alongside
@@ -89,6 +92,94 @@ pub fn compute_address_sel_prefix(
     peer_identity: cesr::Digest256,
 ) -> Result<cesr::Digest256, KelsError> {
     compute_sad_event_prefix(peer_identity, ADDRESS_SEL_TOPIC)
+}
+
+/// SAIDs of the three events staged by [`incept_address_sel`].
+///
+/// Returned so the caller can anchor each SAID in the peer-identity KEL
+/// before calling [`SadEventBuilder::flush`] — the SEL submit handler's
+/// anchor checks fire against the IEL-resolved `authPolicy` /
+/// `governancePolicy`.
+#[derive(Debug, Clone)]
+pub struct AddressSelInceptionBatch {
+    pub icp: cesr::Digest256,
+    pub upd: cesr::Digest256,
+    pub sea: cesr::Digest256,
+}
+
+/// SAIDs of the two events staged by [`rotate_address_sel`].
+#[derive(Debug, Clone)]
+pub struct AddressSelRotationBatch {
+    pub upd: cesr::Digest256,
+    pub sea: cesr::Digest256,
+}
+
+/// Stage an address-SEL inception (`[Icp, Upd, Sea]`) and publish the
+/// referenced [`AddressSad`] body via the supplied cascade.
+///
+/// Operation order:
+///
+/// 1. `cascade.store(address_sad.said, body)` — fans the body out to every
+///    cascade layer (local cache + remote sadstore). The body must be
+///    fetchable by the remote sadstore before any SEL event references its
+///    SAID — the submit handler's content-existence check rejects SEL Upd
+///    events whose content is unknown.
+/// 2. `builder.incept_chain(peer_identity, ADDRESS_SEL_TOPIC, address_sad.said)` —
+///    stages `[Icp, Upd]` with the SAD's SAID as the Upd's content.
+/// 3. `builder.seal()` — stages the trailing `Sea`, satisfying the
+///    Sea-after-Upd ratchet so the chain is sealed at every publication
+///    boundary.
+///
+/// The helper **does not** call [`SadEventBuilder::flush`]. Anchoring the
+/// returned SAIDs in the peer-identity KEL and calling `flush()` are the
+/// caller's responsibility — they must happen in that order, with all three
+/// SAIDs anchored before the batch is submitted.
+///
+/// Tooling that wants to author a fresh address SEL **must** call this helper
+/// rather than the lower-level `incept_chain` / `seal` pair. The helper is
+/// the federation address-SEL convention's enforcement point: a partial
+/// staging (Icp + Upd without Sea) cannot be expressed through this API, so
+/// no conforming caller can produce an Upd-tailed address SEL chain.
+pub async fn incept_address_sel(
+    builder: &mut SadEventBuilder,
+    cascade: &dyn SadStore,
+    peer_identity: cesr::Digest256,
+    address_sad: &AddressSad,
+) -> Result<AddressSelInceptionBatch, KelsError> {
+    let body = serde_json::to_value(address_sad)?;
+    cascade.store(&address_sad.said, &body).await?;
+
+    let (icp, upd) = builder
+        .incept_chain(peer_identity, ADDRESS_SEL_TOPIC, address_sad.said)
+        .await?;
+    let sea = builder.seal().await?;
+    Ok(AddressSelInceptionBatch { icp, upd, sea })
+}
+
+/// Stage an address-SEL rotation (`[Upd, Sea]`) and publish the referenced
+/// [`AddressSad`] body via the supplied cascade.
+///
+/// Same shape as [`incept_address_sel`] but extends an existing chain (the
+/// `builder` must be hydrated from the peer's current SEL tip via
+/// `with_remote_prefix` / `with_prefix`). Operation order:
+///
+/// 1. `cascade.store(address_sad.said, body)`.
+/// 2. `builder.update(address_sad.said)` — stages the new `Upd`.
+/// 3. `builder.seal()` — stages the trailing `Sea`.
+///
+/// `flush` and KEL anchoring remain the caller's responsibility, same as in
+/// [`incept_address_sel`].
+pub async fn rotate_address_sel(
+    builder: &mut SadEventBuilder,
+    cascade: &dyn SadStore,
+    address_sad: &AddressSad,
+) -> Result<AddressSelRotationBatch, KelsError> {
+    let body = serde_json::to_value(address_sad)?;
+    cascade.store(&address_sad.said, &body).await?;
+
+    let upd = builder.update(address_sad.said).await?;
+    let sea = builder.seal().await?;
+    Ok(AddressSelRotationBatch { upd, sea })
 }
 
 #[cfg(test)]
