@@ -142,5 +142,5 @@ The gossip-handshake authorization gate covers participation in the gossip mesh.
 - [federation.md](federation.md) — the federation IEL and how `authPolicy` evolves.
 - [discovery.md](discovery.md) — node-side discovery (resolving who + where).
 - [gossip.md](gossip.md) — handshake transport mechanics.
-- [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL semantics, immunity rule.
+- [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL semantics, immunity rule.
 - [features/policy.md](../features/policy.md) — policy DSL and evaluation.

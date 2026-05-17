@@ -64,7 +64,7 @@ for v1+: cross-chain authorization resolution:
 
     verify event.said is anchored under the resolved policy with the
     anchor kind required by the event's tier — see
-    [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+    [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation):
         Upd       → Ixn (tier 1)
         Est, Sea  → Rot (tier 2)
         Rpr, Cnt, Dec → Ror (tier 3)
@@ -190,7 +190,7 @@ Contest is governance-authorized via IEL; the verifier confirms `Cnt` satisfies 
 
 ### 8. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `DecommissionedSel`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 9. Normal Append
 
@@ -237,7 +237,7 @@ The submit handler runs under a per-prefix advisory lock (Postgres `pg_advisory_
 3. Insert / archive as the path requires.
 4. Publish to Redis (`sel_updates`) for gossip propagation if any path mutated chain state.
 
-The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
+The `SelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../../../protocol-doctrine.md](../../../../protocol-doctrine.md)).
 
 ## Pagination
 
@@ -271,7 +271,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 
 ### How SEL and KEL discriminators differ
 
-Both KEL and SEL honor the one-divergent-generation-at-a-time invariant (see [../../protocol-doctrine.md §One Divergent Generation at a Time](../../protocol-doctrine.md#one-divergent-generation-at-a-time)), but via different implementation routes:
+Both KEL and SEL honor the one-divergent-generation-at-a-time invariant (see [../../../../protocol-doctrine.md §One Divergent Generation at a Time](../../../../protocol-doctrine.md#one-divergent-generation-at-a-time)), but via different implementation routes:
 
 - **SEL — storage-side normalization (truncate-before-verify).** When an `Rpr` is detected, `repository::truncate_and_replace` (`services/sadstore/src/handlers.rs:1809-1830`) archives the to-be-archived branch events and removes them from `sad_events` *before* the handler runs its post-truncation chain verification (`handlers.rs:1848+`). The post-truncation verifier walks the linear chain (surviving branch + new batch including `Rpr`); the divergent set is gone from storage before this walk runs.
 - **KEL — branch-scoped verifier input.** Verification is seeded from `Rec.previous`; the walker only sees the surviving branch + the pending batch. The divergent set is in storage but never in the walker's input stream. See [../kel/merge.md §Key Invariants](../kel/merge.md#key-invariants), invariant 6.
@@ -286,5 +286,5 @@ Different routes; same doctrinal outcome — the walker's running state never ca
 - [events.md](events.md) — Per-kind reference.
 - [../iel/merge.md](../iel/merge.md) — IEL counterpart.
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture.
+- [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md) — SADStore service architecture.
 - [../kel/merge.md](../kel/merge.md) — KEL counterpart.

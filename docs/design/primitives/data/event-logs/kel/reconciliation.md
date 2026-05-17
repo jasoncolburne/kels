@@ -1,6 +1,6 @@
 # KEL Reconciliation: Multi-Node Correctness Matrix
 
-> Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
+> Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
 
 For lifecycle prose (states, divergence, recovery via discriminator, contest, decommission, the proactive-ROR seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
@@ -50,7 +50,7 @@ What happens when a client submits events to the merge engine on a single node.
 - **`Cnt` on Divergent / Divergent (recovery revealed)** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **Active, sealed** — Handled algorithmically by §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than by a state precondition; structural behavior matches IEL/SEL. `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
 - **`Divergent (recovery revealed)` → `ContestRequired` for non-Cnt** — once the recovery key is revealed in a divergent branch (via `Rec`/`Ror`/`Dec`/`Cnt`), only Cnt is admissible. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
-- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `KelDecommissioned`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `KelDecommissioned`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 
 ### Batch submissions
 
@@ -90,7 +90,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
-- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 - **Send-side partitioning** (Source: Divergent, Source: Contested) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [§Transfer ordering](#transfer-ordering) above and [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-kels).
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
@@ -103,7 +103,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes; a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes; a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec)) |
 | **Decommissioned** | `dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
 
 ## Archival
@@ -258,7 +258,7 @@ window timing).
 
 ### 6. Cnt-Dec override
 
-Two parties submit terminal events onto a chain: the operator submits `Dec` (clean retirement) to one node; a second authority-holder submits `Cnt` (contest) to another. The doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
+Two parties submit terminal events onto a chain: the operator submits `Dec` (clean retirement) to one node; a second authority-holder submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
 **Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
 
@@ -312,7 +312,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence).
 
 ## References
 

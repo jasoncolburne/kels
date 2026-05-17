@@ -1,6 +1,6 @@
 # SEL Reconciliation: Multi-Node Correctness Matrix
 
-> Exhaustive enumeration of all SEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the SEL design — without it, the submit handler and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
+> Exhaustive enumeration of all SEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the SEL design — without it, the submit handler and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
 
 For lifecycle prose (states, divergence, repair, contest, decommission, evaluation seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the submit handler routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
@@ -64,14 +64,14 @@ Additional rejection cases that don't fit per-state cells:
 - **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
-- **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded).
-- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `DecommissionedSel`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
+- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `DecommissionedSel`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 
 ### Batch submissions
 
 The submit handler treats a batch atomically:
 
-- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `ielEvent` and is anchored under the bound IEL's authPolicy (tier 2 per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
+- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `ielEvent` and is anchored under the bound IEL's authPolicy (tier 2 per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
 - **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at serial ≥ `first_divergent_serial` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
@@ -99,7 +99,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
-- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 - **Send-side partitioning** (Source: Divergent, Source: Contested, Source: Repaired) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-sels).
 - **Decommissioned → Divergent sink** — `Dec` cannot resolve divergence; sink stays divergent until `Rpr` or `Cnt` arrives.
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
@@ -123,7 +123,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Repaired** | Tip event SAID (the `Rpr`) | ✓ (identical clean chains) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec)) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec)) |
 | **Decommissioned** | `Dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
 
 ## Archival
@@ -292,7 +292,7 @@ synchronization. Both nodes' chains stay as forensic record.
 
 ### 6. Adversary races inception with stale identity binding
 
-> **Operator never extends `Est_stale`.** Extending an adversary event would be a structural attestation that the predecessor is acceptable — equivalent to endorsing the adversary's content. The operator extends `Icp` (which is attested-shared via dedup-equivalence), not the adversary's `Est`. See [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline).
+> **Operator never extends `Est_stale`.** Extending an adversary event would be a structural attestation that the predecessor is acceptable — equivalent to endorsing the adversary's content. The operator extends `Icp` (which is attested-shared via dedup-equivalence), not the adversary's `Est`. See [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline).
 
 Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governancePolicy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
 
@@ -330,7 +330,7 @@ Est_legit at v_2):
                                        (forensic; not on live chain)
 ```
 
-The operator's response **never extends `Est_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline).
+The operator's response **never extends `Est_stale`** — extending an adversary event would be a structural attestation that the predecessor is acceptable, equivalent to endorsing the adversary's content. See [../../../../protocol-doctrine.md §Extension Discipline](../../../../protocol-doctrine.md#extension-discipline).
 
 ### 7. IEL evolves, owner advances dependent SEL's branch tip
 
@@ -401,7 +401,7 @@ Dependent SEL trying to extend:
 
 ### 9. Cnt-Dec override
 
-Two parties submit terminal events onto a linear SEL chain: the operator submits `Dec` (clean retirement) to one node; a second governance-authorized party (on the bound IEL) submits `Cnt` (contest) to another. The doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
+Two parties submit terminal events onto a linear SEL chain: the operator submits `Dec` (clean retirement) to one node; a second governance-authorized party (on the bound IEL) submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
 **Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
 
@@ -456,7 +456,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence).
 
 ## References
 
@@ -466,5 +466,5 @@ Cross-node forensic divergence (which events each node holds; at which serial co
 - [verification.md](verification.md) — `SelVerifier` algorithm.
 - [../iel/reconciliation.md](../iel/reconciliation.md) — IEL counterpart (smaller; no Rpr).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle and cross-chain anchor stability.
-- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
+- [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
 - [../kel/reconciliation.md](../kel/reconciliation.md) — KEL counterpart; the discriminator and bounds analysis are mirrored on both sides.

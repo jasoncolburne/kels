@@ -57,7 +57,7 @@ for v0 (Icp): verify Icp.said is anchored under the declared governancePolicy
                declaration is tier-2 like Evl/Sea)
 for v1+ (Evl/Sea/Cnt/Dec): verifier checks anchoring against branch.trackedGovernancePolicy
               with the kind required by the event's tier — see
-              [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+              [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation):
                 Evl, Sea  → Rot (tier 2)
                 Cnt, Dec  → Ror (tier 3)
               Wrong-kind anchor for any contributing leaf rejects the event.
@@ -156,7 +156,7 @@ On IEL specifically, Cnt lands only on a linear chain: Cnt's `previous = v_{tip-
 
 ### 6. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. Subsequent submissions return `IelDecommissioned`, with one exception: a `Cnt` with `previous = v_{d-1}.said` overrides `Dec` per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec), routes through the contest path, and transitions the chain to Contested.
 
 ### 7. Normal Append (Evl / Sea)
 
@@ -199,7 +199,7 @@ The submit handler runs under a per-prefix advisory lock so concurrent submissio
 3. Insert as the path requires (no archival on IEL — there is no `truncate_and_replace`).
 4. Publish to gossip if any path mutated chain state.
 
-The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
+The `IelVerification` token is the trusted context for routing decisions. The DB cannot be trusted directly (the verification invariant — see [../../../../protocol-doctrine.md](../../../../protocol-doctrine.md)).
 
 ## Pagination
 

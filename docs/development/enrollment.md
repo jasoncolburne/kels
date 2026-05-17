@@ -1,6 +1,6 @@
 # Application-Developer Enrollment Patterns
 
-How applications should structure user enrollment to defuse the brand-new SEL chain race described in [../design/primitives/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
+How applications should structure user enrollment to defuse the brand-new SEL chain race described in [../design/primitives/data/event-logs/iel/event-log.md §What parent-monotonic blocks (and what it doesn't)](../design/primitives/data/event-logs/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt).
 
 ## The race
 
@@ -20,6 +20,6 @@ This pattern eliminates the brand-new chain race as an authorization-bearing con
 
 ## See also
 
-- [../design/primitives/iel/event-log.md §What parent-monotonic blocks](../design/primitives/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt) — the protocol-mechanics analysis this pattern operationally defuses.
-- [../design/primitives/sel/events.md §Inception batch rule](../design/primitives/sel/events.md#inception-batch-rule) — the `[Icp, Est]` minimum that makes the race well-defined.
+- [../design/primitives/data/event-logs/iel/event-log.md §What parent-monotonic blocks](../design/primitives/data/event-logs/iel/event-log.md#what-parent-monotonic-blocks-and-what-it-doesnt) — the protocol-mechanics analysis this pattern operationally defuses.
+- [../design/primitives/data/event-logs/sel/events.md §Inception batch rule](../design/primitives/data/event-logs/sel/events.md#inception-batch-rule) — the `[Icp, Est]` minimum that makes the race well-defined.
 - [multi-party-governance](../operations/multi-party-governance.md) — operator-side synchronization for high-stakes IEL identities.

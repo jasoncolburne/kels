@@ -14,9 +14,16 @@ Read in full before the primitives — every per-primitive doc cross-references 
 
 ## Primitives
 
-The substantive part of the design. Three primitives (KEL, IEL, SEL) implement the doctrine in different shapes. Each primitive has five docs in the same structural roles, and reading them in the same internal order makes the parallel structure visible.
+The substantive part of the design. `docs/design/primitives/` splits into two top-level categories:
 
-### Internal order within each primitive
+- **`data/`** — the chain primitives (KEL, IEL, SEL). Each has its own subdirectory under `data/event-logs/{kel,iel,sel}/` and carries the load-bearing semantic content. This is the heart of the design.
+- **`logic/`** — the code abstractions built on top of the chains (builders, verifiers, resolvers, stores, event-transfer, policies). One stub per primitive; less semantic weight than data primitives, but the canonical names live here and code aligns to them.
+
+### Data primitives — `data/event-logs/`
+
+Three primitives (KEL, IEL, SEL) implement the doctrine in different shapes. Each primitive has five docs in the same structural roles, and reading them in the same internal order makes the parallel structure visible.
+
+#### Internal order within each primitive
 
 1. **events.md** — per-kind reference. What event kinds exist, their field rules, the satisfaction model (what authorizes each kind). Most approachable entry point.
 2. **event-log.md** — chain lifecycle. States (active / divergent / contested / decommissioned), divergence semantics, terminal events, evaluation/recovery seal, trust caveats.
@@ -24,15 +31,15 @@ The substantive part of the design. Three primitives (KEL, IEL, SEL) implement t
 4. **verification.md** — verifier walk algorithm. The single-pass walk that produces the Verification token; chain-validity invariants.
 5. **reconciliation.md** — multi-node correctness matrix. The load-bearing proof that every state × submission × gossip combination terminates correctly and all nodes converge on the same effective SAID. This is the per-primitive proof of [protocol-doctrine.md §Federation Convergence](protocol-doctrine.md#federation-convergence).
 
-### IEL — start here
+#### IEL — start here
 
 The simplest primitive. Every IEL event is governance-authorized (no auth-vs-governance asymmetry), there is no recovery primitive (Rpr is absent — divergence is immediately terminal), no content payload (the chain's data is its tracked policy state), and a small kind set (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`). The cleanest place to internalize the core protocol concepts: cryptographically-linked event chains, divergence semantics, terminal events, evaluation seals, authorization via anchored policy.
 
-Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitives/iel/event-log.md) → [merge.md](primitives/iel/merge.md) → [verification.md](primitives/iel/verification.md) → [reconciliation.md](primitives/iel/reconciliation.md).
+Read in order: [events.md](primitives/data/event-logs/iel/events.md) → [event-log.md](primitives/data/event-logs/iel/event-log.md) → [merge.md](primitives/data/event-logs/iel/merge.md) → [verification.md](primitives/data/event-logs/iel/verification.md) → [reconciliation.md](primitives/data/event-logs/iel/reconciliation.md).
 
 **Note on forward references.** IEL is the authorization root for SEL, so IEL docs forward-reference SEL concepts (`ielEvent`, SEL `Upd` / `Est` / `Sea` / `Rpr` / `Cnt` / `Dec` binding rules). On first read, treat these as "the binding exists; the SEL-side docs cover the consumer rules" — you'll fill them in once you reach SEL.
 
-### KEL — second
+#### KEL — second
 
 KEL adds device-level cryptography to the chain model you learned from IEL. A KEL carries three key roles — a signing key, a rotation key (pre-committed via `rotationHash`), and a recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Recovery-revealing events require a dual signature. KEL is the authenticity primitive that anchors everything else: IEL events anchor in KELs at tier 2 (`Rot`, governance acts) or tier 3 (`Ror`, terminals) per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation); SEL post-inception events anchor at the same tiers (SEL `Icp` itself is permissionless and unanchored).
 
@@ -44,9 +51,9 @@ New concepts you'll meet:
 - Proactive-ROR bound — a protocol-level cap on how many non-revealing events can sit between recovery-revealing events.
 - The upgrade rule — a non-privileged divergent set plus a gossip-delivered non-archiving privileged event upgrades the chain to contested. Applies to KEL and SEL; IEL is exempt because every IEL event is privileged.
 
-Read in order: [events.md](primitives/kel/events.md) → [event-log.md](primitives/kel/event-log.md) → [merge.md](primitives/kel/merge.md) → [verification.md](primitives/kel/verification.md) → [reconciliation.md](primitives/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
+Read in order: [events.md](primitives/data/event-logs/kel/events.md) → [event-log.md](primitives/data/event-logs/kel/event-log.md) → [merge.md](primitives/data/event-logs/kel/merge.md) → [verification.md](primitives/data/event-logs/kel/verification.md) → [reconciliation.md](primitives/data/event-logs/kel/reconciliation.md). Supplemental: [recovery-workflow.md](primitives/data/event-logs/kel/recovery-workflow.md) for the operational walkthrough of `Rec` ceremonies.
 
-### SEL — third
+#### SEL — third
 
 The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `ielEvent` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the upgrade rule.
 
@@ -57,7 +64,20 @@ New concepts you'll meet:
 - `Rpr` — SEL's discriminator-based recovery, analogous in shape to KEL's `Rec` but governance-authorized (a higher-bar resolution of auth-policy-level divergence).
 - Cross-chain binding stability — how SEL's `ielEvent` resolution stays deterministic across IEL governance evolution.
 
-Read in order: [events.md](primitives/sel/events.md) → [event-log.md](primitives/sel/event-log.md) → [merge.md](primitives/sel/merge.md) → [verification.md](primitives/sel/verification.md) → [reconciliation.md](primitives/sel/reconciliation.md). Supplemental: [repair-workflow.md](primitives/sel/repair-workflow.md) for the operational walkthrough of `Rpr` ceremonies.
+Read in order: [events.md](primitives/data/event-logs/sel/events.md) → [event-log.md](primitives/data/event-logs/sel/event-log.md) → [merge.md](primitives/data/event-logs/sel/merge.md) → [verification.md](primitives/data/event-logs/sel/verification.md) → [reconciliation.md](primitives/data/event-logs/sel/reconciliation.md). Supplemental: [repair-workflow.md](primitives/data/event-logs/sel/repair-workflow.md) for the operational walkthrough of `Rpr` ceremonies.
+
+### Logic primitives — `logic/`
+
+Code abstractions consumed by the runtime services. Read after the data primitives — these are downstream of the chain semantics and are best understood once the chain model is internalized. Each subdirectory holds one stub per primitive, organized by role:
+
+- [`logic/builders/`](primitives/logic/builders/) — event construction: `SadEventBuilder`, `KelEventBuilder`, `IelEventBuilder`, `SelEventBuilder`.
+- [`logic/verifiers/`](primitives/logic/verifiers/) — chain walkers and authorization checkers: `KelVerifier`, `IelVerifier`, `SelVerifier`, `AnchoredPolicyChecker`.
+- [`logic/resolvers/`](primitives/logic/resolvers/) — chain-state resolution: `IelResolver`, `PolicyResolver`, `AddressResolver`.
+- [`logic/stores/`](primitives/logic/stores/) — SAD persistence: `SadStore` trait, `CascadingSadStore`, `RemoteSadStore`, `FileSadStore`, `InMemorySadStore`, `PostgresSadStore`.
+- [`logic/event-transfer/`](primitives/logic/event-transfer/) — point-to-point event transfer (`transfer_*_events` / `forward_*_events` / `verify_*_events`).
+- [`logic/policies/`](primitives/logic/policies/) — the policy DSL and its evaluator.
+
+The stubs name canonical types and point at consumers/dependencies; substantive content lands iteratively in follow-on PRs.
 
 ## Features
 

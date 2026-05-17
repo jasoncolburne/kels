@@ -94,7 +94,7 @@ verify_policy(event, branch):
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
     each Endorse(KEL_PREFIX) and Delegate(KEL_PREFIX) leaf node in the
     policy must have an anchor of the required kind (Ixn / Rot / Ror per
-    the event's tier — see [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation))
+    the event's tier — see [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation))
     in the named KEL anchoring this event's SAID. Wrong-kind anchor for a
     leaf evaluates as unsatisfied.
 ```
@@ -130,13 +130,13 @@ In practice on IEL, any divergence is immediately contested. The "divergent-but-
 
 ### Cnt parent resolution
 
-Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. IEL-specific: every IEL event advances the seal, so the chain transitions to contested-terminal at first 2-event divergence; both divergent branches are single-event at `v_d` by construction, so each branch's `v_{tip-1}` is `v_{d-1}`.
+Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. IEL-specific: every IEL event advances the seal, so the chain transitions to contested-terminal at first 2-event divergence; both divergent branches are single-event at `v_d` by construction, so each branch's `v_{tip-1}` is `v_{d-1}`.
 
 Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governancePolicy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
 
 ### Upgrade rule: not applicable on IEL
 
-Every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist; see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-primitive rule and the unreachability proof for 3 events with 2+ privileged.
+Every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path does not exist. IEL divergent sets are bounded at 2 events; subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`) are rejected by the contested-state gate. The rule applies on KEL and SEL where non-privileged divergent sets can exist; see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-primitive rule and the unreachability proof for 3 events with 2+ privileged.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal, concurrent siblings within a batch that introduces a Cnt).
 
@@ -207,7 +207,7 @@ Verification does NOT fail on divergence. Instead:
 
 ## Streaming
 
-IEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `IelVerifier`. Proof-of-verification token: `IelVerification`. Per-IEL specifics: every IEL event is governance-authorized so divergent sets are immediately contested-terminal at first 2-event observation — branches max out at 2 in the divergent case but the chain never returns to a single-tip recovered state on IEL (no `Rpr`); the verifier resolves policy satisfaction via a `PolicyChecker` against the bound KEL anchors; caller-bounded SAID querying against `queried_saids` mirrors KEL's inline anchor checking.
+IEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `IelVerifier`. Proof-of-verification token: `IelVerification`. Per-IEL specifics: every IEL event is governance-authorized so divergent sets are immediately contested-terminal at first 2-event observation — branches max out at 2 in the divergent case but the chain never returns to a single-tip recovered state on IEL (no `Rpr`); the verifier resolves policy satisfaction via a `PolicyChecker` against the bound KEL anchors; caller-bounded SAID querying against `queried_saids` mirrors KEL's inline anchor checking.
 
 `IelVerifier` walks forward through events page by page, verifying integrity and policy satisfaction without loading the full chain into memory. It supports both linear and divergent chains by tracking per-branch state.
 
@@ -272,6 +272,6 @@ The IEL verifier produces these accessors as part of its normal verification out
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [events.md](events.md) — Per-kind structural rules.
 - [../sel/verification.md](../sel/verification.md) — SEL verification (consumer of IEL verification for binding resolution).
-- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
-- [../../protocol-doctrine.md §Part 3 Verification Mechanics](../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
+- [../../../../features/policy.md](../../../../features/policy.md) — Policy DSL and anchoring model.
+- [../../../../protocol-doctrine.md §Part 3 Verification Mechanics](../../../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

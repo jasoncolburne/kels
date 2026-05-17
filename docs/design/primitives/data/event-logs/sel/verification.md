@@ -122,7 +122,7 @@ verify_authorization(event, branch):
 
     // Verify the SEL event's anchoring under that policy, with the
     // anchor kind required by the event's tier per
-    // [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
+    // [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation):
     //   Upd          → Ixn  (tier 1)
     //   Est, Sea     → Rot  (tier 2)
     //   Rpr, Cnt, Dec → Ror (tier 3)
@@ -166,11 +166,11 @@ Hard fails leave the chain at its prior tip. The verifier does not advance the b
 
 All events require HARD anchor: a Cnt or Dec whose cross-chain anchor check or `IelDivergent` check fails is rejected at the verifier; the chain stays at its prior state. The chain advances iff auth holds.
 
-The rationale for HARD anchor on all events: the DB cannot be trusted (see [../../protocol-doctrine.md](../../protocol-doctrine.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
+The rationale for HARD anchor on all events: the DB cannot be trusted (see [../../../../protocol-doctrine.md](../../../../protocol-doctrine.md)). An unauthorized event lands in storage as a corrupted state; the verifier should reject it so the chain stays at its actual current state, not a fake-terminal state induced by a forged Cnt/Dec. The "chain stuck at a tip the owner intends to abandon" concern is operator-side and resolved by reincept under a new prefix, not by allowing unauthorized terminals to advance the chain locally. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the doctrinal frame.
 
 #### Post-divergence soft-fail propagation
 
-The verification cutoff for "valid for downstream binding" is `first_divergent_serial`. A `Cnt` structurally creates divergence (it extends an existing tip that isn't the chain's max serial), so contested chains always have a divergence point. `Dec` only lands on non-divergent chains (routing rejects Dec on divergent with `ContestRequired`), so decommissioned chains have no cutoff and the Dec event itself is a valid event in the chain. (A `Cnt` overriding `Dec` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) lands as the second event in a `{Dec, Cnt}` divergent set at `v_d` — the chain transitions to contested through the standard privileged-divergence path; Dec itself still landed onto a non-divergent chain at submit time, so no new verifier logic is required.)
+The verification cutoff for "valid for downstream binding" is `first_divergent_serial`. A `Cnt` structurally creates divergence (it extends an existing tip that isn't the chain's max serial), so contested chains always have a divergence point. `Dec` only lands on non-divergent chains (routing rejects Dec on divergent with `ContestRequired`), so decommissioned chains have no cutoff and the Dec event itself is a valid event in the chain. (A `Cnt` overriding `Dec` per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) lands as the second event in a `{Dec, Cnt}` divergent set at `v_d` — the chain transitions to contested through the standard privileged-divergence path; Dec itself still landed onto a non-divergent chain at submit time, so no new verifier logic is required.)
 
 For events at `serial >= first_divergent_serial` on a chain that is divergent-but-not-yet-contested (non-privileged-divergent — `Upd`-`Upd` race scenarios at v ≥ 2, or `Est`-`Est` race scenarios at v = 1): auth-check failures convert to SOFT. The verifier doesn't return Err; it sets the chain-wide `policy_satisfied = false` and continues. Once the chain is contested (any privileged event in the divergent set), the whole-chain-suspect rule applies and the per-event soft-fail propagation rule's purpose is superseded by the whole-chain framing. Structural integrity rules (SAID, serial monotonicity, content preservation, BadIdentityBinding, etc.) stay HARD regardless of position.
 
@@ -191,7 +191,7 @@ Cnt is a privileged event whose presence in the divergent set triggers contested
 
 ### Cnt parent resolution
 
-Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. SEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-evaluation cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
+Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. SEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-evaluation cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
 
 **Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state's `tip_iel_event` holds `v_{tip-1}.ielEvent` (because `v_tip` has not yet been processed). Cnt and the existing tip at `v_d` are processed as siblings of the same generation; both have parent `v_{tip-1}` and both check parent-monotonic against `v_{tip-1}.ielEvent` from branch state. After the generation is processed, branch state forks per branch with each branch's own tip ielEvent. No new cache slot in branch state. (Authorization itself resolves via the bound IEL event referenced by Cnt's own `ielEvent`, not via SEL's branch state; cross-chain via `IelResolver`.)
 
@@ -199,7 +199,7 @@ Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events: `Upd`-`Upd` race at v ≥ 2; `Est`-`Est` at v = 1 is non-privileged-divergent but unreachable by the upgrade-rule path since all privileged kinds have `serial >= 2` — Est-Est resolves only via `Rpr`) and gossip delivers a non-archiving privileged event for that same `v_d` (`Sea`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
-`Rpr` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other non-archiving privileged kinds — `Sea`, `Cnt`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
+`Rpr` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other non-archiving privileged kinds — `Sea`, `Cnt`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
 
 ### Caller-bounded SAID querying
 
@@ -283,7 +283,7 @@ Verification does NOT fail on divergence. Instead:
 
 ## Streaming
 
-SEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `SelVerifier`. Proof-of-verification token: `SelVerification`. Per-SEL specifics: cross-chain `ielEvent` resolution via `IelResolver` (separate trait from `PolicyChecker` — see §Two-trait split below); per-event parent-monotonic check on `ielEvent` walked per-branch; post-divergence soft-fail propagation on non-privileged divergent sets; constructors `new` / `resume`.
+SEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `SelVerifier`. Proof-of-verification token: `SelVerification`. Per-SEL specifics: cross-chain `ielEvent` resolution via `IelResolver` (separate trait from `PolicyChecker` — see §Two-trait split below); per-event parent-monotonic check on `ielEvent` walked per-branch; post-divergence soft-fail propagation on non-privileged divergent sets; constructors `new` / `resume`.
 
 `SelVerifier` walks forward through events page by page, verifying integrity and authorization without loading the full chain into memory.
 
@@ -375,6 +375,6 @@ The validation rules above apply identically at submit, gossip ingestion, bootst
 - [events.md](events.md) — Per-kind structural rules.
 - [../iel/verification.md](../iel/verification.md) — IEL counterpart (provides binding resolution for SEL).
 - [../iel/event-log.md](../iel/event-log.md) — IEL lifecycle (immunity rule, anchor stability).
-- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model.
-- [../../protocol-doctrine.md §Part 3 Verification Mechanics](../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
+- [../../../../features/policy.md](../../../../features/policy.md) — Policy DSL and anchoring model.
+- [../../../../protocol-doctrine.md §Part 3 Verification Mechanics](../../../../protocol-doctrine.md#part-3-verification-mechanics) — Cross-primitive verification doctrine (streaming, tokens, effective-SAID synthetic comparison).
 - [../kel/verification.md](../kel/verification.md) — KEL counterpart.

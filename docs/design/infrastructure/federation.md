@@ -16,7 +16,7 @@ Identity primitives already answer the first two:
 
 - An IEL's `authPolicy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `authPolicy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
 - An IEL's `governancePolicy` is the policy an `Evl` must satisfy to evolve `authPolicy` (or `governancePolicy` itself). Under the federation convention, `governancePolicy` is shaped as `threshold(M(n), identity(X_1), …, identity(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
-- The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
+- The IEL policy-immunity rule ([primitives/data/event-logs/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/data/event-logs/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
 
 The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
 
@@ -267,7 +267,7 @@ Bootstrap and onboarding flows use `transfer_*_events` parameterized with the co
 
 ## Concurrent-Evl coordination
 
-The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/iel/event-log.md §Divergence and Contest-Only Resolution](../primitives/iel/event-log.md#divergence-and-contest-only-resolution)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
+The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/data/event-logs/iel/event-log.md §Divergence and Contest-Only Resolution](../primitives/data/event-logs/iel/event-log.md#divergence-and-contest-only-resolution)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
 
 The protocol does not prevent this. The defense is operational:
 
@@ -306,10 +306,10 @@ A contested federation IEL stays contested forever — that is the structural me
 
 ## References
 
-- [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
-- [primitives/iel/events.md](../primitives/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
+- [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
+- [primitives/data/event-logs/iel/events.md](../primitives/data/event-logs/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
-- [primitives/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
+- [primitives/data/event-logs/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/data/event-logs/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
 - [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).
 - [discovery.md](discovery.md) — node-side discovery (`authPolicy` enumeration + address SEL walks).
 - [peer-identity.md](peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.

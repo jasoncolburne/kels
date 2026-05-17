@@ -67,11 +67,11 @@ The "authorization" column names which signature(s) the verifier requires for th
 
 `Dip` declares a `delegatingPrefix`, captured into the verification token but not checked at submit time. The delegation relationship is verified at **policy-evaluation time** via the `Delegated(delegator)` policy node: any KEL with `delegatingPrefix == delegator` that the delegator anchors (via an `ixn` in the delegator's KEL) satisfies the node.
 
-The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, delegate)`) is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../../features/policy.md](../../features/policy.md) for `Delegated(delegator)` resolution.
+The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, delegate)`) is what makes the indirection useful — the delegator can rotate their delegate fleet (decommission, replace, add) without changing any policy that references them. See [../../../../features/policy.md](../../../../features/policy.md) for `Delegated(delegator)` resolution.
 
 ### Anchor on Rot and Ror
 
-`Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
+`Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
 `Rec`, `Dec`, and `Cnt` are anchor-forbidden by design. `Rec`'s role is divergence resolution (archival); `Dec`/`Cnt` end the chain. The protocol does not conflate event semantics — anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery or terminal primitives. Each event kind carries one explicit purpose; operators compose them rather than combining behaviors in a single event.
 
@@ -101,11 +101,11 @@ The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from incept
 
 This bound caps an adversary's fork to 62 events before they need to satisfy the recovery primitive — which they cannot without the recovery key — and bounds the synchronous archival window during recovery to a single page. The builder auto-inserts `Ror` (upgrading a `Rot`) when the bound is about to be crossed.
 
-KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal: both are privileged-primitive caps that bound how far an adversary can fork before they must satisfy a higher bar (recovery-key revelation on KEL; governance evaluation on SEL). The two reads on `lastSealAdvancingEvent` operate identically — see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded) for the cross-primitive frame, and [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound) for the SEL-side instantiation.
+KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal: both are privileged-primitive caps that bound how far an adversary can fork before they must satisfy a higher bar (recovery-key revelation on KEL; governance evaluation on SEL). The two reads on `lastSealAdvancingEvent` operate identically — see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded) for the cross-primitive frame, and [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound) for the SEL-side instantiation.
 
 ### Cnt overrides Dec
 
-See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) for the doctrinal mechanic (a gossip-delivered `Cnt` with `previous = v_{d-1}.said` lands alongside an existing `Dec` at `v_d`; the chain transitions to contested). On KEL, the auth check for the overriding `Cnt` is the dual-signature requirement against `v_{d-1}`'s `rotationHash` and `recoveryHash` commitments.
+See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) for the doctrinal mechanic (a gossip-delivered `Cnt` with `previous = v_{d-1}.said` lands alongside an existing `Dec` at `v_d`; the chain transitions to contested). On KEL, the auth check for the overriding `Cnt` is the dual-signature requirement against `v_{d-1}`'s `rotationHash` and `recoveryHash` commitments.
 
 ## Typical Chain Shapes
 
@@ -168,7 +168,7 @@ s0..sN   normal chain
 sN+1     kind=dec   ← owner ends the KEL cleanly; dual-signed (kN + recovery key)
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
@@ -178,4 +178,4 @@ After `Cnt`, all submissions are rejected. After `Dec`, all submissions are reje
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
 - [../iel/events.md](../iel/events.md) — IEL per-kind reference.
 - [../sel/events.md](../sel/events.md) — SEL per-kind reference.
-- [../../features/policy.md](../../features/policy.md) — Policy DSL and anchoring model (`Delegate(delegator)` resolution for `Dip`).
+- [../../../../features/policy.md](../../../../features/policy.md) — Policy DSL and anchoring model (`Delegate(delegator)` resolution for `Dip`).

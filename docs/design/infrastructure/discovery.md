@@ -131,5 +131,5 @@ In all cases the failure mode is **fail-secure**: an unverifiable or contested c
 - [federation.md](federation.md) — full federation-as-identity design.
 - [peer-identity.md](peer-identity.md) — handshake-time authorization check against the federation IEL.
 - [gossip.md](gossip.md) — gossip protocol mechanics, anti-entropy, transport layer.
-- [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics.
-- [primitives/sel/event-log.md](../primitives/sel/event-log.md) — SEL chain semantics; address SELs follow the standard SEL pattern.
+- [primitives/data/event-logs/iel/event-log.md](../primitives/data/event-logs/iel/event-log.md) — IEL chain semantics.
+- [primitives/data/event-logs/sel/event-log.md](../primitives/data/event-logs/sel/event-log.md) — SEL chain semantics; address SELs follow the standard SEL pattern.

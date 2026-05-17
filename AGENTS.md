@@ -82,11 +82,11 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotationHash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/kel/events.md`, `docs/design/primitives/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
+**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotationHash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/data/event-logs/kel/events.md`, `docs/design/primitives/data/event-logs/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
 
-**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/primitives/kel/event-log.md`, `docs/design/primitives/kel/recovery-workflow.md`, `docs/design/primitives/kel/reconciliation.md`.
+**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
 
-**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/primitives/kel/merge.md`.
+**Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/primitives/data/event-logs/kel/merge.md`.
 
 **Merge results**: Accepted, Recovered, Contested, Diverged, RecoverRequired, ContestRequired.
 
@@ -104,22 +104,22 @@ use crate::{handlers::AppState, repository::KelsRepository};
 - Inception: `Icp` is permissionless; `[Icp, Est]` is the minimum inception batch.
 - Authorization and evolution: `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `ielEvent`.
 
-See `docs/design/primitives/sel/events.md` and `docs/design/primitives/sel/event-log.md`.
+See `docs/design/primitives/data/event-logs/sel/events.md` and `docs/design/primitives/data/event-logs/sel/event-log.md`.
 
 **Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `authPolicy` and `governancePolicy` declarations (`Icp`) and evolutions (`Evl`); `Sea` advances the seal without policy evolution; terminal via `Cnt` (contest) or `Dec` (decommission). Every IEL event is governance-authorized (anchored under the chain's `governancePolicy`); `authPolicy` is the per-event policy declaration consumed by SEL `Est`/`Upd` via `ielEvent` binding. Every introduced/evolved policy must be `immune: true`. IEL divergence is structurally contested-terminal at first 2-event observation; IEL has no `Rpr`.
 
 Storage: `iel_events` table; `/api/v1/iel/events*` routes; `iel_updates` Redis channel; `kels/gossip/v1/topics/iel` gossip topic.
 
-See `docs/design/primitives/iel/events.md`, `docs/design/primitives/iel/event-log.md`, `docs/design/primitives/iel/verification.md`, `docs/design/primitives/iel/merge.md`.
+See `docs/design/primitives/data/event-logs/iel/events.md`, `docs/design/primitives/data/event-logs/iel/event-log.md`, `docs/design/primitives/data/event-logs/iel/verification.md`, `docs/design/primitives/data/event-logs/iel/merge.md`.
 
-**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `authPolicy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/iel/event-log.md §Cascading effect on dependent SELs`.
+**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `authPolicy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/data/event-logs/iel/event-log.md §Cascading effect on dependent SELs`.
 
 ## Architecture
 
 ### Services
 
 - **kels** — KEL submission and retrieval
-- **sadstore** — content-addressed data store (RustFS + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/infrastructure/sadstore.md`, `docs/design/primitives/iel/`
+- **sadstore** — content-addressed data store (RustFS + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/infrastructure/sadstore.md`, `docs/design/primitives/data/event-logs/iel/`
 - **gossip** — KEL/SAD sync between peers (HyParView + PlumTree); also hosts the federation IEL locally and walks per-peer address SELs for discovery. See `docs/design/infrastructure/gossip.md`, `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`
 - **identity** — node KEL and signing keys
 

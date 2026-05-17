@@ -1,6 +1,6 @@
 # IEL Reconciliation: Multi-Node Correctness Matrix
 
-> Exhaustive enumeration of all IEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the IEL design — without it, the submit handler and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
+> Exhaustive enumeration of all IEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the IEL design — without it, the submit handler and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
 
 For lifecycle prose (states, divergence-by-Cnt-resolution, evaluation seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For submit-handler routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
@@ -42,7 +42,7 @@ What happens when a client submits events to the submit handler on a single node
 | **Active, sealed** (`Evl`/`Sea` would land at-or-before `lastSealAdvancingEvent` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` (every valid Cnt shape per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) qualifies for the override; the catch-all rejects malformed parent SAIDs) | `IelDecommissioned` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` (every valid Cnt shape per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) qualifies for the override; the catch-all rejects malformed parent SAIDs) | `IelDecommissioned` |
 
 ### Notes on cell routing
 
@@ -50,7 +50,7 @@ What happens when a client submits events to the submit handler on a single node
 - **`Sea` shape constraints** — parent must not be `Icp`/`Sea`/`Cnt`/`Dec`. See [events.md §Sea](events.md).
 - **`Dec` on Active or Active, sealed** — Dec terminates the chain rather than extending it; routes to decommission regardless of seal position.
 - **Divergent IEL → `ContestedIel` everywhere** — divergent IEL is structurally contested-terminal (every IEL event is governance-authorized → privileged), so no further events including Cnt land in the divergent state. The Cnt-as-third-event upgrade path doesn't exist on IEL. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
-- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds (Evl/Sea/Dec) on a Decommissioned chain → `IelDecommissioned`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds (Evl/Sea/Dec) on a Decommissioned chain → `IelDecommissioned`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 
 ### Batch submissions
 
@@ -83,7 +83,7 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
-- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
+- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 - **Decommissioned → Divergent sink** — divergent IEL is structurally Contested per privileged-divergence-is-terminal (every IEL event is privileged); the §2 Terminal-State Gate rejects every gossip-delivered event including the source's `Dec` with `ContestedIel`. Effective SAIDs converge on `hash("contested:{prefix}")` for the sink; the decommissioned source's effective SAID is `Dec.said`, which does not converge — but the sink is the terminal state of record here and the source is the one that needs gossip from elsewhere to reconcile.
 - **Divergent → Divergent sink** — effective SAIDs match by construction (both produce `hash("contested:{prefix}")` since IEL divergent-shape sets is_contested = true); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
@@ -96,7 +96,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | State | Effective SAID | Converges? |
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (covers all divergent-shape chains, with or without explicit `Cnt`, since IEL sets `is_contested = true` via privileged-divergence; same value regardless of which fork events each node has. Also covers a chain carrying both `Dec` and `Cnt` per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (covers all divergent-shape chains, with or without explicit `Cnt`, since IEL sets `is_contested = true` via privileged-divergence; same value regardless of which fork events each node has. Also covers a chain carrying both `Dec` and `Cnt` per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).) |
 | **Decommissioned** | `Dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
 
 ## Edge Cases
@@ -130,7 +130,7 @@ first observation of divergence. Both events stay in storage as forensic
 record. Operator reincepts under a new IEL prefix.
 ```
 
-The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by serial + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../../protocol-doctrine.md §Ordering Without Timestamps](../../protocol-doctrine.md#ordering-without-timestamps). Divergence is preserved as data.
+The protocol does not pick a winner — picking would mean architecting around "who was first," which is unknowable globally. KELS events carry no wall-clock timestamps; ordering is by serial + cryptographic chain linkage (each event's `previous` SAID anchors it to its predecessor), not by clock. See [../../../../protocol-doctrine.md §Ordering Without Timestamps](../../../../protocol-doctrine.md#ordering-without-timestamps). Divergence is preserved as data.
 
 ### 2. Adversary submits a conflicting Evl after governance compromise
 
@@ -271,7 +271,7 @@ Two operators may submit `Cnt` concurrently to different nodes — a real operat
 
 ### 6. Cnt-Dec override
 
-Two parties submit terminal events onto a linear IEL chain: the operator submits `Dec` (clean retirement) to one node; a second governance-authorized party submits `Cnt` (contest) to another. The doctrine in [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
+Two parties submit terminal events onto a linear IEL chain: the operator submits `Dec` (clean retirement) to one node; a second governance-authorized party submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
 **Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
 
@@ -326,7 +326,7 @@ Both shapes converge to contested:
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
 
-Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../protocol-doctrine.md §Federation Convergence](../../protocol-doctrine.md#federation-convergence).
+Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Without the override, A would resolve to `hash_effective_said("decommissioned:{prefix}") = Dec.said` while B would resolve to `hash_effective_said("contested:{prefix}")`, and anti-entropy would spin forever — a direct violation of [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence).
 
 ## References
 

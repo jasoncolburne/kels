@@ -57,7 +57,7 @@ If a peer misses the gossip announcement (e.g., it was offline), the owner can s
 
 ## Verification Invariant
 
-See [../../protocol-doctrine.md §Operation Categories](../../protocol-doctrine.md#operation-categories) for the structural framing.
+See [../../../../protocol-doctrine.md §Operation Categories](../../../../protocol-doctrine.md#operation-categories) for the structural framing.
 
 Owner's `repair`/`contest`/`decommission` builders run `verify_sel_events` against the server's view as defense-in-depth before extending from `get_owner_tip`. A buggy/malicious server that mis-handles a divergent chain would otherwise be taken at its word; the pre-flight verification ensures the server's chain is structurally and policy-wise sound before owner signs anything that extends it.
 
@@ -78,5 +78,5 @@ When a chain divergence is observed:
 - [event-log.md](event-log.md) — Chain lifecycle, the discriminator algorithm, evaluation seal and anchor non-poisonability.
 - [merge.md](merge.md) — Submit handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.
-- [../../infrastructure/sadstore.md](../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
+- [../../../../infrastructure/sadstore.md](../../../../infrastructure/sadstore.md) — SADStore service architecture and gossip layer.
 - [../kel/recovery-workflow.md](../kel/recovery-workflow.md) — KEL counterpart.

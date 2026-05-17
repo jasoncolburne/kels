@@ -174,11 +174,11 @@ The verifier's terminal-state-determination rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
+Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
 ### Cnt parent resolution
 
-Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. KEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
+Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. KEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
 
 **Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
 
@@ -186,7 +186,7 @@ Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear
 
 When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
-`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other non-archiving privileged kinds — `Ror`, `Cnt`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
+`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other non-archiving privileged kinds — `Ror`, `Cnt`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
 
 ### Cnt authorization (HARD)
 
@@ -211,7 +211,7 @@ Events with recovery signatures require dual authorization, making them the high
 
 ## Streaming
 
-KEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `KelVerifier`. Proof-of-verification token: `KelVerification`. Per-KEL specifics: branch-tip behavior on divergence (verifier forks `BranchState` per branch and tracks `divergenceAncestor`); inline anchor checking against caller-registered SAIDs; constructors `new` / `resume` / `from_branch_tip`.
+KEL verification follows the cross-primitive streaming pattern (see [../../../../protocol-doctrine.md §Streaming](../../../../protocol-doctrine.md#streaming)). Verifier type: `KelVerifier`. Proof-of-verification token: `KelVerification`. Per-KEL specifics: branch-tip behavior on divergence (verifier forks `BranchState` per branch and tracks `divergenceAncestor`); inline anchor checking against caller-registered SAIDs; constructors `new` / `resume` / `from_branch_tip`.
 
 `KelVerifier` is the sole verification mechanism for KELs. It walks forward through events page by page, verifying cryptographic integrity without loading the full KEL into memory. Events are processed in **generations** (all events at a given serial). When multiple events appear at the same serial (divergence), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
 
@@ -251,7 +251,7 @@ let verification = verifier.into_verification();
 
 Register SAIDs to check before verification with `verifier.check_anchors(saids)`. As the verifier processes events, it checks each event's anchor field against the queried SAIDs. Results are available on the `KelVerification` token via `is_said_anchored()` and `anchors_all_saids()`.
 
-Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
+Anchor fields appear on `Ixn`, `Rot`, and `Ror` events — `Ixn.anchor` is required (tier 1), `Rot.anchor` / `Ror.anchor` are optional (tier 2 / tier 3) and used by cross-chain verifiers per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation). The `check_anchors()` match scans all three kinds. Cross-chain consumers (IEL/SEL verifiers) need to know not just that a SAID is anchored but in which kind of KEL event — `KelVerification` exposes the anchoring event's kind so callers can enforce tier-appropriate anchor checks.
 
 ### PageLoader implementations
 
