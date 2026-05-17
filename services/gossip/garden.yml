@@ -5,9 +5,6 @@ type: container
 # Gossip service is not needed in the registry environment
 disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
-dependencies:
-  - run.federation-read-prefixes
-
 source:
   path: ../..  # Set build context to repository root
 
@@ -16,15 +13,22 @@ include:
   - lib/kels/**/*
   - lib/exchange/**/*
   - lib/derive/**/*
+  - lib/policy/**/*
   - services/gossip/**/*
   - project.garden.yml
-  - .kels/federated-registries.json
+  - .kels/federation-iel.json
 
 spec:
   dockerfile: services/gossip/Dockerfile
   buildArgs:
-    # TRUSTED_REGISTRY_PREFIXES is compiled into the binary for security
-    TRUSTED_REGISTRY_PREFIXES: ${actions.run.federation-read-prefixes.outputs.log}
+    # FEDERATION_IEL_PREFIX is compiled into the gossip binary at build
+    # (#190 / #194). Runtime override via the same env var; mismatch logs
+    # a startup warning. See `docs/design/infrastructure/federation.md
+    # §Configuration`. The placeholder value is the all-A digest used
+    # before a real federation IEL is incepted; #195 / #196 introduce
+    # tooling to populate `.kels/federation-iel.json` from a live
+    # federation ceremony.
+    FEDERATION_IEL_PREFIX: ${var.federationIelPrefix}
 
 ---
 
@@ -36,7 +40,6 @@ type: kubernetes
 disabled: ${var.envType == "registry" || var.envType == "standalone"}
 
 dependencies:
-  - run.federation-read-urls
   - build.gossip
   - deploy.kels
   - deploy.redis
@@ -46,7 +49,6 @@ dependencies:
 
 variables:
   gossipDatabaseUrl: ${var.postgres.url}/kels_gossip
-  federationRegistryUrls: ${actions.run.federation-read-urls.outputs.log}
   gossipAdvertiseAddress: "gossip.${environment.name}.kels:${var.gossip.port}"
 
 spec:

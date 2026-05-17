@@ -24,7 +24,7 @@ use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::{
-    allowlist::SharedAllowlist,
+    authorization::SharedAllowlist,
     pending::{DepRef, ParkRecord, ParkSubject, PendingMap},
     types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement},
 };

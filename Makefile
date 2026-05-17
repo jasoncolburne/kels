@@ -12,12 +12,23 @@ CLIENTS_DIR := clients
 
 PACKAGES := $(LIBS_PACKAGES) $(SERVICE_PACKAGES) $(CLIENT_PACKAGES)
 
-# Read federated registries - just the prefixes (for compile-time trust anchor)
+# Read federated registries - just the prefixes (for compile-time trust anchor).
+# Used by lib/kels (federation feature) and downstream test/iOS clients;
+# the gossip service dropped this in #194 in favor of FEDERATION_IEL_PREFIX
+# below. #197 deletes the registry surface entirely, which retires this var.
 TRUSTED_REGISTRY_PREFIXES := $(shell jq -r '[.[].prefix] | join(",")' .kels/federated-registries.json 2>/dev/null || echo "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 export TRUSTED_REGISTRY_PREFIXES
 
 TRUSTED_REGISTRY_MEMBERS := $(shell jq -c '[.[] | {id, prefix, active}]' .kels/federated-registries.json 2>/dev/null || echo '[{"id":0,"prefix":"KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","active":true}]')
 export TRUSTED_REGISTRY_MEMBERS
+
+# Compile-time default federation IEL prefix baked into the gossip binary
+# (#190 / #194). Runtime override is the same env var; mismatch logs a
+# startup warning. Placeholder all-A digest during dev — replaced at
+# real-federation build time. See
+# `docs/design/infrastructure/federation.md §Configuration`.
+FEDERATION_IEL_PREFIX := $(shell jq -r '.iel_prefix // "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"' .kels/federation-iel.json 2>/dev/null || echo "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+export FEDERATION_IEL_PREFIX
 
 .PHONY: all build check clean clean-docker clean-test-containers clippy clippy-fix coverage deny fmt fmt-check install-deny lint-terminology test ios-simulator redeploy-registries restart-gossip-services test-resync test-grow-federation test-shrink-federation test-peer-lifecycle test-rotation test-node test-federation test-kels-suite test-sad-suite test-exchange-suite test-creds-suite wait-for-gossip
 

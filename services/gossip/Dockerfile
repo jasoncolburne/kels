@@ -15,17 +15,20 @@ COPY lib/gossip /app/lib/gossip
 COPY lib/derive /app/lib/derive
 COPY lib/exchange /app/lib/exchange
 COPY lib/kels /app/lib/kels
+COPY lib/policy /app/lib/policy
 COPY services/gossip /app/services/gossip
 
-# TRUSTED_REGISTRY_PREFIXES contains the KELS prefixes of trusted registries
-# This MUST be provided at compile time as it's embedded in the binary for security
-ARG TRUSTED_REGISTRY_PREFIXES
+# FEDERATION_IEL_PREFIX is the compile-time default federation IEL prefix
+# baked into the binary at build (#190 / #194). Runtime override via the
+# same env var; mismatch logs a startup warning. See
+# `docs/design/infrastructure/federation.md §Configuration`.
+ARG FEDERATION_IEL_PREFIX
 
 # Build with BuildKit cache mounts for cargo registry and target directory
 WORKDIR /app/services/gossip
 RUN --mount=type=cache,id=kels-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=gossip-target,target=/app/services/gossip/target \
-    TRUSTED_REGISTRY_PREFIXES="${TRUSTED_REGISTRY_PREFIXES}" cargo build --release --bin gossip && \
+    FEDERATION_IEL_PREFIX="${FEDERATION_IEL_PREFIX}" cargo build --release --bin gossip && \
     cp target/release/gossip /app/gossip
 
 # Final stage

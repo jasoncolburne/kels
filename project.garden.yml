@@ -109,6 +109,16 @@ variables:
     topic: "kels/events/v1"
     listenAddress: "0.0.0.0:${var.gossip.port}"
     antiEntropyIntervalSecs: "10"
+    # Slow background re-walk cadence of the federation IEL chain to pick
+    # up `Evl` events the gossip-driven invalidation path missed (#194 /
+    # `peer-identity.md §Authorization view stays current via gossip`).
+    authPolicyRefreshIntervalSecs: "60"
+  # Compile-time default federation IEL prefix baked into the gossip
+  # binary at build (#190 / #194). Runtime override via the env var of
+  # the same name; mismatch logs a startup warning. Placeholder value
+  # before a real federation IEL is incepted; #195 / #196 introduce
+  # tooling that populates this from a live federation ceremony.
+  federationIelPrefix: "KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   registry:
     replicas: 1
     port: "80"

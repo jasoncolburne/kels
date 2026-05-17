@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
-use kels_core::{KelsClient, KelsError, KelsRegistryClient, PeerSigner};
+use kels_core::{KelsClient, KelsError, PeerSigner};
 use thiserror::Error;
 
 use crate::pending::{ParkRecord, ParkSubject, PendingMap};
@@ -95,10 +95,16 @@ pub struct DiscoveryResult {
 }
 
 /// Handles bootstrap synchronization from existing peers.
+///
+/// Pre-#194 this was wired to the registry-fetched allowlist for both peer
+/// discovery and authorization. #194 (federation-as-identity) moves the
+/// authority to the federation IEL — see `crate::authorization`. Peer URL
+/// discovery (the address-list side) waits on #195's address SELs; through
+/// the #194 window the `allowlist` field is structurally an empty map, and
+/// preload paths degrade to no-ops.
 pub struct BootstrapSync {
     config: BootstrapConfig,
-    urls: Vec<String>,
-    allowlist: crate::allowlist::SharedAllowlist,
+    allowlist: crate::authorization::SharedAllowlist,
     signer: Arc<dyn PeerSigner>,
     http_client: reqwest::Client,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
@@ -111,11 +117,11 @@ pub struct BootstrapSync {
 }
 
 impl BootstrapSync {
-    /// Create a new BootstrapSync with registry URLs, shared allowlist, and signer.
+    /// Create a new BootstrapSync with the shared peer-address map and the
+    /// node's identity signer.
     pub fn new(
         config: BootstrapConfig,
-        urls: Vec<String>,
-        allowlist: crate::allowlist::SharedAllowlist,
+        allowlist: crate::authorization::SharedAllowlist,
         signer: Arc<dyn PeerSigner>,
     ) -> Result<Self, BootstrapError> {
         let http_client = reqwest::Client::builder()
@@ -126,7 +132,6 @@ impl BootstrapSync {
 
         Ok(Self {
             config,
-            urls,
             allowlist,
             signer,
             http_client,
@@ -823,31 +828,6 @@ impl BootstrapSync {
             }
         }
         ready_peers
-    }
-
-    /// Check if a peer is authorized in the allowlist.
-    pub async fn is_peer_authorized(&self, peer_kel_prefix: &str) -> Result<bool, BootstrapError> {
-        // Try each registry URL until one succeeds
-        for url in &self.urls {
-            let client = KelsRegistryClient::new(url)?;
-            match client.fetch_peers().await {
-                Ok(peers_response) => {
-                    return Ok(peers_response.peers.iter().any(|history| {
-                        history
-                            .records
-                            .last()
-                            .map(|peer| peer.kel_prefix.as_ref() == peer_kel_prefix && peer.active)
-                            .unwrap_or(false)
-                    }));
-                }
-                Err(e) => {
-                    warn!(url = %url, error = %e, "Failed to check peer authorization, trying next");
-                }
-            }
-        }
-        Err(BootstrapError::Failed(
-            "Could not check peer authorization from any registry".to_string(),
-        ))
     }
 
     /// Check if there are Ready peers we should resync from.

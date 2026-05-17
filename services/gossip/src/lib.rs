@@ -30,7 +30,7 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
-mod allowlist;
+mod authorization;
 mod bootstrap;
 mod bootstrap_merge;
 mod gossip_layer;
@@ -49,11 +49,14 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use cesr::Matter;
 use redis::AsyncCommands;
 use thiserror::Error;
 
-use allowlist::SharedAllowlist;
+use authorization::{
+    FederationAuthError, FederationEvaluator, SharedAllowlist, SharedFederationState,
+    is_peer_authorized, load_federation_state, resolve_federation_iel_prefix,
+    run_federation_refresh_loop,
+};
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
 use types::{GossipCommand, GossipEvent};
@@ -70,14 +73,10 @@ pub enum ServiceError {
     Bootstrap(#[from] bootstrap::BootstrapError),
     #[error("Signer error: {0}")]
     Signer(#[from] SignerError),
+    #[error("Federation authorization error: {0}")]
+    FederationAuth(#[from] FederationAuthError),
 }
 
-/// Create a `KelStore` wrapping the registry KEL repository.
-fn registry_kel_store(
-    repo: &repository::RegistryKelRepository,
-) -> kels_core::RepositoryKelStore<repository::RegistryKelRepository> {
-    kels_core::RepositoryKelStore::new(std::sync::Arc::new(repo.clone()))
-}
 
 /// Service configuration
 #[derive(Clone)]
@@ -95,16 +94,17 @@ pub struct Config {
     pub hsm_url: String,
     /// Identity service URL for KELS prefix
     pub identity_url: String,
-    /// All federation registry URLs (for peer discovery)
-    pub federation_registry_urls: Vec<String>,
     /// Gossip listen address (e.g., 0.0.0.0:4001)
     pub listen_addr: SocketAddr,
-    /// Advertised gossip address for registry (e.g., gossip.node-a.kels:4001)
+    /// Advertised gossip address (e.g., gossip.node-a.kels:4001)
     pub advertise_addr: String,
     /// Gossip topic name
     pub topic: String,
-    /// Allowlist refresh interval in seconds
-    pub allowlist_refresh_interval_secs: u64,
+    /// Federation IEL authPolicy refresh interval in seconds. Slow background
+    /// re-walk of the federation IEL chain to pick up `Evl` events that the
+    /// gossip-driven invalidation path missed. See
+    /// `docs/design/infrastructure/peer-identity.md §Authorization view stays current via gossip`.
+    pub auth_policy_refresh_interval_secs: u64,
     /// HTTP server listen host (e.g., 0.0.0.0)
     pub http_listen_host: String,
     /// HTTP server listen port (e.g., 80)
@@ -139,11 +139,10 @@ pub struct EnvValues {
     pub redis_url: Option<String>,
     pub hsm_url: Option<String>,
     pub identity_url: Option<String>,
-    pub federation_registry_urls: Option<String>,
     pub listen_addr: Option<String>,
     pub advertise_addr: Option<String>,
     pub topic: Option<String>,
-    pub allowlist_refresh_interval_secs: Option<u64>,
+    pub auth_policy_refresh_interval_secs: Option<u64>,
     pub http_listen_host: Option<String>,
     pub http_listen_port: Option<u16>,
     pub anti_entropy_interval_secs: Option<u64>,
@@ -167,11 +166,6 @@ impl Config {
             .advertise_addr
             .unwrap_or_else(|| listen_addr_str.clone());
 
-        let federation_registry_urls: Vec<String> = env
-            .federation_registry_urls
-            .map(|s| s.split(',').map(|u| u.trim().to_string()).collect())
-            .unwrap_or_default();
-
         Ok(Self {
             node_id: env.node_id.unwrap_or_else(|| "node-unknown".to_string()),
             base_domain,
@@ -185,13 +179,14 @@ impl Config {
             identity_url: env
                 .identity_url
                 .unwrap_or_else(|| "http://identity".to_string()),
-            federation_registry_urls,
             listen_addr,
             advertise_addr,
             topic: env
                 .topic
                 .unwrap_or_else(|| gossip_layer::DEFAULT_TOPIC.to_string()),
-            allowlist_refresh_interval_secs: env.allowlist_refresh_interval_secs.unwrap_or(60),
+            auth_policy_refresh_interval_secs: env
+                .auth_policy_refresh_interval_secs
+                .unwrap_or(60),
             http_listen_host: env
                 .http_listen_host
                 .unwrap_or_else(|| "0.0.0.0".to_string()),
@@ -209,11 +204,10 @@ impl Config {
             redis_url: env::var("REDIS_URL").ok(),
             hsm_url: env::var("HSM_URL").ok(),
             identity_url: env::var("IDENTITY_URL").ok(),
-            federation_registry_urls: env::var("FEDERATION_REGISTRY_URLS").ok(),
             listen_addr: env::var("GOSSIP_LISTEN_ADDR").ok(),
             advertise_addr: env::var("GOSSIP_ADVERTISE_ADDR").ok(),
             topic: env::var("GOSSIP_TOPIC").ok(),
-            allowlist_refresh_interval_secs: env::var("ALLOWLIST_REFRESH_INTERVAL_SECS")
+            auth_policy_refresh_interval_secs: env::var("AUTH_POLICY_REFRESH_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
             http_listen_host: env::var("HTTP_LISTEN_HOST").ok(),
@@ -241,10 +235,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     info!("Connecting to Redis");
     info!("HSM URL: {}", config.hsm_url);
     info!("Identity URL: {}", config.identity_url);
-    info!(
-        "Federation registry URLs: {:?}",
-        config.federation_registry_urls
-    );
     info!("Listen address: {}", config.listen_addr);
     info!("Advertise address: {}", config.advertise_addr);
     info!("Topic: {}", config.topic);
@@ -302,33 +292,32 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Identity KEL submitted to local KELS service");
     }
 
-    // Create registry signer for authenticated requests (signs via identity service)
-    info!("Creating identity registry signer...");
-    let registry_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix)
+    // Identity signer for authenticated peer-to-peer requests (signs via
+    // identity service). Used by sync paths for cross-peer fetches when an
+    // address-source supplies peer URLs (#195 address SELs replace what
+    // was registry-driven).
+    info!("Creating identity signer...");
+    let peer_request_signer = IdentitySigner::new(&config.identity_url, local_kel_prefix)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity signer: {}", e)))?;
-    let registry_signer: Arc<dyn kels_core::PeerSigner> = Arc::new(registry_signer);
-    info!("Registry signer ready");
+    let peer_request_signer: Arc<dyn kels_core::PeerSigner> = Arc::new(peer_request_signer);
+    info!("Identity signer ready");
 
-    // All federation registry URLs for peer discovery and authenticated operations
-    let federation_registry_urls = config.federation_registry_urls.clone();
+    // Resolve the federation IEL prefix (compile-time default + runtime
+    // env override per `federation.md §Configuration`). Mismatch warning is
+    // emitted inside `resolve_federation_iel_prefix`.
+    let federation_iel_prefix = resolve_federation_iel_prefix()?;
+    info!("Federation IEL prefix: {federation_iel_prefix}");
 
-    // Discover and verify registry prefix from the registry's KEL
-    info!("Discovering registry prefix from KEL...");
-    info!("urls: {:?}", federation_registry_urls);
-    let registry_prefixes: Vec<String> = kels_core::trusted_prefixes()
-        .iter()
-        .map(|p| p.to_string())
-        .collect();
+    // Bundled federation evaluator: PolicyResolver + IelResolver +
+    // iel-aware PolicyChecker, all bound to the local sadstore + kels
+    // HTTP surfaces. Used for both federation IEL chain validation
+    // (load_federation_state) and handshake authorization (is_peer_authorized).
+    let federation_evaluator = FederationEvaluator::new(&config.sadstore_url(), &config.kels_url())?;
 
-    if registry_prefixes.is_empty() {
-        return Err(ServiceError::Config(
-            "No trusted registry prefixes configured".to_string(),
-        ));
-    }
-
-    info!("Registry prefixes: {:?}", registry_prefixes);
-
-    // Create shared allowlist for authorized peers (used by both bootstrap and gossip)
+    // Transitional empty allowlist. Source of peer URLs (`base_domain`,
+    // `gossip_addr`) was the registry-fetch path pre-#194; #195's address
+    // SELs supply the replacement. Sync paths that look up peer URLs
+    // gracefully no-op under the empty map.
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
 
     // Create Redis connection manager early — used by both bootstrap and retry/anti-entropy loops
@@ -350,9 +339,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             }
         };
 
-    // Initialize PostgreSQL for local registry KEL store
+    // Initialize PostgreSQL for the (now-dead) local registry-KEL table.
+    // The `registry_kels` table is retained for #197 to drop alongside
+    // the registry service; #194 stops populating + reading it but keeps
+    // the migration in place so existing deployments don't trip schema
+    // drift on rolling upgrades.
     info!("Connecting to database");
-    let gossip_repo = {
+    let _gossip_repo = {
         use verifiable_storage_postgres::RepositoryConnection;
         let repo = repository::GossipRepository::connect(&config.database_url)
             .await
@@ -364,22 +357,27 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         Arc::new(repo)
     };
 
-    // Transfer verified registry KELs to local store for anchoring checks
-    {
-        let registry_kel_store =
-            kels_core::RepositoryKelStore::new(Arc::new(gossip_repo.registry_kels.clone()));
-        for prefix_str in &registry_prefixes {
-            if let Ok(prefix_digest) = cesr::Digest256::from_qb64(prefix_str) {
-                kels_core::sync_member_kel(
-                    &prefix_digest,
-                    &federation_registry_urls,
-                    &registry_kel_store,
-                )
-                .await;
-            }
-        }
-    }
-    info!("Registry KELs persisted to local store");
+    // Initial federation IEL load + policy-shape verification. Refuses
+    // to continue if the federation IEL is missing, terminal, divergent,
+    // or non-conforming (see `federation.md §Federation policy shape
+    // verification`).
+    let federation_state = load_federation_state(&federation_iel_prefix, &federation_evaluator)
+        .await
+        .map_err(|e| {
+            ServiceError::Config(format!(
+                "Initial federation IEL load failed for prefix {federation_iel_prefix}: {e} \
+                 (expected: federation IEL is replicated locally via gossip and the \
+                 (auth_policy, governance_policy) pair conforms to the federation \
+                 shape convention)"
+            ))
+        })?;
+    info!(
+        "Federation IEL loaded: {} members, governance threshold {}",
+        federation_state.members.len(),
+        federation_state.governance_threshold
+    );
+    let shared_federation_state: SharedFederationState =
+        Arc::new(RwLock::new(Some(federation_state)));
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
@@ -391,9 +389,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
     let mut bootstrap = BootstrapSync::new(
         bootstrap_config.clone(),
-        federation_registry_urls.clone(),
         allowlist.clone(),
-        registry_signer.clone(),
+        peer_request_signer.clone(),
     )?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
@@ -407,89 +404,62 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         bootstrap = bootstrap.with_pending(pending::PendingMap::new(redis.clone()));
     }
 
-    // Step 2-3: Check allowlist and wait if not authorized
+    // Step 2-3: Wait until this node's identity is admitted by the
+    // federation IEL's current `authPolicy`. The federation refresh loop
+    // (spawned below) re-walks the federation IEL on a slow interval so
+    // we see new `Evl` events that add this node.
+    //
+    // For #194 the preload-while-waiting branch (registry-driven
+    // peer-data sync) is gone — peer-address discovery moves to address
+    // SELs in #195; until then the node just polls the federation IEL.
     loop {
-        match bootstrap
-            .is_peer_authorized(local_kel_prefix.as_ref())
-            .await
-        {
+        let auth_check = {
+            let guard = shared_federation_state.read().await;
+            match guard.as_ref() {
+                Some(state) => {
+                    is_peer_authorized(state, &local_kel_prefix, &federation_evaluator).await
+                }
+                None => Err(FederationAuthError::Config(
+                    "federation state not loaded".to_string(),
+                )),
+            }
+        };
+        match auth_check {
             Ok(true) => {
-                info!("Peer {} is authorized in allowlist", local_kel_prefix);
+                info!(
+                    "Peer {} is authorized by the federation IEL's current authPolicy",
+                    local_kel_prefix
+                );
                 break;
             }
             Ok(false) => {
                 warn!(
                     "=======================================================================\n\
-                     AUTHORIZATION REQUIRED: This node is not in the allowlist.\n\
+                     AUTHORIZATION REQUIRED: This node is not in the federation IEL's current authPolicy.\n\
                      Peer prefix: {}\n\
-                     Add this peer via: registry-admin peer add --peer-kel-prefix {} --node-id {}\n\
-                     Preloading KELs while waiting...\n\
+                     Add this peer via an `Evl` on the federation IEL that includes\n\
+                     `identity(<this-peer's IEL prefix>)` in the new authPolicy.\n\
+                     Sleeping 15 minutes before re-checking.\n\
                      =======================================================================",
-                    local_kel_prefix, local_kel_prefix, config.node_id
+                    local_kel_prefix
                 );
-
-                // Preload KELs, SAD objects, IELs, and SAD events from Ready peers
-                let mut do_loop = true;
-
-                while do_loop {
-                    do_loop = false;
-
-                    match bootstrap.preload_kels().await {
-                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
-                        Err(e) => warn!("KEL preload failed: {}", e),
-                        Ok(()) => {}
-                    }
-                    match bootstrap.preload_sad_objects().await {
-                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
-                        Err(e) => warn!("SAD preload failed: {}", e),
-                        Ok(()) => {}
-                    }
-                    match bootstrap.preload_iels().await {
-                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
-                        Err(e) => warn!("IEL preload failed: {}", e),
-                        Ok(()) => {}
-                    }
-                    match bootstrap.preload_sad_events().await {
-                        Err(bootstrap::BootstrapError::Sync(_)) => do_loop = true,
-                        Err(e) => warn!("SEL preload failed: {}", e),
-                        Ok(()) => {}
-                    }
-
-                    if do_loop {
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-                            _ = kels_core::shutdown_signal() => {
-                                info!("Shutdown signal received during preload");
-                                std::process::exit(0);
-                            }
-                        }
-                    }
-                }
-
-                // Wait 15 minutes before checking again. The longer cadence
-                // avoids cross-pressure with bootstrap-fetch on later-vote
-                // nodes coming online while earlier nodes are still bootstrapping
-                // (an AE+gossip storm against an under-tuned object store
-                // saturates RustFS+Postgres concurrency; see #157 for the
-                // structural fix).
-                info!("Sleeping 15 minutes before rechecking allowlist...");
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(900)) => {}
                     _ = kels_core::shutdown_signal() => {
-                        info!("Shutdown signal received during allowlist wait");
+                        info!("Shutdown signal received during authorization wait");
                         std::process::exit(0);
                     }
                 }
             }
             Err(e) => {
                 warn!(
-                    "Failed to check allowlist: {}. Retrying in 30 seconds...",
+                    "Failed to check federation authorization: {}. Retrying in 30 seconds...",
                     e
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(30)) => {}
                     _ = kels_core::shutdown_signal() => {
-                        info!("Shutdown signal received during allowlist wait");
+                        info!("Shutdown signal received during authorization wait");
                         std::process::exit(0);
                     }
                 }
@@ -509,23 +479,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         } else {
             info!("Published bootstrapping state to Redis");
         }
-    }
-
-    // Initial allowlist refresh — fetch all peers from all registries, exclude self
-    let allowlist_store = registry_kel_store(&gossip_repo.registry_kels);
-    match allowlist::refresh_allowlist(
-        &federation_registry_urls,
-        &allowlist_store,
-        &allowlist,
-        Some(&config.node_id),
-    )
-    .await
-    {
-        Ok(count) => info!("Allowlist refreshed with {} peers", count),
-        Err(e) => warn!(
-            "Initial allowlist refresh failed: {} - starting with empty allowlist",
-            e
-        ),
     }
 
     // Probe peer KELS readiness before discovery. This gives peer services
@@ -702,16 +655,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Create gossip signer and verifier (signer uses identity service)
+    // Create gossip signer and verifier (signer uses identity service;
+    // verifier authenticates the handshake signature against the peer's
+    // local KEL tip and authorizes via federation IEL `authPolicy`
+    // satisfaction).
     let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
-    let verifier_store: std::sync::Arc<dyn kels_core::KelStore> =
-        std::sync::Arc::new(registry_kel_store(&gossip_repo.registry_kels));
     let verifier = KelsPeerVerifier::new(
-        allowlist.clone(),
-        &config.kels_url(),
-        federation_registry_urls.clone(),
-        config.node_id.clone(),
-        verifier_store,
+        shared_federation_state.clone(),
+        federation_evaluator.clone(),
+        config.kels_url(),
     );
 
     // Create gossip instance — advertise our address so peers can dial us on demand
@@ -779,7 +731,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
     let sync_redis = redis_for_sync.clone();
-    let sync_signer = registry_signer.clone();
+    let sync_signer = peer_request_signer.clone();
     let sync_pending = pending_map.clone();
     let sync_handle = tokio::spawn(async move {
         if let Err(e) = sync::run_sync_handler(
@@ -892,7 +844,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
         let ae_kels_url = config.kels_url().clone();
-        let ae_signer = registry_signer.clone();
+        let ae_signer = peer_request_signer.clone();
         let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
             sync::run_anti_entropy_loop(
@@ -908,7 +860,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
         let sad_ae_allowlist = allowlist.clone();
-        let sad_ae_signer = registry_signer.clone();
+        let sad_ae_signer = peer_request_signer.clone();
         let sad_ae_sadstore_url = config.sadstore_url().clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
@@ -927,7 +879,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // ever propagating to the parking peer.
         let iel_ae_redis = redis.clone();
         let iel_ae_allowlist = allowlist.clone();
-        let iel_ae_signer = registry_signer.clone();
+        let iel_ae_signer = peer_request_signer.clone();
         let iel_ae_sadstore_url = config.sadstore_url().clone();
         let iel_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
         tokio::spawn(async move {
@@ -942,18 +894,20 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         });
     }
 
-    // Start allowlist refresh loop
-    let refresh_interval = Duration::from_secs(config.allowlist_refresh_interval_secs);
-    let refresh_urls = federation_registry_urls.clone();
-    let refresh_store = registry_kel_store(&gossip_repo.registry_kels);
-    let refresh_node_id = config.node_id.clone();
+    // Federation IEL refresh loop. Slow background re-walk of the
+    // federation IEL chain picks up `Evl` events that the gossip-driven
+    // invalidation path missed; see `peer-identity.md §Authorization view
+    // stays current via gossip`.
+    let refresh_interval = Duration::from_secs(config.auth_policy_refresh_interval_secs);
+    let refresh_iel_prefix = federation_iel_prefix;
+    let refresh_state = shared_federation_state.clone();
+    let refresh_evaluator = federation_evaluator.clone();
     tokio::spawn(async move {
-        allowlist::run_allowlist_refresh_loop(
-            &refresh_urls,
-            &refresh_store,
-            allowlist,
+        run_federation_refresh_loop(
+            refresh_iel_prefix,
+            refresh_state,
+            refresh_evaluator,
             refresh_interval,
-            &refresh_node_id,
         )
         .await;
     });
@@ -1062,7 +1016,7 @@ mod tests {
             assert_eq!(config.sadstore_url(), "http://sadstore.example.com");
             assert_eq!(config.redis_url, "redis://redis:6379");
             assert_eq!(config.hsm_url, "http://hsm");
-            assert_eq!(config.allowlist_refresh_interval_secs, 60);
+            assert_eq!(config.auth_policy_refresh_interval_secs, 60);
             assert_eq!(config.http_listen_host, "0.0.0.0");
             assert_eq!(config.http_listen_port, 80);
         }
