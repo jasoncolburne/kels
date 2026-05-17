@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use kels_core::{AnchorEvaluation, KelsError, PagedKelSource, PolicyChecker};
+use kels_core::{AnchorEvaluation, IelResolver, KelsError, PagedKelSource, PolicyChecker};
 
 use crate::{evaluate_anchored_policy, resolver::PolicyResolver, verification::EndorsementStatus};
 
@@ -21,20 +21,28 @@ use crate::{evaluate_anchored_policy, resolver::PolicyResolver, verification::En
 /// Owns its dependencies via `Arc` so the checker is `'static` and can be
 /// stashed in `Arc<dyn PolicyChecker + Send + Sync>` on `SadEventBuilder` or
 /// any other type-erased holder. Cloning is cheap (Arc bumps a refcount).
+///
+/// `iel_resolver` resolves `iel(X)` DSL leaves to the current `authPolicy` of
+/// the named IEL `X` (per `docs/design/features/policy.md §Identity Resolution`).
+/// Must be a real implementation in production — the evaluator fails loudly
+/// on any `iel(...)` leaf the resolver can't resolve.
 #[derive(Clone)]
 pub struct AnchoredPolicyChecker {
     kel_source: Arc<dyn PagedKelSource + Send + Sync>,
     resolver: Arc<dyn PolicyResolver + Send + Sync>,
+    iel_resolver: Arc<dyn IelResolver + Send + Sync>,
 }
 
 impl AnchoredPolicyChecker {
     pub fn new(
         kel_source: Arc<dyn PagedKelSource + Send + Sync>,
         resolver: Arc<dyn PolicyResolver + Send + Sync>,
+        iel_resolver: Arc<dyn IelResolver + Send + Sync>,
     ) -> Self {
         Self {
             kel_source,
             resolver,
+            iel_resolver,
         }
     }
 }
@@ -51,10 +59,15 @@ impl PolicyChecker for AnchoredPolicyChecker {
             .resolve_policy(policy)
             .await
             .map_err(map_policy_error)?;
-        let verification =
-            evaluate_anchored_policy(&policy, said, &*self.kel_source, &*self.resolver)
-                .await
-                .map_err(map_policy_error)?;
+        let verification = evaluate_anchored_policy(
+            &policy,
+            said,
+            &*self.kel_source,
+            &*self.resolver,
+            &*self.iel_resolver,
+        )
+        .await
+        .map_err(map_policy_error)?;
         // #156 contract: `missing_anchors` enumerates KEL prefixes whose
         // commitment could flip the policy outcome — i.e., chains where
         // an Ixn anchoring `said` could still land. `NotEndorsed`

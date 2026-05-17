@@ -126,7 +126,7 @@ verify_authorization(event, branch):
     //   Upd          → Ixn  (tier 1)
     //   Est, Sea     → Rot  (tier 2)
     //   Rpr, Cnt, Dec → Ror (tier 3)
-    // Each Endorse / Delegate leaf in the policy must have an anchor
+    // Each Kel / Iel / Delegate leaf in the policy must have an anchor
     // of the required kind in the named KEL. Wrong-kind anchor for a
     // leaf evaluates as unsatisfied; policy-level satisfaction is
     // computed against the tier-appropriate leaf checks.
@@ -245,6 +245,15 @@ SelVerification:
 ```
 
 Accessors:
+
+> **⚠️ Doc-vs-code drift surfaced during the #194 sweep — design and operator to reconcile.** The accessor list and the struct-field block above describe a richer surface than `SelVerification` currently exports in `lib/kels/src/types/sad/event.rs:495+`. Specifically:
+>
+> - `identity()` is named on line `prefix()/topic()/identity()` but no `pub fn identity()` exists today. The bound IEL prefix is reachable as `current_event().identity` (the inception event's `identity` field). `prefix()` returns the **SEL** prefix, not the IEL prefix; `topic()` returns the topic string.
+> - `lastSealAdvancingEvent()` (SAID-returning) and `divergenceAncestor()` (SAID-returning) are not exported. The closest current accessors are `last_governance_version() -> Option<u64>` and `diverged_at_version() -> Option<u64>` — both **version**-returning, not SAID-returning.
+> - `lastIelEvent()` exists as `last_identity_event(&self) -> Option<&Digest256>` (snake_case), and the current semantic is **linear-only — `None` on divergent chains** (not "max ielEvent across all events"). Divergent-chain aggregation needs an `IelResolver` for `IelChainPosition::try_cmp`, which the synchronous accessor doesn't have.
+> - `current_event()` is `pub fn current_event(&self) -> &SadEvent` — unconditional, returning the tie-break winner's branch tip (not `None` on divergent). `current_content()` returns `None` when the tip event has no `content` field, not because of divergence.
+>
+> The struct-field block (`divergenceAncestor`, `lastSealAdvancingEvent`, `lastIelEvent`) likewise describes fields not present on the code struct. The design lead is ahead of the code here; whether the missing accessors are upcoming work or stale design needs a per-line call from design + Jason.
 
 - `current_event()` → `None` if divergent
 - `current_content()` → `None` if divergent

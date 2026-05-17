@@ -27,13 +27,23 @@ blake3 = "1"
 # CESR for decoding identity service responses and ML-DSA-65 verification
 cesr = { git = "https://github.com/jasoncolburne/cesr-rs", default-features = false, features = ["native"] }
 
-# KELS library for types and server utilities (shutdown_signal)
-kels-core = { path = "../../lib/kels", features = ["server", "federation"] }
+# KELS library for types and server utilities (shutdown_signal). The
+# "federation" feature is no longer needed here — pre-#194 it gated the
+# compile-time TRUSTED_REGISTRY_PREFIXES env var consumed by the
+# registry-fetch + allowlist path; #194 swaps in the federation IEL flow
+# (FEDERATION_IEL_PREFIX is gossip-local at services/gossip/src/authorization.rs).
+kels-core = { path = "../../lib/kels", features = ["server"] }
+
+# Policy DSL evaluation — federation IEL authPolicy satisfaction at handshake
+# (evaluate_signed_policy), federation policy-shape conformance check
+# (verify_federation_policy_shape).
+kels-policy = { path = "../../lib/policy" }
 
 # Exchange protocol types (MailAnnouncement, MailClient)
 kels-exchange = { path = "../../lib/exchange" }
 
-# Verifiable storage for Chained trait and PostgreSQL backend
+# Verifiable storage for Chained trait, SelfAddressed (policy SAID re-verify),
+# and PostgreSQL backend.
 verifiable-storage = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 verifiable-storage-postgres = { git = "https://github.com/jasoncolburne/verifiable-storage-rs" }
 

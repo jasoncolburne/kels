@@ -104,14 +104,28 @@ impl Policy {
         self.poison.is_some()
     }
 
-    /// Collect all endorser prefixes referenced in the expression.
-    /// Includes both `endorse(PREFIX)` prefixes and `delegate(_, DELEGATE)` prefixes.
-    pub fn endorser_prefixes(&self) -> Result<BTreeSet<cesr::Digest256>, PolicyError> {
+    /// Collect all KEL prefixes referenced in the expression.
+    /// Includes both `kel(PREFIX)` prefixes and `delegate(DELEGATOR, DELEGATE)`
+    /// prefixes (delegator and delegate, when both are specified). `iel(...)`
+    /// leaves name IEL prefixes — a different namespace — and are excluded;
+    /// see [`Self::referenced_iel_prefixes`].
+    pub fn referenced_kel_prefixes(&self) -> Result<BTreeSet<cesr::Digest256>, PolicyError> {
         let ast = self.parse()?;
         let mut prefixes = BTreeSet::new();
-        collect_endorser_prefixes(&ast, &mut prefixes);
+        collect_kel_prefixes(&ast, &mut prefixes);
         if let Some(poison_ast) = self.parse_poison()? {
-            collect_endorser_prefixes(&poison_ast, &mut prefixes);
+            collect_kel_prefixes(&poison_ast, &mut prefixes);
+        }
+        Ok(prefixes)
+    }
+
+    /// Collect all IEL prefixes referenced in the expression (`iel(PREFIX)` leaves).
+    pub fn referenced_iel_prefixes(&self) -> Result<BTreeSet<cesr::Digest256>, PolicyError> {
+        let ast = self.parse()?;
+        let mut prefixes = BTreeSet::new();
+        collect_iel_prefixes(&ast, &mut prefixes);
+        if let Some(poison_ast) = self.parse_poison()? {
+            collect_iel_prefixes(&poison_ast, &mut prefixes);
         }
         Ok(prefixes)
     }
@@ -146,11 +160,12 @@ impl Policy {
     }
 }
 
-fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest256>) {
+fn collect_kel_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest256>) {
     match node {
-        PolicyNode::Endorse(prefix) => {
+        PolicyNode::Kel(prefix) => {
             prefixes.insert(*prefix);
         }
+        PolicyNode::Iel(_) => {}
         PolicyNode::Delegate(delegator, delegate) => {
             prefixes.insert(*delegator);
             if *delegate != cesr::Digest256::default() {
@@ -159,16 +174,32 @@ fn collect_endorser_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Di
         }
         PolicyNode::Weighted(_, pairs) => {
             for (node, _) in pairs {
-                collect_endorser_prefixes(node, prefixes);
+                collect_kel_prefixes(node, prefixes);
             }
         }
         PolicyNode::Policy(_) => {}
     }
 }
 
+fn collect_iel_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest256>) {
+    match node {
+        PolicyNode::Iel(prefix) => {
+            prefixes.insert(*prefix);
+        }
+        PolicyNode::Kel(_) | PolicyNode::Delegate(_, _) | PolicyNode::Policy(_) => {}
+        PolicyNode::Weighted(_, pairs) => {
+            for (node, _) in pairs {
+                collect_iel_prefixes(node, prefixes);
+            }
+        }
+    }
+}
+
 fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<cesr::Digest256>) {
     match node {
-        PolicyNode::Endorse(_) | PolicyNode::Delegate(_, _) => {}
+        PolicyNode::Kel(_)
+        | PolicyNode::Iel(_)
+        | PolicyNode::Delegate(_, _) => {}
         PolicyNode::Weighted(_, pairs) => {
             for (node, _) in pairs {
                 collect_policy_saids(node, saids);
@@ -189,9 +220,9 @@ mod tests {
     #[test]
     fn test_create_simple() {
         let a = test_digest("prefix-a");
-        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let policy = Policy::build(&format!("kel({a})"), None, false).unwrap();
         assert_eq!(policy.said.to_string().len(), 44);
-        assert_eq!(policy.expression, format!("endorse({a})"));
+        assert_eq!(policy.expression, format!("kel({a})"));
         assert!(policy.immune.is_none());
         assert!(policy.poison.is_none());
     }
@@ -199,7 +230,7 @@ mod tests {
     #[test]
     fn test_create_immune() {
         let a = test_digest("prefix-a");
-        let policy = Policy::build(&format!("endorse({a})"), None, true).unwrap();
+        let policy = Policy::build(&format!("kel({a})"), None, true).unwrap();
         assert!(policy.is_immune());
         assert!(!policy.is_poisonable());
     }
@@ -209,8 +240,8 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({a})"),
-            Some(&format!("endorse({b})")),
+            &format!("kel({a})"),
+            Some(&format!("kel({b})")),
             false,
         )
         .unwrap();
@@ -229,8 +260,8 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let result = Policy::build(
-            &format!("endorse({a})"),
-            Some(&format!("endorse({b})")),
+            &format!("kel({a})"),
+            Some(&format!("kel({b})")),
             true,
         );
         assert!(result.is_err());
@@ -241,26 +272,23 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({a})"),
-            Some(&format!("endorse({b})")),
+            &format!("kel({a})"),
+            Some(&format!("kel({b})")),
             false,
         )
         .unwrap();
         assert!(policy.poison.is_some());
-        assert_eq!(
-            policy.poison.as_deref(),
-            Some(format!("endorse({b})").as_str())
-        );
+        assert_eq!(policy.poison.as_deref(), Some(format!("kel({b})").as_str()));
     }
 
     #[test]
     fn test_said_differs_by_poison() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let p1 = Policy::build(&format!("kel({a})"), None, false).unwrap();
         let p2 = Policy::build(
-            &format!("endorse({a})"),
-            Some(&format!("endorse({b})")),
+            &format!("kel({a})"),
+            Some(&format!("kel({b})")),
             false,
         )
         .unwrap();
@@ -270,40 +298,40 @@ mod tests {
     #[test]
     fn test_said_differs_by_immune() {
         let a = test_digest("prefix-a");
-        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({a})"), None, true).unwrap();
+        let p1 = Policy::build(&format!("kel({a})"), None, false).unwrap();
+        let p2 = Policy::build(&format!("kel({a})"), None, true).unwrap();
         assert_ne!(p1.said, p2.said);
     }
 
     #[test]
     fn test_said_deterministic() {
         let a = test_digest("prefix-a");
-        let p1 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let p1 = Policy::build(&format!("kel({a})"), None, false).unwrap();
+        let p2 = Policy::build(&format!("kel({a})"), None, false).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
     #[test]
     fn test_said_canonicalization() {
         let a = test_digest("prefix-a");
-        let p1 = Policy::build(&format!("endorse( {a} )"), None, false).unwrap();
-        let p2 = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let p1 = Policy::build(&format!("kel( {a} )"), None, false).unwrap();
+        let p2 = Policy::build(&format!("kel({a})"), None, false).unwrap();
         assert_eq!(p1.said, p2.said);
     }
 
     #[test]
-    fn test_endorser_prefixes() {
+    fn test_referenced_kel_prefixes() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
         let s = test_digest("said-a");
         let policy = Policy::build(
-            &format!("threshold(2, [endorse({a}), delegate({b}, {c}), policy({s})])"),
+            &format!("threshold(2, [kel({a}), delegate({b}, {c}), policy({s})])"),
             None,
             false,
         )
         .unwrap();
-        let prefixes = policy.endorser_prefixes().unwrap();
+        let prefixes = policy.referenced_kel_prefixes().unwrap();
         assert_eq!(prefixes.len(), 3);
         assert!(prefixes.contains(&a));
         assert!(prefixes.contains(&b));
@@ -311,11 +339,31 @@ mod tests {
     }
 
     #[test]
+    fn test_referenced_iel_prefixes() {
+        let a = test_digest("iel-a");
+        let b = test_digest("iel-b");
+        let kel = test_digest("kel-c");
+        let policy = Policy::build(
+            &format!("threshold(2, [iel({a}), iel({b}), kel({kel})])"),
+            None,
+            false,
+        )
+        .unwrap();
+        let iels = policy.referenced_iel_prefixes().unwrap();
+        assert_eq!(iels.len(), 2);
+        assert!(iels.contains(&a));
+        assert!(iels.contains(&b));
+        let kels = policy.referenced_kel_prefixes().unwrap();
+        assert_eq!(kels.len(), 1);
+        assert!(kels.contains(&kel));
+    }
+
+    #[test]
     fn test_referenced_policy_saids() {
         let a = test_digest("prefix-a");
         let s = test_digest("said-a");
         let policy = Policy::build(
-            &format!("threshold(1, [endorse({a}), policy({s})])"),
+            &format!("threshold(1, [kel({a}), policy({s})])"),
             None,
             false,
         )
@@ -353,7 +401,7 @@ mod tests {
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
         let policy = Policy::build(
-            &format!("threshold(2, [endorse({a}), weighted(3, [endorse({b}):2, endorse({c}):1])])"),
+            &format!("threshold(2, [kel({a}), weighted(3, [kel({b}):2, kel({c}):1])])"),
             None,
             false,
         )
@@ -366,7 +414,7 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let a = test_digest("prefix-a");
-        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let policy = Policy::build(&format!("kel({a})"), None, false).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.said, deserialized.said);
@@ -377,7 +425,7 @@ mod tests {
     #[test]
     fn test_serialization_omits_defaults() {
         let a = test_digest("prefix-a");
-        let policy = Policy::build(&format!("endorse({a})"), None, false).unwrap();
+        let policy = Policy::build(&format!("kel({a})"), None, false).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(!json.contains("immune"));
         assert!(!json.contains("poison"));
@@ -386,7 +434,7 @@ mod tests {
     #[test]
     fn test_serialization_includes_immune() {
         let a = test_digest("prefix-a");
-        let policy = Policy::build(&format!("endorse({a})"), None, true).unwrap();
+        let policy = Policy::build(&format!("kel({a})"), None, true).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(json.contains("immune"));
     }
@@ -396,8 +444,8 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let policy = Policy::build(
-            &format!("endorse({a})"),
-            Some(&format!("endorse({b})")),
+            &format!("kel({a})"),
+            Some(&format!("kel({b})")),
             false,
         )
         .unwrap();

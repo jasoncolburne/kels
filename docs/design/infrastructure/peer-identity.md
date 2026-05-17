@@ -15,12 +15,12 @@ A gossip identity is structurally a normal KELS identity, with two simplifying c
 
 - **One KEL.** The KEL holds the gossip service's signing key — an ML-DSA-65 or ML-DSA-87 key generated inside an HSM. The KEL goes through standard inception, rotation, and recovery via the existing key-event flow; the only special property is that the private key never leaves the HSM.
 - **A single-KEL IEL wrapping it.** The IEL declares:
-  - `authPolicy = endorse(gossip_kel_prefix)`
-  - `governancePolicy = endorse(gossip_kel_prefix)`
+  - `authPolicy = kel(gossip_kel_prefix)`
+  - `governancePolicy = kel(gossip_kel_prefix)`
 
-  Both policies are the same `endorse` over the single HSM-backed KEL. For a degenerate single-KEL identity, the same-set-different-thresholds convention used by user and federation IELs collapses — there's only one identity in the set, so `threshold(1) = any`. The two policies stay structurally distinct so the same evolution machinery (`Evl`, immunity, governance authorization) applies. The IEL prefix is the **peer identity** referenced from the federation IEL's `authPolicy`.
+  Both policies are the same `kel` over the single HSM-backed KEL. For a degenerate single-KEL identity, the same-set-different-thresholds convention used by user and federation IELs collapses — there's only one identity in the set, so `threshold(1) = any`. The two policies stay structurally distinct so the same evolution machinery (`Evl`, immunity, governance authorization) applies. The IEL prefix is the **peer identity** referenced from the federation IEL's `authPolicy`.
 
-The IEL is intentionally "degenerate" — it has one KEL under it. The IEL layer is there because the federation IEL's `authPolicy` references identities (IEL prefixes via `identity(...)`), not raw KEL prefixes — and because the operator may later want to evolve auth (e.g., adding a backup key) without changing the peer identity from the federation's point of view.
+The IEL is intentionally "degenerate" — it has one KEL under it. The IEL layer is there because the federation IEL's `authPolicy` references identities (IEL prefixes via `iel(...)`), not raw KEL prefixes — and because the operator may later want to evolve auth (e.g., adding a backup key) without changing the peer identity from the federation's point of view.
 
 ## HSM-backed identity ceremony
 
@@ -30,7 +30,7 @@ When a node is provisioned, the following happens once per node:
    - Development: `kels-mock-hsm` (`kels_mock_hsm.so`), a PKCS#11 cdylib implementing ML-DSA-65/87 via fips204. Not for production.
    - Production: a real HSM's PKCS#11 module (CloudHSM, Luna, etc.) via the `PKCS11_LIBRARY_PATH` env var.
 2. **KEL inception.** Standard KEL `Icp` with the HSM-backed public key as the signing key, signed via the HSM. Produces `gossip_kel_prefix`.
-3. **IEL inception.** Standard IEL `Icp` with `authPolicy = endorse(gossip_kel_prefix)` and an operator-chosen `governancePolicy`. The Icp is anchored in the KEL per the standard inception ceremony. Produces the peer identity prefix.
+3. **IEL inception.** Standard IEL `Icp` with `authPolicy = kel(gossip_kel_prefix)` and an operator-chosen `governancePolicy`. The Icp is anchored in the KEL per the standard inception ceremony. Produces the peer identity prefix.
 4. **Address SEL inception.** Standard SEL `[Icp, Upd, Sea]` batch at the deterministic prefix `compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`. The `Upd` carries the node's initial endpoints (tier-1, anchored under the peer identity's `authPolicy`); the trailing `Sea` (tier-2) is required by the Sea-after-Upd ratchet so the chain is sealed at every publication boundary. Conforming tooling never produces an Upd-tailed address SEL. See [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern).
 5. **Distribute the new peer identity to federation operators.** Out-of-band — by whatever channel the operators use to coordinate federation membership changes. The new identity is added to the federation IEL via a normal `Evl` (subject to the federation's `governancePolicy`); see [federation.md §Membership evolution](federation.md#membership-evolution).
 
@@ -52,7 +52,7 @@ When peer A initiates a gossip handshake with peer B:
 3. **Peer B's authorization check.**
    - Read B's local federation IEL tip; take the current `authPolicy`.
    - Evaluate the policy against A's claimed identity using `evaluate_signed_policy`.
-   - The policy is an `authPolicy` expression over `identity(...)` leaves; satisfaction requires A's identity to appear (directly or via threshold composition) in the current `authPolicy`.
+   - The policy is an `authPolicy` expression over `iel(...)` leaves; satisfaction requires A's identity to appear (directly or via threshold composition) in the current `authPolicy`.
 4. **Decision.**
    - **Authorized:** the handshake completes and the gossip session is established.
    - **Not authorized:** the handshake is rejected. B logs the rejection; no fallback, no soft-fail.
@@ -123,7 +123,7 @@ The gossip-handshake authorization gate covers participation in the gossip mesh.
 
 1. Confirm the connecting peer's identity is in the current federation `authPolicy`:
    - Read the local federation IEL tip.
-   - Walk the `authPolicy` for `identity(<connecting_peer_prefix>)`.
+   - Walk the `authPolicy` for `iel(<connecting_peer_prefix>)`.
 2. If the identity is not present, check whether a recent `Evl` removed it.
 3. If the identity should be present but isn't, verify the federation IEL has converged (effective SAID matches across peers).
 

@@ -177,11 +177,13 @@ impl<T: Claims> Credential<T> {
     /// Verify a typed credential against the KEL.
     /// If a SadStore is provided, recursively verifies edge-referenced credentials.
     /// Delegates to [`verify_credential`](crate::verification::verify_credential).
+    #[allow(clippy::too_many_arguments)]
     pub async fn verify(
         &self,
         schema: &Schema,
         policy: &Policy,
         resolver: &dyn PolicyResolver,
+        iel_resolver: &dyn kels_core::IelResolver,
         source: &(dyn PagedKelSource + Sync),
         sad_store: Option<&dyn SadStore>,
         edge_schemas: &BTreeMap<String, Schema>,
@@ -191,6 +193,7 @@ impl<T: Claims> Credential<T> {
             schema,
             policy,
             resolver,
+            iel_resolver,
             source,
             sad_store,
             edge_schemas,
@@ -270,7 +273,7 @@ mod tests {
     }
 
     fn test_policy(prefix: cesr::Digest256) -> Policy {
-        Policy::build(&format!("endorse({prefix})"), None, false).unwrap()
+        Policy::build(&format!("kel({prefix})"), None, false).unwrap()
     }
 
     fn test_claims() -> TestClaims {
@@ -605,6 +608,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -628,6 +632,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -667,6 +672,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -681,7 +687,7 @@ mod tests {
     async fn test_verify_immune_ignores_poison_hash() {
         let (mut builder, prefix, kel_store, _dir) = setup_kel().await;
         let schema = test_schema();
-        let policy = Policy::build(&format!("endorse({prefix})"), None, true).unwrap();
+        let policy = Policy::build(&format!("kel({prefix})"), None, true).unwrap();
         let resolver = InMemoryPolicyResolver::empty();
 
         let (cred, compacted_said) = Credential::build(
@@ -707,6 +713,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -745,6 +752,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -779,6 +787,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -831,6 +840,7 @@ mod tests {
                 &schema,
                 &policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -960,6 +970,7 @@ mod tests {
                 &schema_a,
                 &policy_a,
                 &resolver_a,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store_a.as_ref()),
                 None,
                 &BTreeMap::new(),
@@ -990,6 +1001,7 @@ mod tests {
                 &schema_b,
                 &policy_b,
                 &resolver_b,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store_b.as_ref()),
                 None,
                 &edge_schemas,
@@ -1005,6 +1017,7 @@ mod tests {
                 &schema_b,
                 &policy_b,
                 &resolver_b,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store_b.as_ref()),
                 Some(&sad_store),
                 &edge_schemas,
@@ -1199,6 +1212,7 @@ mod tests {
                 &leaf_schema,
                 &leaf_policy,
                 &resolver,
+                &kels_core::UnavailableIelResolver,
                 &StoreKelSource::new(kel_store_leaf.as_ref()),
                 Some(&sad_store),
                 &edge_schemas,

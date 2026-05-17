@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use verifiable_storage::{StorageDatetime, compute_said_from_value};
 
-use kels_core::{PagedKelSource, SadStore};
+use kels_core::{IelResolver, PagedKelSource, SadStore};
 use kels_policy::{PolicyResolver, PolicyVerification, evaluate_anchored_policy};
 
 use crate::{
@@ -69,11 +69,13 @@ impl CredentialVerification {
 ///    are provided, recursively verify referenced credentials
 ///
 /// `edge_schemas` maps schema SAIDs to Schema objects for edge credentials.
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_credential<T: Claims>(
     credential: &Credential<T>,
     schema: &Schema,
     policy: &kels_policy::Policy,
     resolver: &dyn PolicyResolver,
+    iel_resolver: &dyn IelResolver,
     source: &(dyn PagedKelSource + Sync),
     sad_store: Option<&dyn SadStore>,
     edge_schemas: &BTreeMap<String, Schema>,
@@ -83,6 +85,7 @@ pub async fn verify_credential<T: Claims>(
         schema,
         policy,
         resolver,
+        iel_resolver,
         source,
         sad_store,
         edge_schemas,
@@ -97,6 +100,7 @@ fn verify_credential_bounded<'a, T: Claims>(
     schema: &'a Schema,
     policy: &'a kels_policy::Policy,
     resolver: &'a dyn PolicyResolver,
+    iel_resolver: &'a dyn IelResolver,
     source: &'a (dyn PagedKelSource + Sync),
     sad_store: Option<&'a dyn SadStore>,
     edge_schemas: &'a BTreeMap<String, Schema>,
@@ -149,7 +153,7 @@ fn verify_credential_bounded<'a, T: Claims>(
 
         // Policy evaluation — check anchoring and poisoning via policy evaluator
         let policy_verification =
-            evaluate_anchored_policy(policy, &compacted_said, source, resolver)
+            evaluate_anchored_policy(policy, &compacted_said, source, resolver, iel_resolver)
                 .await
                 .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
 
@@ -164,6 +168,7 @@ fn verify_credential_bounded<'a, T: Claims>(
             verify_edges(
                 credential,
                 resolver,
+                iel_resolver,
                 source,
                 sad_store,
                 edge_schemas,
@@ -190,9 +195,11 @@ fn verify_credential_bounded<'a, T: Claims>(
 /// Looks up each referenced credential in the SADStore, expands it using
 /// schema-aware expansion (with schema from `edge_schemas`), parses as
 /// `Credential<Value>`, and recursively verifies.
+#[allow(clippy::too_many_arguments)]
 async fn verify_edges<T: Claims>(
     credential: &Credential<T>,
     resolver: &dyn PolicyResolver,
+    iel_resolver: &dyn IelResolver,
     source: &(dyn PagedKelSource + Sync),
     sad_store: &dyn SadStore,
     edge_schemas: &BTreeMap<String, Schema>,
@@ -294,6 +301,7 @@ async fn verify_edges<T: Claims>(
             edge_schema,
             &edge_policy,
             resolver,
+            iel_resolver,
             source,
             Some(sad_store),
             edge_schemas,

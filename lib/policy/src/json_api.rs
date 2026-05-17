@@ -37,13 +37,13 @@ mod tests {
     #[test]
     fn test_build() {
         let (json, said) = build(
-            "endorse(KBfd1234567890123456789012345678901234567890)",
+            "kel(KBfd1234567890123456789012345678901234567890)",
             None,
             false,
         )
         .unwrap();
         assert_eq!(said.len(), 44);
-        assert!(json.contains("endorse"));
+        assert!(json.contains("kel"));
         assert!(!json.contains("immune"));
         assert!(!json.contains("poison"));
     }
@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn test_build_immune() {
         let (json, _) = build(
-            "endorse(KBfd1234567890123456789012345678901234567890)",
+            "kel(KBfd1234567890123456789012345678901234567890)",
             None,
             true,
         )
@@ -62,8 +62,8 @@ mod tests {
     #[test]
     fn test_build_with_poison() {
         let (json, _) = build(
-            "endorse(KBfd1234567890123456789012345678901234567890)",
-            Some("endorse(KAbc5678901234567890123456789012345678901234)"),
+            "kel(KBfd1234567890123456789012345678901234567890)",
+            Some("kel(KAbc5678901234567890123456789012345678901234)"),
             false,
         )
         .unwrap();

@@ -25,7 +25,7 @@ With federated deployments, KELS can also serve as a secure identity backbone fo
 ### Features built on the primitives
 
 - **Credentials** — issuance, schema-aware compacted disclosure, and verification
-- **Composable trust policies** — `endorse`, `delegate`, `threshold`, `weighted`, nested `policy`, and `identity(X)` for identity-rooted endorsement; withdrawal semantics
+- **Composable trust policies** — `kel`, `delegate`, `threshold`, `weighted`, `any` / `all`, nested `policy`, and `iel(X)` for identity-rooted endorsement; withdrawal semantics
 - **Replicated self-addressed data store** (SADStore) — content-addressed objects (object store) + authenticated SAD Event Logs (PostgreSQL), gossip-replicated
 - **ESSR authenticated encryption** — Encrypt-Sender-Sign-Receiver with four unforgeability properties via ML-KEM + AES-GCM-256 + ML-DSA
 - **Credential exchange messaging** — IPEX-style protocol (Apply/Offer/Agree/Grant/Admit/Reject) with chained, self-addressed exchange threads

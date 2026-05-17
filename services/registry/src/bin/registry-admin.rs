@@ -13,7 +13,7 @@ use verifiable_storage::{Chained, StorageDatetime};
 use kels_core::{
     FederationStatus, IdentityClient, KelsError, KelsRegistryClient, PeerAdditionProposal,
     PeerRemovalProposal, ProposalHistory, ProposalWithVotes, ProposalWithVotesMethods, Vote,
-    compute_approval_threshold,
+    compute_federation_governance_threshold,
 };
 
 #[derive(Parser)]
@@ -245,7 +245,7 @@ async fn propose_peer(
 
     // Get the approval threshold from federation status
     let threshold = match ctx.get_federation_status().await? {
-        Some(status) => compute_approval_threshold(status.members.len()),
+        Some(status) => compute_federation_governance_threshold(status.members.len()),
         None => return Err(anyhow!("Federation not configured")),
     };
 
@@ -290,7 +290,7 @@ async fn propose_removal(ctx: &AdminContext, peer_kel_prefix: &str) -> anyhow::R
 
     // Get the approval threshold from federation status
     let threshold = match ctx.get_federation_status().await? {
-        Some(status) => compute_approval_threshold(status.members.len()),
+        Some(status) => compute_federation_governance_threshold(status.members.len()),
         None => return Err(anyhow!("Federation not configured")),
     };
 

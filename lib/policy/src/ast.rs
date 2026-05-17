@@ -3,8 +3,11 @@ use std::fmt;
 /// AST node representing a policy expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyNode {
-    /// A specific prefix must anchor the credential SAID.
-    Endorse(cesr::Digest256),
+    /// A specific KEL prefix must anchor the credential SAID.
+    Kel(cesr::Digest256),
+    /// An IEL prefix; resolves to the IEL's current `authPolicy` and is
+    /// evaluated in place. See `docs/design/features/policy.md §Identity Resolution`.
+    Iel(cesr::Digest256),
     /// A delegated endorsement: the delegate must be delegated by the delegator,
     /// and the delegate must anchor the credential SAID.
     Delegate(cesr::Digest256, cesr::Digest256),
@@ -21,7 +24,8 @@ impl PolicyNode {
     /// represented as `Delegate(delegator, default)` with a default digest.
     pub fn compact(&self) -> Self {
         match self {
-            PolicyNode::Endorse(prefix) => PolicyNode::Endorse(*prefix),
+            PolicyNode::Kel(prefix) => PolicyNode::Kel(*prefix),
+            PolicyNode::Iel(prefix) => PolicyNode::Iel(*prefix),
             PolicyNode::Delegate(delegator, _) => {
                 PolicyNode::Delegate(*delegator, cesr::Digest256::default())
             }
@@ -40,7 +44,8 @@ impl PolicyNode {
 impl fmt::Display for PolicyNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PolicyNode::Endorse(prefix) => write!(f, "endorse({prefix})"),
+            PolicyNode::Kel(prefix) => write!(f, "kel({prefix})"),
+            PolicyNode::Iel(prefix) => write!(f, "iel({prefix})"),
             PolicyNode::Delegate(delegator, delegate) => {
                 if *delegate == cesr::Digest256::default() {
                     write!(f, "delegate({delegator})")
@@ -49,7 +54,6 @@ impl fmt::Display for PolicyNode {
                 }
             }
             PolicyNode::Weighted(min_weight, pairs) => {
-                // Output as threshold() when all weights are 1 (syntactic sugar round-trip)
                 let all_unit_weight = pairs.iter().all(|(_, w)| *w == 1);
                 if all_unit_weight {
                     write!(f, "threshold({min_weight}, [")?;
@@ -83,10 +87,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_display_endorse() {
+    fn test_display_kel() {
         let a = test_digest("prefix-a");
-        let node = PolicyNode::Endorse(a);
-        assert_eq!(node.to_string(), format!("endorse({a})"));
+        let node = PolicyNode::Kel(a);
+        assert_eq!(node.to_string(), format!("kel({a})"));
+    }
+
+    #[test]
+    fn test_display_iel() {
+        let a = test_digest("prefix-a");
+        let node = PolicyNode::Iel(a);
+        assert_eq!(node.to_string(), format!("iel({a})"));
     }
 
     #[test]
@@ -112,14 +123,33 @@ mod tests {
         let node = PolicyNode::Weighted(
             2,
             vec![
-                (PolicyNode::Endorse(a), 1),
-                (PolicyNode::Endorse(b), 1),
-                (PolicyNode::Endorse(c), 1),
+                (PolicyNode::Kel(a), 1),
+                (PolicyNode::Kel(b), 1),
+                (PolicyNode::Kel(c), 1),
             ],
         );
         assert_eq!(
             node.to_string(),
-            format!("threshold(2, [endorse({a}), endorse({b}), endorse({c})])")
+            format!("threshold(2, [kel({a}), kel({b}), kel({c})])")
+        );
+    }
+
+    #[test]
+    fn test_display_threshold_over_iels() {
+        let a = test_digest("iel-a");
+        let b = test_digest("iel-b");
+        let c = test_digest("iel-c");
+        let node = PolicyNode::Weighted(
+            2,
+            vec![
+                (PolicyNode::Iel(a), 1),
+                (PolicyNode::Iel(b), 1),
+                (PolicyNode::Iel(c), 1),
+            ],
+        );
+        assert_eq!(
+            node.to_string(),
+            format!("threshold(2, [iel({a}), iel({b}), iel({c})])")
         );
     }
 
@@ -129,11 +159,11 @@ mod tests {
         let b = test_digest("prefix-b");
         let node = PolicyNode::Weighted(
             5,
-            vec![(PolicyNode::Endorse(a), 3), (PolicyNode::Endorse(b), 2)],
+            vec![(PolicyNode::Kel(a), 3), (PolicyNode::Kel(b), 2)],
         );
         assert_eq!(
             node.to_string(),
-            format!("weighted(5, [endorse({a}):3, endorse({b}):2])")
+            format!("weighted(5, [kel({a}):3, kel({b}):2])")
         );
     }
 
@@ -157,9 +187,16 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_preserves_endorse() {
+    fn test_compact_preserves_kel() {
         let a = test_digest("prefix-a");
-        let node = PolicyNode::Endorse(a);
+        let node = PolicyNode::Kel(a);
+        assert_eq!(node.compact(), node);
+    }
+
+    #[test]
+    fn test_compact_preserves_iel() {
+        let a = test_digest("prefix-a");
+        let node = PolicyNode::Iel(a);
         assert_eq!(node.compact(), node);
     }
 
@@ -170,7 +207,7 @@ mod tests {
         let c = test_digest("prefix-c");
         let node = PolicyNode::Weighted(
             1,
-            vec![(PolicyNode::Delegate(a, b), 1), (PolicyNode::Endorse(c), 1)],
+            vec![(PolicyNode::Delegate(a, b), 1), (PolicyNode::Kel(c), 1)],
         );
         let compacted = node.compact();
         assert_eq!(
@@ -179,7 +216,7 @@ mod tests {
                 1,
                 vec![
                     (PolicyNode::Delegate(a, cesr::Digest256::default()), 1),
-                    (PolicyNode::Endorse(c), 1),
+                    (PolicyNode::Kel(c), 1),
                 ]
             )
         );

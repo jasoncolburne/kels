@@ -164,11 +164,16 @@ pub async fn verify(
         BTreeMap::new()
     };
     let credential: Credential<serde_json::Value> = Credential::from_str(json_credential)?;
+    // JSON-API consumers don't currently plumb an IEL store through; policies
+    // containing `iel(...)` leaves will error loudly via the stub resolver.
+    // Per `docs/design/features/policy.md §Identity Resolution` trust model.
+    let iel_resolver = kels_core::UnavailableIelResolver;
     let verification = verify_credential(
         &credential,
         &schema,
         &policy,
         resolver.as_ref(),
+        &iel_resolver,
         source,
         sad_store,
         &edge_schemas,
@@ -314,7 +319,7 @@ mod tests {
         let schema = test_schema();
         let schema_json = test_schema_json();
         let issuer = test_digest("issuer");
-        let policy = Policy::build(&format!("endorse({issuer})"), None, false).unwrap();
+        let policy = Policy::build(&format!("kel({issuer})"), None, false).unwrap();
 
         // Build a credential via the typed API
         let mut claims = serde_json::json!({"said": "", "name": "Alice", "age": 30});
