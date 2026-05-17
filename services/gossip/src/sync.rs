@@ -58,7 +58,7 @@ pub enum SyncError {
 /// and broadcasts them to the gossip network.
 pub async fn run_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
@@ -88,7 +88,7 @@ pub async fn run_redis_subscriber(
         // otherwise (contested-synthetic, normal-tip, Dec'd-tip)
         // re-evaluate every park enrolled on this prefix.
         // Spec line 184 — re-eval, not drop-on-contested.
-        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix);
         if let (Some(ann), Some(drain)) = (parsed.as_ref(), drain.as_ref()) {
             let divergent_synthetic = hash_effective_said(&format!("divergent:{}", ann.prefix));
             if ann.said != divergent_synthetic {
@@ -139,7 +139,7 @@ const SEL_PUBSUB_CHANNEL: &str = "sel_updates";
 /// Broadcasts announcements to the gossip network on the SAD topic.
 pub async fn run_sad_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
@@ -188,10 +188,10 @@ pub async fn run_sad_redis_subscriber(
             }
             SadAnnouncement::Object {
                 said: said_digest,
-                origin: local_kel_prefix,
+                origin: local_iel_prefix,
             }
         } else if channel == SEL_PUBSUB_CHANNEL {
-            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix) {
+            if let Some(ann) = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix) {
                 // #156: synthetic-SAID dispatch — divergent → no-op,
                 // everything else (contested-synthetic, normal-tip,
                 // Dec'd-tip) → re-eval every park (spec line 184).
@@ -210,7 +210,7 @@ pub async fn run_sad_redis_subscriber(
                 SadAnnouncement::Event {
                     prefix: ann.prefix,
                     said: ann.said,
-                    origin: local_kel_prefix,
+                    origin: local_iel_prefix,
                 }
             } else {
                 warn!(channel = %channel, payload = %payload, "Failed to parse SAD Event Log update");
@@ -260,7 +260,7 @@ const IEL_PUBSUB_CHANNEL: &str = "iel_updates";
 /// `IelAnnouncement` over the gossip network.
 pub async fn run_iel_redis_subscriber(
     redis_url: &str,
-    local_kel_prefix: cesr::Digest256,
+    local_iel_prefix: cesr::Digest256,
     command_tx: mpsc::Sender<GossipCommand>,
     recently_stored: RecentlyStoredFromGossip,
     drain: Option<DrainExecutor>,
@@ -283,7 +283,7 @@ pub async fn run_iel_redis_subscriber(
 
         debug!(payload = %payload, "IEL Redis message received");
 
-        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_kel_prefix);
+        let parsed = KelAnnouncement::from_pubsub_message(&payload, &local_iel_prefix);
 
         // #156: synthetic-SAID dispatch — divergent → no-op, everything
         // else (contested-synthetic, normal-tip, Dec event SAID) →
@@ -319,7 +319,7 @@ pub async fn run_iel_redis_subscriber(
         let announcement = IelAnnouncement {
             prefix: ann.prefix,
             said: ann.said,
-            origin: local_kel_prefix,
+            origin: local_iel_prefix,
         };
 
         if command_tx

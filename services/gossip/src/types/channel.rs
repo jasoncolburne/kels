@@ -17,9 +17,9 @@ pub(crate) enum GossipEvent {
     IelAnnouncementReceived { announcement: IelAnnouncement },
     /// Received a mail announcement from a peer
     MailAnnouncementReceived { announcement: MailAnnouncement },
-    /// New peer connected
+    /// New peer connected — carries the peer's identity (IEL prefix).
     PeerConnected(cesr::Digest256),
-    /// Peer disconnected
+    /// Peer disconnected — carries the peer's identity (IEL prefix).
     PeerDisconnected(cesr::Digest256),
 }
 

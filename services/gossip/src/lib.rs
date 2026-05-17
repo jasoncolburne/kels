@@ -249,15 +249,35 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         error!("Failed to clear ready state in Redis: {}", e);
     }
 
-    // Step 1: Fetch identity prefix and KEL from the identity service
-    info!("Fetching identity prefix...");
+    // Step 1: Fetch identity prefixes from the identity service.
+    // - `local_kel_prefix` is the gossip-service KEL prefix (signing-key
+    //   custody of the moment).
+    // - `local_iel_prefix` is the canonical peer identity — what
+    //   federation `authPolicy` references and what the gossip mesh uses
+    //   to identify "this node" externally. See
+    //   `feedback_node_refs_by_iel`: anywhere we name a node, it's the
+    //   IEL prefix; the KEL prefix is only the current signing key
+    //   holder for that identity.
+    info!("Fetching identity prefixes...");
     let identity_client = kels_core::IdentityClient::new(&config.identity_url)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
-    let local_kel_prefix = identity_client
-        .get_kel_prefix()
+    let identity_info = identity_client
+        .get_info()
         .await
-        .map_err(|e| ServiceError::Config(format!("Failed to get identity prefix: {}", e)))?;
-    info!("Local PeerPrefix: {}", local_kel_prefix);
+        .map_err(|e| ServiceError::Config(format!("Failed to get identity info: {}", e)))?;
+    let local_kel_prefix = identity_info.kel_prefix;
+    let local_iel_prefix = identity_info.iel_prefix.ok_or_else(|| {
+        ServiceError::Config(
+            "Identity service has not yet reconciled its IEL (peer identity); \
+             gossip cannot start without one"
+                .to_string(),
+        )
+    })?;
+    info!(
+        kel_prefix = %local_kel_prefix,
+        iel_prefix = %local_iel_prefix,
+        "Local identity",
+    );
 
     // Submit identity KEL to local KELS service so other peers can verify us
     let identity_page = identity_client
@@ -313,21 +333,15 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // startup (#195 Gap 8b-3); gossip pushes it here. SAD bodies are
     // pushed first because sadstore's submit handler rejects `Upd`
     // events whose content body is absent.
-    if let Some(local_iel_prefix) = identity_client
-        .get_iel_prefix()
-        .await
-        .map_err(|e| ServiceError::Config(format!("Failed to fetch IEL prefix: {}", e)))?
-    {
-        let services_prefix = kels_core::compute_peer_services_sel_prefix(local_iel_prefix)
-            .map_err(|e| ServiceError::Config(format!("Failed to derive peer/services prefix: {}", e)))?;
-        push_peer_sel_to_sadstore(
-            &identity_client,
-            &local_sadstore_client,
-            &services_prefix,
-            "peer/services",
-        )
-        .await;
-    }
+    let services_prefix = kels_core::compute_peer_services_sel_prefix(local_iel_prefix)
+        .map_err(|e| ServiceError::Config(format!("Failed to derive peer/services prefix: {}", e)))?;
+    push_peer_sel_to_sadstore(
+        &identity_client,
+        &local_sadstore_client,
+        &services_prefix,
+        "peer/services",
+    )
+    .await;
 
     // Identity signer for authenticated peer-to-peer requests (signs via
     // identity service). Used by sync paths for cross-peer fetches when an
@@ -461,14 +475,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         let auth_check = match walk_federation_iel(&federation_iel_prefix, &federation_evaluator)
             .await
         {
-            Ok(state) => is_peer_authorized(&state, &local_kel_prefix, &federation_evaluator).await,
+            Ok(state) => Ok(is_peer_authorized(&state, &local_iel_prefix)),
             Err(e) => Err(e),
         };
         match auth_check {
             Ok(true) => {
                 info!(
                     "Peer {} is authorized by the federation IEL's current authPolicy",
-                    local_kel_prefix
+                    local_iel_prefix
                 );
                 break;
             }
@@ -476,12 +490,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
                 warn!(
                     "=======================================================================\n\
                      AUTHORIZATION REQUIRED: This node is not in the federation IEL's current authPolicy.\n\
-                     Peer prefix: {}\n\
+                     Peer IEL prefix: {}\n\
                      Add this peer via an `Evl` on the federation IEL that includes\n\
-                     `identity(<this-peer's IEL prefix>)` in the new authPolicy.\n\
+                     `iel(<this peer's IEL prefix>)` in the new authPolicy.\n\
                      Sleeping 15 minutes before re-checking.\n\
                      =======================================================================",
-                    local_kel_prefix
+                    local_iel_prefix
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(900)) => {}
@@ -603,13 +617,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let redis_command_tx = command_tx.clone();
     let redis_url = config.redis_url.clone();
     let redis_recently_stored = recently_stored.clone();
-    let redis_local_kel_prefix = local_kel_prefix;
+    let redis_local_iel_prefix = local_iel_prefix;
     let redis_drain = drain_executor.clone();
     let redis_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_redis_subscriber(
                 &redis_url,
-                redis_local_kel_prefix,
+                redis_local_iel_prefix,
                 redis_command_tx.clone(),
                 redis_recently_stored.clone(),
                 redis_drain.clone(),
@@ -628,13 +642,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sad_redis_command_tx = command_tx.clone();
     let sad_redis_url = config.redis_url.clone();
     let sad_redis_recently_stored = recently_stored.clone();
-    let sad_redis_local_kel_prefix = local_kel_prefix;
+    let sad_redis_local_iel_prefix = local_iel_prefix;
     let sad_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_sad_redis_subscriber(
                 &sad_redis_url,
-                sad_redis_local_kel_prefix,
+                sad_redis_local_iel_prefix,
                 sad_redis_command_tx.clone(),
                 sad_redis_recently_stored.clone(),
                 sad_redis_drain.clone(),
@@ -653,13 +667,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let iel_redis_command_tx = command_tx.clone();
     let iel_redis_url = config.redis_url.clone();
     let iel_redis_recently_stored = recently_stored.clone();
-    let iel_redis_local_kel_prefix = local_kel_prefix;
+    let iel_redis_local_iel_prefix = local_iel_prefix;
     let iel_redis_drain = drain_executor.clone();
     tokio::spawn(async move {
         loop {
             if let Err(e) = sync::run_iel_redis_subscriber(
                 &iel_redis_url,
-                iel_redis_local_kel_prefix,
+                iel_redis_local_iel_prefix,
                 iel_redis_command_tx.clone(),
                 iel_redis_recently_stored.clone(),
                 iel_redis_drain.clone(),
@@ -695,11 +709,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     });
 
-    // Create gossip signer and verifier (signer uses identity service;
-    // verifier authenticates the handshake signature against the peer's
-    // local KEL tip and authorizes via federation IEL `authPolicy`
-    // satisfaction).
-    let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
+    // Create gossip signer and verifier. The signer signs with the
+    // identity service's KEL key but claims this node's IEL prefix —
+    // peers identify by identity (IEL), not by current signing-key
+    // custody (KEL). The verifier bundles the IEL → current-KEL
+    // resolution internally, then checks federation membership.
+    let signer = IdentityGossipSigner::new(&config.identity_url, local_iel_prefix)?;
     let verifier = KelsPeerVerifier::new(
         federation_iel_prefix,
         federation_evaluator.clone(),
@@ -740,7 +755,11 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to join mail gossip topic: {}", e)))?;
 
-    let local_node_prefix = local_kel_prefix;
+    // Gossip transport's "self" identifier — the IEL prefix is the peer
+    // identity in the federation-as-identity model. Receivers see this
+    // as `delivered_from` on inbound messages and as the announcement
+    // `origin` on outbound broadcasts.
+    let local_node_prefix = local_iel_prefix;
 
     // Start gossip event loop in background
     let gossip_instance_clone = gossip_instance.clone();

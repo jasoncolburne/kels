@@ -130,7 +130,9 @@ pub struct ParkRecord {
     #[said]
     pub said: cesr::Digest256,
     pub subject: ParkSubject,
-    /// Peer KEL prefix; replay re-fetches from this peer's sadstore.
+    /// Originating peer's IEL prefix (identity, not signing-key custody).
+    /// Replay routes through `AddressResolver` to look up this peer's
+    /// current service URL.
     pub origin: cesr::Digest256,
     /// Canonical-ordered set of awaited deps. Drives both indexes and
     /// the primary's content-derived SAID.
