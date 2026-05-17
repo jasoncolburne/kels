@@ -1,7 +1,8 @@
-// Walker primitives are consumed by the next gap of #195 (sync.rs /
-// bootstrap.rs retire SharedAllowlist and route URL lookups through the
-// peer/services walker). Suppress dead-code warnings module-wide until that
-// hookup lands.
+// Walker primitives. Today `FederationAddressResolver` resolves URLs via
+// `kels_core::resolve_peer_services_domain` directly, so these walkers are
+// only exercised by their own unit tests; the `peer/gossip` walker waits
+// on the federation-gated `host:port` consumption surface. Suppressed
+// dead-code module-wide until those callsites land.
 #![allow(dead_code)]
 
 //! Per-peer discovery: federation `authPolicy` → per-peer SEL chains →

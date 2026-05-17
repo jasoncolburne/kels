@@ -1,8 +1,3 @@
-// Consumed in the next gap of #195 — the SharedAllowlist retirement
-// threads this resolver through sync.rs/bootstrap.rs/lib.rs. Suppress
-// dead-code warnings module-wide until that hookup lands.
-#![allow(dead_code)]
-
 //! Federation-aware [`AddressResolver`] for gossip.
 //!
 //! Enumerates the federation IEL's current `authPolicy` member set on every

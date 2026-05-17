@@ -4,8 +4,7 @@
 //! authority for who is allowed to participate in the gossip mesh is the
 //! federation IEL's current `authPolicy` — an `any(iel(X_1), ..., iel(X_n))`
 //! expression naming peer-identity IEL prefixes. Handshake authorization is
-//! `evaluate_signed_policy` against that policy, with the verified KEL prefix
-//! as the input.
+//! a direct membership lookup against the walked `FederationState`.
 //!
 //! **Verify on every handshake.** Per the system thesis (every consumer
 //! verifies independently; the DB cannot be trusted), the federation IEL
@@ -24,12 +23,11 @@
 //! - `CLAUDE.md §Verification Invariant` (consuming requires fresh
 //!   verification — applies to federation IEL state, not just KEL state)
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use cesr::{Digest256, Matter};
 use thiserror::Error;
-use tokio::sync::RwLock;
 use tracing::warn;
 
 use kels_core::{
@@ -100,17 +98,6 @@ pub struct FederationState {
     /// Governance threshold `M(n)` from the conforming governance_policy.
     pub governance_threshold: u64,
 }
-
-/// Transitional address-list keyed by peer KEL prefix.
-///
-/// Pre-#194 this was the registry-fetched allowlist. Under
-/// federation-as-identity (#190) the *authority* moves to the federation IEL
-/// and `kels_core::Peer.gossip_addr` / `base_domain` will be supplied by
-/// per-peer address SELs (#195). Through the #194 window the map stays empty
-/// — sync paths that look up peer URLs gracefully degrade to no-op. Type
-/// alias preserved so `sync.rs`'s URL-lookup callers continue to compile;
-/// #195 retires it.
-pub type SharedAllowlist = Arc<RwLock<HashMap<Digest256, kels_core::Peer>>>;
 
 #[derive(Error, Debug)]
 pub enum FederationAuthError {

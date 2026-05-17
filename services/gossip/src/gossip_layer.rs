@@ -36,7 +36,9 @@ pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
 /// prefix — see [`kels_core::compute_peer_services_sel_prefix`]. Canonical in
 /// `kels_core::PEER_SERVICES_SEL_TOPIC`; this re-export is the consumer-side
 /// handle used by the discovery walker.
-// Consumed in the next gap of #195 (SharedAllowlist retire / AddressResolver wiring).
+// Re-exported here for symmetry with the gossip pub/sub topic constants
+// above; the SEL-chain itself is consumed via `kels_core::AddressResolver`
+// and the local discovery walkers in `discovery.rs`.
 #[allow(dead_code)]
 pub const PEER_SERVICES_SEL_TOPIC: &str = kels_core::PEER_SERVICES_SEL_TOPIC;
 

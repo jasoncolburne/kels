@@ -24,7 +24,6 @@ use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::{
-    authorization::SharedAllowlist,
     pending::{DepRef, ParkRecord, ParkSubject, PendingMap},
     types::{GossipCommand, GossipEvent, IelAnnouncement, KelAnnouncement, SadAnnouncement},
 };
@@ -533,10 +532,6 @@ pub(crate) fn deferred_deps_to_park_inputs(
 #[derive(Clone)]
 pub struct DrainExecutor {
     sadstore_client: kels_core::SadStoreClient,
-    /// Transitional — retained for parameter-shape compatibility while the
-    /// SharedAllowlist plumbing is deleted in the next sub-gap.
-    #[allow(dead_code)]
-    allowlist: SharedAllowlist,
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     pending: PendingMap,
     permits: Arc<tokio::sync::Semaphore>,
@@ -545,14 +540,12 @@ pub struct DrainExecutor {
 impl DrainExecutor {
     pub fn new(
         sadstore_url: &str,
-        allowlist: SharedAllowlist,
         address_resolver: Arc<dyn kels_core::AddressResolver>,
         pending: PendingMap,
     ) -> Result<Self, KelsError> {
         let n = kels_core::env_usize("KELS_DEFERRED_DRAIN_PERMITS", 8);
         Ok(Self {
             sadstore_client: kels_core::SadStoreClient::new(sadstore_url)?,
-            allowlist,
             address_resolver,
             pending,
             permits: Arc::new(tokio::sync::Semaphore::new(n)),
@@ -632,12 +625,13 @@ impl DrainExecutor {
         };
 
         let Some(sadstore_url) = self.peer_sadstore_url(&record.origin).await else {
-            // Origin not in allowlist (yet) — AE backstop applies; record
-            // TTLs out at 5 min if origin doesn't reappear.
+            // Origin not resolvable by the address resolver (yet) — AE
+            // backstop applies; record TTLs out at 5 min if origin
+            // doesn't reappear.
             debug!(
                 record_said = %record.said,
                 origin = %record.origin,
-                "drain: no allowlist entry for origin, falling through to AE backstop"
+                "drain: address resolver returned no URL for origin, falling through to AE backstop"
             );
             return;
         };
@@ -767,12 +761,7 @@ pub struct SyncHandler {
     signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<cesr::Digest256, cesr::Digest256>,
-    /// Transitional shared allowlist (empty no-op; retired in the next
-    /// sub-gap).
-    #[allow(dead_code)]
-    allowlist: SharedAllowlist,
-    /// Federation-aware peer URL resolver (replaces the SharedAllowlist
-    /// URL-lookup callsites). Keyed by peer IEL prefix.
+    /// Federation-aware peer URL resolver. Keyed by peer IEL prefix.
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
@@ -795,7 +784,6 @@ impl SyncHandler {
         kels_url: &str,
         sadstore_url: &str,
         mail_url: &str,
-        allowlist: SharedAllowlist,
         address_resolver: Arc<dyn kels_core::AddressResolver>,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
@@ -810,7 +798,6 @@ impl SyncHandler {
             mail_client,
             signer,
             local_saids: HashMap::new(),
-            allowlist,
             address_resolver,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
@@ -1662,7 +1649,6 @@ pub async fn run_sync_handler(
     mail_url: String,
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
-    allowlist: SharedAllowlist,
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     recently_stored: RecentlyStoredFromGossip,
     redis: OptionalRedis,
@@ -1674,7 +1660,6 @@ pub async fn run_sync_handler(
         &kels_url,
         &sadstore_url,
         &mail_url,
-        allowlist,
         address_resolver,
         recently_stored,
         redis,
@@ -2020,13 +2005,11 @@ async fn drain_stale_prefixes(
 /// If Phase 1 finds stale entries, Phase 2 is skipped for that cycle.
 pub async fn run_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     local_kels_url: String,
     signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
-    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match KelsClient::new(&local_kels_url) {
         Ok(c) => c,
         Err(e) => {
@@ -2321,13 +2304,11 @@ pub async fn record_sad_stale_prefix(
 /// - **Phase 2 (random sampling):** Compare chain effective SAIDs with a random peer.
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
 ) {
-    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match kels_core::SadStoreClient::new(&sadstore_url) {
         Ok(c) => c,
         Err(e) => {
@@ -2790,13 +2771,11 @@ pub async fn record_iel_stale_prefix(
 /// because IELs lacked an AE phase to converge them (#172).
 pub async fn run_iel_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
-    allowlist: SharedAllowlist,
     address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
 ) {
-    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match kels_core::SadStoreClient::new(&sadstore_url) {
         Ok(c) => c,
         Err(e) => {
@@ -3201,7 +3180,6 @@ mod tests {
     }
 
     fn create_test_handler() -> SyncHandler {
-        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
         let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
         let address_resolver: Arc<dyn kels_core::AddressResolver> =
@@ -3210,7 +3188,6 @@ mod tests {
             "http://localhost:8080",
             "http://localhost:8081",
             "http://localhost:8083",
-            allowlist,
             address_resolver,
             recently_stored,
             None,
@@ -3302,7 +3279,6 @@ mod tests {
     async fn test_run_sync_handler_closes_on_receiver_close() {
         let (command_tx, _command_rx) = mpsc::channel::<GossipCommand>(10);
         let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(10);
-        let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
         let address_resolver: Arc<dyn kels_core::AddressResolver> =
             Arc::new(TestAddressResolver);
@@ -3318,7 +3294,6 @@ mod tests {
             "http://localhost:8083".to_string(),
             event_rx,
             command_tx,
-            allowlist,
             address_resolver,
             recently_stored,
             None,

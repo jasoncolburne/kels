@@ -55,8 +55,8 @@ use redis::AsyncCommands;
 use thiserror::Error;
 
 use authorization::{
-    FederationAuthError, FederationEvaluator, SharedAllowlist, is_peer_authorized,
-    resolve_federation_iel_prefix, walk_federation_iel,
+    FederationAuthError, FederationEvaluator, is_peer_authorized, resolve_federation_iel_prefix,
+    walk_federation_iel,
 };
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
@@ -371,8 +371,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Federation-aware address resolver: per-call walks the federation
     // IEL → enumerates members → walks each member's peer/services chain
     // → returns `(peer_iel_prefix, base_domain)` pairs (excluding self).
-    // Replaces the legacy SharedAllowlist URL-lookup callsites; the
-    // SharedAllowlist plumbing itself is retired in the next sub-gap.
+    // Source of peer URLs for sync handlers and AE loops; replaces the
+    // pre-#194 registry-driven allowlist.
     let resolver_sadstore_store: Arc<dyn kels_core::SadStore> = Arc::new(
         kels_core::RemoteSadStore::new(
             kels_core::SadStoreClient::new(&config.sadstore_url()).map_err(|e| {
@@ -389,13 +389,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             resolver_sadstore_store,
             Some(local_iel_prefix),
         ));
-
-    // Transitional empty allowlist. Source of peer URLs (`base_domain`,
-    // `gossip_addr`) was the registry-fetch path pre-#194; #195's
-    // `address_resolver` above supplies the replacement. URL-lookup
-    // callsites in sync.rs route through the resolver; the SharedAllowlist
-    // type alias + parameter threading is retired in the next sub-gap.
-    let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
 
     // Create Redis connection manager early — used by both bootstrap and retry/anti-entropy loops
     let redis_conn_manager: Option<Arc<redis::aio::ConnectionManager>> =
@@ -471,11 +464,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         page_size: 100,
     };
 
-    let mut bootstrap = BootstrapSync::new(
-        bootstrap_config.clone(),
-        allowlist.clone(),
-        peer_request_signer.clone(),
-    )?;
+    let mut bootstrap = BootstrapSync::new(bootstrap_config.clone(), peer_request_signer.clone())?;
     if let Some(ref redis) = redis_conn_manager {
         bootstrap = bootstrap.with_redis(redis.clone());
         // Wire the deferred-deps pending map into bootstrap so IEL/SEL
@@ -563,23 +552,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Probe peer KELS readiness before discovery. This gives peer services
     // time to finish starting — without it, gossip nodes race ahead and try
     // to dial peers before they're listening. Fire-and-forget parallel checks
-    // with a 2s per-request timeout.
-    {
-        let peers: Vec<_> = allowlist.read().await.values().cloned().collect();
-        let readiness_futures = peers.iter().filter(|p| p.active).map(|peer| {
-            let kels_url = format!("http://kels.{}", peer.base_domain);
-            async move {
-                if let Ok(client) =
-                    kels_core::KelsClient::with_timeout(&kels_url, Duration::from_secs(2))
-                {
-                    let _ = client.check_ready_status().await;
-                }
-            }
-        });
-        futures::future::join_all(readiness_futures).await;
-    }
+    // with a 2s per-request timeout. Skipped under #195 until `BootstrapSync`
+    // is wired to the address resolver (peer URLs come from `peer/services`).
 
-    // Step 4: Now authorized - discover peers from allowlist and build peer addresses
+    // Step 4: Now authorized - discover peers and build peer addresses
     let discovery = bootstrap.discover_peers().await?;
 
     let mut peer_addrs: Vec<kels_gossip_core::addr::PeerAddr> = Vec::new();
@@ -631,7 +607,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let drain_executor: Option<sync::DrainExecutor> = match pending_map.clone() {
         Some(pm) => match sync::DrainExecutor::new(
             &config.sadstore_url(),
-            allowlist.clone(),
             Arc::clone(&address_resolver),
             pm,
         ) {
@@ -818,7 +793,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let sadstore_url = config.sadstore_url().clone();
     let mail_url = config.mail_url().clone();
     let sync_command_tx = command_tx.clone();
-    let sync_allowlist = allowlist.clone();
     let sync_address_resolver = Arc::clone(&address_resolver);
     let sync_redis = redis_for_sync.clone();
     let sync_signer = peer_request_signer.clone();
@@ -830,7 +804,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             mail_url,
             event_rx,
             sync_command_tx,
-            sync_allowlist,
             sync_address_resolver,
             recently_stored,
             sync_redis,
@@ -933,7 +906,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // Spawn periodic anti-entropy loops (repairs silent divergence and failed gossip fetches)
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
-        let ae_allowlist = allowlist.clone();
         let ae_resolver = Arc::clone(&address_resolver);
         let ae_kels_url = config.kels_url().clone();
         let ae_signer = peer_request_signer.clone();
@@ -941,7 +913,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         tokio::spawn(async move {
             sync::run_anti_entropy_loop(
                 ae_redis,
-                ae_allowlist,
                 ae_resolver,
                 ae_kels_url,
                 ae_signer,
@@ -952,7 +923,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
 
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
-        let sad_ae_allowlist = allowlist.clone();
         let sad_ae_resolver = Arc::clone(&address_resolver);
         let sad_ae_signer = peer_request_signer.clone();
         let sad_ae_sadstore_url = config.sadstore_url().clone();
@@ -960,7 +930,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         tokio::spawn(async move {
             sync::run_sad_anti_entropy_loop(
                 sad_ae_redis,
-                sad_ae_allowlist,
                 sad_ae_resolver,
                 sad_ae_signer,
                 sad_ae_sadstore_url,
@@ -973,7 +942,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SEL→IEL deferred-deps parks could TTL out without the IEL chain
         // ever propagating to the parking peer.
         let iel_ae_redis = redis.clone();
-        let iel_ae_allowlist = allowlist.clone();
         let iel_ae_resolver = Arc::clone(&address_resolver);
         let iel_ae_signer = peer_request_signer.clone();
         let iel_ae_sadstore_url = config.sadstore_url().clone();
@@ -981,7 +949,6 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         tokio::spawn(async move {
             sync::run_iel_anti_entropy_loop(
                 iel_ae_redis,
-                iel_ae_allowlist,
                 iel_ae_resolver,
                 iel_ae_signer,
                 iel_ae_sadstore_url,
