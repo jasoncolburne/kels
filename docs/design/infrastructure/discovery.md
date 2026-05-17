@@ -19,15 +19,15 @@ Both layers — and the anchoring KELs they verify against — live in primitive
 
 When a node refreshes its peer view (on startup, on a configurable interval, or on demand):
 
-1. **Read the federation IEL's tip locally.** The federation IEL prefix is configured (compile-time default + runtime `FEDERATION_IEL_PREFIX` env-var override — see [federation.md §Configuration](federation.md#configuration)). Verify the chain via `IelVerifier`, take the current `auth_policy`.
-2. **Enumerate authorized identities.** Walk the `auth_policy` expression and collect the set of `identity(...)` leaves. Each leaf is a peer-identity prefix.
+1. **Read the federation IEL's tip locally.** The federation IEL prefix is configured (compile-time default + runtime `FEDERATION_IEL_PREFIX` env-var override — see [federation.md §Configuration](federation.md#configuration)). Verify the chain via `IelVerifier`, take the current `authPolicy`.
+2. **Enumerate authorized identities.** Walk the `authPolicy` expression and collect the set of `identity(...)` leaves. Each leaf is a peer-identity prefix.
 3. **For each peer identity, compute the address SEL prefix.**
    ```
    address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
    ```
    The topic string `"kels/sel/v1/peer/addresses"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
 4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd`. Per the federation address-SEL application convention, that `Upd` is sealed by a trailing `Sea` — conforming tooling never produces an Upd-tailed chain. A chain whose tip is an unsealed `Upd` is structurally invalid under the convention and rejected by discovery.
-5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `auth_policy`; see [peer-identity.md](peer-identity.md)).
+5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `authPolicy`; see [peer-identity.md](peer-identity.md)).
 
 All reads (anchoring KELs, federation and peer IELs, address SELs) go to the local sadstore and kels services on the same node — gossip doesn't query peers or external infrastructure for discovery state. The freshness of the answer is the freshness of the chain state the local sadstore and kels holds, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
 
@@ -47,7 +47,7 @@ A new federation is created by, first, bringing at least three nodes online. Onc
   - `Sea` — tier-2 (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern))
 4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and address SELs to the coordinator's services.
 5. The coordinating node submits the original federation IEL `Icp`. The peers' KEL `Rot` anchors are already on the coordinator from step 4, so the `Icp` is accepted on submission.
-6. The coordinating node enumerates the `identity(...)` leaves of the federation IEL's `auth_policy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and SELs involved) to each peer, using the peer's address SEL to resolve the destination.
+6. The coordinating node enumerates the `identity(...)` leaves of the federation IEL's `authPolicy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and SELs involved) to each peer, using the peer's address SEL to resolve the destination.
 7. `FEDERATION_IEL_PREFIX` is set for all nodes and all gossip services are restarted.
 
 ### Adding a new peer
@@ -56,7 +56,7 @@ Assumption: `FEDERATION_IEL_PREFIX` is set for all nodes, including the new one.
 
 1. The new peer invokes their identity service CLI to create and anchor an address SEL `[Icp, Upd, Sea]` for their node, with the same shape as above.
 2. The new peer invokes their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KEL/IEL and address SEL to another node so federation members can resolve them at gossip-up time.
-3. The peer is added to the federation with an `Evl` on the federation identity, endorsed by >= M(n) federation members per `governance_policy` (see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); each member anchors the `Evl` SAID in their KEL via a `Rot`, tier-2).
+3. The peer is added to the federation with an `Evl` on the federation identity, endorsed by >= M(n) federation members per `governancePolicy` (see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); each member anchors the `Evl` SAID in their KEL via a `Rot`, tier-2).
 4. Another node then transfers the entire bundle (all KELs, IELs, and SELs involved) to the new member of the federation IEL policy using another identity service CLI command (`seed-one`).
 
 ### Identity as source of truth
@@ -65,10 +65,10 @@ The identity service is the source of truth for the node's own identity — it h
 
 ### Recovering a node: local stores lost, identity DB intact
 
-Assumption: `FEDERATION_IEL_PREFIX` is set; the node's identity is in current `auth_policy`; the identity service's DB and HSM material are intact, but the local `kels` and `sadstore` services lost their state.
+Assumption: `FEDERATION_IEL_PREFIX` is set; the node's identity is in current `authPolicy`; the identity service's DB and HSM material are intact, but the local `kels` and `sadstore` services lost their state.
 
 1. Operator on any current federation peer invokes `seed-one --to={RECOVERING DOMAIN}`, pushing the full bundle (federation IEL + all member KELs + all member address SELs) to the recovering node's `kels`/`sadstore`.
-2. Gossip starts; handshakes succeed because the identity is still in `auth_policy`. No federation `Evl` needed.
+2. Gossip starts; handshakes succeed because the identity is still in `authPolicy`. No federation `Evl` needed.
 
 ### Recovering a node: identity DB lost, HSM material intact
 
@@ -80,11 +80,11 @@ Operators back up identity DB state alongside HSM material.
 
 ### Recovering a node: identity material lost
 
-Assumption: identity material is unrecoverable (HSM lost; or no backup of identity DB and HSM handles can't be re-discovered; or `label_prefix` itself is lost). The node's lost identity remains in `auth_policy` but no one can sign as it.
+Assumption: identity material is unrecoverable (HSM lost; or no backup of identity DB and HSM handles can't be re-discovered; or `label_prefix` itself is lost). The node's lost identity remains in `authPolicy` but no one can sign as it.
 
-1. Stand up a fresh node and re-incept a new identity (new KEL, new IEL, new prefix). The federation continues operating under the existing `auth_policy` minus the lost identity's effective authority.
-2. Federation members coordinate a single `Evl` on the federation IEL that simultaneously **removes** the lost identity and **adds** the new identity. Endorsed by >= M(n) members per the prior `governance_policy` (see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); the lost identity cannot participate, so remaining members must meet the threshold without it).
-3. The exclusion `Evl` is **immediately batched with a `Sea`** to close the structural window the exclusion opens. Until a `Sea` lands at `v_{N+1}`, the chain's `v_{tip-1}` is the pre-exclusion event whose `governance_policy` (`P_old`) any rotated-out party can still satisfy. Cnt's parent rule (`previous = v_{tip-1}.said`) makes such a party's `Cnt` at `v_N` structurally valid; Cnt is a privileged event, so privileged-divergence-is-terminal fires and the federation IEL becomes contested-terminal. The trailing `Sea` advances `v_{tip-1}` to `v_N` — whose `governance_policy` is `P_new`, which no rotated-out party can satisfy by definition. The `Sea` is authorized under `P_new`, so the operator can land it but the rotated-out party cannot. This concern is specific to **exclusion** evolutions (member removed or replaced); pure additions or threshold-decreases that keep prior membership open up no rotated-out position and do not need the trailing `Sea`. See [protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). The federation-membership CLI should bake `[Evl, Sea]` into every exclusion evolution.
+1. Stand up a fresh node and re-incept a new identity (new KEL, new IEL, new prefix). The federation continues operating under the existing `authPolicy` minus the lost identity's effective authority.
+2. Federation members coordinate a single `Evl` on the federation IEL that simultaneously **removes** the lost identity and **adds** the new identity. Endorsed by >= M(n) members per the prior `governancePolicy` (see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); the lost identity cannot participate, so remaining members must meet the threshold without it).
+3. The exclusion `Evl` is **immediately batched with a `Sea`** to close the structural window the exclusion opens. Until a `Sea` lands at `v_{N+1}`, the chain's `v_{tip-1}` is the pre-exclusion event whose `governancePolicy` (`P_old`) any rotated-out party can still satisfy. Cnt's parent rule (`previous = v_{tip-1}.said`) makes such a party's `Cnt` at `v_N` structurally valid; Cnt is a privileged event, so privileged-divergence-is-terminal fires and the federation IEL becomes contested-terminal. The trailing `Sea` advances `v_{tip-1}` to `v_N` — whose `governancePolicy` is `P_new`, which no rotated-out party can satisfy by definition. The `Sea` is authorized under `P_new`, so the operator can land it but the rotated-out party cannot. This concern is specific to **exclusion** evolutions (member removed or replaced); pure additions or threshold-decreases that keep prior membership open up no rotated-out position and do not need the trailing `Sea`. See [protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). The federation-membership CLI should bake `[Evl, Sea]` into every exclusion evolution.
 4. From here, the §Adding a new peer flow for the new identity (steps 1–4).
 
 For federation-IEL-contested recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
@@ -108,7 +108,7 @@ Stale endpoints for a still-authorized peer cause connection failures, not autho
 When a federation `Evl` removes a peer from the policy set:
 
 - The peer's identity remains a structurally valid identity (the peer's own IEL is unchanged). The peer can still operate, just not as a federation member.
-- The peer's address SEL stays readable. The discovery flow simply doesn't enumerate that peer anymore, because step 2 reads the new `auth_policy`.
+- The peer's address SEL stays readable. The discovery flow simply doesn't enumerate that peer anymore, because step 2 reads the new `authPolicy`.
 - Existing gossip connections to the removed peer are torn down at the next handshake re-check (or sooner, on an explicit policy-refresh tick). New handshakes from the removed peer fail authorization.
 
 The federation IEL's current [conforming policy pair](federation.md#federation-policy-shape-verification) is the source of truth; what's not enumerated in it is not authorized.

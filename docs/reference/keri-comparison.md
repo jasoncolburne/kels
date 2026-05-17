@@ -7,7 +7,7 @@ This document compares KERI (Key Event Receipt Infrastructure) and KELS (Key Eve
 KERI is a DKMI (Decentralized Key Management Infrastructure). KELS started as one and grew into a **DVTI (Decentralized Verifiable Trust Infrastructure)** — keys, identity, and content all live as self-addressed event chains under a unified verification model. Where KERI stops at the Key Event Log, KELS layers:
 
 - **KEL** — the DKMI primitive. Direct KERI analogue; the focus of most of this document.
-- **IEL** (Identity Event Log) — aggregates one or more KELs into an identity via `auth_policy` and `governance_policy`. No KERI analogue (KERI overloads the KEL with identity semantics; KELS separates them). User identities, organizational identities, and the federation itself are all IELs.
+- **IEL** (Identity Event Log) — aggregates one or more KELs into an identity via `authPolicy` and `governancePolicy`. No KERI analogue (KERI overloads the KEL with identity semantics; KELS separates them). User identities, organizational identities, and the federation itself are all IELs.
 - **SEL** (SAD Event Log) — a general append-only verifiable event log for arbitrary Self-Addressing Data, governed by a policy DSL. No KERI analogue. Identity-rooted content chains: exchange-key chains, custody envelopes, mail metadata, per-peer address publications, credential-anchor chains.
 - **Policy DSL** — `endorse`, `threshold`, `weighted`, `delegate`, nested `policy` references, with soft/hard/immune poisoning. Governance composes *across* independent identities rather than being embedded as a multisig threshold *within* one identifier.
 - **Credentials, exchange, mail, federation** — layered consumers of the above, not built-in DKMI features.
@@ -43,7 +43,7 @@ KELS is a federated DVTI (Decentralized Verifiable Trust Infrastructure) that sh
 - **Stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem.
 - Introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics.
 - Uses a custom gossip protocol for replication (HyParView + PlumTree over ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256) rather than witness receipts.
-- Constructs federation as an identity — a shared **federation IEL** whose current `auth_policy` declares the set of authorized peers and whose `governance_policy` constrains how membership evolves.
+- Constructs federation as an identity — a shared **federation IEL** whose current `authPolicy` declares the set of authorized peers and whose `governancePolicy` constrains how membership evolves.
 - Backs peer gossip-service identities with HSMs.
 
 KELS derives the prefix differently from the SAID (blanking both `said` and `prefix` fields before hashing, and computing each in sequence — prefix first — rather than in the same operation), producing two distinct content-derived identifiers from the same inception event. There is no way to reverse an event's SAID to determine which identity created it — you need the full event. This protects against some identification/correlation attacks.
@@ -53,7 +53,7 @@ Beyond the DKMI layer, KELS adds:
 - **SELs** (SAD Event Logs) — a generic append-only verifiable event log for arbitrary Self-Addressing Data, with per-event authorization resolved through the bound IEL. Concrete chains include ML-KEM encapsulation-key publication, per-peer gossip-service address publication, custody envelopes, and mail metadata.
 - **A composable policy DSL** with the following constructs:
   - `endorse(kel_prefix)` — a specific KEL must anchor the SAID.
-  - `identity(iel_prefix)` — resolves through an IEL's current `auth_policy` at evaluation time.
+  - `identity(iel_prefix)` — resolves through an IEL's current `authPolicy` at evaluation time.
   - `delegate(DELEGATOR)` — any KEL the delegator has dip-delegated and anchored qualifies.
   - `threshold(k, [...])` / `weighted(k, [... : weight])` — composition aggregators.
   - `policy(SAID)` — nest another policy by SAID.
@@ -78,7 +78,7 @@ KERI has no analogue at this layer — ACDC credentials and TEL registries are c
 
 **Analysis:** KELS's three-tier key hierarchy provides a stronger recovery posture. In KERI, if an adversary compromises a pre-rotated next key, there is a race condition — whoever rotates first wins. KELS eliminates this race by requiring dual signatures (rotation + recovery) for recovery events, meaning the adversary cannot recover with only the rotation key. The explicit contest mechanism for total compromise is a significant advantage: rather than leaving a totally compromised identifier in an ambiguous state, KELS provides a deterministic, auditable freeze.
 
-That hierarchy is one half of KELS's key-compromise story. The other half is IEL composition: where KERI composes multiple keys within a single KEL via tholder, KELS composes multiple single-key KELs at the IEL layer (`auth_policy` referencing independent KEL prefixes via `identity(...)`). Compromise of any one member KEL is resolved on that KEL's own recovery primitive, then `Evl`'d out of the IEL's `auth_policy` — the identity continues without disrupting the other members.
+That hierarchy is one half of KELS's key-compromise story. The other half is IEL composition: where KERI composes multiple keys within a single KEL via tholder, KELS composes multiple single-key KELs at the IEL layer (`authPolicy` referencing independent KEL prefixes via `identity(...)`). Compromise of any one member KEL is resolved on that KEL's own recovery primitive, then `Evl`'d out of the IEL's `authPolicy` — the identity continues without disrupting the other members.
 
 **2026 consideration:** With quantum computing advances making asymmetric key compromise more plausible (even if not yet practical at scale), having a formal total-compromise response (`cnt`) is increasingly valuable. Both protocols' pre-rotation commitments provide some post-quantum protection since the hash commitment cannot be broken even by a quantum adversary — but KELS's recovery hierarchy provides defense in depth beyond what pre-rotation alone offers.
 
@@ -87,23 +87,23 @@ That hierarchy is one half of KELS's key-compromise story. The other half is IEL
 | Property | KERI | KELS |
 |----------|------|------|
 | Chain primitives | One (KEL) | Three (KEL, IEL, SEL) |
-| What the identifier is | A KEL prefix | An IEL prefix; an IEL aggregates one or more KELs via `auth_policy` |
+| What the identifier is | A KEL prefix | An IEL prefix; an IEL aggregates one or more KELs via `authPolicy` |
 | Device key role | A device's key lives in the KEL that *is* the identifier | A device's key lives in its own KEL; the IEL references the KEL through policy |
-| Multi-device identity | Multi-sig within a single KEL (Tholder thresholds over keys) | `auth_policy` over multiple independent KELs, each with its own key lifecycle |
-| Adding a device | Rotation event evolving the multi-sig set within the identifier's KEL | Add a KEL (incept independently) and evolve the IEL's `auth_policy` to include it; identifier prefix unchanged |
-| Replacing a compromised device | Rotation that excludes the compromised key from the multi-sig set | `Evl` excluding that KEL's `identity(...)` from `auth_policy`; the rest of the identity unaffected |
+| Multi-device identity | Multi-sig within a single KEL (Tholder thresholds over keys) | `authPolicy` over multiple independent KELs, each with its own key lifecycle |
+| Adding a device | Rotation event evolving the multi-sig set within the identifier's KEL | Add a KEL (incept independently) and evolve the IEL's `authPolicy` to include it; identifier prefix unchanged |
+| Replacing a compromised device | Rotation that excludes the compromised key from the multi-sig set | `Evl` excluding that KEL's `identity(...)` from `authPolicy`; the rest of the identity unaffected |
 
 **Analysis:** KERI has one chain primitive, the KEL, and overloads it with both device-cryptographic-state semantics and identity semantics — a KEL prefix *is* an identifier. Every device-level change (key rotation, multi-sig change, custody migration) is also an identity-level event, because the same chain carries both.
 
-KELS separates the two structurally. A KEL is a device-level cryptographic chain: signing key, rotation commitment, recovery key, dual-signed recovery. An IEL is an identity-level aggregation: it declares an `auth_policy` (who currently speaks for this identity) and a `governance_policy` (who can change that), with both policies referencing KEL prefixes through the policy DSL. Identity is therefore composable from independent KELs:
+KELS separates the two structurally. A KEL is a device-level cryptographic chain: signing key, rotation commitment, recovery key, dual-signed recovery. An IEL is an identity-level aggregation: it declares an `authPolicy` (who currently speaks for this identity) and a `governancePolicy` (who can change that), with both policies referencing KEL prefixes through the policy DSL. Identity is therefore composable from independent KELs:
 
-- A single-device identity is an IEL with `auth_policy = endorse(kel_prefix)` over one KEL. Same effective semantics as a KERI identifier, but the device-key chain (KEL) is structurally distinct from the identifier (IEL prefix).
-- A multi-device identity is an IEL with `auth_policy = threshold(M, [endorse(kel_a), endorse(kel_b), ...])` over independent KELs. Each device has its own key lifecycle and its own recovery posture; compromise of one device is resolved on that device's KEL, then `Evl`'d out of the identity's `auth_policy` without touching the other devices.
-- An organizational identity is an IEL whose `auth_policy` references the IELs of the people/services in the org. Composition crosses identity boundaries naturally — the same policy DSL applies at every level.
+- A single-device identity is an IEL with `authPolicy = endorse(kel_prefix)` over one KEL. Same effective semantics as a KERI identifier, but the device-key chain (KEL) is structurally distinct from the identifier (IEL prefix).
+- A multi-device identity is an IEL with `authPolicy = threshold(M, [endorse(kel_a), endorse(kel_b), ...])` over independent KELs. Each device has its own key lifecycle and its own recovery posture; compromise of one device is resolved on that device's KEL, then `Evl`'d out of the identity's `authPolicy` without touching the other devices.
+- An organizational identity is an IEL whose `authPolicy` references the IELs of the people/services in the org. Composition crosses identity boundaries naturally — the same policy DSL applies at every level.
 
 The compositional surface is wider:
 
-- **SEL** is a third primitive — an append-only linear chain of SADs (Self-Addressed Data) bound at inception to a specific IEL via `identity` and resolving authorization per-event through that IEL's evolving `auth_policy`. SELs carry content (credentials are not SELs, but exchange-key publications, custody envelopes, mail metadata, per-peer address publications, and federation membership are all SELs or SEL-shaped).
+- **SEL** is a third primitive — an append-only linear chain of SADs (Self-Addressed Data) bound at inception to a specific IEL via `identity` and resolving authorization per-event through that IEL's evolving `authPolicy`. SELs carry content (credentials are not SELs, but exchange-key publications, custody envelopes, mail metadata, per-peer address publications, and federation membership are all SELs or SEL-shaped).
 - **Cred** is a credential-specific SAD format, optionally chainable as a graph via edges (similar shape to ACDC).
 - **Policy DSL** is the composition surface that ties the identity layers together. A policy expression references KEL prefixes (via `endorse`/`delegate`), IEL prefixes (via `identity`), or other policies by SAID (via `policy(...)`), composed under `threshold`/`weighted` aggregators.
 
@@ -111,7 +111,7 @@ The same primitives carry every content-bearing chain and every authorization de
 
 KERI's contrast: the KEL is the only chain primitive in the core protocol; TELs (Transaction Event Logs) are a credential-specific extension; ACDCs (Authentic Chained Data Containers) are credential-specific data containers. Each is purpose-built for credentials. Reusing TEL infrastructure for non-credential content isn't part of the protocol; KERI applications that need non-credential chains tend to layer them outside the framework.
 
-**2026 consideration:** As identity systems span devices, services, organizations, and credential domains, the ability to compose authorization across these layers using the same primitives — not separate frameworks for each — is the difference between a coherent system and a stack of integrations. The KEL/IEL/SEL split also isolates blast radius: a compromised device key is resolved on its own KEL; the IEL `Evl`'s the KEL out of `auth_policy`; downstream SELs and credentials that bound to the identity at a tier-2 anchor remain valid by the immunity rule. KERI's monolithic-KEL model couples these together — every device-level event is also an identity-level event.
+**2026 consideration:** As identity systems span devices, services, organizations, and credential domains, the ability to compose authorization across these layers using the same primitives — not separate frameworks for each — is the difference between a coherent system and a stack of integrations. The KEL/IEL/SEL split also isolates blast radius: a compromised device key is resolved on its own KEL; the IEL `Evl`'s the KEL out of `authPolicy`; downstream SELs and credentials that bound to the identity at a tier-2 anchor remain valid by the immunity rule. KERI's monolithic-KEL model couples these together — every device-level event is also an identity-level event.
 
 ### 3. Divergence and Duplicity Handling
 
@@ -141,7 +141,7 @@ The asymmetry compounds in automated systems. Reputation-based trust decisions a
 | Consistency model | Receipt threshold (e.g., 2-of-3 witnesses) | Eventual consistency via gossip + anti-entropy |
 | Availability guarantee | Witness liveness required | Any gossip peer can serve; the federation IEL declares which peers are authorized |
 | Transport security | Varies by implementation | ML-KEM-768/1024 + ML-DSA-65/87 + AES-GCM-256 (forward secrecy, mutual auth, PQ-secure) |
-| Discovery | OOBIs (Out-of-Band Introductions) | Federation IEL `auth_policy` enumeration + per-peer address SEL walks |
+| Discovery | OOBIs (Out-of-Band Introductions) | Federation IEL `authPolicy` enumeration + per-peer address SEL walks |
 | Infrastructure responsibility | Controller selects and manages witnesses | Federation operators jointly operate the shared peer mesh |
 
 **Analysis:** KERI's witness model is the fully-specified replication path; it provides stronger consistency guarantees at the cost of availability — if witnesses are offline, events cannot be receipted. Where KERI gestures at gossip as an alternative replication mechanism, the specification doesn't cover the hard problems gossip raises: send-side ordering across divergent chains, anti-entropy through terminal states, effective-SAID convergence on contested chains, gossip-driven divergence detection, upgrade-rule propagation. Gossip in this domain isn't a hand-wave; it's a real engineering problem with subtle correctness traps. KELS has specified and implemented these mechanics (HyParView + PlumTree over a PQ transport, with primitive-specific reconciliation matrices proving convergence under all state-by-submission-by-gossip combinations) — see [../design/protocol-doctrine.md §Federation Convergence](../design/protocol-doctrine.md#federation-convergence) and the per-primitive reconciliation docs. KELS's gossip model prioritizes availability and partition tolerance, accepting eventual consistency, with anti-entropy repair (every 10s by default) bounding staleness.
@@ -159,11 +159,11 @@ KELS's transport security is notably stronger: the ML-KEM-768/1024 key exchange 
 | Root of trust | Self-certifying identifiers (inception event) | Self-certifying identifiers (inception event) for participants; federation IEL prefix (compile-time default, runtime-overridable for recovery) for infrastructure |
 | Delegation trust | Verified in protocol (delegated rotation) | Deferred to consumers (KELS accepts any valid `dip`) |
 | Ambient verifiability | Yes (any party can verify any KEL) | Yes (any party can verify any KEL) |
-| Infrastructure trust | Witness selection by controller | Federation IEL `governance_policy` controls who may evolve membership (typically a threshold over current member identities) |
+| Infrastructure trust | Witness selection by controller | Federation IEL `governancePolicy` controls who may evolve membership (typically a threshold over current member identities) |
 
-**Analysis:** Both protocols share the same root of trust for identities — any identifier is self-certifying from its inception event alone. The difference is in infrastructure trust: KERI relies on controller-selected witnesses, while KELS anchors infrastructure trust in a single shared **federation IEL**. The federation IEL is itself a self-certifying identity (verified from its inception), and its current `auth_policy` is the canonical record of which peers may participate in the gossip mesh. The trust assumption reduces to "I trust this federation IEL prefix and the chain it produced," which a verifier can check from the chain alone.
+**Analysis:** Both protocols share the same root of trust for identities — any identifier is self-certifying from its inception event alone. The difference is in infrastructure trust: KERI relies on controller-selected witnesses, while KELS anchors infrastructure trust in a single shared **federation IEL**. The federation IEL is itself a self-certifying identity (verified from its inception), and its current `authPolicy` is the canonical record of which peers may participate in the gossip mesh. The trust assumption reduces to "I trust this federation IEL prefix and the chain it produced," which a verifier can check from the chain alone.
 
-The federation's `governance_policy` is typically a `threshold(M, [identity(...)])` over current member identities — a structural quorum requirement encoded directly in the policy DSL, evaluated by the standard policy evaluator. Membership evolution requires M valid endorsements on every `Evl` event, giving the same Sybil resistance and unilateral-change resistance that explicit voting protocols provide, expressed as plain chain operations.
+The federation's `governancePolicy` is typically a `threshold(M, [identity(...)])` over current member identities — a structural quorum requirement encoded directly in the policy DSL, evaluated by the standard policy evaluator. Membership evolution requires M valid endorsements on every `Evl` event, giving the same Sybil resistance and unilateral-change resistance that explicit voting protocols provide, expressed as plain chain operations.
 
 **2026 consideration:** A single chain-rooted trust anchor — verified by the standard verifier and propagated via the standard gossip mesh — is auditable in the same way every other chain is: from the data, by anyone. The runtime-overridable federation IEL prefix gives operators a recovery path for contested federation IELs without a binary rebuild, balancing the auditability of a fixed compile-time default against operational reality.
 
@@ -215,7 +215,7 @@ KERI's specification defines verification semantics, but implementation rigor va
 KELS provides general primitives that credentials are one consumer of:
 
 - **SAD** (Self-Addressed Data) is the underlying content-addressed-data primitive. Credentials are SADs with credential-specific structure; the same SAD primitive underpins exchange-key publications, custody envelopes, mail metadata, federation per-peer addresses, and every other content-bearing object in the system.
-- **SEL** is an append-only linear chain of SADs, bound at inception to an IEL via `identity` and resolving authorization per-event through that IEL's `auth_policy`. SELs carry ongoing-state-evolution domains.
+- **SEL** is an append-only linear chain of SADs, bound at inception to an IEL via `identity` and resolving authorization per-event through that IEL's `authPolicy`. SELs carry ongoing-state-evolution domains.
 - **Cred** is a SAD-shaped credential, optionally chainable as a graph via edges (similar in shape to ACDC's edge sections). Cred edges are graph-shaped; SEL chaining is linear append-only. The two primitives have different chaining shapes for different purposes.
 - **Policy DSL** is the composition surface that ties these primitives together. A policy expression references KEL prefixes (via `endorse`/`delegate`), IEL prefixes (via `identity`), or other policies by SAID (via `policy(...)`), composed under `threshold`/`weighted` aggregators.
 
@@ -242,20 +242,20 @@ The credential mechanics themselves remain expressive:
 | Multi-sig signing | Native weighted thresholds (`"kt"`: `"1/2,1/2,1/2"`) | Single signing key per event |
 | Multi-sig rotation | Threshold of next key digests (`"nt"`, `"n"`) | Single rotation hash commitment |
 | Threshold structures | Fractionally weighted, nested groups | Threshold, weighted, nested groups, delegation via kels-policy DSL |
-| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance; federation IEL `governance_policy` for infrastructure membership |
+| Organizational key governance | Multiple keyholders with quorum requirements | Single keyholder per KEL; kels-policy for multi-party governance; federation IEL `governancePolicy` for infrastructure membership |
 | Recovery signatures | Implementation-dependent | Dual signature (rotation key + recovery key) required |
 
 **Analysis:** This section dives into the multi-sig mechanics; the underlying structural choice (single chain primitive vs. KEL/IEL/SEL split) is covered in [§2 Decoupling Device-Level Cryptography from Identity](#2-decoupling-device-level-cryptography-from-identity).
 
 KERI's multi-sig support is deeply integrated via the `Tholder` (threshold holder). A KERI identifier can require, for example, 2-of-3 signatures from weighted keyholders for signing and a different 3-of-5 threshold for rotation. The `Tholder` accepts fractional weights on keys (e.g., `"1/2,1/2,1/2"` — three keys each with weight 1/2, requiring any two). This maps directly to organizational governance: a corporate identifier might require two officers to sign but three board members to rotate keys — but all keys live within the identifier's single KEL.
 
-KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Multi-party authorization lives at the IEL layer (via `auth_policy` over independent KELs) and at the credential layer (via kels-policy over independent endorser KELs). Core KEL verification stays single-key and simple; multi-party governance composes at a layer above through an expressive, composable policy DSL.
+KELS takes a fundamentally different approach: each KEL has a single signing key, a single rotation commitment, and a single recovery key. Multi-party authorization lives at the IEL layer (via `authPolicy` over independent KELs) and at the credential layer (via kels-policy over independent endorser KELs). Core KEL verification stays single-key and simple; multi-party governance composes at a layer above through an expressive, composable policy DSL.
 
 #### Tholder vs. Policy: Detailed Comparison
 
 | | KERI Tholder | KELS Policy |
 |---|---|---|
-| Scope | Per-identifier (embedded in KEL) | Multi-scope: identity (`auth_policy` on IEL), governance (`governance_policy` on IEL), credential (travels with credential), federation (membership on the federation IEL) |
+| Scope | Per-identifier (embedded in KEL) | Multi-scope: identity (`authPolicy` on IEL), governance (`governancePolicy` on IEL), credential (travels with credential), federation (membership on the federation IEL) |
 | Expressiveness | Fractional weights on keys within one identifier | Nested DSL: threshold, weighted, delegation, policy references |
 | Key compromise isolation | All keys share one identifier's fate | Each endorser has independent recovery/contest lifecycle |
 | Governance changes | Rotation event (changes the identifier's keys) | Issue new credential with new policy |
@@ -332,7 +332,7 @@ KELS is a single-author, single-implementation project. This is not inherently a
 | Compacted disclosure | ACDC graduated disclosure (compact → partial → full) | kels-creds path expression DSL (compact → compacted → full) |
 | Unlinkable presentations | Possible via ACDC compact disclosure | Compactable edges hide referenced credentials and issuers |
 | KEL privacy | KEL is public (ambient verifiability) | KEL is public (ambient verifiability) |
-| Witness/node privacy | Witness addresses in KEL (`"b"` field) | Peer set declared by the federation IEL's `auth_policy`; addresses live in per-peer address SELs, not in any identity's KEL |
+| Witness/node privacy | Witness addresses in KEL (`"b"` field) | Peer set declared by the federation IEL's `authPolicy`; addresses live in per-peer address SELs, not in any identity's KEL |
 
 **Analysis:** Both protocols treat KELs as public, verifiable data — ambient verifiability is a core design principle of both. Neither provides KEL confidentiality.
 
@@ -358,7 +358,7 @@ KERI exposes witness addresses in the KEL itself (`"b"` field), creating infrast
 
 **Analysis:** KERI's delegation model is deeply integrated into the protocol. When identifier B is delegated from identifier A, the delegator (A) must anchor an approval seal in their own KEL for every delegated establishment event (inception and rotation). This creates a cryptographically verifiable chain of authority: verifying B's KEL requires also verifying A's KEL and confirming the approval seals. The delegator retains ongoing control — they can refuse to approve future rotations, effectively revoking the delegation.
 
-KELS takes a layered approach to delegation. At the service level, the `dip` (delegated inception) event includes a `delegating_prefix` field, but the KELS service itself does not verify the delegation relationship — any structurally valid KEL starting with `dip` is accepted. This is a deliberate design choice: "Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed."
+KELS takes a layered approach to delegation. At the service level, the `dip` (delegated inception) event includes a `delegatingPrefix` field, but the KELS service itself does not verify the delegation relationship — any structurally valid KEL starting with `dip` is accepted. This is a deliberate design choice: "Delegation trust is NOT verified by the KELS service. KELS accepts any valid KEL starting with `icp` or `dip`. Consumers verify delegation trust chains when needed."
 
 However, at the credential level, kels-policy provides full delegation verification via the `delegate(DELEGATOR)` DSL node. The leaf names only the delegator; specific delegates are discovered at evaluation time. When a policy includes a `delegate` node, the evaluator walks the delegator's KEL for anchored dip-delegated prefixes and accepts any such KEL X that also anchors the credential SAID — three structural checks: X was incepted via `dip` with DELEGATOR as the delegating prefix, the delegator's KEL is cryptographically verified, and the delegator's KEL anchors X's prefix. Delegation trust is verified automatically during policy evaluation without consumers needing to implement it independently. The single-argument form is the fleet-scaling primitive: edges express "any delegate of this authority" by construction, no compaction step needed.
 
@@ -465,7 +465,7 @@ KELS has completed its post-quantum signature migration for infrastructure (ML-D
 Supply chain integrity requires:
 - **Anchor verification** — KELS's inline anchor checking during verification (single pass) is well-suited to verifying that specific data items are anchored in a KEL.
 - **Divergence as signal** — A divergent supply chain identifier is a meaningful security event that should be visible and actionable, not just a reputation problem.
-- **Federation model** — Supply chains naturally involve a known set of participants, mapping well to KELS's federation-as-identity model where membership is encoded as a single identity's `auth_policy`.
+- **Federation model** — Supply chains naturally involve a known set of participants, mapping well to KELS's federation-as-identity model where membership is encoded as a single identity's `authPolicy`.
 
 ### 7. Peer-to-Peer / Censorship-Resistant Communication
 
@@ -579,7 +579,7 @@ A federation is born via a one-time **coordinator ceremony**: one node acts as c
 | Rotation key compromised | Rotate immediately (race with adversary) | Submit `rec` event (dual-signed, no race) |
 | Total key compromise | No formal protocol; social resolution | Submit `cnt` to permanently freeze; deterministic |
 | Divergence detected | Detection only (via watcher, where deployed); resolution is abandon-and-reincept (propagate new prefix to every consumer) or human arbitration | `rec`/`Rpr` to recover; `cnt` to terminate. Both protocol-defined, machine-executable. |
-| Peer/node compromise | Replace witness, rotate identifier's witness list (per-identifier action) | Federation `Evl` removing the peer from `auth_policy` (single federation-wide action) |
+| Peer/node compromise | Replace witness, rotate identifier's witness list (per-identifier action) | Federation `Evl` removing the peer from `authPolicy` (single federation-wide action) |
 | Infrastructure outage | Witness redundancy; degrade gracefully | Gossip mesh self-heals; anti-entropy repairs gaps |
 | Database corruption | Rebuild requires threshold witnesses reachable | Rebuild from any gossip peer holding a chain replica; chain is self-verifying |
 | Federation membership change | Per-identifier witness-list rotation | Federation IEL `Evl` (one chain event, federation-wide) |
@@ -834,7 +834,7 @@ let sig = KeyEventSignature {
 **KELS's approach:**
 - Self-documenting — type names, field names, and method names read as English descriptions of their purpose. A developer reading `KelVerifier::verify_chain_event()` or `KeyEventKind::requires_dual_signature()` understands the operation without consulting a glossary.
 - Standard conventions — follows Rust community naming (traits named for capabilities, enums named for the domain, methods named as verb phrases). No project-specific lexicon to learn.
-- Explicit over compact — `rotation_hash` is longer than `"n"` but communicates its meaning without context. `recovery_key` is unambiguous where `"br"` requires documentation.
+- Explicit over compact — `rotationHash` is longer than `"n"` but communicates its meaning without context. `recoveryKey` is unambiguous where `"br"` requires documentation.
 - Wire format separated from code — Rust field names are `snake_case`, JSON serialization is `camelCase` via serde attributes. The wire format is a serialization concern, not a naming concern.
 
 ---
@@ -855,9 +855,9 @@ Consider a cryptographer with strong knowledge of public key infrastructure, has
 **Estimated time to first meaningful code review:** 2-3 weeks. The cryptographer understands the math immediately but cannot map it to the codebase without extensive glossary study.
 
 **KELS:**
-- The cryptographer can read the type definitions and understand the security model directly. `KelVerifier`, `KelVerification`, `recovery_key`, `rotation_hash`, `requires_dual_signature()` — these terms map to concepts they already know.
+- The cryptographer can read the type definitions and understand the security model directly. `KelVerifier`, `KelVerification`, `recoveryKey`, `rotationHash`, `requires_dual_signature()` — these terms map to concepts they already know.
 - Rust itself is a learning curve if they are not already proficient, but the *domain naming* does not add to it. A Rust-literate cryptographer can read KELS types on day one.
-- The three-tier key hierarchy (signing, rotation, recovery) is documented in the type system: `public_key`, `rotation_hash`, `recovery_key`, `recovery_hash` are all explicit fields on `KeyEvent`.
+- The three-tier key hierarchy (signing, rotation, recovery) is documented in the type system: `publicKey`, `rotationHash`, `recoveryKey`, `recoveryHash` are all explicit fields on `KeyEvent`.
 - Infrastructure concepts (gossip, federation) use standard distributed systems terminology. `HyParView` and `PlumTree` are published protocols with their own literature.
 - The `KelVerification` token pattern is novel but immediately comprehensible to anyone who has worked with capability-based security or proof-carrying code.
 
@@ -886,7 +886,7 @@ For a security audit, the naming difference is material:
 
 **KERIpy audit challenge:** An auditor must first build a mental translation layer between KERIpy's vocabulary and standard cryptographic concepts. When reviewing `Kevery.process()` for verification correctness, they must hold in mind that `kever.verfers` means "verification keys for this identifier" and `siger.index` means "which key in the multi-sig set signed this." Errors in this mental translation can cause missed vulnerabilities.
 
-**KELS audit advantage:** An auditor can read `KelVerifier::verify_signatures(signed_event, public_key)` and immediately assess whether the signature verification is correct relative to the claimed key. The type signature communicates intent. The `KelVerification` token pattern means the auditor can verify that all security-sensitive code paths require proof of verification by tracing type usage — no runtime behavior analysis needed.
+**KELS audit advantage:** An auditor can read `KelVerifier::verify_signatures(signed_event, publicKey)` and immediately assess whether the signature verification is correct relative to the claimed key. The type signature communicates intent. The `KelVerification` token pattern means the auditor can verify that all security-sensitive code paths require proof of verification by tracing type usage — no runtime behavior analysis needed.
 
 ### Summary
 

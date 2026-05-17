@@ -62,7 +62,7 @@ verify_generation(events_at_serial):
     if events_at_serial.len() > branches.len():
         // More events than branches = divergence detected
         fork BranchState for new branches
-        record divergence_ancestor (the SAID of v_{d-1}) if first divergence
+        record divergenceAncestor (the SAID of v_{d-1}) if first divergence
 
     for each event:
         match to branch via event.previous
@@ -75,7 +75,7 @@ When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec), 
 
 ```
 process_establishment(event, branch):
-    new_public_key = parse(event.public_key)
+    new_public_key = parse(event.publicKey)
 
     // Verify rotation hash commitment (forward commitment from previous establishment)
     if branch.pending_rotation_hash exists:
@@ -85,34 +85,34 @@ process_establishment(event, branch):
 
     // Verify recovery hash commitment
     if branch.pending_recovery_hash exists AND event.reveals_recovery_key():
-        expected = compute_rotation_hash(event.recovery_key)
+        expected = compute_rotation_hash(event.recoveryKey)
         if branch.pending_recovery_hash != expected:
             return Error("Recovery key does not match recovery hash")
 
     // Update branch state
     branch.current_public_key = new_public_key
-    branch.pending_rotation_hash = event.rotation_hash
-    branch.pending_recovery_hash = event.recovery_hash
+    branch.pending_rotation_hash = event.rotationHash
+    branch.pending_recovery_hash = event.recoveryHash
     branch.establishment_tip = event
 ```
 
 ### Signature verification
 
 ```
-verify_signatures(signed_event, public_key):
+verify_signatures(signed_event, publicKey):
     // SAID is Blake3 hash of canonical JSON — signing the SAID bytes
     // is equivalent to signing the content but more efficient
     data = signed_event.event.said.as_bytes()
 
     // Primary signature
     signature = parse_signature(signed_event.signature)
-    public_key.verify(data, signature)
+    publicKey.verify(data, signature)
 
     // Recovery signature (dual authorization for rec, ror, cnt, dec)
     if signed_event.recovery_signature exists:
-        recovery_key = parse_key(signed_event.event.recovery_key)
+        recoveryKey = parse_key(signed_event.event.recoveryKey)
         recovery_sig = parse_signature(signed_event.recovery_signature)
-        recovery_key.verify(data, recovery_sig)
+        recoveryKey.verify(data, recovery_sig)
 ```
 
 ## Verification Return Value
@@ -124,9 +124,9 @@ KelVerification:
     prefix: String
     branch_tips: Vec<BranchTip>                     // one per branch (1 = linear, N = divergent)
     is_contested: bool
-    divergence_ancestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
-    last_seal_advancing_event: Option<Digest256>     // SAID of most recent Rec/Ror (seal-cap watermark)
-    last_recovery_revealing_event: Option<Digest256> // SAID of most recent Rec/Ror/Cnt/Dec (spent-key)
+    divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
+    lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror (seal-cap watermark)
+    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Cnt/Dec (spent-key)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>
 
@@ -154,14 +154,14 @@ Derived accessors:
 | Chain completeness | All `previous` references resolve to existing events |
 | Serial monotonicity | Each event's serial must equal previous event's serial + 1 |
 | Inception serial | Inception events (no `previous`) must have serial 0 |
-| Pre-rotation commitment | rotation_hash matches next public_key |
-| Recovery commitment | recovery_hash matches revealed recovery_key |
+| Pre-rotation commitment | rotationHash matches next publicKey |
+| Recovery commitment | recoveryHash matches revealed recoveryKey |
 | Signature validity | Cryptographic signature verification against SAID bytes |
 
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `KelVerification` token (`is_divergent()`, `divergence_ancestor()`)
+- Divergence is detected and tracked in the `KelVerification` token (`is_divergent()`, `divergenceAncestor()`)
 - All branches of a divergent KEL are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler is responsible for resolving divergence
 
@@ -180,7 +180,7 @@ Cnt is a privileged event whose presence in the divergent set triggers contested
 
 Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. KEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
 
-**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotation_hash` and `recovery_hash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
+**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
 
 ### Upgrade rule
 
@@ -190,7 +190,7 @@ When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Ro
 
 ### Cnt authorization (HARD)
 
-Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
+Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotationHash`) + recovery key (preimage of `v_{tip-1}`'s `recoveryHash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
 
 ## Event Types and Their Signatures
 
@@ -211,7 +211,7 @@ Events with recovery signatures require dual authorization, making them the high
 
 ## Streaming
 
-KEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `KelVerifier`. Proof-of-verification token: `KelVerification`. Per-KEL specifics: branch-tip behavior on divergence (verifier forks `BranchState` per branch and tracks `divergence_ancestor`); inline anchor checking against caller-registered SAIDs; constructors `new` / `resume` / `from_branch_tip`.
+KEL verification follows the cross-primitive streaming pattern (see [../../protocol-doctrine.md §Streaming](../../protocol-doctrine.md#streaming)). Verifier type: `KelVerifier`. Proof-of-verification token: `KelVerification`. Per-KEL specifics: branch-tip behavior on divergence (verifier forks `BranchState` per branch and tracks `divergenceAncestor`); inline anchor checking against caller-registered SAIDs; constructors `new` / `resume` / `from_branch_tip`.
 
 `KelVerifier` is the sole verification mechanism for KELs. It walks forward through events page by page, verifying cryptographic integrity without loading the full KEL into memory. Events are processed in **generations** (all events at a given serial). When multiple events appear at the same serial (divergence), the verifier forks `BranchState` — each new event is matched to its branch via the `previous` pointer.
 
@@ -220,7 +220,7 @@ struct KelVerifier {
     prefix: String,
     branches: HashMap<String, BranchState>,  // keyed by tip SAID
     last_verified_serial: Option<u64>,
-    divergence_ancestor: Option<Digest256>,
+    divergenceAncestor: Option<Digest256>,
     is_contested: bool,
     queried_saids: BTreeSet<String>,   // anchor checking
     anchored_saids: BTreeSet<String>,  // anchor checking

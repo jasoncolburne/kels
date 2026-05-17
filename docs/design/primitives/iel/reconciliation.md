@@ -8,13 +8,13 @@ For lifecycle prose (states, divergence-by-Cnt-resolution, evaluation seal), see
 
 All cases below depend on these invariants:
 
-1. **Every IEL event is governance-authorized**: `Icp` is self-endorsed under its declared `governance_policy`; `Evl`, `Sea`, `Cnt`, `Dec` all require the branch's tracked `governance_policy` satisfaction. There are no auth-only events on IEL. This eliminates the auth-vs-governance asymmetry that SEL needs Rpr to handle.
+1. **Every IEL event is governance-authorized**: `Icp` is self-endorsed under its declared `governancePolicy`; `Evl`, `Sea`, `Cnt`, `Dec` all require the branch's tracked `governancePolicy` satisfaction. There are no auth-only events on IEL. This eliminates the auth-vs-governance asymmetry that SEL needs Rpr to handle.
 
 2. **No proactive-evaluation bound needed**: every non-terminal post-Icp IEL event advances the seal (`Evl`/`Sea`), and only one Icp lands per chain. There is no "non-evaluation event run" for a bound to cap — the SEL `MAX_NON_EVALUATION_EVENTS` cap has no IEL analog.
 
 3. **No archival**: history is encoded in the data, including divergent branches, forever. There is no `truncate_and_replace`, no `Rpr`, no archive table.
 
-4. **No retroactive poisoning**: every policy referenced as `auth_policy` or `governance_policy` MUST have `immune: true`. Both submit and verify enforce. Past evaluations stay satisfied by construction. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability).
+4. **No retroactive poisoning**: every policy referenced as `authPolicy` or `governancePolicy` MUST have `immune: true`. Both submit and verify enforce. Past evaluations stay satisfied by construction. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability).
 
 These invariants are what let IEL ship without Rpr and without an archival path.
 
@@ -24,7 +24,7 @@ These invariants are what let IEL ship without Rpr and without an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. |
 | **Divergent** | Chain shape with 2 events at serial `d`; treated as Contested per privileged-divergence (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. |
 | **Contested** | `Cnt` present, permanently frozen. |
 | **Decommissioned** | `Dec` present, permanently frozen. |
@@ -37,9 +37,9 @@ What happens when a client submits events to the submit handler on a single node
 
 | IEL State | Icp | Evl | Sea | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-----|-------------------|-----|
-| **Empty** | Append ✓ if `governance_policy` satisfied; else reject | Reject (no chain) | Reject (no chain) | Reject | Reject |
+| **Empty** | Append ✓ if `governancePolicy` satisfied; else reject | Reject (no chain) | Reject (no chain) | Reject | Reject |
 | **Active** | Reject (already incepted) | Append ✓ | Append ✓ | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`Evl`/`Sea` would land at-or-before `last_seal_advancing_event` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Evl`/`Sea` would land at-or-before `lastSealAdvancingEvent` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Contested** | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` | `ContestedIel` |
 | **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `IelDecommissioned` (every valid Cnt shape per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec) qualifies for the override; the catch-all rejects malformed parent SAIDs) | `IelDecommissioned` |
@@ -58,7 +58,7 @@ The submit handler treats a batch atomically:
 
 - **`[pending..., Cnt]`** — owner's pre-flush staged events plus the contest extending the last bundled tip. At most one page (`MINIMUM_PAGE_SIZE = 64`).
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
-- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SEL, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governance_policy`).
+- **`[Icp]`** — chain inception. Standalone batch is fine (unlike SEL, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governancePolicy`).
 - **`[Icp, Evl]`** also valid — inception with immediate first evolution. (Icp + governance step in same batch.)
 
 There is no `[..., Rpr]` batch — IEL has no Rpr.
@@ -161,7 +161,7 @@ the chain is contested-terminal, all subsequent submissions are rejected.
 
 ### 3. Cross-chain effect: SELs bound to a divergent IEL event
 
-If an SEL's `iel_event` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
+If an SEL's `ielEvent` references an IEL event that lives on a now-divergent IEL branch, the SEL's authorization resolution returns "IEL is divergent at the bound branch — cannot resolve" and SEL submissions to that chain are rejected with `IelDivergent`. SELs stay in their pre-divergence state until the IEL is contested-and-replaced.
 
 ```
 IEL chain (now divergent at v_d):
@@ -171,16 +171,16 @@ IEL chain (now divergent at v_d):
 
 SEL chain bound to the IEL (last good binding pre-divergence):
 
-  [Icp] → [Upd_v1, iel_event=Evl_{d-1}.said] → ...
+  [Icp] → [Upd_v1, ielEvent=Evl_{d-1}.said] → ...
 
   Submitter tries:
-    [Upd_v_new, iel_event=Evl_d_a.said]   ← bound to a divergent IEL event
+    [Upd_v_new, ielEvent=Evl_d_a.said]   ← bound to a divergent IEL event
 
   IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
   Submitter retries with stable pre-divergence binding:
-    [Upd_v_new, iel_event=Evl_{d-1}.said]   ← bound at v_{d-1} < d
+    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} < d
 
   IEL resolver: "bound event is in pre-divergence shared prefix" → OK
    for chain-validity; consumer trust degraded per whole-chain-suspect rule.

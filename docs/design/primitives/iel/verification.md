@@ -7,17 +7,17 @@ Source-of-truth for the algorithm that validates Identity Event Log (IEL) chains
 IEL verification ensures:
 - Events match their explicit per-kind schemas (`IdentityEvent::validate_structure`)
 - Versions start at 0 and increment by 1 with no gaps
-- The inception event has a valid prefix (derives from `(auth_policy, governance_policy, nonce)`)
+- The inception event has a valid prefix (derives from `(authPolicy, governancePolicy, nonce)`)
 - All event prefixes match
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
-- `Icp` is anchored under its declared `governance_policy` (self-governance-endorsement — every IEL event is a governance act)
-- `Evl` / `Sea` / `Cnt` / `Dec` are anchored under the branch's tracked `governance_policy`
-- Any policy referenced as `auth_policy` or `governance_policy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
+- `Icp` is anchored under its declared `governancePolicy` (self-governance-endorsement — every IEL event is a governance act)
+- `Evl` / `Sea` / `Cnt` / `Dec` are anchored under the branch's tracked `governancePolicy`
+- Any policy referenced as `authPolicy` or `governancePolicy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
 
-Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `auth_policy` and `governance_policy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
+Like SEL, IEL has no per-event signature — authorization is via the *anchoring model*: `authPolicy` and `governancePolicy` resolve to KEL prefixes whose `ixn` events anchor the IEL event's SAID. The verifier resolves these policies through a `PolicyChecker` that fetches and verifies the anchoring KEL events on demand.
 
 The verifier answers a single question: **is this chain shape structurally authentic?** Consumer trust ("should I trust authorization claims from this chain?") is a separate concern handled at the auth/policy layer through `policy_satisfied`, soft-fail propagation, and `satisfied_saids` (see [event-log.md §Divergence, Contestation, and the Trust Layer](event-log.md#divergence-contestation-and-the-trust-layer)). The verifier accepts divergent and `Cnt`'d chains as structurally valid regardless of whether the divergence arose from federation race, threshold compromise, or operator-initiated `Cnt` contestation; the trust layer applies the consumer-side semantics on top of the authenticated data.
 
@@ -70,7 +70,7 @@ verify_generation(events_at_serial):
     if events_at_serial.len() > branches.len():
         // More events than branches = divergence detected
         fork BranchState for new branches
-        record divergence_ancestor (the SAID of v_{d-1}) if first divergence
+        record divergenceAncestor (the SAID of v_{d-1}) if first divergence
 
     for each event:
         match to branch via event.previous
@@ -86,10 +86,10 @@ When an event requires policy satisfaction, the verifier resolves the relevant p
 ```
 verify_policy(event, branch):
     match event.kind:
-        Icp           → self_satisfies(event)  // anchored under event.governance_policy; tier-2 (Rot anchor)
-        Evl           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
-        Sea           → satisfies(event, branch.tracked_governance_policy)  // tier-2 (Rot anchor)
-        Cnt, Dec      → satisfies(event, branch.tracked_governance_policy)  // tier-3 (Ror anchor)
+        Icp           → self_satisfies(event)  // anchored under event.governancePolicy; tier-2 (Rot anchor)
+        Evl           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
+        Sea           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
+        Cnt, Dec      → satisfies(event, branch.trackedGovernancePolicy)  // tier-3 (Ror anchor)
 
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
     each Endorse(KEL_PREFIX) and Delegate(KEL_PREFIX) leaf node in the
@@ -101,19 +101,19 @@ verify_policy(event, branch):
 
 Policy state is **branch-tracked**. Two fields:
 
-- `tracked_auth_policy`
-  - *Seeded by* `Icp.auth_policy` after the immunity check (below).
-  - *Updated by* any authorized `Evl` carrying a new `auth_policy`, subject to the immunity check.
-  - *Consumed by* SEL `Upd` / `Est` via `iel_event` binding; never authorizes IEL events themselves.
+- `trackedAuthPolicy`
+  - *Seeded by* `Icp.authPolicy` after the immunity check (below).
+  - *Updated by* any authorized `Evl` carrying a new `authPolicy`, subject to the immunity check.
+  - *Consumed by* SEL `Upd` / `Est` via `ielEvent` binding; never authorizes IEL events themselves.
 
-- `tracked_governance_policy`
-  - *Seeded by* `Icp.governance_policy` after the immunity check AND after the verifier confirms `Icp.said` is anchored under the declared policy (the self-endorsement check).
-  - *Updated by* any authorized `Evl` carrying a new `governance_policy`, subject to the immunity check.
-  - *Consumed by* every IEL event's authorization gate plus SEL `Sea`/`Rpr`/`Cnt`/`Dec` via `iel_event` binding.
+- `trackedGovernancePolicy`
+  - *Seeded by* `Icp.governancePolicy` after the immunity check AND after the verifier confirms `Icp.said` is anchored under the declared policy (the self-endorsement check).
+  - *Updated by* any authorized `Evl` carrying a new `governancePolicy`, subject to the immunity check.
+  - *Consumed by* every IEL event's authorization gate plus SEL `Sea`/`Rpr`/`Cnt`/`Dec` via `ielEvent` binding.
 
-**Immunity check.** Whenever `tracked_auth_policy` or `tracked_governance_policy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error; the chain is rejected. Mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)); both layers enforce because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
+**Immunity check.** Whenever `trackedAuthPolicy` or `trackedGovernancePolicy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error; the chain is rejected. Mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)); both layers enforce because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
 
-> **Evolution authorization uses the *previous* tracked policy.** An `Evl` evolving `auth_policy` is itself authorized by the prior `tracked_governance_policy`, not by the new one it's introducing. This prevents an actor with auth-only authority from elevating themselves to governance authority.
+> **Evolution authorization uses the *previous* tracked policy.** An `Evl` evolving `authPolicy` is itself authorized by the prior `trackedGovernancePolicy`, not by the new one it's introducing. This prevents an actor with auth-only authority from elevating themselves to governance authority.
 
 ### Terminal-state determination and authorization
 
@@ -132,7 +132,7 @@ In practice on IEL, any divergence is immediately contested. The "divergent-but-
 
 Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../protocol-doctrine.md §Privileged Divergence is Terminal; Cnt Triggers It Uniformly](../../protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly) for the cross-shape derivation and worked diagrams. IEL-specific: every IEL event advances the seal, so the chain transitions to contested-terminal at first 2-event divergence; both divergent branches are single-event at `v_d` by construction, so each branch's `v_{tip-1}` is `v_{d-1}`.
 
-Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governance_policy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
+Cnt is processed inline with the chain walk: when the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s tracked governancePolicy (set when `v_{tip-1}` was processed). Cnt is processed alongside the existing event(s) at `v_d` as siblings of the same generation, all consuming `v_{tip-1}`'s governance context. No new cache slot in branch state.
 
 ### Upgrade rule: not applicable on IEL
 
@@ -142,15 +142,15 @@ The handler-level rejection on contested/decommissioned chains is a separate sea
 
 ### Caller-bounded SAID querying
 
-The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `iel_event` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `auth_policy` / `governance_policy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
+The chain-wide `policy_satisfied: bool` answers "is the chain currently authoritative" in aggregate, but consumers — notably the SEL verifier when resolving `ielEvent` bindings — need to ask about specific events: "is THIS IEL event valid for SEL to bind under, and what `authPolicy` / `governancePolicy` was tracked there?" The verifier exposes a caller-bounded query pattern mirroring `KelVerification`:
 
 - Caller provides `queried_saids: BTreeSet<Digest256>` up-front — the IEL event SAIDs the caller cares about.
 - During the chain walk, for each event whose SAID appears in `queried_saids`:
   - If the event is on the pre-divergence shared portion of the chain (or the chain is non-divergent) AND auth-passed, the verifier adds the SAID to `satisfied_saids`.
-  - The verifier snapshots the event's tracked `(auth_policy, governance_policy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
-- For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `tracked_auth_policy` / `tracked_governance_policy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
+  - The verifier snapshots the event's tracked `(authPolicy, governancePolicy)` into a SAID-keyed map, available post-verification via `auth_policy_at(said)` / `governance_policy_at(said)`.
+- For events NOT in `queried_saids`, the verifier still performs anchor checks during the walk (chain-validity requires it) but does not retain per-event policy state — branch state's running `trackedAuthPolicy` / `trackedGovernancePolicy` is sufficient for in-flight checks. No snapshot is kept post-verification; `auth_policy_at(said)` / `governance_policy_at(said)` return `None` for any SAID outside `queried_saids`.
 
-The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs or the universe of per-event policy state. The SEL verifier collects `iel_event` references from its own chain walk in a pre-pass, passes them as `queried_saids` to the IEL verification, and uses `is_said_satisfied` + `auth_policy_at` / `governance_policy_at` to resolve each binding. Same shape as KEL's `is_said_anchored`. Token memory is `O(|queried_saids|)`, not `O(chain length)`. Callers that need post-hoc resolution for SAIDs they didn't declare go through `IelResolver` directly.
+The pattern is bounded by what the caller asks about, not by chain size — verification doesn't accumulate the universe of chain SAIDs or the universe of per-event policy state. The SEL verifier collects `ielEvent` references from its own chain walk in a pre-pass, passes them as `queried_saids` to the IEL verification, and uses `is_said_satisfied` + `auth_policy_at` / `governance_policy_at` to resolve each binding. Same shape as KEL's `is_said_anchored`. Token memory is `O(|queried_saids|)`, not `O(chain length)`. Callers that need post-hoc resolution for SAIDs they didn't declare go through `IelResolver` directly.
 
 ## Verification Return Value
 
@@ -160,10 +160,10 @@ The pattern is bounded by what the caller asks about, not by chain size — veri
 IelVerification:
     prefix: Digest256
     branches: Vec<BranchTip>                 // 1 = linear, 2 = divergent
-    divergence_ancestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
+    divergenceAncestor: Option<Digest256>   // SAID of v_{d-1} on a divergent chain (None on linear)
     is_contested: bool
     is_decommissioned: bool
-    last_seal_advancing_event: Option<Digest256> // SAID of most recent Evl or Sea
+    lastSealAdvancingEvent: Option<Digest256> // SAID of most recent Evl or Sea
     queried_saids: BTreeSet<Digest256>       // caller-declared SAIDs of interest
     satisfied_saids: BTreeSet<Digest256>     // verifier-populated subset (auth-passed, pre-divergence)
     // policy_history: BTreeMap<Digest256, (Digest256, Digest256)> — caller-bounded by queried_saids
@@ -173,11 +173,11 @@ Accessors:
 
 - `current_event()` → `None` if divergent
 - `prefix()`
-- `auth_policy_at(event_said)` — SAID of the `auth_policy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `iel_event` bindings.
-- `governance_policy_at(event_said)` — same, for governance_policy.
+- `auth_policy_at(event_said)` — SAID of the `authPolicy` tracked at the named IEL event, IF `event_said` was pre-declared in `queried_saids`. Returns `None` for SAIDs outside `queried_saids` (caller-bounded; see §Caller-Bounded SAID Querying). Used by SEL verification to resolve `ielEvent` bindings.
+- `governance_policy_at(event_said)` — same, for governancePolicy.
 - `policy_satisfied()` — overall policy satisfaction across the chain.
-- `last_seal_advancing_event()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
-- `divergence_ancestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
+- `lastSealAdvancingEvent()` — SAID of the most recent `Evl` or `Sea` (the evaluation seal; advances on both kinds).
+- `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_divergent()` — `branches.len() > 1`.
 - `is_contested()`, `is_decommissioned()`
 
@@ -186,22 +186,22 @@ Accessors:
 | Property | Verification Method |
 |----------|---------------------|
 | SAID integrity | Recompute and compare |
-| Prefix derivation | Inception prefix recomputed from `(auth_policy, governance_policy, nonce)` and compared |
+| Prefix derivation | Inception prefix recomputed from `(authPolicy, governancePolicy, nonce)` and compared |
 | Prefix consistency | All events have same prefix |
 | Event chaining | `previous` field points to valid prior event SAID |
 | Chain completeness | All `previous` references resolve to existing events |
 | Serial monotonicity | Each event's serial equals predecessor's serial + 1 |
 | Inception serial | Inception (no `previous`) must have serial 0 |
-| `governance_policy` satisfaction at Icp | `evaluate_anchored_policy(event.governance_policy, event.said)` (self-governance-endorsement) |
-| `governance_policy` satisfaction | `evaluate_anchored_policy(branch.tracked_governance_policy, event.said)` for Evl/Sea/Cnt/Dec |
-| Policy immunity | Every introduced/evolved auth_policy or governance_policy must have `immune: true` |
+| `governancePolicy` satisfaction at Icp | `evaluate_anchored_policy(event.governancePolicy, event.said)` (self-governance-endorsement) |
+| `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Sea/Cnt/Dec |
+| Policy immunity | Every introduced/evolved authPolicy or governancePolicy must have `immune: true` |
 
 Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
 
 ## Divergence Handling
 
 Verification does NOT fail on divergence. Instead:
-- Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergence_ancestor()`)
+- Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergenceAncestor()`)
 - Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch)
 - The submit handler resolves divergence via `Cnt` (see [merge.md](merge.md)). There is no `Rpr` on IEL; divergent chains stay divergent until contested.
 
@@ -217,7 +217,7 @@ struct IelVerifier {
     checker: Arc<dyn PolicyChecker>,
     branches: HashMap<Digest256, BranchState>,   // keyed by tip SAID
     last_verified_serial: Option<u64>,
-    divergence_ancestor: Option<Digest256>,
+    divergenceAncestor: Option<Digest256>,
     is_contested: bool,
     is_decommissioned: bool,
     ...
@@ -250,15 +250,15 @@ let verification = verifier.finish().await?;
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency
-7. Policy satisfaction via `PolicyChecker` (`governance_policy` for every kind — Icp anchored under its declared `governance_policy`; Evl/Sea/Cnt/Dec anchored under the branch's tracked `governance_policy`)
+7. Policy satisfaction via `PolicyChecker` (`governancePolicy` for every kind — Icp anchored under its declared `governancePolicy`; Evl/Sea/Cnt/Dec anchored under the branch's tracked `governancePolicy`)
 8. Immunity check on policy seed/update
 
 ## Cross-Chain Use: SEL Authorization Resolution
 
-SEL verification depends on IEL verification for resolving `iel_event` bindings. The flow:
+SEL verification depends on IEL verification for resolving `ielEvent` bindings. The flow:
 
-1. SEL event has `iel_event = IEL_X.said`.
-2. SEL verifier (or merge handler) needs to know "what auth_policy or governance_policy was declared/evolved at IEL_X?"
+1. SEL event has `ielEvent = IEL_X.said`.
+2. SEL verifier (or merge handler) needs to know "what authPolicy or governancePolicy was declared/evolved at IEL_X?"
 3. The IEL is fetched (or already cached). `IelVerification` is loaded or computed.
 4. `auth_policy_at(IEL_X.said)` (or `governance_policy_at(...)`) returns the relevant policy SAID.
 5. SEL event's anchor is verified against that policy.

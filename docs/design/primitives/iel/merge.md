@@ -12,7 +12,7 @@ The submit handler integrates new events into an existing IEL while handling:
 - Decommission (`Dec`) — terminal owner-initiated end
 - Algorithmic `ContestRequired` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
 
-Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governance_policy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `auth_policy` is reserved for SEL Upd authorization through `iel_event` binding (see [../sel/events.md](../sel/events.md)).
+Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
 **There is no `Rpr` kind on IEL** (see [event-log.md §Why no `Rpr`](event-log.md#why-no-rpr)). Divergence is preserved as data; only `Cnt` resolves it.
 
@@ -23,14 +23,14 @@ Events are linked by their `previous` SAID. Authority is via the anchoring model
 | Field | Meaning |
 |---|---|
 | `applied` | `true` if the batch was accepted; `false` if rejected (duplicates or routing rejection). |
-| `divergence_ancestor` | SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), or `None` if linear. |
+| `divergenceAncestor` | SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), or `None` if linear. |
 
 Server errors map to:
 
 | Error | Meaning | Chain state after |
 |---|---|---|
 | `Ok({applied: true, ...})` | Batch accepted | linear / divergent / contested / decommissioned per batch contents |
-| `ContestRequired { reason }` | Normal-event submission at-or-before `last_seal_advancing_event` in chain order on a linear chain | unchanged |
+| `ContestRequired { reason }` | Normal-event submission at-or-before `lastSealAdvancingEvent` in chain order on a linear chain | unchanged |
 | `ContestedIel` | Submission to a chain with a `Cnt` event in it | terminal, unchanged |
 | `IelDecommissioned` | Submission (other than an overriding `Cnt`) to a chain with a `Dec` event in it | terminal, unchanged |
 | `NotImmunePolicy { policy }` | Icp or Evl introducing/evolving a non-immune policy | unchanged |
@@ -47,22 +47,22 @@ Server errors map to:
 ```
 for each event:
     IdentityEvent::validate_structure()  // per-kind field rules per [events.md]
-    verify event.prefix derives from declared (auth_policy, governance_policy, nonce) for v0
+    verify event.prefix derives from declared (authPolicy, governancePolicy, nonce) for v0
     verify each batch event shares the same prefix
 
-for v0 (Icp): verify Icp.said is anchored under the declared governance_policy
+for v0 (Icp): verify Icp.said is anchored under the declared governancePolicy
               with tier-2 (Rot) anchor per contributing policy member
               (the inceptor proves membership in the governance policy they're
                declaring — every IEL event is a governance act; the founding
                declaration is tier-2 like Evl/Sea)
-for v1+ (Evl/Sea/Cnt/Dec): verifier checks anchoring against branch.tracked_governance_policy
+for v1+ (Evl/Sea/Cnt/Dec): verifier checks anchoring against branch.trackedGovernancePolicy
               with the kind required by the event's tier — see
               [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation):
                 Evl, Sea  → Rot (tier 2)
                 Cnt, Dec  → Ror (tier 3)
               Wrong-kind anchor for any contributing leaf rejects the event.
 
-for events introducing or evolving auth_policy or governance_policy
+for events introducing or evolving authPolicy or governancePolicy
     (Icp v0, Evl with policy field):
     fetch the referenced policy by SAID
     if not policy.immune: reject with NotImmunePolicy
@@ -77,9 +77,9 @@ for Sea events: verify parent-kind constraint — parent must be Evl
                 sees only the event in isolation; parent-kind requires chain context.
 ```
 
-The Icp authorization requirement is structural authentication of the inceptor against their own declared `governance_policy`. Unlike SEL's Icp, there is no phishing class to defend against — the prefix is structurally unpredictable from outside (the inception `nonce` makes it unguessable).
+The Icp authorization requirement is structural authentication of the inceptor against their own declared `governancePolicy`. Unlike SEL's Icp, there is no phishing class to defend against — the prefix is structurally unpredictable from outside (the inception `nonce` makes it unguessable).
 
-The policy-immunity gate makes chain stability structural: a non-immune policy can never be referenced as `auth_policy` or `governance_policy`, so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past authorizations stay satisfied by construction. To revoke an endorser's authority going forward, evolve the policy via `Evl` rather than poisoning past anchors.
+The policy-immunity gate makes chain stability structural: a non-immune policy can never be referenced as `authPolicy` or `governancePolicy`, so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past authorizations stay satisfied by construction. To revoke an endorser's authority going forward, evolve the policy via `Evl` rather than poisoning past anchors.
 
 ### 2. Terminal-State Gate
 
@@ -132,7 +132,7 @@ if is_contest        → contest path (insert; Cnt's previous = v_{tip-1}.said c
                        2-event divergent set is privileged → chain transitions to
                        contested-terminal at this moment)
 else if is_decommission → decommission path (insert + mark decommissioned)
-else if event is at-or-before `last_seal_advancing_event` in chain order AND policy satisfied AND non-terminal → reject ContestRequired
+else if event is at-or-before `lastSealAdvancingEvent` in chain order AND policy satisfied AND non-terminal → reject ContestRequired
 else if event creates a fork (overlap) → insert single concurrent event at v_d;
                                          the new 2-event divergent set is
                                          privileged → chain transitions to
@@ -167,7 +167,7 @@ Events chain from the current tip, no divergence, no terminal kind in batch. Ins
 Before inserting a non-terminal event, the handler checks:
 
 ```
-if event is at-or-before `last_seal_advancing_event` in chain order
+if event is at-or-before `lastSealAdvancingEvent` in chain order
    AND policy is satisfied
    AND event.kind is non-terminal
    AND chain is not divergent:
@@ -176,16 +176,16 @@ if event is at-or-before `last_seal_advancing_event` in chain order
 
 This fires when a write-authorized normal event would land at or before the evaluation seal — meaning the seal has advanced past the submitter's view of the chain. The submitter has authority but cannot proceed via normal append; they must accept the new state and re-submit at a higher serial, contest, or abandon.
 
-(For IEL, "policy is satisfied" means the event's anchor passes against `tracked_governance_policy` — every IEL event including `Icp` is governance-authorized; `Icp` is self-endorsed under its declared policy.)
+(For IEL, "policy is satisfied" means the event's anchor passes against `trackedGovernancePolicy` — every IEL event including `Icp` is governance-authorized; `Icp` is self-endorsed under its declared policy.)
 
 ### 8. Overlap (non-divergent IEL, fork-creating event)
 
 When a non-Cnt/Dec event chains from an event earlier than the current tip:
 
 ```
-divergence_ancestor = first_branch_point.said    // the parent of v_d
+divergenceAncestor = first_branch_point.said    // the parent of v_d
 insert single forking event (the first batch event that creates the fork)
-return applied: true, divergence_ancestor: Some(first_branch_point.said)
+return applied: true, divergenceAncestor: Some(first_branch_point.said)
 ```
 
 Subsequent submissions return `ContestRequired` until the chain is contested.

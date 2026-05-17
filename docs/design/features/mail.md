@@ -1,6 +1,6 @@
 # Mail Service: General-Purpose ESSR Messaging
 
-> **⚠️ Design in transition.** Sender and recipient references migrating from KEL prefix to identity prefix — see [#138](https://github.com/jasoncolburne/kels/issues/138). Broader identity-binding context: [#140](https://github.com/jasoncolburne/kels/issues/140). When the identity-binding rework lands, references to `recipient_kel_prefix` / similar fields become identity-prefix references throughout this document.
+> **⚠️ Design in transition.** Sender and recipient references migrating from KEL prefix to identity prefix — see [#138](https://github.com/jasoncolburne/kels/issues/138). Broader identity-binding context: [#140](https://github.com/jasoncolburne/kels/issues/140). When the identity-binding rework lands, references to `recipientKelPrefix` / similar fields become identity-prefix references throughout this document.
 
 A general-purpose encrypted messaging layer for KELS identities. Stores and delivers ESSR-encrypted envelopes without inspecting payloads. Deployed as `services/mail` alongside other KELS node services.
 
@@ -12,7 +12,7 @@ The mail service is payload-agnostic — it handles opaque ESSR envelopes. The e
 
 Two layers, split between routing metadata and bulk encrypted data:
 
-- **Envelope blobs** (RustFS, S3-compatible) — ESSR envelopes stored as opaque binary objects at the **origin node only**. Key: `messages/{blob_digest}` where digest is qb64 Blake3. Content-addressable and integrity-verified on fetch.
+- **Envelope blobs** (RustFS, S3-compatible) — ESSR envelopes stored as opaque binary objects at the **origin node only**. Key: `messages/{blobDigest}` where digest is qb64 Blake3. Content-addressable and integrity-verified on fetch.
 - **Message metadata** (PostgreSQL) — Routing information stored at **every node** via gossip. Tells recipients where their mail lives without replicating the encrypted payloads.
 
 ### MailMessage
@@ -20,13 +20,13 @@ Two layers, split between routing metadata and bulk encrypted data:
 ```rust
 pub struct MailMessage {
     pub said: String,
-    pub sender_kel_prefix: String,    // sender's KEL prefix
-    pub source_node_prefix: String,   // node where blob lives
-    pub recipient_kel_prefix: String, // recipient's KEL prefix
-    pub blob_digest: String,          // qb64 Blake3 digest (object store key)
-    pub blob_size: i64,               // envelope size in bytes
-    pub created_at: StorageDatetime,
-    pub expires_at: StorageDatetime,
+    pub senderKelPrefix: String,    // sender's KEL prefix
+    pub sourceNodePrefix: String,   // node where blob lives
+    pub recipientKelPrefix: String, // recipient's KEL prefix
+    pub blobDigest: String,          // qb64 Blake3 digest (object store key)
+    pub blobSize: i64,               // envelope size in bytes
+    pub createdAt: StorageDatetime,
+    pub expiresAt: StorageDatetime,
 }
 ```
 
@@ -46,8 +46,8 @@ Announcements published to Redis, picked up by the gossip service, and broadcast
 ## Message Lifecycle
 
 1. **Send** — Sender submits ESSR envelope to their local mail node. Node stores blob in the object store + metadata in PostgreSQL, gossips `Message` announcement.
-2. **Discover** — Recipient queries any node's inbox endpoint. Gets `MailMessage` entries with `source_node_prefix` identifying where blobs live.
-3. **Fetch** — Recipient resolves source node URL via registry peer lookup (`source_node_prefix` → `base_domain`), authenticates to source node's mail service, retrieves blob. Client verifies `blob_digest` and `blob_size` match.
+2. **Discover** — Recipient queries any node's inbox endpoint. Gets `MailMessage` entries with `sourceNodePrefix` identifying where blobs live.
+3. **Fetch** — Recipient resolves source node URL via registry peer lookup (`sourceNodePrefix` → `baseDomain`), authenticates to source node's mail service, retrieves blob. Client verifies `blobDigest` and `blobSize` match.
 4. **Open** — Recipient deserializes blob as `SignedEssrEnvelope`, verifies sender's KEL, ESSR-opens with local decapsulation key.
 5. **Acknowledge** — Recipient sends ack to local node. Source node deletes blob from the object store, gossips `Removal` announcement. All nodes delete metadata.
 
@@ -78,7 +78,7 @@ Three independent layers:
 | Message TTL | 30 days | `MAIL_MESSAGE_TTL_DAYS` |
 | Nonce deduplication window | 60 seconds | `KELS_NONCE_WINDOW_SECS` |
 
-The storage cap is enforced per-node: `SUM(blob_size) WHERE source_node_prefix = self AND recipient_kel_prefix = $1`. This caps what the local node stores, not network-wide metadata.
+The storage cap is enforced per-node: `SUM(blobSize) WHERE sourceNodePrefix = self AND recipientKelPrefix = $1`. This caps what the local node stores, not network-wide metadata.
 
 A background reaper runs every 5 minutes to:
 - Expire rate limit entries older than 1 day

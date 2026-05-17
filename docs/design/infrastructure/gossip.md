@@ -84,7 +84,7 @@ services/gossip/
     ├── server.rs       # HTTP server for ready endpoint
     ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
     ├── protocol.rs     # Message types (KelAnnouncement, SadAnnouncement)
-    ├── authorization.rs # Handshake authorization against the federation IEL `auth_policy`
+    ├── authorization.rs # Handshake authorization against the federation IEL `authPolicy`
     ├── bootstrap.rs    # Bootstrap sync from existing peers
     └── hsm_signer.rs   # HSM-backed request signing and peer verification
 ```
@@ -144,7 +144,7 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 | `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
-| `AUTH_POLICY_REFRESH_INTERVAL_SECS` | Background interval to re-check the federation IEL `auth_policy` (defense against missed gossip-driven invalidations) | `60` |
+| `AUTH_POLICY_REFRESH_INTERVAL_SECS` | Background interval to re-check the federation IEL `authPolicy` (defense against missed gossip-driven invalidations) | `60` |
 
 ## Design Decisions
 
@@ -184,7 +184,7 @@ Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (
 
 ### Federation-IEL-based discovery (not hardcoded bootstrap peers)
 
-- Nodes hold the federation IEL locally and enumerate authorized peers from its current `auth_policy`
+- Nodes hold the federation IEL locally and enumerate authorized peers from its current `authPolicy`
 - Each peer publishes its current network endpoints via a per-peer address SEL; nodes walk those SELs to resolve addresses
 - Initial state on a fresh node arrives via `transfer_*_events` (operator-coordinated, point-to-point) during the federation bootstrap ceremony or peer-onboarding; after that, the node participates in the gossip mesh and propagation runs normally
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
@@ -205,7 +205,7 @@ Gossip propagation can miss events due to timing gaps (e.g., between bootstrap p
 ### Two-phase repair (every `ANTI_ENTROPY_INTERVAL_SECS`, default 10s)
 
 **Phase 1 — Targeted repair of known-stale prefixes:**
-- Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → source_node_prefix` entries
+- Drains a Redis hash (`kels:anti_entropy:stale`) of `kel_prefix → sourceNodePrefix` entries
 - For each entry, fetches the KEL from the source peer and submits locally
 - Failures are re-queued for the next cycle (batch fetch failures and individual submit failures both re-record the stale entry)
 

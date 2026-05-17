@@ -20,7 +20,7 @@ SEAL(inner, sender_serial, recipient_prefix, recipient_encap_key, sender_signing
   3. aes_key = blake3::derive_key("kels/exchange/v1/protocols/essr", &shared_secret)
   4. nonce = random_12_bytes()
   5. encrypted = AES-GCM-256-encrypt(aes_key, nonce, inner_json)
-  6. envelope = EssrEnvelope { said, sender, sender_serial, recipient, kem_ciphertext, encrypted, nonce, created_at }
+  6. envelope = EssrEnvelope { said, sender, sender_serial, recipient, kem_ciphertext, encrypted, nonce, createdAt }
   7. derive envelope SAID
   8. signature = ML-DSA-sign(sender_signing_key, envelope.said)
   9. return SignedEssrEnvelope { envelope, signature }
@@ -67,7 +67,7 @@ pub struct EssrEnvelope {
     pub kem_ciphertext: String,   // CESR ML-KEM ciphertext
     pub encrypted_payload: String,// url-safe base64 no-pad AES-GCM-256 ciphertext
     pub nonce: String,            // CESR-encoded AES-GCM nonce (code 1AAN)
-    pub created_at: StorageDatetime,
+    pub createdAt: StorageDatetime,
 }
 ```
 
@@ -132,7 +132,7 @@ pub struct ExchangeMessage {
     pub kind: ExchangeKind,
     pub sender: String,
     pub recipient: String,
-    pub created_at: StorageDatetime,
+    pub createdAt: StorageDatetime,
     pub nonce: String,
     pub payload: ExchangePayload,
 }

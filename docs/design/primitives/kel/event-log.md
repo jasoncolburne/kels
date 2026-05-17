@@ -14,18 +14,18 @@ The Key Event Log (KEL) is a per-prefix chain of `SignedKeyEvent` records descri
 | **Decommissioned** | Chain terminated cleanly by operator — at least one `Dec`, no Cnt or privileged divergence. | Gossip-delivered `Cnt` → Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); all other submissions rejected with `KelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `KelVerification` token surfaces:
-- `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
+- `divergenceAncestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
 - `is_contested: bool` — any `Cnt` event in the chain.
 - `is_decommissioned: bool` — any `Dec` event in the chain.
-- `last_seal_advancing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`. The chain's seal-cap watermark (see §Seal and Key Non-Poisonability).
-- `last_recovery_revealing_event: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`. Tracks recovery-key revelation for the spent-key / non-poisonability rule (distinct from the seal).
+- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`. The chain's seal-cap watermark (see §Seal and Key Non-Poisonability).
+- `lastRecoveryRevealingEvent: Option<Digest256>` — SAID of the most recent `Rec`/`Ror`/`Cnt`/`Dec`. Tracks recovery-key revelation for the spent-key / non-poisonability rule (distinct from the seal).
 
 ## Event Kinds
 
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
 | `Icp` / `Dip` | Inception (s0). | Structural (self-authenticating; `Dip` additionally anchored by delegator). | No |
-| `Rot` | Rotation. | Signing key (preimage of prior `rotation_hash`). | No |
+| `Rot` | Rotation. | Signing key (preimage of prior `rotationHash`). | No |
 | `Ixn` | Interaction (anchor). | Current signing key. | No |
 | `Rec` | Recovery — resolves divergence; rotates both keys. | Dual (signing + recovery). | No |
 | `Ror` | Recovery rotation — pre-emptively rotates both keys (no divergence required). | Dual. | No |
@@ -42,14 +42,14 @@ KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
 | Concept | Advances on | Used for |
 |---|---|---|
-| `last_seal_advancing_event` | `Rec`/`Ror` | Seal-cap rule: `event_serial >= seal_serial`; recovery cannot truncate at-or-before the seal. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded). |
-| `last_recovery_revealing_event` | `Rec`/`Ror`/`Cnt`/`Dec` | Spent-key rule + proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`). Once any recovery-revealing event lands, the recovery key is publicly known; future divergent events must be resolved by `Cnt`, not `Rec`. |
+| `lastSealAdvancingEvent` | `Rec`/`Ror` | Seal-cap rule: `event_serial >= seal_serial`; recovery cannot truncate at-or-before the seal. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded). |
+| `lastRecoveryRevealingEvent` | `Rec`/`Ror`/`Cnt`/`Dec` | Spent-key rule + proactive-ROR cap (`MAX_NON_REVEALING_EVENTS = 62`). Once any recovery-revealing event lands, the recovery key is publicly known; future divergent events must be resolved by `Cnt`, not `Rec`. |
 
 `Cnt`/`Dec` are terminal — they enforce the seal but do not advance it.
 
 **Once a recovery-revealing event lands, the dual-signature it proves is final.** Subsequent compromise or revocation of the keys it revealed does NOT retroactively unsatisfy the past authorization — the chain's history at that serial is locked. Without this, history could be invalidated retroactively by anyone who later comes to control the revealed key material, making terminal states (recovered, contested, decommissioned) unstable. The trade-off is that a key controller who later turns adversarial cannot undo their past contributions; only the going-forward spent-key effect applies.
 
-`last_seal_advancing_event` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
+`lastSealAdvancingEvent` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
 
 The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_serial`, with `parent_serial = seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. The land-serial framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted.
 
@@ -115,7 +115,7 @@ All nodes have effective SAID `hash_effective_said("contested:{prefix}")` despit
 
 ## Recovery (Rec)
 
-Recovery resolves a non-privileged-divergent chain by archiving all events at `serial >= diverged_at` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
+Recovery resolves a non-privileged-divergent chain by archiving all events at `serial >= divergedAt` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
 
 1. **Branch-tip-extending shape — `Rec.previous` is a branch tip at `v_d`.** Rec extends that branch at `v_{d+1}`. The discriminator's walkback from `Rec.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: one of the two branches at `v_d` is the operator's legitimate content; the operator preserves it via Rec.
 
@@ -133,7 +133,7 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
                      other branch archived
    ```
 
-2. **Divergence-ancestor-extending shape — `Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `diverged_at`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rec.
+2. **Divergence-ancestor-extending shape — `Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rec.
 
    ```
    Pre-state (non-priv divergent at v_d, both adversary-planted):
@@ -173,7 +173,7 @@ The library bundles pending into the lifecycle batch by default; the application
 
 **Rule.** `needs_extra_rot = archived_branch_rotated && !extending_branch_rotated`.
 
-The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotation_hash`). If the archived branch has already used it but the extending branch hasn't, an extra `Rot` after `Rec` is needed to escape to a key only the operator (whoever holds the recovery key dictates this) knows. The "extending branch" is the branch `Rec.previous` walks back from; the "archived branch" is what the discriminator removes.
+The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotationHash`). If the archived branch has already used it but the extending branch hasn't, an extra `Rot` after `Rec` is needed to escape to a key only the operator (whoever holds the recovery key dictates this) knows. The "extending branch" is the branch `Rec.previous` walks back from; the "archived branch" is what the discriminator removes.
 
 Truth table:
 
@@ -205,7 +205,7 @@ The cost of discarding pending may be substantial: a flush that involved collect
 Both follow the same algorithmic shape as SEL's `truncate_and_replace`:
 
 1. Detect recovery: any event in the batch has `kind = Rec` (or `Cnt` for contest).
-2. Compute archive lower bound `L = serial of (divergence_ancestor) + 1` (i.e., the divergence serial `v_d`).
+2. Compute archive lower bound `L = serial of (divergenceAncestor) + 1` (i.e., the divergence serial `v_d`).
 3. **Single page fetch**: events at `serial >= L` for the prefix, ordered `(serial ASC, kind sort_priority ASC, said ASC)`, `limit = MINIMUM_PAGE_SIZE`. One round-trip.
 4. **Trust gate**: feed the page through the resume-mode verifier (`KelVerifier::resume(&prefix, &kel_verification).verify_page(&page)`). The verifier checks SAID, prefix, chain linkage, and verifies each event's signatures against the establishment-declared keys. Verification failure aborts archival — fail-secure on tampered DB rows.
 5. Build a SAID-keyed in-memory map of the verified page (and of the batch's own new events not yet on the chain — bundled missing events may be referenced by `Rec.previous`).
@@ -218,7 +218,7 @@ The page+resume-verify pattern is the SEL backport: prior to it, the discriminat
 
 ### Bounds
 
-Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Cnt`/`Dec` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before the chain's seal, so the divergence ancestor is strictly after `last_seal_advancing_event` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
+Proactive-ROR rule caps the chain since the last `Rec`/`Ror`/`Cnt`/`Dec` to `MAX_NON_REVEALING_EVENTS = 62`. Recovery cannot truncate at or before the chain's seal, so the divergence ancestor is strictly after `lastSealAdvancingEvent` and the post-`d` window is at most 62 events combined. One page (limit 64) covers both branches and the bundled `[Rec, Rot]`; one DB round-trip; no per-hop queries.
 
 ## Contest (Cnt)
 
@@ -239,7 +239,7 @@ Cnt is privileged (recovery-revealing). Its presence in any divergent set trigge
 
 ### Operator recourse against signing-key-only Rot takeover
 
-Cnt's authorization is dual-signed against `v_{tip-1}`'s commitments: signing-key preimage of `v_{tip-1}`'s `rotation_hash` + recovery-key preimage of `v_{tip-1}`'s `recovery_hash`.
+Cnt's authorization is dual-signed against `v_{tip-1}`'s commitments: signing-key preimage of `v_{tip-1}`'s `rotationHash` + recovery-key preimage of `v_{tip-1}`'s `recoveryHash`.
 
 This authorization choice gives the operator a recourse against signing-key-only Rot takeover. If a second signing-key holder (whose access was acquired via signing-key-only compromise) submits a Rot at `v_N` to take over, the keys committed by `v_{N-1}` are: signing key revealed by the Rot at `v_N` (both parties have it) + recovery key NOT revealed by Rot (only the original holder, who prepared it, has it; recovery is revealed only by `Rec`/`Ror`/`Cnt`/`Dec`). The original holder's dual-sig succeeds; the second signing-key holder's does not. The original holder can submit Cnt, terminate the chain, and reincept under a new prefix.
 
@@ -258,16 +258,16 @@ On a divergent KEL, the merge engine returns one of two error codes depending on
 
 `KeyEventKind::Cnt`:
 - `reveals_recovery_key() = true` (same gate as `Rec`/`Ror`/`Dec`).
-- Dual-signed against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotation_hash`) + recovery key (preimage of `v_{tip-1}`'s `recovery_hash`).
+- Dual-signed against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotationHash`) + recovery key (preimage of `v_{tip-1}`'s `recoveryHash`).
 
-`KeyEvent::create_contest(previous, public_key, recovery_key)` mirrors `create_decommission`. No future-key commitments — KEL ends. See [§Cnt mechanics](#cnt-mechanics) above for `previous` rule and divergence semantics.
+`KeyEvent::create_contest(previous, publicKey, recoveryKey)` mirrors `create_decommission`. No future-key commitments — KEL ends. See [§Cnt mechanics](#cnt-mechanics) above for `previous` rule and divergence semantics.
 
 #### Authorization symmetry vs. SEL Cnt
 
 Both KEL and SEL `Cnt` require the chain's privileged primitive. The asymmetry of *mechanism* derives from the difference in primitives:
 
 - KEL's signing key and recovery key are independent cryptographic primitives. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual signature.
-- SEL's `governance_policy` is a *policy* — a composable predicate that can be crafted to subsume the matching `auth_policy`. SEL `Cnt` requires governance_policy satisfaction at tier-3 anchor (KEL `Ror` per contributing member) per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), not bare governance.
+- SEL's `governancePolicy` is a *policy* — a composable predicate that can be crafted to subsume the matching `authPolicy`. SEL `Cnt` requires governancePolicy satisfaction at tier-3 anchor (KEL `Ror` per contributing member) per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation), not bare governance.
 
 The symmetry of *intent* — terminal authority assertion — is preserved on both sides.
 
@@ -324,8 +324,8 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 | State observed | Batch content | Outcome |
 |---|---|---|
-| Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `diverged_at: None`. |
-| Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event, freeze. `Diverged (non-privileged)`, `diverged_at: Some(d)`. |
+| Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `divergedAt: None`. |
+| Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event, freeze. `Diverged (non-privileged)`, `divergedAt: Some(d)`. |
 | Linear (active) | batch ending in `Cnt` (`previous = v_{d-1}.said`) | Insert; creates divergence at `v_d` (existing tip + Cnt); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
 | Linear, overlap, recovery revealed in existing branch | non-`Cnt` events | `ContestRequired`. |
 | Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Branch-tip-extending Rec: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rec: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
@@ -341,7 +341,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 **Code:**
 - `lib/kels/src/types/kel/event.rs` — `KeyEventKind` enum (`Icp`/`Dip`/`Rot`/`Ixn`/`Rec`/`Ror`/`Dec`/`Cnt`); `validate_structure` enforces per-kind field rules (see [events.md](events.md)).
-- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergence_ancestor`, `is_contested`, `is_decommissioned`, `last_seal_advancing_event`, `last_recovery_revealing_event`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
+- `lib/kels/src/types/kel/verification.rs` — `KelVerifier` and `KelVerification`; surfaces `divergenceAncestor`, `is_contested`, `is_decommissioned`, `lastSealAdvancingEvent`, `lastRecoveryRevealingEvent`. Enforces proactive-ROR (`events_since_last_revealing > MAX_NON_REVEALING_EVENTS` rejected).
 - `lib/kels/src/builder.rs` — `KeyEventBuilder::recover()`, `contest()`, `rotate_recovery()`, `decommission()`. Each runs `verify_server_chain_pre_repair` pre-flight, then bundles missing owner events (from `find_missing_owner_events`) AND any pending events into the batch ahead of the dual-signed lifecycle event, and submits atomically.
 - `lib/kels/src/merge.rs` — `MergeTransaction::merge_events` (single entry point); `archive_adversary_chain` with `collect_all_adversary_saids` / `collect_adversary_chain_saids` strategies. Archival uses a single page fetch + resume-mode verifier trust gate + in-memory walkback (mirroring SEL's `truncate_and_replace` discriminator).
 - Server submit handler (`services/kels/src/handlers.rs`) — calls `save_with_merge` which acquires advisory lock, constructs `MergeTransaction`, invokes `merge_events`. All routing is internal to the merge engine.

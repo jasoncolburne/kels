@@ -7,7 +7,7 @@ A general-purpose replicated store for publicly discoverable, self-addressed dat
 Two layers:
 
 - **SAD Object Store** (RustFS, S3-compatible) — Content-addressed blob storage. Any `SelfAddressed` JSON object stored/retrieved by SAID. No authentication needed: writes are idempotent (same SAID = identical content by definition). Existence check before writes prevents write amplification under attack. Two-phase compaction prevents resource amplification from nested SADs.
-- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SEL event's authorization resolves through the bound IEL (`identity` at Icp; `iel_event` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
+- **SAD Event Logs** (PostgreSQL) — Versioned event chains with deterministic prefix discovery and identity-rooted ownership. Event metadata references content in the SAD store via `content`. Authorization is via the anchoring model: each SEL event's authorization resolves through the bound IEL (`identity` at Icp; `ielEvent` on v1+ events); endorsing parties anchor the event's SAID in their KELs.
 
 ## Data Model
 
@@ -15,7 +15,7 @@ Two layers:
 
 A chained, self-addressed event. The v0 (inception) event has `content: None`, making the prefix fully deterministic from `(identity, topic)` alone. Content is added in v1+ events.
 
-No `created_at` field — intentionally omitted so inception events produce deterministic prefixes.
+No `createdAt` field — intentionally omitted so inception events produce deterministic prefixes.
 
 Fields:
 - `said` — Self-addressing identifier (content hash)
@@ -25,7 +25,7 @@ Fields:
 - `topic` — Event type (e.g., `kels/sel/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
-- `iel_event` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/sel/events.md) for the full per-kind matrix.
+- `ielEvent` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `authPolicy` for `Upd` and `governancePolicy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/sel/events.md) for the full per-kind matrix.
 
 #167: `custody` and `availability` are not part of the `SadEvent` struct, so any inline keys with those names get silently dropped during deserialization — chain events broadcast as a unit and can't carry differential authority/replication across links. The drop is structural (type-system), not an explicit submit-handler rejection: a chain-event JSON body containing those keys parses cleanly with the keys ignored. The `CustodyValidationError::CustodyNotAllowedOnEvent` / `AvailabilityNotAllowedOnEvent` variants exist for a future explicit-rejection path (e.g., `deny_unknown_fields` on `SadEvent` deserialization or boundary JSON-key inspection); they are not raised today.
 
@@ -43,28 +43,28 @@ This constructs the v0 inception event (which has only deterministic fields), de
 
 Per-SAD authority via two independent fields, each optional. Inline-on-parent (no separate SAID):
 
-- `owner_iel_event` — IEL event SAID, the writer's identity at write time. Write attestation derives from this event: a verifier can ask either "was the writer authorized under the `auth_policy` at *this event*?" (historical lookup against the event's policy) or "is the writer's identity still authorized at the *current* tip?" (dereference → extract IEL prefix → walk to tip → resolve current `auth_policy`). Both modes derive from one SAID. `None` for unsigned (anonymous) writes.
-- `read_policy` — policy SAID. At read time, the policy is fetched and evaluated against a verified prefix set from a `SignedRequest`. The policy can compose identities arbitrarily — e.g., `threshold(2, [identity(X), identity(Y), identity(Z)])` permits any 2 of 3 identities without those three needing to form a shared IEL. `None` for publicly readable content.
+- `ownerIelEvent` — IEL event SAID, the writer's identity at write time. Write attestation derives from this event: a verifier can ask either "was the writer authorized under the `authPolicy` at *this event*?" (historical lookup against the event's policy) or "is the writer's identity still authorized at the *current* tip?" (dereference → extract IEL prefix → walk to tip → resolve current `authPolicy`). Both modes derive from one SAID. `None` for unsigned (anonymous) writes.
+- `readPolicy` — policy SAID. At read time, the policy is fetched and evaluated against a verified prefix set from a `SignedRequest`. The policy can compose identities arbitrarily — e.g., `threshold(2, [identity(X), identity(Y), identity(Z)])` permits any 2 of 3 identities without those three needing to form a shared IEL. `None` for publicly readable content.
 
-The asymmetry between the two fields is intentional: writes are single-identity-bound (one writer at one moment); reads are composable (any DSL expression). Typical `read_policy` uses `identity(X)` leaves to gate by identity-current state; `endorse(KEL)` is allowed but rare since most read-side gating is identity-oriented rather than device-oriented.
+The asymmetry between the two fields is intentional: writes are single-identity-bound (one writer at one moment); reads are composable (any DSL expression). Typical `readPolicy` uses `identity(X)` leaves to gate by identity-current state; `endorse(KEL)` is allowed but rare since most read-side gating is identity-oriented rather than device-oriented.
 
 Four valid combinations:
 
-| `owner_iel_event` | `read_policy` | Pattern |
+| `ownerIelEvent` | `readPolicy` | Pattern |
 |-------------------|---------------|---------|
 | `None` | `None` | Public, anonymous write |
 | `Some` | `None` | Attested write, public read |
 | `None` | `Some` | Anonymous write, controlled read (drop-box) |
 | `Some` | `Some` | Attested write, controlled read (private message) |
 
-**Supersedes #167's `custody.write` + `custody.read` split.** The prior design used `custody.write` (IEL event SAID) + `custody.read` (IEL prefix). The write field stays as an IEL event SAID under the new name `owner_iel_event`; the read field generalizes from "IEL prefix" to "policy SAID," giving composability that the prefix-only form couldn't express. Asymmetric patterns (signed-public, anonymous-drop-box) are preserved.
+**Supersedes #167's `custody.write` + `custody.read` split.** The prior design used `custody.write` (IEL event SAID) + `custody.read` (IEL prefix). The write field stays as an IEL event SAID under the new name `ownerIelEvent`; the read field generalizes from "IEL prefix" to "policy SAID," giving composability that the prefix-only form couldn't express. Asymmetric patterns (signed-public, anonymous-drop-box) are preserved.
 
 ### Availability (per-SAD-object replication + lifecycle)
 
 #167: sibling top-level inline struct, factored apart from custody. Independently optional:
 
 - `nodes` — SAID of a `NodeSet` SAD declaring serving nodes. `None` = default broadcast.
-- `ttl` — Seconds until expiry (per-object: `sad_objects.created_at + ttl`).
+- `ttl` — Seconds until expiry (per-object: `sad_objects.createdAt + ttl`).
 - `once` — Atomic delete on first successful retrieval. Only valid when `nodes` references a single-prefix NodeSet matching the accepting node.
 
 **Safety valve:** Unrecognized fields in either struct disengage server-side enforcement (forward compatibility). **Context rejection:** both `custody` and `availability` are forbidden on chain events (replicate as a unit).
@@ -76,7 +76,7 @@ A set of node prefixes for selective replication. Prefixes are sorted lexicograp
 ## Authentication
 
 - **SAD objects**: No authentication. Content is self-verifying via SAID.
-- **SAD events**: No signature verification — authorization is via the anchoring model. The chain is identity-rooted: every chain binds at inception (Icp) to a specific IEL (`identity` field), and every v1+ event references a specific IEL event by SAID (`iel_event`). Authorization policies (`auth_policy` for `Upd`; `governance_policy` for `Sea` / `Rpr`) live on the bound IEL and are resolved on demand. Endorsing parties anchor the event's SAID in their KELs; consumers verify the anchoring when they use the data.
+- **SAD events**: No signature verification — authorization is via the anchoring model. The chain is identity-rooted: every chain binds at inception (Icp) to a specific IEL (`identity` field), and every v1+ event references a specific IEL event by SAID (`ielEvent`). Authorization policies (`authPolicy` for `Upd`; `governancePolicy` for `Sea` / `Rpr`) live on the bound IEL and are resolved on demand. Endorsing parties anchor the event's SAID in their KELs; consumers verify the anchoring when they use the data.
 
 ## Chain Lifecycle
 
@@ -96,9 +96,9 @@ If a node misses the gossip message (e.g., it was offline), the owner submits th
 
 ## Verification
 
-The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, serial monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `iel_event` (each event's `iel_event` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
+The `SelVerification` token (following the `KelVerification` pattern) proves a chain was verified. It can only be obtained through `verify_sel_events()`, which performs single-pass structural verification: pages through the chain verifying SAID integrity, chain linkage, serial monotonicity, consistent topic, the IEL `identity` binding (set at Icp), and the per-event parent-monotonic check on `ielEvent` (each event's `ielEvent` must be at-or-after its parent event's, applied per branch). Authorization policies are resolved through `IelResolver` — the verifier does not track them per branch. No signature verification — authorization is via the anchoring model (consumer-side).
 
-Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `last_seal_advancing_event()`, `last_iel_event()`, `is_contested()`, `is_decommissioned()`, `divergence_ancestor()`. `last_seal_advancing_event()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergence_ancestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `last_iel_event()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_contested` / `is_decommissioned` / `divergence_ancestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/sel/event-log.md) for the state model.
+Accessors: `branches()`, `current_event()`, `current_content()`, `prefix()`, `topic()`, `events_since_evaluation()`, `policy_satisfied()`, `lastSealAdvancingEvent()`, `lastIelEvent()`, `is_contested()`, `is_decommissioned()`, `divergenceAncestor()`. `lastSealAdvancingEvent()` returns the SAID of the most recent `Sea`/`Rpr` (the evaluation seal). `divergenceAncestor()` returns the SAID of `v_{d-1}` on a divergent chain (the unique parent of all events at the divergence point), `None` on a linear chain. `lastIelEvent()` is a derived aggregate — the highest IEL event SAID across all events in the chain. (On a divergent chain it's the max across all branches' tip iel_events.) The `is_contested` / `is_decommissioned` / `divergenceAncestor` accessors expose lifecycle state — see [sel/event-log.md](../primitives/sel/event-log.md) for the state model.
 
 ## Policy Evaluation Modes
 
@@ -113,9 +113,9 @@ Used for credential issuance and endorsement verification. Evaluates a policy ag
 - `Delegate(delegator, delegate)` verifies the delegation chain: the delegate's KEL must have been incepted via `dip` with the delegator, and the delegator must anchor the delegate's prefix. This supports scaling credential issuance via delegation chains (#77 — delegated signing servers with sub-delegation to minimize KEL length)
 - Poison checks: endorsers can withdraw endorsement by anchoring a poison hash; configurable via `poison` expression or `immune` flag
 
-### `evaluate_signed_policy` — Access Control Context (`read_policy` enforcement)
+### `evaluate_signed_policy` — Access Control Context (`readPolicy` enforcement)
 
-Used for SAD-object read enforcement at fetch time, against the policy referenced by `read_policy`. The policy is fetched and evaluated against the verified prefix set from a `SignedRequest`; `identity(X)` leaves in the policy resolve to X's current `auth_policy` (walk to tip), while `endorse(KEL)` leaves check the KEL's current state.
+Used for SAD-object read enforcement at fetch time, against the policy referenced by `readPolicy`. The policy is fetched and evaluated against the verified prefix set from a `SignedRequest`; `identity(X)` leaves in the policy resolve to X's current `authPolicy` (walk to tip), while `endorse(KEL)` leaves check the KEL's current state.
 
 - Checks prefix set membership: the caller has already verified the signers' KELs and collected verified prefixes
 - Supports `Endorse`, `Identity`, `Weighted`, and `Policy` (nested) nodes
@@ -235,5 +235,5 @@ kels-cli sel prefix <identity> <topic>           # Compute SEL prefix offline
 
 - **Key publication credentials** — ML-KEM encapsulation keys for ESSR encrypted messaging. Given a recipient's KEL prefix, compute their key publication SEL prefix and look it up on any node.
 - **General verifiable data** — Any self-addressed data that needs to be publicly discoverable and replicated across nodes.
-- **Ephemeral objects** — `availability.once: true` + `read_policy` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
-- **Access-controlled data** — `read_policy` enforces fetch-time access control via signed requests evaluated against a composable policy (typically `identity(X)` leaves resolving identity-current state).
+- **Ephemeral objects** — `availability.once: true` + `readPolicy` for secure one-time delivery (e.g., key material). `availability.ttl` for auto-expiring objects.
+- **Access-controlled data** — `readPolicy` enforces fetch-time access control via signed requests evaluated against a composable policy (typically `identity(X)` leaves resolving identity-current state).
