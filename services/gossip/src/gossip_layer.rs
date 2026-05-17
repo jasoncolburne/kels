@@ -28,16 +28,22 @@ pub const IEL_TOPIC: &str = "kels/gossip/v1/topics/iel";
 /// Gossip topic name for mail announcements
 pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
 
-/// Per-peer address-SEL chain topic.
+/// Per-peer services SEL chain topic (public service base domain).
 ///
 /// Unlike the other constants in this module (gossip pub/sub topic names),
 /// this is the **SEL-chain topic string** carried in the SEL's `topic` field
 /// and participating in chain-prefix derivation alongside the peer's identity
-/// prefix — see [`kels_core::compute_address_sel_prefix`]. It is canonical in
-/// `kels_core::ADDRESS_SEL_TOPIC`; this re-export is the consumer-side handle
-/// used by the discovery walker.
-#[allow(dead_code)] // Consumed by the discovery walker landing in the next gap of #195.
-pub const SEL_TOPIC: &str = kels_core::ADDRESS_SEL_TOPIC;
+/// prefix — see [`kels_core::compute_peer_services_sel_prefix`]. Canonical in
+/// `kels_core::PEER_SERVICES_SEL_TOPIC`; this re-export is the consumer-side
+/// handle used by the discovery walker.
+// Consumed in the next gap of #195 (SharedAllowlist retire / AddressResolver wiring).
+#[allow(dead_code)]
+pub const PEER_SERVICES_SEL_TOPIC: &str = kels_core::PEER_SERVICES_SEL_TOPIC;
+
+/// Per-peer gossip SEL chain topic (federation-gated `host:port` endpoint).
+/// See [`PEER_SERVICES_SEL_TOPIC`] for the family-naming note.
+#[allow(dead_code)]
+pub const PEER_GOSSIP_SEL_TOPIC: &str = kels_core::PEER_GOSSIP_SEL_TOPIC;
 
 #[derive(Error, Debug)]
 pub enum GossipError {
@@ -225,9 +231,11 @@ mod tests {
     }
 
     #[test]
-    fn test_sel_topic_constant_matches_kels_core() {
-        assert_eq!(SEL_TOPIC, "kels/sel/v1/peer/addresses");
-        assert_eq!(SEL_TOPIC, kels_core::ADDRESS_SEL_TOPIC);
+    fn test_peer_sel_topic_constants_match_kels_core() {
+        assert_eq!(PEER_SERVICES_SEL_TOPIC, "kels/sel/v1/peer/services");
+        assert_eq!(PEER_SERVICES_SEL_TOPIC, kels_core::PEER_SERVICES_SEL_TOPIC);
+        assert_eq!(PEER_GOSSIP_SEL_TOPIC, "kels/sel/v1/peer/gossip");
+        assert_eq!(PEER_GOSSIP_SEL_TOPIC, kels_core::PEER_GOSSIP_SEL_TOPIC);
     }
 
     #[test]

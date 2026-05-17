@@ -1,12 +1,12 @@
 # KELS - Key Event Log System
 
-KELS is a federated **Decentralized Verifiable Trust Infrastructure (DVTI)**, inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
+KELS is a federated **Verifiable Decentralized Trust Infrastructure (VDTI)**, inspired by [KERI](https://github.com/WebOfTrust/keripy). The system composes three primitive chain types — **Key Event Logs** (KEL, the original primitive that gives the project its name), **Identity Event Logs** (IEL), and **SAD Event Logs** (SEL) — into a layered design for cryptographically verifiable identity, governance, and data management. Events are self-addressing (content-addressed via SAID) and cryptographically signed; the entire system is tamper-evident and end-verifiable.
 
 For the full design — the doctrine, the per-primitive specifications, and the features and infrastructure built on top — start with [docs/design/reading-guide.md](docs/design/reading-guide.md). **Note**: Design is currently in flux and not guaranteed to be correct. I've worked to try and ensure the primitives/doctrine are well fleshed out, but it needs more review and the features and infrastructure designs are about to undergo many changes.
 
-## Why a DVTI?
+## Why a VDTI?
 
-The product of a DVTI is **portable identity** — cryptographic identity that belongs to the individual, not to any service provider.
+The product of a VDTI is **portable identity** — cryptographic identity that belongs to the individual, not to any service provider.
 
 Today, centralized platforms collect and store vast amounts of personal data, much of which they don't actually need. With portable identity, services only need to verify *that you are who you claim to be* — they don't need to be the source of truth for your identity, your data, or your relationships. The bulk of data storage and compute can be offloaded to consumer devices, where it belongs.
 

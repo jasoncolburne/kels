@@ -996,7 +996,7 @@ pub(crate) mod tests {
 
         let identity_prefix = test_digest("sel-rt-identity");
         let icp =
-            kels_core::SadEvent::icp(identity_prefix, kels_core::ADDRESS_SEL_TOPIC).unwrap();
+            kels_core::SadEvent::icp(identity_prefix, kels_core::PEER_SERVICES_SEL_TOPIC).unwrap();
         let iel_event = test_digest("sel-rt-iel-event");
         let content = test_digest("sel-rt-address-sad");
         let upd = kels_core::SadEvent::upd(&icp, iel_event, content).unwrap();

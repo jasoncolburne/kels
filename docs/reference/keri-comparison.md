@@ -1,10 +1,10 @@
 # KERI vs KELS: Architecture and Security Comparison
 
-This document compares KERI (Key Event Receipt Infrastructure) and KELS (Key Event Log System) across their security properties, architectural decisions, and suitability for various Decentralized Verifiable Trust Infrastructure (DVTI) scenarios — keys, identity, and content. Analysis reflects security best practices as of 2026, including post-quantum readiness, zero-trust architecture, and supply chain integrity considerations.
+This document compares KERI (Key Event Receipt Infrastructure) and KELS (Key Event Log System) across their security properties, architectural decisions, and suitability for various Verifiable Decentralized Trust Infrastructure (VDTI) scenarios — keys, identity, and content. Analysis reflects security best practices as of 2026, including post-quantum readiness, zero-trust architecture, and supply chain integrity considerations.
 
 ## Scope
 
-KERI is a DKMI (Decentralized Key Management Infrastructure). KELS started as one and grew into a **DVTI (Decentralized Verifiable Trust Infrastructure)** — keys, identity, and content all live as self-addressed event chains under a unified verification model. Where KERI stops at the Key Event Log, KELS layers:
+KERI is a DKMI (Decentralized Key Management Infrastructure). KELS started as one and grew into a **VDTI (Verifiable Decentralized Trust Infrastructure)** — keys, identity, and content all live as self-addressed event chains under a unified verification model. Where KERI stops at the Key Event Log, KELS layers:
 
 - **KEL** — the DKMI primitive. Direct KERI analogue; the focus of most of this document.
 - **IEL** (Identity Event Log) — aggregates one or more KELs into an identity via `authPolicy` and `governancePolicy`. No KERI analogue (KERI overloads the KEL with identity semantics; KELS separates them). User identities, organizational identities, and the federation itself are all IELs.
@@ -12,7 +12,7 @@ KERI is a DKMI (Decentralized Key Management Infrastructure). KELS started as on
 - **Policy DSL** — `kel`, `iel`, `threshold`, `weighted`, `any` / `all`, `delegate`, nested `policy` references, with soft/hard/immune poisoning. Governance composes *across* independent identities rather than being embedded as a multisig threshold *within* one identifier.
 - **Credentials, exchange, mail, federation** — layered consumers of the above, not built-in DKMI features.
 
-The sharpest statement of the split (expanded in §8): KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three independent identities collectively endorse something per a policy. That decoupling is what makes KELS a DVTI substrate rather than just another DKMI.
+The sharpest statement of the split (expanded in §8): KERI couples governance to identity — the identifier *is* a 2-of-3 multisig. KELS decouples them — three independent identities collectively endorse something per a policy. That decoupling is what makes KELS a VDTI substrate rather than just another DKMI.
 
 Direct comparison in this document focuses on the DKMI layer because that is where an apples-to-apples comparison is meaningful. Where KELS extends beyond KERI's scope (SELs, policy, credentials, exchange, mail, federation), sections note this explicitly.
 
@@ -38,7 +38,7 @@ Key components: KELs, witnesses, watchers, jurors, judges, OOBIs (Out-of-Band In
 
 ### KELS
 
-KELS is a federated DVTI (Decentralized Verifiable Trust Infrastructure) that shares KERI's foundational DKMI concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust — and extends past the keys layer to identity (IEL) and content (SEL). KELS:
+KELS is a federated VDTI (Verifiable Decentralized Trust Infrastructure) that shares KERI's foundational DKMI concepts (KELs, pre-rotation, SAIDs, CESR) but diverges significantly in how it handles key compromise, replication, and trust — and extends past the keys layer to identity (IEL) and content (SEL). KELS:
 
 - **Stores divergent events directly in the KEL** rather than treating duplicity as an external detection problem.
 - Introduces explicit recovery (`rec`) and contest (`cnt`) event types with formal semantics.
@@ -321,7 +321,7 @@ KELS has no standards track presence yet, but a standards proposal (IETF Interne
 
 KELS is a single-author, single-implementation project. This is not inherently a weakness for technical quality — many excellent security tools start this way — but it means the protocol has not been independently validated through reimplementation, and the bus factor is 1. The Rust type system and test suite provide strong internal correctness assurance, but external review and diverse implementation are important for protocol-level confidence.
 
-**2026 consideration:** For risk-averse organizations evaluating DVTI infrastructure, community size, implementation diversity, and production references are often deciding factors regardless of technical merit. KERI's ecosystem maturity provides lower perceived risk. KELS's technical advantages (type-safe verification, deterministic recovery, gossip replication) may be more compelling but require more due diligence to adopt.
+**2026 consideration:** For risk-averse organizations evaluating VDTI infrastructure, community size, implementation diversity, and production references are often deciding factors regardless of technical merit. KERI's ecosystem maturity provides lower perceived risk. KELS's technical advantages (type-safe verification, deterministic recovery, gossip replication) may be more compelling but require more due diligence to adopt.
 
 ### 12. Privacy Properties
 
@@ -403,7 +403,7 @@ KELS provides native device integration through two paths: a Swift client (`kels
 
 ---
 
-## DVTI Usage Context Recommendations
+## VDTI Usage Context Recommendations
 
 ### 1. Personal/Consumer Identity (e.g., digital wallets, personal credentials)
 
@@ -646,7 +646,7 @@ A federation is born via a one-time **coordinator ceremony**: one node acts as c
 
 **2026 assessment:** The industry trend toward memory-safe languages for security infrastructure (driven by CISA guidance, White House directives, and major vendor commitments) favors Rust. However, Python remains appropriate for higher-level protocol implementations where performance is not the bottleneck and contributor accessibility matters more than compile-time guarantees.
 
-For DVTI infrastructure that processes high event volumes, enforces security invariants automatically, and must resist sophisticated attacks, Rust's compile-time guarantees provide material security benefits. For client-side tooling, credential management, and protocol experimentation, Python's accessibility and iteration speed are more valuable.
+For VDTI infrastructure that processes high event volumes, enforces security invariants automatically, and must resist sophisticated attacks, Rust's compile-time guarantees provide material security benefits. For client-side tooling, credential management, and protocol experimentation, Python's accessibility and iteration speed are more valuable.
 
 ---
 
@@ -904,7 +904,7 @@ For a security audit, the naming difference is material:
 
 ## Conclusion
 
-KERI and KELS represent different points in the DVTI design space — KERI is positioned as a DKMI (the keys slice); KELS spans the broader DVTI (keys + identity + content + the features built on them). KERI optimizes for decentralization, controller autonomy, and a rich taxonomy of participant roles (witnesses, watchers, jurors, judges) intended to support open ecosystems where no single party controls the infrastructure and where a social trust layer carries resolution. KELS optimizes for operational rigor, deterministic security, and automated trust decisions, targeting environments with defined participants and high-assurance requirements.
+KERI and KELS represent different points in the VDTI design space — KERI is positioned as a DKMI (the keys slice); KELS spans the broader VDTI (keys + identity + content + the features built on them). KERI optimizes for decentralization, controller autonomy, and a rich taxonomy of participant roles (witnesses, watchers, jurors, judges) intended to support open ecosystems where no single party controls the infrastructure and where a social trust layer carries resolution. KELS optimizes for operational rigor, deterministic security, and automated trust decisions, targeting environments with defined participants and high-assurance requirements.
 
 The most significant differentiator is **detection vs. resolution**. KERI provides detection of divergence via watchers but no protocol-defined path to continue from a divergent state — the controller's options are abandoning the identifier (propagate a new prefix to every consumer) or human-mediated arbitration. KELS provides both detection *and* resolution: `rec`/`Rpr` to recover, `cnt` to terminate, all protocol-defined and machine-executable. In a zero-trust landscape where automated trust decisions are the norm, detection-only systems force humans into the loop for every divergence event; protocol-defined resolution is what makes machine-autonomous incident response possible.
 

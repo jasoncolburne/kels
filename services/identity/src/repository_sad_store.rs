@@ -128,7 +128,7 @@ impl SadStore for RepositorySadStore {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use cesr::test_digest;
-    use kels_core::ADDRESS_SEL_TOPIC;
+    use kels_core::PEER_SERVICES_SEL_TOPIC;
     use serde_json::json;
 
     use super::*;
@@ -204,7 +204,7 @@ mod tests {
         let store = make_store(&repo).await;
 
         let identity = test_digest("rss-sel-identity");
-        let icp = kels_core::SadEvent::icp(identity, ADDRESS_SEL_TOPIC).unwrap();
+        let icp = kels_core::SadEvent::icp(identity, PEER_SERVICES_SEL_TOPIC).unwrap();
         store.store_sel_event(&icp).await.unwrap();
 
         let (events, has_more) = store.load_sel_events(&icp.prefix, 10, 0).await.unwrap();
@@ -221,7 +221,7 @@ mod tests {
         let store = make_store(&repo).await;
 
         let identity = test_digest("rss-sel-idempotent");
-        let icp = kels_core::SadEvent::icp(identity, ADDRESS_SEL_TOPIC).unwrap();
+        let icp = kels_core::SadEvent::icp(identity, PEER_SERVICES_SEL_TOPIC).unwrap();
         store.store_sel_event(&icp).await.unwrap();
         // Re-insert: DuplicateRecord is swallowed by store_sel_event.
         store.store_sel_event(&icp).await.unwrap();
@@ -235,7 +235,7 @@ mod tests {
         let store = make_store(&repo).await;
 
         let identity = test_digest("rss-sel-paging");
-        let icp = kels_core::SadEvent::icp(identity, ADDRESS_SEL_TOPIC).unwrap();
+        let icp = kels_core::SadEvent::icp(identity, PEER_SERVICES_SEL_TOPIC).unwrap();
         let upd = kels_core::SadEvent::upd(
             &icp,
             test_digest("iel-evt"),

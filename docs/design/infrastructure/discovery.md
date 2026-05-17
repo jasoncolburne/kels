@@ -11,9 +11,9 @@ Anchoring KELs are the trust substrate that makes both layers below verifiable �
 | Layer | Source | What it answers |
 |---|---|---|
 | Membership (who) | Federation IEL [conforming policy pair](federation.md#federation-policy-shape-verification) (member identities must appear in both) | Which peer identities are currently authorized to participate? |
-| Address resolution (where) | Per-peer address SELs | For each authorized peer, what are its current network endpoints? |
+| Address resolution (where) | Per-peer SELs — `peer/services` (public service base domain) + `peer/gossip` (federation-gated `host:port`) | For each authorized peer, what services + gossip endpoints are currently published? |
 
-Both layers — and the anchoring KELs they verify against — live in primitives every gossip node already replicates: the KELs, the federation and peer IELs, the peer address SELs. No separate replication mechanism, no separate authority, no deployment beyond the gossip service itself.
+Both layers — and the anchoring KELs they verify against — live in primitives every gossip node already replicates: the KELs, the federation and peer IELs, the per-peer SELs. No separate replication mechanism, no separate authority, no deployment beyond the gossip service itself.
 
 ## Steady-state discovery flow
 
@@ -21,15 +21,16 @@ When a node refreshes its peer view (on startup, on a configurable interval, or 
 
 1. **Read the federation IEL's tip locally.** The federation IEL prefix is configured (compile-time default + runtime `FEDERATION_IEL_PREFIX` env-var override — see [federation.md §Configuration](federation.md#configuration)). Verify the chain via `IelVerifier`, take the current `authPolicy`.
 2. **Enumerate authorized identities.** Walk the `authPolicy` expression and collect the set of `iel(...)` leaves. Each leaf is a peer-identity prefix.
-3. **For each peer identity, compute the address SEL prefix.**
+3. **For each peer identity, compute the two SEL prefixes.**
    ```
-   address_sel_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
+   services_prefix = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/services")
+   gossip_prefix   = compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/gossip")
    ```
-   The topic string `"kels/sel/v1/peer/addresses"` is a protocol constant; the resulting prefix is fully deterministic given the peer identity.
-4. **Walk each address SEL to its tip.** Verify the chain via `SelVerifier`. The current address SAD is the `content` field on the latest accepted `Upd`. Per the federation address-SEL application convention, that `Upd` is sealed by a trailing `Sea` — conforming tooling never produces an Upd-tailed chain. A chain whose tip is an unsealed `Upd` is structurally invalid under the convention and rejected by discovery.
-5. **Connect.** The node now has the authorized peer set with current endpoints. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `authPolicy`; see [peer-identity.md](peer-identity.md)).
+   The topic strings are protocol constants; both prefixes are fully deterministic given the peer identity. End-user clients (non-federation consumers) compute only the `peer/services` prefix.
+4. **Walk each per-peer SEL to its tip.** Verify the chain via `SelVerifier`. The current published SAD is the `content` field on the latest accepted `Upd`. Per the federation per-peer SEL convention, that `Upd` is sealed by a trailing `Sea` — conforming tooling never produces an Upd-tailed chain on either topic. A chain whose tip is an unsealed `Upd` is structurally invalid under the convention and rejected by discovery. The `peer/gossip` SAD body fetch is `readPolicy`-gated; only federation members succeed.
+5. **Connect.** The node now has the authorized peer set with current published values — service URLs derived from `peer/services` SADs via the subdomain convention (see [federation.md §`peer/services` SAD](federation.md#peerservices-sad--public-service-domain)), gossip mesh endpoints from `peer/gossip` SADs. Filter by liveness / region preference / policy as needed, then initiate gossip handshakes (which themselves re-check the federation IEL `authPolicy`; see [peer-identity.md](peer-identity.md)).
 
-All reads (anchoring KELs, federation and peer IELs, address SELs) go to the local sadstore and kels services on the same node — gossip doesn't query peers or external infrastructure for discovery state. The freshness of the answer is the freshness of the chain state the local sadstore and kels holds, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
+All reads (anchoring KELs, federation and peer IELs, per-peer SELs) go to the local sadstore and kels services on the same node — gossip doesn't query peers or external infrastructure for discovery state. The freshness of the answer is the freshness of the chain state the local sadstore and kels holds, which the gossip mesh keeps current — primarily through announcement-driven propagation (PlumTree), with dependency tracking for out-of-order arrivals and anti-entropy as a fallback for events the primary path missed.
 
 ## Where initial state comes from
 
@@ -41,40 +42,40 @@ A new federation is created by, first, bringing at least three nodes online. Onc
 
 1. The federation IEL `Icp` event is drafted in the [allowed shape](federation.md#same-membership-different-thresholds), composed of the peer IELs, using identity service CLI tooling on the coordinating node.
 2. All peers invoke their identity service CLI to anchor the `Icp` SAID in their KEL via a `Rot` (tier-2). The `Icp` event is delivered out of band.
-3. All peers invoke their identity service CLI to create and anchor address SEL events `[Icp, Upd, Sea]`. The tooling should enforce batched submission of all three events. Shape:
-  - `Icp(identity_prefix, "kels/sel/v1/peer/addresses")` — unsigned; chain prefix is `compute_sel_prefix(identity_prefix, "kels/sel/v1/peer/addresses")`
-  - `Upd(address_object_prefix)` — tier-1; `address_object_prefix` is the SAID of the address SAD object (endpoints list) stored in the sadstore
+3. All peers invoke their identity service CLI to create and anchor `[Icp, Upd, Sea]` batches for both per-peer SEL chains — `peer/services` (`{ said, domain }`) and `peer/gossip` (`{ said, readPolicy, address }`). The tooling should enforce batched submission of all three events on each chain. Per-chain shape:
+  - `Icp(identity_prefix, TOPIC)` — unsigned; chain prefix is `compute_sel_prefix(identity_prefix, TOPIC)` where TOPIC is `kels/sel/v1/peer/services` or `kels/sel/v1/peer/gossip`
+  - `Upd(sad_said)` — tier-1; `sad_said` is the SAID of the published SAD body (services or gossip, per chain) stored in the sadstore
   - `Sea` — tier-2 (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern))
-4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and address SELs to the coordinator's services.
+4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and per-peer SELs (both chains) to the coordinator's services.
 5. The coordinating node submits the original federation IEL `Icp`. The peers' KEL `Rot` anchors are already on the coordinator from step 4, so the `Icp` is accepted on submission.
-6. The coordinating node enumerates the `iel(...)` leaves of the federation IEL's `authPolicy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and SELs involved) to each peer, using the peer's address SEL to resolve the destination.
+6. The coordinating node enumerates the `iel(...)` leaves of the federation IEL's `authPolicy` and runs `transfer_*_events` (`seed-all`), transferring the entire bundle (all KELs, IELs, and per-peer SELs involved) to each peer, using each peer's `peer/services` SAD to resolve the destination domain.
 7. `FEDERATION_IEL_PREFIX` is set for all nodes and all gossip services are restarted.
 
 ### Adding a new peer
 
 Assumption: `FEDERATION_IEL_PREFIX` is set for all nodes, including the new one. As it starts, if it has no knowledge of the prefix in the local sadstore, it sleeps for 5 seconds before polling again. When it succeeds, it performs the normal startup sync.
 
-1. The new peer invokes their identity service CLI to create and anchor an address SEL `[Icp, Upd, Sea]` for their node, with the same shape as above.
-2. The new peer invokes their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KEL/IEL and address SEL to another node so federation members can resolve them at gossip-up time.
+1. The new peer invokes their identity service CLI to create and anchor `[Icp, Upd, Sea]` batches on both per-peer SEL chains (`peer/services` and `peer/gossip`), with the same shape as above.
+2. The new peer invokes their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KEL/IEL and per-peer SELs to another node so federation members can resolve them at gossip-up time.
 3. The peer is added to the federation with an `Evl` on the federation identity, endorsed by >= M(n) federation members per `governancePolicy` (see [federation.md §Threshold formula](federation.md#threshold-formula-application-level); each member anchors the `Evl` SAID in their KEL via a `Rot`, tier-2).
 4. Another node then transfers the entire bundle (all KELs, IELs, and SELs involved) to the new member of the federation IEL policy using another identity service CLI command (`seed-one`).
 
 ### Identity as source of truth
 
-The identity service is the source of truth for the node's own identity — it holds the node's KEL, IEL, and address SEL in its own DB, alongside the HSM key bindings. The kels and sadstore services hold infrastructure-distributed copies; identity creates and pushes, infrastructure replicates. The recovery procedures below proceed from this model.
+The identity service is the source of truth for the node's own identity — it holds the node's KEL, IEL, and per-peer SELs (`peer/services` + `peer/gossip`) in its own DB, alongside the HSM key bindings. The kels and sadstore services hold infrastructure-distributed copies; identity creates and pushes, infrastructure replicates. The recovery procedures below proceed from this model.
 
 ### Recovering a node: local stores lost, identity DB intact
 
 Assumption: `FEDERATION_IEL_PREFIX` is set; the node's identity is in current `authPolicy`; the identity service's DB and HSM material are intact, but the local `kels` and `sadstore` services lost their state.
 
-1. Operator on any current federation peer invokes `seed-one --to={RECOVERING DOMAIN}`, pushing the full bundle (federation IEL + all member KELs + all member address SELs) to the recovering node's `kels`/`sadstore`.
+1. Operator on any current federation peer invokes `seed-one --to={RECOVERING DOMAIN}`, pushing the full bundle (federation IEL + all member KELs + all member per-peer SELs) to the recovering node's `kels`/`sadstore`.
 2. Gossip starts; handshakes succeed because the identity is still in `authPolicy`. No federation `Evl` needed.
 
 ### Recovering a node: identity DB lost, HSM material intact
 
 Operators back up identity DB state alongside HSM material.
 
-1. Operator on any current federation peer invokes `seed-one --to={RECOVERING DOMAIN}`, repopulating local kels/sadstore including the recovering node's own KEL/IEL/address-SEL.
+1. Operator on any current federation peer invokes `seed-one --to={RECOVERING DOMAIN}`, repopulating local kels/sadstore including the recovering node's own KEL/IEL/per-peer SELs.
 2. Operator restores identity database with latest snapshot.
 3. Operator restarts identity service; gossip starts; handshakes succeed. No federation `Evl` needed.
 
@@ -89,7 +90,7 @@ Assumption: identity material is unrecoverable (HSM lost; or no backup of identi
 
 For federation-IEL-contested recovery (a different, harder case — the federation IEL itself is dead under its current prefix), see [federation.md §Recovery](federation.md#recovery).
 
-Gossip cannot do the initial pull itself in any of these modes: handshakes authorize against the federation IEL, which is exactly what a fresh node doesn't have. `transfer_*_events` is the bootstrap channel; gossip takes over once the node has the federation IEL and the address SELs locally.
+Gossip cannot do the initial pull itself in any of these modes: handshakes authorize against the federation IEL, which is exactly what a fresh node doesn't have. `transfer_*_events` is the bootstrap channel; gossip takes over once the node has the federation IEL and the per-peer SELs locally.
 
 ## Refresh cadence
 
@@ -99,16 +100,16 @@ A node refreshes its discovery view in three situations:
 - **On gossip-driven invalidation**, when a new federation IEL event (`Evl`) lands locally — the membership view may have changed.
 - **On a slow background interval**, as a defense against missed invalidations.
 
-Per-peer address SEL refreshes are also gossip-driven: when a new `Upd` lands on an address SEL the node holds, the node updates its cached endpoints for that peer.
+Per-peer SEL refreshes are also gossip-driven: when a new `Upd` lands on a `peer/services` or `peer/gossip` chain the node holds, the node updates its cached publication for that peer.
 
-Stale endpoints for a still-authorized peer cause connection failures, not authorization failures — the gossip mesh routes around them, and the latest address SEL state arrives on the next announcement (or anti-entropy fallback) and is merged locally.
+Stale endpoints for a still-authorized peer cause connection failures, not authorization failures — the gossip mesh routes around them, and the latest per-peer SEL state arrives on the next announcement (or anti-entropy fallback) and is merged locally.
 
 ## Removed members
 
 When a federation `Evl` removes a peer from the policy set:
 
 - The peer's identity remains a structurally valid identity (the peer's own IEL is unchanged). The peer can still operate, just not as a federation member.
-- The peer's address SEL stays readable. The discovery flow simply doesn't enumerate that peer anymore, because step 2 reads the new `authPolicy`.
+- The peer's `peer/services` SEL stays publicly readable. The `peer/gossip` SAD body becomes unfetchable once the peer is no longer a federation member (the `readPolicy` no longer resolves it for that peer's identity). The discovery flow simply doesn't enumerate that peer anymore, because step 2 reads the new `authPolicy`.
 - Existing gossip connections to the removed peer are torn down at the next handshake re-check (or sooner, on an explicit policy-refresh tick). New handshakes from the removed peer fail authorization.
 
 The federation IEL's current [conforming policy pair](federation.md#federation-policy-shape-verification) is the source of truth; what's not enumerated in it is not authorized.
@@ -121,7 +122,7 @@ The federation IEL's current [conforming policy pair](federation.md#federation-p
 | Federation IEL not yet present locally (cold start, before bootstrap completes) | Node sleeps and polls the local sadstore for the configured prefix; participates as soon as state arrives via operator-coordinated `transfer_*_events`. See [§Bootstrapping the federation](#bootstrapping-the-federation) and [§Recovering a node: local stores lost, identity DB intact](#recovering-a-node-local-stores-lost-identity-db-intact). |
 | Federation IEL chain fails verification | Discovery rejects the chain; node refuses to participate. Operator intervention required. |
 | Federation IEL is contested-terminal | Federation is dead under that prefix. Recovery is via a fresh federation IEL inception + runtime override repoint. See [federation.md §Recovery](federation.md#recovery). |
-| Address SEL missing for an authorized peer | Peer is treated as unreachable. Anti-entropy will fetch the address SEL on its next chance. |
+| Per-peer SEL (`peer/services` or `peer/gossip`) missing for an authorized peer | Peer is treated as unreachable for whichever chain is missing. Anti-entropy will fetch the chain on its next pass. |
 | Address SEL endpoints stale (peer not reachable at published addresses) | Connection failures only. Gossip mesh routes via other peers; the affected peer is effectively offline until it publishes new endpoints. |
 
 In all cases the failure mode is **fail-secure**: an unverifiable or contested chain causes the node to refuse rather than to fall back to a less-trusted source.
@@ -132,4 +133,4 @@ In all cases the failure mode is **fail-secure**: an unverifiable or contested c
 - [peer-identity.md](peer-identity.md) — handshake-time authorization check against the federation IEL.
 - [gossip.md](gossip.md) — gossip protocol mechanics, anti-entropy, transport layer.
 - [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics.
-- [primitives/sel/event-log.md](../primitives/sel/event-log.md) — SEL chain semantics; address SELs follow the standard SEL pattern.
+- [primitives/sel/event-log.md](../primitives/sel/event-log.md) — SEL chain semantics; per-peer SELs follow the standard SEL pattern.

@@ -116,8 +116,9 @@ CREATE TABLE IF NOT EXISTS identity_iel_events (
 
 CREATE INDEX IF NOT EXISTS identity_iel_events_prefix_idx ON identity_iel_events(prefix);
 
--- SAD Event Log (SEL) events — local copy of the node's own address SEL
--- (`compute_address_sel_prefix(peer_identity)` at topic `kels/sel/v1/peer/addresses`).
+-- SAD Event Log (SEL) events — local copy of the node's own per-peer SELs
+-- (`peer/services` and `peer/gossip` at the deterministic prefixes derived
+-- from the peer identity + topic; see `lib/kels/src/types/federation/peer_publication.rs`).
 --
 -- Column shape mirrors sadstore's SEL table (which sadstore confusingly calls
 -- `sad_events`); identity uses the precise `identity_sel_events` name so the
