@@ -348,9 +348,9 @@ The fifth bucket — **federation IEL load/verify** (`load_federation_state`, `F
 
 When #197 lands the federation-IEL e2e harness, that harness implicitly covers:
 - Federation IEL replicates from one node's sadstore to a peer's via gossip.
-- Each gossip node successfully runs `load_federation_state` against its local sadstore at startup.
+- Each gossip node successfully runs the startup federation-IEL precondition walk against its local sadstore.
 - A `(auth_policy, governance_policy)` pair that fails `verify_federation_policy_shape` is refused at startup (negative case — a deliberately-misshapen federation IEL planted via the operator CLI).
-- The refresh loop picks up an `Evl`-driven membership change and the next handshake's authorization decision flips accordingly.
+- An `Evl`-driven membership change becomes effective on the next handshake (the handshake walks the federation IEL fresh per the DVTI invariant, so visibility is gossip-replication-bounded rather than refresh-interval-bounded).
 
 If the e2e harness surfaces a regression that would have been catchable at unit scope, revisit and add the in-memory test then. Until then this is documented work-deferred, not work-missed.
 

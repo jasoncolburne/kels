@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use kels_gossip_core::net::{Error as GossipError, PeerVerifier, Signer};
 
-use crate::authorization::{FederationEvaluator, SharedFederationState, is_peer_authorized};
+use crate::authorization::{FederationEvaluator, is_peer_authorized, walk_federation_iel};
 
 #[derive(Error, Debug)]
 pub enum SignerError {
@@ -82,36 +82,46 @@ impl Signer for IdentityGossipSigner {
 /// Verifies peer identity during the gossip handshake using the federation
 /// IEL `authPolicy` (post-#190 federation-as-identity model).
 ///
-/// Two phases, in order:
-/// 1. **Authentication.** Fetch the peer's KEL via the local KELS service,
-///    extract the current signing-key public key, verify the handshake
-///    transcript signature against it. The wire protocol presents the
-///    peer's KEL prefix (today's encoding); KEL key rotation is picked up
-///    on the next handshake's chain re-walk.
-/// 2. **Authorization.** Run `evaluate_signed_policy` against the federation
-///    IEL's current `authPolicy` with the verified KEL prefix as the
-///    sole verified-prefix input. The `iel(X)` evaluator resolves each
+/// Three phases, in order, **all run fresh on every handshake**:
+/// 1. **Peer-KEL authentication.** Fetch the peer's KEL via the local
+///    KELS service, extract the current signing-key public key, verify the
+///    handshake transcript signature against it. The wire protocol presents
+///    the peer's KEL prefix (today's encoding); KEL key rotation is picked
+///    up on this walk.
+/// 2. **Federation IEL walk.** Walk the local sadstore's copy of the
+///    federation IEL via `walk_federation_iel` — verify the chain, extract
+///    the current `authPolicy` SAID, check shape conformance. Terminal
+///    (`Cnt`/`Dec`) or divergent federation IELs surface as loud errors,
+///    refusing the handshake.
+/// 3. **Authorization.** Run `evaluate_signed_policy` against the
+///    federation IEL's current `authPolicy` with the verified KEL prefix as
+///    the sole verified-prefix input. The `iel(X)` evaluator resolves each
 ///    member identity's IEL to its current `authPolicy` (a single
 ///    `kel(K_peer)` leaf for degenerate peer identities) and checks for
 ///    a match. Any one member match satisfies `any(...)`.
 ///
-/// Re-fetch-on-mismatch (the prior allowlist-driven flow) is parked for
-/// #195 when address SELs provide the per-peer URL needed to pull a remote
-/// KEL update.
+/// **No cached federation state.** Per DVTI invariant, every handshake's
+/// authorization decision verifies the federation IEL fresh from the local
+/// sadstore. A cached snapshot would let a `Cnt`'d / `Evl`'d federation
+/// IEL admit peers the current chain no longer admits.
+///
+/// Re-fetch-on-mismatch (the prior allowlist-driven flow for peer-KEL
+/// refresh on signature mismatch) is parked for #195 when address SELs
+/// provide the per-peer URL needed to pull a remote KEL update.
 pub struct KelsPeerVerifier {
-    federation_state: SharedFederationState,
+    federation_iel_prefix: cesr::Digest256,
     federation_evaluator: FederationEvaluator,
     kels_url: String,
 }
 
 impl KelsPeerVerifier {
     pub fn new(
-        federation_state: SharedFederationState,
+        federation_iel_prefix: cesr::Digest256,
         federation_evaluator: FederationEvaluator,
         kels_url: String,
     ) -> Self {
         Self {
-            federation_state,
+            federation_iel_prefix,
             federation_evaluator,
             kels_url,
         }
@@ -186,14 +196,21 @@ impl PeerVerifier for KelsPeerVerifier {
         let kel_key = self.public_key_from_key_events(peer).await?;
         verify_signature(data, signature, &kel_key)?;
 
-        // Phase 2: authorize via federation IEL's current authPolicy.
-        let federation = self.federation_state.read().await;
-        let state = federation.as_ref().ok_or_else(|| {
-            GossipError::VerificationFailed(
-                "federation IEL state not yet loaded — refusing handshake".to_string(),
-            )
-        })?;
-        let authorized = is_peer_authorized(state, peer, &self.federation_evaluator)
+        // Phase 2: walk the federation IEL fresh from the local sadstore.
+        // DVTI invariant — no cross-handshake cache; the chain may have
+        // been Cnt'd / Evl'd since the last handshake and the decision
+        // here is consuming-class.
+        let federation_state =
+            walk_federation_iel(&self.federation_iel_prefix, &self.federation_evaluator)
+                .await
+                .map_err(|e| {
+                    GossipError::VerificationFailed(format!(
+                        "federation IEL walk during handshake for {peer}: {e}"
+                    ))
+                })?;
+
+        // Phase 3: authorize via federation IEL's current authPolicy.
+        let authorized = is_peer_authorized(&federation_state, peer, &self.federation_evaluator)
             .await
             .map_err(|e| {
                 GossipError::VerificationFailed(format!(

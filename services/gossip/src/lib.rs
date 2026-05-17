@@ -53,9 +53,8 @@ use redis::AsyncCommands;
 use thiserror::Error;
 
 use authorization::{
-    FederationAuthError, FederationEvaluator, SharedAllowlist, SharedFederationState,
-    is_peer_authorized, load_federation_state, resolve_federation_iel_prefix,
-    run_federation_refresh_loop,
+    FederationAuthError, FederationEvaluator, SharedAllowlist, is_peer_authorized,
+    resolve_federation_iel_prefix, walk_federation_iel,
 };
 use bootstrap::{BootstrapConfig, BootstrapSync};
 use hsm_signer::{IdentityGossipSigner, IdentitySigner, KelsPeerVerifier, SignerError};
@@ -100,11 +99,6 @@ pub struct Config {
     pub advertise_addr: String,
     /// Gossip topic name
     pub topic: String,
-    /// Federation IEL authPolicy refresh interval in seconds. Slow background
-    /// re-walk of the federation IEL chain to pick up `Evl` events that the
-    /// gossip-driven invalidation path missed. See
-    /// `docs/design/infrastructure/peer-identity.md §Authorization view stays current via gossip`.
-    pub auth_policy_refresh_interval_secs: u64,
     /// HTTP server listen host (e.g., 0.0.0.0)
     pub http_listen_host: String,
     /// HTTP server listen port (e.g., 80)
@@ -142,7 +136,6 @@ pub struct EnvValues {
     pub listen_addr: Option<String>,
     pub advertise_addr: Option<String>,
     pub topic: Option<String>,
-    pub auth_policy_refresh_interval_secs: Option<u64>,
     pub http_listen_host: Option<String>,
     pub http_listen_port: Option<u16>,
     pub anti_entropy_interval_secs: Option<u64>,
@@ -184,9 +177,6 @@ impl Config {
             topic: env
                 .topic
                 .unwrap_or_else(|| gossip_layer::DEFAULT_TOPIC.to_string()),
-            auth_policy_refresh_interval_secs: env
-                .auth_policy_refresh_interval_secs
-                .unwrap_or(60),
             http_listen_host: env
                 .http_listen_host
                 .unwrap_or_else(|| "0.0.0.0".to_string()),
@@ -207,9 +197,6 @@ impl Config {
             listen_addr: env::var("GOSSIP_LISTEN_ADDR").ok(),
             advertise_addr: env::var("GOSSIP_ADVERTISE_ADDR").ok(),
             topic: env::var("GOSSIP_TOPIC").ok(),
-            auth_policy_refresh_interval_secs: env::var("AUTH_POLICY_REFRESH_INTERVAL_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
             http_listen_host: env::var("HTTP_LISTEN_HOST").ok(),
             http_listen_port: env::var("HTTP_LISTEN_PORT")
                 .ok()
@@ -357,27 +344,34 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         Arc::new(repo)
     };
 
-    // Initial federation IEL load + policy-shape verification. Refuses
-    // to continue if the federation IEL is missing, terminal, divergent,
-    // or non-conforming (see `federation.md §Federation policy shape
-    // verification`).
-    let federation_state = load_federation_state(&federation_iel_prefix, &federation_evaluator)
-        .await
-        .map_err(|e| {
-            ServiceError::Config(format!(
-                "Initial federation IEL load failed for prefix {federation_iel_prefix}: {e} \
-                 (expected: federation IEL is replicated locally via gossip and the \
-                 (auth_policy, governance_policy) pair conforms to the federation \
-                 shape convention)"
-            ))
-        })?;
-    info!(
-        "Federation IEL loaded: {} members, governance threshold {}",
-        federation_state.members.len(),
-        federation_state.governance_threshold
-    );
-    let shared_federation_state: SharedFederationState =
-        Arc::new(RwLock::new(Some(federation_state)));
+    // Startup precondition: walk the federation IEL once just to fail-fast
+    // if it isn't replicated locally yet or doesn't conform to the
+    // (auth_policy, governance_policy) shape. **The result is dropped** —
+    // not cached, not shared. Per the DVTI thesis, each handshake walks
+    // the federation IEL fresh inside `KelsPeerVerifier::verify_peer`;
+    // caching the result would let a `Cnt`'d / `Evl`'d federation IEL admit
+    // peers the current chain no longer admits. See
+    // `services/gossip/src/authorization.rs` module-level note and
+    // `CLAUDE.md §Verification Invariant`.
+    {
+        let precondition = walk_federation_iel(&federation_iel_prefix, &federation_evaluator)
+            .await
+            .map_err(|e| {
+                ServiceError::Config(format!(
+                    "Initial federation IEL precondition walk failed for prefix \
+                     {federation_iel_prefix}: {e} (expected: federation IEL is \
+                     replicated locally via gossip and the (auth_policy, \
+                     governance_policy) pair conforms to the federation shape \
+                     convention)"
+                ))
+            })?;
+        info!(
+            "Federation IEL precondition walk OK: {} members, governance threshold {}",
+            precondition.members.len(),
+            precondition.governance_threshold
+        );
+        // `precondition` drops here — no cross-handshake retention.
+    }
 
     let bootstrap_config = BootstrapConfig {
         node_id: config.node_id.clone(),
@@ -405,24 +399,24 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     }
 
     // Step 2-3: Wait until this node's identity is admitted by the
-    // federation IEL's current `authPolicy`. The federation refresh loop
-    // (spawned below) re-walks the federation IEL on a slow interval so
-    // we see new `Evl` events that add this node.
+    // federation IEL's current `authPolicy`. Each poll walks the
+    // federation IEL fresh (no cache) so a new `Evl` adding this node
+    // is observed as soon as it replicates locally.
     //
     // For #194 the preload-while-waiting branch (registry-driven
     // peer-data sync) is gone — peer-address discovery moves to address
     // SELs in #195; until then the node just polls the federation IEL.
     loop {
-        let auth_check = {
-            let guard = shared_federation_state.read().await;
-            match guard.as_ref() {
-                Some(state) => {
-                    is_peer_authorized(state, &local_kel_prefix, &federation_evaluator).await
-                }
-                None => Err(FederationAuthError::Config(
-                    "federation state not loaded".to_string(),
-                )),
+        let auth_check = match walk_federation_iel(
+            &federation_iel_prefix,
+            &federation_evaluator,
+        )
+        .await
+        {
+            Ok(state) => {
+                is_peer_authorized(&state, &local_kel_prefix, &federation_evaluator).await
             }
+            Err(e) => Err(e),
         };
         match auth_check {
             Ok(true) => {
@@ -661,7 +655,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // satisfaction).
     let signer = IdentityGossipSigner::new(&config.identity_url, local_kel_prefix)?;
     let verifier = KelsPeerVerifier::new(
-        shared_federation_state.clone(),
+        federation_iel_prefix,
         federation_evaluator.clone(),
         config.kels_url(),
     );
@@ -894,23 +888,13 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         });
     }
 
-    // Federation IEL refresh loop. Slow background re-walk of the
-    // federation IEL chain picks up `Evl` events that the gossip-driven
-    // invalidation path missed; see `peer-identity.md §Authorization view
-    // stays current via gossip`.
-    let refresh_interval = Duration::from_secs(config.auth_policy_refresh_interval_secs);
-    let refresh_iel_prefix = federation_iel_prefix;
-    let refresh_state = shared_federation_state.clone();
-    let refresh_evaluator = federation_evaluator.clone();
-    tokio::spawn(async move {
-        run_federation_refresh_loop(
-            refresh_iel_prefix,
-            refresh_state,
-            refresh_evaluator,
-            refresh_interval,
-        )
-        .await;
-    });
+    // No federation-IEL refresh loop. Each handshake re-walks the
+    // federation IEL from scratch inside `KelsPeerVerifier::verify_peer`
+    // (DVTI invariant — every security decision verifies chain state
+    // fresh; see `services/gossip/src/authorization.rs` module note and
+    // `CLAUDE.md §Verification Invariant`). Federation `Evl` events
+    // replicate via standard IEL gossip and are visible on the next
+    // handshake's walk.
 
     // Wait for gossip event loop to complete OR shutdown signal
     tokio::select! {
@@ -1016,7 +1000,6 @@ mod tests {
             assert_eq!(config.sadstore_url(), "http://sadstore.example.com");
             assert_eq!(config.redis_url, "redis://redis:6379");
             assert_eq!(config.hsm_url, "http://hsm");
-            assert_eq!(config.auth_policy_refresh_interval_secs, 60);
             assert_eq!(config.http_listen_host, "0.0.0.0");
             assert_eq!(config.http_listen_port, 80);
         }

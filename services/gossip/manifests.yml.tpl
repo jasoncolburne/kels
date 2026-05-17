@@ -88,8 +88,6 @@ spec:
               value: "${var.identity.url}"
             - name: FEDERATION_IEL_PREFIX
               value: "${var.federationIelPrefix}"
-            - name: AUTH_POLICY_REFRESH_INTERVAL_SECS
-              value: "${var.gossip.authPolicyRefreshIntervalSecs}"
             - name: GOSSIP_LISTEN_ADDR
               value: "${var.gossip.listenAddress}"
             - name: GOSSIP_ADVERTISE_ADDR

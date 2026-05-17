@@ -5,24 +5,32 @@
 //! federation IEL's current `authPolicy` — an `any(iel(X_1), ..., iel(X_n))`
 //! expression naming peer-identity IEL prefixes. Handshake authorization is
 //! `evaluate_signed_policy` against that policy, with the verified KEL prefix
-//! as the input. The federation IEL is loaded from the local sadstore at
-//! startup, verified via `verify_identity_events`, and refreshed on a slow
-//! background interval (gossip-driven invalidation hooks land in #195 /
-//! #196).
+//! as the input.
+//!
+//! **Verify on every handshake.** Per the system thesis (every consumer
+//! verifies independently; the DB cannot be trusted), the federation IEL
+//! chain is re-walked from the local sadstore on every `verify_peer` call —
+//! no cross-handshake cache. Between two handshakes the chain could have
+//! been `Cnt`'d, `Evl`'d, or otherwise advanced; a stale snapshot would
+//! authorize peers the current state no longer admits (or fail to detect
+//! that the federation IEL itself has terminated). One startup walk runs as
+//! a precondition to fail-fast on a misconfigured federation prefix; that
+//! result is not retained.
 //!
 //! Design:
 //! - `docs/design/infrastructure/federation.md` (federation as identity,
 //!   policy shape, threshold formula, configuration, recovery)
 //! - `docs/design/infrastructure/peer-identity.md` (handshake authorization)
+//! - `CLAUDE.md §Verification Invariant` (consuming requires fresh
+//!   verification — applies to federation IEL state, not just KEL state)
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
 use cesr::{Digest256, Matter};
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::warn;
 
 use kels_core::{
     AnchoredIelResolver, HttpIelSource, HttpKelSource, IelResolver, KelsError, PagedIelSource,
@@ -62,14 +70,21 @@ pub fn resolve_federation_iel_prefix() -> Result<Digest256, FederationAuthError>
     })
 }
 
-/// Snapshot of the federation IEL state held in memory by the gossip
-/// service. Recomputed at startup and on each refresh tick. Consumers read
-/// `current_auth_policy_said` to drive handshake authorization.
+/// Transient snapshot of the federation IEL state, **constructed fresh on
+/// every call** to [`walk_federation_iel`] — never held across handshakes.
+/// Returned + consumed within a single authorization decision.
+///
+/// Per `CLAUDE.md §Verification Invariant`, consuming-class state (i.e.,
+/// state on which security decisions are made) must come from a fresh
+/// verification token. Caching this struct across handshakes would let a
+/// `Cnt`'d / `Evl`'d federation IEL admit peers the current chain no longer
+/// admits.
 #[derive(Debug, Clone)]
 pub struct FederationState {
     /// Federation IEL prefix (matches `resolve_federation_iel_prefix()`).
-    /// Held so consumers can sanity-check which IEL a refreshed snapshot
-    /// describes — load/refresh use it to detect runtime-override repoint.
+    /// Held so callers can sanity-check which IEL the walk-result describes
+    /// — useful when the runtime override differs from the compile-time
+    /// default during contested-federation recovery.
     #[allow(dead_code)]
     pub iel_prefix: Digest256,
     /// Tip event's tracked `authPolicy` SAID.
@@ -79,9 +94,6 @@ pub struct FederationState {
     /// Governance threshold `M(n)` from the conforming governance_policy.
     pub governance_threshold: u64,
 }
-
-/// Shared, refreshable handle to the federation state.
-pub type SharedFederationState = Arc<RwLock<Option<FederationState>>>;
 
 /// Transitional address-list keyed by peer KEL prefix.
 ///
@@ -218,17 +230,21 @@ impl FederationEvaluator {
     }
 }
 
-/// Load the federation IEL: walk the chain via `verify_identity_events`
-/// using the iel-aware policy checker (so Evl `governance_policy`
-/// satisfactions with `iel(...)` leaves resolve), read the tip event's
-/// tracked `auth_policy` + `governance_policy` SAIDs, resolve them, and
-/// verify the pair conforms to the federation shape convention. Returns
-/// the resulting [`FederationState`] snapshot.
+/// Walk the federation IEL fresh from the local sadstore and return a
+/// transient [`FederationState`] snapshot. Verifies the chain via
+/// `verify_identity_events` using the iel-aware policy checker (so Evl
+/// `governance_policy` satisfactions with `iel(...)` leaves resolve),
+/// reads the tip event's tracked `auth_policy` + `governance_policy`
+/// SAIDs, resolves them, and verifies the pair conforms to the federation
+/// shape convention.
 ///
-/// Terminal / divergent chains return loud errors — gossip refuses to start
-/// or refresh under a contested or decommissioned federation IEL. Recovery
-/// is operator-driven (see `federation.md §Recovery`).
-pub async fn load_federation_state(
+/// **Called fresh on every handshake** — see the module-level note. Result
+/// must not be retained across handshakes.
+///
+/// Terminal / divergent chains return loud errors — gossip refuses to
+/// authorize handshakes against a contested or decommissioned federation
+/// IEL. Recovery is operator-driven (see `federation.md §Recovery`).
+pub async fn walk_federation_iel(
     iel_prefix: &Digest256,
     evaluator: &FederationEvaluator,
 ) -> Result<FederationState, FederationAuthError> {
@@ -314,6 +330,10 @@ fn map_verification_error(err: KelsError) -> FederationAuthError {
 /// `kel(K_peer)`), and checks `K_peer == verified_kel_prefix`. Any single
 /// member match satisfies `any(...)`.
 ///
+/// `federation` must come from a **fresh** [`walk_federation_iel`] call on
+/// the same handshake — see the module-level note on no cross-handshake
+/// caching.
+///
 /// Returns `Ok(true)` on authorized, `Ok(false)` on unauthorized, and `Err`
 /// on resolver failure — fail-loud per the design's trust model.
 pub async fn is_peer_authorized(
@@ -332,35 +352,6 @@ pub async fn is_peer_authorized(
     .await
     .map_err(|e| FederationAuthError::PolicyResolver(e.to_string()))?;
     Ok(verification.is_satisfied)
-}
-
-/// Run a background loop refreshing the federation state on a fixed
-/// interval. On each tick: re-walk the federation IEL, re-verify the policy
-/// shape, swap into `shared` on success. Failures log + leave the previous
-/// snapshot in place (so a transient sadstore failure doesn't take the mesh
-/// offline immediately — the snapshot ages until the failure resolves or an
-/// operator intervenes).
-pub async fn run_federation_refresh_loop(
-    iel_prefix: Digest256,
-    shared: SharedFederationState,
-    evaluator: FederationEvaluator,
-    interval: Duration,
-) {
-    info!(
-        "Starting federation IEL refresh loop (interval: {:?})",
-        interval
-    );
-    loop {
-        tokio::time::sleep(interval).await;
-        match load_federation_state(&iel_prefix, &evaluator).await {
-            Ok(state) => {
-                *shared.write().await = Some(state);
-            }
-            Err(e) => {
-                error!("Federation IEL refresh failed: {e}");
-            }
-        }
-    }
 }
 
 #[cfg(test)]
