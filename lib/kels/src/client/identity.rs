@@ -185,6 +185,24 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
+    /// Fetch the node's own IEL events, paginated. Used at gossip startup
+    /// to propagate the IEL to the local sadstore service (mirrors how
+    /// `get_key_events` + the existing gossip KEL-push step propagates the
+    /// KEL to the local kels service).
+    pub async fn get_identity_events(
+        &self,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<crate::IdentityEventPage, KelsError> {
+        let url = format!("{}/api/v1/identity/iel", self.base_url);
+        let body = crate::IdentityKelPageRequest {
+            since: since.copied(),
+            limit: Some(limit),
+        };
+        let response = self.client.post(&url).json(&body).send().await?;
+        self.parse_response(response).await
+    }
+
     pub async fn anchor(&self, said: &cesr::Digest256) -> Result<cesr::Digest256, KelsError> {
         let url = format!("{}/api/v1/identity/anchor", self.base_url);
 

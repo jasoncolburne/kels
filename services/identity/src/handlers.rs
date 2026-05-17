@@ -177,6 +177,57 @@ pub async fn get_key_events(
     Ok(Json(page))
 }
 
+/// Serving endpoint — returns paginated IEL events for the node's own
+/// peer-identity IEL. No verification needed; the receiver verifies.
+///
+/// `since` cursor is honored; `prefix` is ignored (the identity service
+/// holds exactly one IEL chain — its own — so the prefix is implicit).
+pub async fn get_identity_events(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::IdentityKelPageRequest>,
+) -> Result<Json<kels_core::IdentityEventPage>, ApiError> {
+    let iel_prefix = state.iel_prefix.read().await.ok_or_else(|| {
+        ApiError::internal("Identity service has not yet reconciled its IEL")
+    })?;
+
+    // Fetch the full chain (single-author, single chain — bounded by the
+    // node's authoring activity). `limit` clamps the result; `since`
+    // advances the cursor by SAID.
+    let chain = state
+        .repo
+        .iel
+        .fetch_chain(&iel_prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("IEL fetch: {e}")))?;
+
+    let limit = request
+        .limit
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size());
+
+    let start = match request.since.as_ref() {
+        Some(cursor) => chain
+            .iter()
+            .position(|e| &e.said == cursor)
+            .map(|i| i + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    let end_inclusive = start.saturating_add(limit);
+    let has_more = end_inclusive < chain.len();
+    let end = end_inclusive.min(chain.len());
+
+    let page = kels_core::IdentityEventPage {
+        events: if start >= chain.len() {
+            Vec::new()
+        } else {
+            chain[start..end].to_vec()
+        },
+        has_more,
+    };
+    Ok(Json(page))
+}
+
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
 pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest256) {
     let forward_url = match state.forward_url.as_ref() {

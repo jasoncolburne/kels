@@ -63,7 +63,11 @@ pub async fn reconcile_iel(
     builder: &mut KeyEventBuilder<HsmKeyProvider>,
     kel_prefix: Digest256,
 ) -> Result<Digest256, ReconciliationError> {
-    if let Some(existing) = repo.iel.latest_prefix().await? {
+    if let Some(existing) = repo
+        .iel
+        .latest_prefix_for_topic(PEER_IDENTITY_IEL_TOPIC)
+        .await?
+    {
         info!(iel_prefix = %existing, "Reusing existing IEL");
         return Ok(existing);
     }
@@ -123,21 +127,18 @@ mod tests {
         };
         let repo = harness.repo().await;
 
-        // Pre-populate an IEL prefix in iel_repo to simulate "already
-        // incepted." Use a hand-built Icp.
-        let policy_said = cesr::Digest256::blake3_256(b"policy");
+        // Pre-populate an IEL prefix in iel_repo under the peer-identity
+        // topic. `latest_prefix_for_topic` filters by topic so cross-test
+        // pollution under other topics doesn't interfere.
+        let policy_said = cesr::Digest256::blake3_256(b"reconcile-test-policy");
         let icp = IdentityEvent::icp(policy_said, policy_said, PEER_IDENTITY_IEL_TOPIC).unwrap();
         repo.iel.insert(icp.clone()).await.unwrap();
 
-        // Build a no-op key event builder to satisfy the signature. Since
-        // the IEL is "already present," reconcile_iel returns early and
-        // doesn't invoke the builder, so any builder shape works. We use
-        // a placeholder kel_prefix matching the pre-built Icp's policy.
-        // (Construction of a real KeyEventBuilder with HSM is heavy; this
-        // test exercises the early-return path only — full inception path
-        // is covered by integration tests in services/sadstore.)
-        let prefix = icp.prefix;
-        let latest = repo.iel.latest_prefix().await.unwrap();
-        assert_eq!(latest, Some(prefix));
+        let latest = repo
+            .iel
+            .latest_prefix_for_topic(PEER_IDENTITY_IEL_TOPIC)
+            .await
+            .unwrap();
+        assert_eq!(latest, Some(icp.prefix));
     }
 }

@@ -280,6 +280,34 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         info!("Identity KEL submitted to local KELS service");
     }
 
+    // Submit identity IEL to local sadstore so federation members can
+    // resolve it (mirror of the KEL push above). Identity reconciles its
+    // IEL at startup (#195 Gap 8b-1); gossip propagates it. Best-effort:
+    // on first boot before identity has finished reconciling, the IEL
+    // page is empty and the push no-ops — subsequent boots catch up.
+    let identity_iel_page = identity_client
+        .get_identity_events(None, kels_core::page_size())
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to get identity IEL: {}", e)))?;
+    let local_sadstore_client = kels_core::SadStoreClient::new(&config.sadstore_url())
+        .map_err(|e| ServiceError::Config(format!("Failed to build sadstore client: {}", e)))?;
+    let iel_events = identity_iel_page.events;
+    if !iel_events.is_empty() {
+        if let Err(e) = local_sadstore_client
+            .submit_identity_events(&iel_events)
+            .await
+        {
+            // 409 (already present) is benign — the IEL Icp is idempotent
+            // on subsequent boots. Log and continue.
+            warn!(
+                "Identity IEL submission to local sadstore returned: {} (continuing)",
+                e
+            );
+        } else {
+            info!("Identity IEL submitted to local sadstore");
+        }
+    }
+
     // Identity signer for authenticated peer-to-peer requests (signs via
     // identity service). Used by sync paths for cross-peer fetches when an
     // address-source supplies peer URLs (#195 address SELs replace what

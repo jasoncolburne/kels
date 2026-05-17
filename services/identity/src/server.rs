@@ -27,6 +27,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/identity", get(handlers::get_identity))
         .route("/api/v1/identity/status", get(handlers::get_status))
         .route("/api/v1/identity/kel", post(handlers::get_key_events))
+        .route("/api/v1/identity/iel", post(handlers::get_identity_events))
         .route("/api/v1/identity/kel/manage", post(handlers::manage_kel))
         .route("/api/v1/identity/anchor", post(handlers::anchor))
         .route("/api/v1/identity/sign", post(handlers::sign))

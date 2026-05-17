@@ -214,12 +214,18 @@ impl IelRepository {
         self.pool.fetch_optional(query).await
     }
 
-    /// Latest IEL prefix the node knows about. Identity is single-author for
-    /// its own IEL so at most one prefix exists at a time; returns `None`
-    /// before the first IEL inception. Used by reconciliation to decide
-    /// whether to incept or restore.
-    pub async fn latest_prefix(&self) -> Result<Option<cesr::Digest256>, StorageError> {
-        let query = Query::<IdentityEvent>::for_table(Self::TABLE_NAME).limit(1);
+    /// Latest IEL prefix the node knows about under a given topic. Identity
+    /// is single-author for its own IEL so at most one prefix exists per
+    /// topic at a time; returns `None` before the first IEL inception
+    /// (or for an unknown topic). Used by reconciliation to decide whether
+    /// to incept or restore the node's own IEL.
+    pub async fn latest_prefix_for_topic(
+        &self,
+        topic: &str,
+    ) -> Result<Option<cesr::Digest256>, StorageError> {
+        let query = Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+            .eq("topic", topic)
+            .limit(1);
         Ok(self.pool.fetch_optional(query).await?.map(|e| e.prefix))
     }
 }
