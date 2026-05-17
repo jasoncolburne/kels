@@ -47,7 +47,7 @@ Examples: `GET` endpoints serving event pages (per-primitive: `kel/:prefix`, `ie
 
 Using data for security decisions (anchoring, key extraction, divergence routing, merge decisions). **MUST verify the full chain first.** The only way to access consumed data is through the corresponding verification token (`KelVerification`, `IelVerification`, `SelVerification`), which can only be obtained via that primitive's verifier (`KelVerifier`, `IelVerifier`, `SelVerifier`). This eliminates TOCTOU vulnerabilities — verification and data access happen in the same pass.
 
-Examples: peer signature verification on a KEL, anchor checking on a KEL, governance-policy resolution on an IEL at a given serial, SEL `iel_event` resolution, submit-handler routing decisions on any primitive.
+Examples: peer signature verification on a KEL, anchor checking on a KEL, governance-policy resolution on an IEL at a given serial, SEL `ielEvent` resolution, submit-handler routing decisions on any primitive.
 
 #### 3. Resolving
 
@@ -60,7 +60,7 @@ Examples: effective-SAID endpoints (per-primitive), anti-entropy comparison, KEL
 The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. Per primitive:
 
 - **KEL:** a key compromised in 2023 cannot `Cnt` the chain in 2026 even if the adversary still holds the key material.
-- **IEL:** a `governance_policy` participant revoked via `Evl` cannot `Cnt` the chain after their revocation.
+- **IEL:** a `governancePolicy` participant revoked via `Evl` cannot `Cnt` the chain after their revocation.
 - **SEL:** an SEL bound to a stale IEL event whose governance has since rotated cannot be `Cnt`'d by the rotated-out parties — subject to operator-side ratcheting via `Sea` (see [§Exclusion Evolutions and the Seal Advance](#exclusion-evolutions-and-the-seal-advance)).
 
 This closes the **stale-state kill-switch problem**. Without this rule, every party who ever held authority over a chain would retain protocol-level kill-switch authority over it forever, and any past compromise would become a permanent vulnerability. With this rule, past compromise is structurally a non-event for protocol authority.
@@ -69,7 +69,7 @@ This closes the **stale-state kill-switch problem**. Without this rule, every pa
 
 The structural mechanism that enforces "current-state-only authority" is the chain's evaluation/recovery seal:
 
-Each primitive tracks `last_seal_advancing_event` — the SAID of the chain's most recent privileged-but-non-terminal event. The advancing kinds differ:
+Each primitive tracks `lastSealAdvancingEvent` — the SAID of the chain's most recent privileged-but-non-terminal event. The advancing kinds differ:
 
 - **KEL**: `Rec`/`Ror`.
 - **IEL**: `Evl`/`Sea`.
@@ -77,7 +77,7 @@ Each primitive tracks `last_seal_advancing_event` — the SAID of the chain's mo
 
 Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
 
-KEL additionally tracks `last_recovery_revealing_event` (`Rec`/`Ror`/`Cnt`/`Dec`) for the spent-key / non-poisonability rule. This is a distinct concept from the seal — see [primitives/kel/event-log.md §Seal and Key Non-Poisonability](primitives/kel/event-log.md#seal-and-key-non-poisonability).
+KEL additionally tracks `lastRecoveryRevealingEvent` (`Rec`/`Ror`/`Cnt`/`Dec`) for the spent-key / non-poisonability rule. This is a distinct concept from the seal — see [primitives/kel/event-log.md §Seal and Key Non-Poisonability](primitives/kel/event-log.md#seal-and-key-non-poisonability).
 
 A new event's land-serial MUST be at-or-after the seal (`event_serial >= seal_serial`). Any submission whose land-serial is strictly before the seal is rejected (`"Cannot land at serial V — sealed by evaluation/recovery at serial S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
@@ -98,15 +98,15 @@ The asymmetry follows from semantics: `Cnt` is repudiation (it terminates withou
 
 - **KEL**: protocol-bounded at 62 events via the proactive-ROR rule (`MAX_NON_REVEALING_EVENTS = 62`).
 - **IEL**: no protocol cap — every non-terminal IEL event advances the seal, so the seal coincides with the tip on linear chains and within-window forks don't structurally exist. The "how stale can authority become" bound is operator-side discipline.
-- **SEL**: protocol-bounded at 63 events via `MAX_NON_EVALUATION_EVENTS = 63`. Combined with SEL's per-event parent-monotonic ratchet on `iel_event`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding.
+- **SEL**: protocol-bounded at 63 events via `MAX_NON_EVALUATION_EVENTS = 63`. Combined with SEL's per-event parent-monotonic ratchet on `ielEvent`, this prevents stale-IEL-policy holders from extending an existing branch with a regressed binding.
 
 The SEL-specific ratchet that the bound composes with lives at [§Per-Event Parent-Monotonic Ratchet (SEL-specific)](#per-event-parent-monotonic-ratchet-sel-specific) below.
 
 #### Per-Event Parent-Monotonic Ratchet (SEL-specific)
 
-SEL is the only primitive where authorization context is referenced via a separate field (`iel_event`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
+SEL is the only primitive where authorization context is referenced via a separate field (`ielEvent`) pointing at another chain. KEL and IEL have no analog — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`, so there's nothing for a per-event monotonic check to compare across.
 
-Each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order, applied per branch independently. A new branch's `iel_event` is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
+Each SEL event's `ielEvent` must be at-or-after its parent event's `ielEvent` in IEL chain order, applied per branch independently. A new branch's `ielEvent` is constrained only by its branch parent (the divergence ancestor on a fork-contest); branches with different parent-chains don't constrain each other.
 
 **Consequence on divergent SEL chains.** Branches may reference different IEL events at the same SEL serial, and thus may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded by two rules: the seal-cap caps how far back branches can diverge, and privileged-divergence-is-terminal caps how long the chain can stay in a divergent state. KEL and IEL never have within-chain policy variation — KEL's authorization is intrinsic to its own commitments, and every IEL event is governance-authorized so any divergence is immediately contested.
 
@@ -200,9 +200,9 @@ Across all three scenarios: Cnt's parent is `v_{d-1}` (the divergence ancestor /
 
 Cnt's authorization resolves through the same policy/key state required to accept `v_{tip}` — i.e., the commitments made at `v_{tip-1}` for the verifier to accept events that extend it. On a divergent chain, that's the same authorization material the verifier used to accept the existing events at `v_d` that already extend `v_{d-1}`.
 
-- **KEL.** Cnt's dual signature is produced under the private signing and recovery keys whose public-key preimages are committed by `v_{tip-1}`'s `rotation_hash` and `recovery_hash`. Cnt uses `v_{tip-1}`'s commitments because Cnt lands at `v_{tip}` (extending `v_{tip-1}`); tip-extending `Ror`/`Dec` land at `v_{tip+1}` and use `v_{tip}`'s commitments instead. Revealing the public-key preimage via a prior event landing at `v_{tip}` does not yield the corresponding private key; signing capability remains operator-held.
-- **IEL.** The `governance_policy` declared at `v_{tip-1}`.
-- **SEL.** The IEL-resolved governance policy at the SEL's `iel_event` binding for `v_{tip-1}`.
+- **KEL.** Cnt's dual signature is produced under the private signing and recovery keys whose public-key preimages are committed by `v_{tip-1}`'s `rotationHash` and `recoveryHash`. Cnt uses `v_{tip-1}`'s commitments because Cnt lands at `v_{tip}` (extending `v_{tip-1}`); tip-extending `Ror`/`Dec` land at `v_{tip+1}` and use `v_{tip}`'s commitments instead. Revealing the public-key preimage via a prior event landing at `v_{tip}` does not yield the corresponding private key; signing capability remains operator-held.
+- **IEL.** The `governancePolicy` declared at `v_{tip-1}`.
+- **SEL.** The IEL-resolved governance policy at the SEL's `ielEvent` binding for `v_{tip-1}`.
 
 Cnt's authorization is **HARD**, like every other event's. **General invariant: any event with failed auth is rejected.** A Cnt whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the verifier. The chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally. The same rule applies to Dec.
 
@@ -282,13 +282,13 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 
 **Policy satisfaction under elevation.** The policy DSL has leaf nodes (`Endorse(prefix)`, `Delegate(delegator)`) that test anchor presence and internal nodes (`Weighted`, nested `Policy`) that compose leaf results. Under anchor elevation, the leaf-level anchor check requires the hosting KEL event to be of the kind specified by the event's tier (`Ixn` for tier 1, `Rot` for tier 2, `Ror` for tier 3); a leaf that finds an anchor of the wrong kind evaluates as unsatisfied. DSL composition is unchanged — `Weighted` still sums satisfied-child weights against the minimum; `Policy` still recursively resolves and evaluates; `Delegate` still requires a delegate's anchor on the SAID, where the delegate is in turn delegated by the delegator named in the policy (the specific delegate is discovered at evaluation time, which is what allows operator-side fleet scaling). The verifier accepts the event when the top-level policy evaluates as satisfied, where satisfaction is computed against the tier-appropriate anchor check at every leaf.
 
-**Strict event-kind anchor.** The tables name a single anchor kind per tier (`Rot` for tier 2, `Ror` for tier 3), not a tier-membership set. `Rot` reveals only the rotation tier; `Ror` reveals both rotation and recovery in one event. Each is the minimum-burn anchor for its tier. Operators whose KEL is divergent must first submit `Rec` to return the chain to a linear state; anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery primitive (`Rec`) or terminal primitives (`Dec`/`Cnt`) — the protocol keeps event semantics explicit and non-conflated; see [primitives/kel/events.md §Anchor on Rot and Ror](primitives/kel/events.md#anchor-on-rot-and-ror). The extra `Rec` carries no security cost — pre-rotation makes each revealing event commit a fresh `recovery_hash`, so the v_{N-1} preimage revealed by `Rec` is dead authority once `Rec` lands.
+**Strict event-kind anchor.** The tables name a single anchor kind per tier (`Rot` for tier 2, `Ror` for tier 3), not a tier-membership set. `Rot` reveals only the rotation tier; `Ror` reveals both rotation and recovery in one event. Each is the minimum-burn anchor for its tier. Operators whose KEL is divergent must first submit `Rec` to return the chain to a linear state; anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery primitive (`Rec`) or terminal primitives (`Dec`/`Cnt`) — the protocol keeps event semantics explicit and non-conflated; see [primitives/kel/events.md §Anchor on Rot and Ror](primitives/kel/events.md#anchor-on-rot-and-ror). The extra `Rec` carries no security cost — pre-rotation makes each revealing event commit a fresh `recoveryHash`, so the v_{N-1} preimage revealed by `Rec` is dead authority once `Rec` lands.
 
-**SEL `Est` and camping defense.** SEL prefix derives from `(identity, topic)` — predictable and well-known. An adversary can race-incept SEL chains for any tuple an operator might use. SEL `Icp` is permissionless and dedup-equivalent: any party's `Icp` for the same tuple produces the same SAID and lands once regardless of who submits it. The actual binding and authorization happen at the next event — `Est` — which carries `iel_event` (binding to an IEL policy state) and is authorized under the IEL-resolved `auth_policy`. Elevating `Est` to tier 2 raises the per-camp cost: each camping attempt requires the camper's policy members to each produce a KEL `Rot` anchor. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. The operator's legitimate `Est` and a camper's `Est` create a divergent set at v1 (different `iel_event` or content → different SAIDs), resolved via `Rpr`.
+**SEL `Est` and camping defense.** SEL prefix derives from `(identity, topic)` — predictable and well-known. An adversary can race-incept SEL chains for any tuple an operator might use. SEL `Icp` is permissionless and dedup-equivalent: any party's `Icp` for the same tuple produces the same SAID and lands once regardless of who submits it. The actual binding and authorization happen at the next event — `Est` — which carries `ielEvent` (binding to an IEL policy state) and is authorized under the IEL-resolved `authPolicy`. Elevating `Est` to tier 2 raises the per-camp cost: each camping attempt requires the camper's policy members to each produce a KEL `Rot` anchor. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. The operator's legitimate `Est` and a camper's `Est` create a divergent set at v1 (different `ielEvent` or content → different SAIDs), resolved via `Rpr`.
 
-IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(auth_policy, governance_policy, nonce)` where `nonce` is opaque random bytes chosen by the inceptor; the resulting prefix is structurally unpredictable from outside, so the well-known-tuple camping surface doesn't exist. IEL `Icp` is tier-2 anchored: the founding governance act is the same kind of act as `Evl`/`Sea`, and tier-2 (rotation-key preimage per contributing member) prevents signing-only compromise from creating fake-but-validly-governed IELs under stolen policy membership.
+IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(authPolicy, governancePolicy, nonce)` where `nonce` is opaque random bytes chosen by the inceptor; the resulting prefix is structurally unpredictable from outside, so the well-known-tuple camping surface doesn't exist. IEL `Icp` is tier-2 anchored: the founding governance act is the same kind of act as `Evl`/`Sea`, and tier-2 (rotation-key preimage per contributing member) prevents signing-only compromise from creating fake-but-validly-governed IELs under stolen policy membership.
 
-**Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotation_hash` and `recovery_hash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Cnt`/`Dec` are unchanged by anchor elevation — they do not anchor in another chain.
+**Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotationHash` and `recoveryHash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Cnt`/`Dec` are unchanged by anchor elevation — they do not anchor in another chain.
 
 **What anchor elevation defends.**
 
@@ -313,10 +313,10 @@ An application protocol can require trailing SEL `Upd`s be followed by `Sea`, ba
 `Sea` is tier-2 anchored — it must anchor in a KEL `Rot`. So the pattern forces a key rotation on every sealed batch. Three layered properties result:
 
 - **Exposure-window bounding (cryptographic).** Each operating signing key is exposed to operations for at most one batch. Pre-rotation hides the next key behind its hash until `Rot` reveals it: the next public key is structurally unreachable from cryptanalysis on the current key (offline signature analysis, side-channel observation, harvest-now-decrypt-later quantum attacks against the signature stream all operate on the current key's public bytes; the next key's bytes have not been observed). By the time the current key would be vulnerable, the chain has already rotated to a key the adversary has never seen. The property holds independent of custody arrangement — pre-rotation defends through *exposure surface*, not through where the keys are stored.
-- **Policy-layer separation (when `auth_policy ≠ governance_policy`).** `Sea` is governance-authorized. An auth-key-only holder can produce `Upd`s but not `Sea`. Multi-device or otherwise composed identities get real cryptographic separation between "auth-set wrote this" and "governance-set sealed this."
+- **Policy-layer separation (when `authPolicy ≠ governancePolicy`).** `Sea` is governance-authorized. An auth-key-only holder can produce `Upd`s but not `Sea`. Multi-device or otherwise composed identities get real cryptographic separation between "auth-set wrote this" and "governance-set sealed this."
 - **Consumer-visibility.** Conforming tooling batches `[Upd..., Sea]` atomically, so an Upd-tailed chain is structurally invalid under the convention — not a legitimate intermediate state. Consumers that observe an unsealed `Upd` at the tip detect a convention violation (tooling bypass, buggy producer, or a producer that cannot produce the `Sea`) and reject the chain.
 
-The exposure-window property is the load-bearing one and applies even to degenerate single-KEL IELs where `auth_policy = governance_policy`. KERI's entire security story leans on pre-rotation for the same reason; KELS inherits it and the Sea-after-Upd ratchet makes the rotation cadence application-driven rather than operator-paced.
+The exposure-window property is the load-bearing one and applies even to degenerate single-KEL IELs where `authPolicy = governancePolicy`. KERI's entire security story leans on pre-rotation for the same reason; KELS inherits it and the Sea-after-Upd ratchet makes the rotation cadence application-driven rather than operator-paced.
 
 **Where it applies:** any IEL+SEL composition where the operator wants exposure-window bounding on durable state, or where governance and auth need to be cryptographically separated, or where governance-aware consumers need a chain-completeness signal. For peer-address SELs on degenerate gossip-service IELs, exposure-window bounding is the primary motivation.
 
@@ -352,7 +352,7 @@ Same chain shape in every case. The protocol cannot distinguish them. Treating t
 
 The doctrine closes attacks rooted in **past** state. It does NOT defend against compromise of **current** state.
 
-If an adversary acquires sufficient currently-controlling authority — current KEL signing+recovery keys; current IEL `governance_policy` threshold; current SEL identity binding's authorizing IEL event — they ARE the chain's current state by every protocol-observable measure. They can:
+If an adversary acquires sufficient currently-controlling authority — current KEL signing+recovery keys; current IEL `governancePolicy` threshold; current SEL identity binding's authorizing IEL event — they ARE the chain's current state by every protocol-observable measure. They can:
 
 - Submit governance-authorized events (KEL `Rot`/`Ror`, IEL `Evl`, SEL `Sea`) that legitimately rotate authority away from the prior operator.
 - Subsequently submit `Cnt` (or any other governance act) under the new authority.
@@ -362,7 +362,7 @@ There is no protocol mechanism to distinguish "legitimately current" from "compr
 
 **Defense for current-state compromise is operational**, not structural. Practices compose across both protocol layers (KEL's dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` blocks signing/rotation-key compromise regardless of recovery-key custody; IEL policy composition handles total device compromise via `Evl` rotation of the lost device):
 
-- **High thresholds** in IEL `governance_policy` / `auth_policy` — raise the cost of accumulating sufficient policy-member authority.
+- **High thresholds** in IEL `governancePolicy` / `authPolicy` — raise the cost of accumulating sufficient policy-member authority.
 - **Custody separation** sized to threat model — KEL-internal (recovery key in different custody from the signing key, e.g., HSM or ceremony-gated) hardens against coerced signing or partial-device compromise; IEL-level (policy members on distinct devices/locations/custodians) hardens against total device compromise.
 - **Monitoring** for unexpected governance / rotation events — fire alerts before adversary completes rotation.
 - **Fast operator response** — cut the detect-to-Cnt latency to within the gossip window.
@@ -399,7 +399,7 @@ An **exclusion evolution** is a governance `Evl` where the new policy `P_new` st
 
 That position matters because of how the seal-cap works. The kill-switch authority granted by `v_{tip-1}`'s policy is symmetric. It serves the operator against single-event adversarial takeover (the operator's `Cnt` against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` — including the rotated-out party — can `Cnt` the chain at `v_N` within that window, subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
 
-**`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `iel_event` to a newer IEL state — pure seal advance when `iel_event` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
+**`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `ielEvent` to a newer IEL state — pure seal advance when `ielEvent` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
 
 `Sea` is tier-2 anchored (KEL `Rot` per contributing member) — the same elevation as `Evl`. The cost to forge a `Sea` is exactly the cost to forge an `Evl`; an adversary who could prematurely advance the seal could already perform the original takeover. `Sea`'s value is shape correctness and audit clarity, not lowering the bar.
 
@@ -410,9 +410,9 @@ That position matters because of how the seal-cap works. The kill-switch authori
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
 - Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
 - **IEL Sea-Sea forbidden.** `Sea` carries no content or policy fields on IEL, so any back-to-back Sea is semantically redundant.
-- **SEL Sea-Sea allowed only with strict-advance.** The new `Sea` must strictly advance `iel_event` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves. Equal `iel_event` between consecutive Seas is rejected.
+- **SEL Sea-Sea allowed only with strict-advance.** The new `Sea` must strictly advance `ielEvent` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves. Equal `ielEvent` between consecutive Seas is rejected.
 
-SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `iel_event` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
+SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `ielEvent` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
 
 ---
 
@@ -435,7 +435,7 @@ Wall-clock timestamps on chain events would not be cryptographically meaningful 
 Where timestamps DO appear in KELS, they serve narrow roles within a **single party's reference frame**, not chain ordering or cross-node consensus:
 
 - **Peer-to-peer signed requests** carry a Unix timestamp + nonce; the receiving party verifies the timestamp against its own clock within a 60-second window and deduplicates via the nonce cache.
-- **Exchange envelopes** carry `created_at` and a per-envelope `nonce`; recipients evaluate freshness against their own clock at decryption time.
+- **Exchange envelopes** carry `createdAt` and a per-envelope `nonce`; recipients evaluate freshness against their own clock at decryption time.
 - **Mail nonce expiry** evicts cache entries older than a configured window.
 
 In each case the timestamp is consumed by a single party using its own clock — drift across the federation doesn't affect correctness. None of these timestamps appear in chain events, and none influence chain ordering.
@@ -444,8 +444,8 @@ In each case the timestamp is consumed by a single party using its own clock —
 
 Applications building on KELS may need time-of-creation evidence (audit trails, regulatory reporting, claim validity windows). The recommended pattern is to carry timestamps as application-layer fields on the *content* a chain event anchors, not on the chain event itself. KELS-provided application primitives already follow this pattern:
 
-- **Credentials** carry `issued_at` (required) and `expires_at` (optional). The verifier checks `expires_at` against its own clock at verification time. See [creds.md](features/creds.md).
-- **Exchange envelopes** carry `created_at`. See [exchange.md](features/exchange.md).
+- **Credentials** carry `issuedAt` (required) and `expiresAt` (optional). The verifier checks `expiresAt` against its own clock at verification time. See [creds.md](features/creds.md).
+- **Exchange envelopes** carry `createdAt`. See [exchange.md](features/exchange.md).
 
 For applications that need third-party-attested timestamps (e.g., legal contexts where a notary's stamp is required), the right pattern is an external attestation: a notary signs `(content_said, timestamp)` as a separate object, which the application carries alongside the content. The KELS chain still anchors the content SAID; the notary's stamp lives in application metadata.
 
@@ -473,18 +473,18 @@ Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/ke
 
 #### Worked example: the federation IEL
 
-The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `auth_policy` declares the set of member identities authorized to participate in the gossip mesh. On every node, the federation IEL is replicated to the local sadstore service and the supporting member KELs to the local kels service; gossip queries those local services as its sources of truth for federation state. Propagation uses the normal gossip mechanics — PlumTree announcement-driven primary path, dependency tracking for out-of-order arrivals, anti-entropy as fallback. The federation has no separate consensus algorithm and no central state machine.
+The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `authPolicy` declares the set of member identities authorized to participate in the gossip mesh. On every node, the federation IEL is replicated to the local sadstore service and the supporting member KELs to the local kels service; gossip queries those local services as its sources of truth for federation state. Propagation uses the normal gossip mechanics — PlumTree announcement-driven primary path, dependency tracking for out-of-order arrivals, anti-entropy as fallback. The federation has no separate consensus algorithm and no central state machine.
 
 Convergence is what makes this work:
 
-- **Identical `auth_policy` view across nodes.** Every gossip node deterministically resolves the federation IEL's tip from the events it holds. If two nodes hold the same event set, they compute the same effective SAID and read the same current `auth_policy`. Anti-entropy converges any two nodes whose effective SAIDs differ.
-- **Handshake authorization is path-agnostic.** A connecting peer's identity is checked against the federation IEL's current `auth_policy` via `evaluate_signed_policy`. Two nodes that both hold the federation IEL's authentic tip produce identical authorization decisions. The "which node did the handshake reach?" question doesn't change the answer.
-- **Membership evolution converges.** A governance-authorized `Evl` event evolving `auth_policy` propagates via the standard IEL gossip channel. Two nodes that have both received the `Evl` see identical post-evolution policy.
+- **Identical `authPolicy` view across nodes.** Every gossip node deterministically resolves the federation IEL's tip from the events it holds. If two nodes hold the same event set, they compute the same effective SAID and read the same current `authPolicy`. Anti-entropy converges any two nodes whose effective SAIDs differ.
+- **Handshake authorization is path-agnostic.** A connecting peer's identity is checked against the federation IEL's current `authPolicy` via `evaluate_signed_policy`. Two nodes that both hold the federation IEL's authentic tip produce identical authorization decisions. The "which node did the handshake reach?" question doesn't change the answer.
+- **Membership evolution converges.** A governance-authorized `Evl` event evolving `authPolicy` propagates via the standard IEL gossip channel. Two nodes that have both received the `Evl` see identical post-evolution policy.
 - **Contested-terminal is also convergent.** If two governance-authorized `Evl`s land concurrently at the same serial, IEL divergence makes the chain contested-terminal across all nodes (per [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal-cnt-triggers-it-uniformly), trivially on IEL since every IEL event is privileged). The federation dies under that prefix; recovery is a fresh federation IEL inception, propagated again via gossip. The catastrophic outcome converges; convergence is not contingent on the chain's success.
 
-The per-peer address SEL pattern is the resolution-side companion. Each member identity owns a SEL bound to its own IEL at a deterministic prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`); each peer publishes its current network endpoints there. Discovery on any node reads the federation IEL's `auth_policy`, enumerates the member identities, walks each peer's address SEL, and connects. Convergence applies twice: once to the federation IEL (members agree on who's authorized), once per peer's address SEL (everyone resolves the same current endpoints for each peer).
+The per-peer address SEL pattern is the resolution-side companion. Each member identity owns a SEL bound to its own IEL at a deterministic prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`); each peer publishes its current network endpoints there. Discovery on any node reads the federation IEL's `authPolicy`, enumerates the member identities, walks each peer's address SEL, and connects. Convergence applies twice: once to the federation IEL (members agree on who's authorized), once per peer's address SEL (everyone resolves the same current endpoints for each peer).
 
-The federation IEL therefore relies on convergence for the same reason any IEL does — convergent identity state under gossip — but its operational role makes the dependency especially visible: a federation with divergent `auth_policy` views across nodes would have nodes accepting different sets of peers as "current members," and the gossip mesh would partition along those views. The protocol's convergence guarantee, combined with the IEL primitive's structural properties, prevents that partition from ever forming under healthy gossip.
+The federation IEL therefore relies on convergence for the same reason any IEL does — convergent identity state under gossip — but its operational role makes the dependency especially visible: a federation with divergent `authPolicy` views across nodes would have nodes accepting different sets of peers as "current members," and the gossip mesh would partition along those views. The protocol's convergence guarantee, combined with the IEL primitive's structural properties, prevents that partition from ever forming under healthy gossip.
 
 Full design: [infrastructure/federation.md](infrastructure/federation.md).
 
@@ -513,7 +513,7 @@ The operator never points an endorsement-class event's `previous` at an adversar
 
 The implication is that **termination events follow the `previous = v_{tip-1}.said` parent rule unconditionally**, including the rare case where `v_{tip-1}` is an adversary event:
 
-- **Cnt on an adversary-extended linear chain.** If an adversary captures the operator's signing key (KEL) or `auth_policy` material (SEL) and submits one or more endorsement-class events `v_N`, `v_{N+1}`, …, `v_M` onto the operator's chain (linear extension; no divergence yet), the operator's local tip after gossip is `v_M`. Operator's `Cnt.previous = v_{tip-1}.said = v_{M-1}.said` — which on a multi-event-extended chain is an adversary event. This is intentional. Cnt's repudiation semantic is what makes it coherent to point at an adversary event in this shape: the operator is observing the chain's tampered state and terminating it, not extending the adversary's chain.
+- **Cnt on an adversary-extended linear chain.** If an adversary captures the operator's signing key (KEL) or `authPolicy` material (SEL) and submits one or more endorsement-class events `v_N`, `v_{N+1}`, …, `v_M` onto the operator's chain (linear extension; no divergence yet), the operator's local tip after gossip is `v_M`. Operator's `Cnt.previous = v_{tip-1}.said = v_{M-1}.said` — which on a multi-event-extended chain is an adversary event. This is intentional. Cnt's repudiation semantic is what makes it coherent to point at an adversary event in this shape: the operator is observing the chain's tampered state and terminating it, not extending the adversary's chain.
 
   ```
   Pre-state (adversary-extended linear chain; operator's last attested

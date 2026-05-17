@@ -30,15 +30,15 @@ The simplest primitive. Every IEL event is governance-authorized (no auth-vs-gov
 
 Read in order: [events.md](primitives/iel/events.md) → [event-log.md](primitives/iel/event-log.md) → [merge.md](primitives/iel/merge.md) → [verification.md](primitives/iel/verification.md) → [reconciliation.md](primitives/iel/reconciliation.md).
 
-**Note on forward references.** IEL is the authorization root for SEL, so IEL docs forward-reference SEL concepts (`iel_event`, SEL `Upd` / `Est` / `Sea` / `Rpr` / `Cnt` / `Dec` binding rules). On first read, treat these as "the binding exists; the SEL-side docs cover the consumer rules" — you'll fill them in once you reach SEL.
+**Note on forward references.** IEL is the authorization root for SEL, so IEL docs forward-reference SEL concepts (`ielEvent`, SEL `Upd` / `Est` / `Sea` / `Rpr` / `Cnt` / `Dec` binding rules). On first read, treat these as "the binding exists; the SEL-side docs cover the consumer rules" — you'll fill them in once you reach SEL.
 
 ### KEL — second
 
-KEL adds device-level cryptography to the chain model you learned from IEL. A KEL carries three key roles — a signing key, a rotation key (pre-committed via `rotation_hash`), and a recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Recovery-revealing events require a dual signature. KEL is the authenticity primitive that anchors everything else: IEL events anchor in KELs at tier 2 (`Rot`, governance acts) or tier 3 (`Ror`, terminals) per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation); SEL post-inception events anchor at the same tiers (SEL `Icp` itself is permissionless and unanchored).
+KEL adds device-level cryptography to the chain model you learned from IEL. A KEL carries three key roles — a signing key, a rotation key (pre-committed via `rotationHash`), and a recovery key (revealed only by recovery-revealing events: `Rec`, `Ror`, `Dec`, `Cnt`). Recovery-revealing events require a dual signature. KEL is the authenticity primitive that anchors everything else: IEL events anchor in KELs at tier 2 (`Rot`, governance acts) or tier 3 (`Ror`, terminals) per [protocol-doctrine.md §Anchor Tier Elevation](protocol-doctrine.md#anchor-tier-elevation); SEL post-inception events anchor at the same tiers (SEL `Icp` itself is permissionless and unanchored).
 
 New concepts you'll meet:
 
-- Forward-key commitments — `rotation_hash` and `recovery_hash` pre-commit the next pair of keys; the revealing event must produce a matching preimage.
+- Forward-key commitments — `rotationHash` and `recoveryHash` pre-commit the next pair of keys; the revealing event must produce a matching preimage.
 - The recovery-revealing event class — `Rec`/`Ror`/`Cnt`/`Dec` each reveal the recovery key; all four are dual-signed.
 - Within that class, `Rec` is the discriminator-based recovery primitive (the only kind that archives), with two parent shapes — branch-tip-extending and divergence-ancestor-extending. `Ror`/`Cnt`/`Dec` are recovery-revealing but non-archiving.
 - Proactive-ROR bound — a protocol-level cap on how many non-revealing events can sit between recovery-revealing events.
@@ -48,14 +48,14 @@ Read in order: [events.md](primitives/kel/events.md) → [event-log.md](primitiv
 
 ### SEL — third
 
-The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `iel_event` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the upgrade rule.
+The most complex primitive. SEL composes KEL anchoring and IEL governance to authorize content-bearing events. Kind set: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt` (sort-priority order). Unlike IEL, SEL events carry application content via a `content` field; unlike KEL, SEL events bind to a specific IEL event via an `ielEvent` field (the SAID of the IEL event whose policy authorizes the SEL event). Like KEL, SEL has a discriminator-based recovery primitive (`Rpr`, analogous to KEL's `Rec`) and inherits the upgrade rule.
 
 New concepts you'll meet:
 
 - Identity-rooting — every SEL binds at inception to an IEL prefix and resolves per-event authorization through the IEL.
-- Per-event parent-monotonic ratchet on `iel_event` — each SEL event's binding must be at-or-after its parent's (per branch), preventing same-branch regression to stale IEL state.
+- Per-event parent-monotonic ratchet on `ielEvent` — each SEL event's binding must be at-or-after its parent's (per branch), preventing same-branch regression to stale IEL state.
 - `Rpr` — SEL's discriminator-based recovery, analogous in shape to KEL's `Rec` but governance-authorized (a higher-bar resolution of auth-policy-level divergence).
-- Cross-chain binding stability — how SEL's `iel_event` resolution stays deterministic across IEL governance evolution.
+- Cross-chain binding stability — how SEL's `ielEvent` resolution stays deterministic across IEL governance evolution.
 
 Read in order: [events.md](primitives/sel/events.md) → [event-log.md](primitives/sel/event-log.md) → [merge.md](primitives/sel/merge.md) → [verification.md](primitives/sel/verification.md) → [reconciliation.md](primitives/sel/reconciliation.md). Supplemental: [repair-workflow.md](primitives/sel/repair-workflow.md) for the operational walkthrough of `Rpr` ceremonies.
 
@@ -74,7 +74,7 @@ Runtime services and system components that store/serve/replicate the primitives
 
 - [sadstore.md](infrastructure/sadstore.md) — SADStore service architecture.
 - [federation.md](infrastructure/federation.md) — federation-as-identity model: federation IEL, per-peer address SELs, membership evolution, bootstrap ceremony, recovery.
-- [discovery.md](infrastructure/discovery.md) — node-side peer discovery (federation IEL `auth_policy` enumeration + per-peer address SEL walks).
+- [discovery.md](infrastructure/discovery.md) — node-side peer discovery (federation IEL `authPolicy` enumeration + per-peer address SEL walks).
 - [peer-identity.md](infrastructure/peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
 - [gossip.md](infrastructure/gossip.md) — gossip protocol mechanics, anti-entropy, transport layer.
 

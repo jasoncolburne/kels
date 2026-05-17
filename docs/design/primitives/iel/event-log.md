@@ -2,47 +2,47 @@
 
 > Source-of-truth design doc for the IEL chain lifecycle. Pairs with [reconciliation.md](reconciliation.md) (multi-node correctness proof matrix), [merge.md](merge.md) (submit-handler routing), and [verification.md](verification.md) (IelVerifier algorithm).
 
-The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `auth_policy` and `governance_policy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked governance policy.
+The Identity Event Log (IEL) is a per-prefix chain of `IdentityEvent` records describing the evolving authorization state of an identity — its tracked `authPolicy` and `governancePolicy`. Authority over the IEL is asserted by anchoring `ixn` events in one or more KELs identified by the chain's currently-tracked governance policy.
 
-An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL — SELs in particular by prefix at inception, resolving per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`iel_event` semantics](../sel/events.md#iel_event-semantics) for the SEL-side binding.
+An IEL is the authorization root for a SEL. Every Credential, SEL, or generally identifying/owned document binds to a specific IEL — SELs in particular by prefix at inception, resolving per-event authorization through specific IEL event SAIDs. See [../sel/events.md §`ielEvent` semantics](../sel/events.md#ielevent-semantics) for the SEL-side binding.
 
 ## Chain States
 
 | State | Description | Accepts new events? |
 |---|---|---|
-| **Active** | Linear chain, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governance_policy`). |
+| **Active** | Linear chain, latest tip extends cleanly. | Yes — `Evl`, `Sea`, `Cnt`, `Dec` (per `governancePolicy`). |
 | **Contested** | Chain terminated — any divergent set (every IEL event is privileged → privileged-divergence-is-terminal fires at first 2-event observation; see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)), or explicit `Cnt` on a linear chain (see [§Cnt mechanics](#cnt-mechanics)). Both branches preserved as forensic record. | None. All submissions rejected. |
 | **Decommissioned** | Chain terminated cleanly by operator — at least one `Dec`, no Cnt or divergence. | Gossip-delivered `Cnt` → Contested per [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec); all other submissions rejected with `IelDecommissioned`. |
 
 State is computed from the chain's events, never tracked as a separate flag. The `IelVerification` token surfaces:
-- `divergence_ancestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
+- `divergenceAncestor: Option<Digest256>` — SAID of `v_{d-1}` on a divergent chain (`None` on linear)
 - `is_contested: bool`
 - `is_decommissioned: bool`
-- `last_seal_advancing_event: Option<Digest256>` — SAID of the most recent `Evl` or `Sea` (the "evaluation seal"; advances on both kinds).
+- `lastSealAdvancingEvent: Option<Digest256>` — SAID of the most recent `Evl` or `Sea` (the "evaluation seal"; advances on both kinds).
 
 ## Event Kinds
 
 | Kind | Purpose | Authorization | Terminal? |
 |---|---|---|---|
-| `Icp` | Inception (v0). Declares `auth_policy` and `governance_policy`. | `governance_policy` (Icp.said anchored under the declared governance_policy — every IEL event is a governance act). | No |
-| `Evl` | Evolve — governance evaluation; advances the seal. MUST evolve at least one of `auth_policy` / `governance_policy` (a no-op Evl is rejected as a structural error). | `governance_policy`. | No |
-| `Sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances the seal; no policy fields. | `governance_policy`. | No |
-| `Cnt` | Contest — terminal due to authority conflict or divergence. | `governance_policy`. | **Yes** |
-| `Dec` | Decommission — terminal owner-initiated end. | `governance_policy`. | **Yes** |
+| `Icp` | Inception (v0). Declares `authPolicy` and `governancePolicy`. | `governancePolicy` (Icp.said anchored under the declared governancePolicy — every IEL event is a governance act). | No |
+| `Evl` | Evolve — governance evaluation; advances the seal. MUST evolve at least one of `authPolicy` / `governancePolicy` (a no-op Evl is rejected as a structural error). | `governancePolicy`. | No |
+| `Sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances the seal; no policy fields. | `governancePolicy`. | No |
+| `Cnt` | Contest — terminal due to authority conflict or divergence. | `governancePolicy`. | **Yes** |
+| `Dec` | Decommission — terminal owner-initiated end. | `governancePolicy`. | **Yes** |
 
 For per-kind field rules and typical chain shapes, see [events.md](events.md). **There is no `Rpr` kind on IEL.** Divergence is preserved as data and resolved by `Cnt` rather than archived by repair (see [§Divergence and Contest-Only Resolution](#divergence-and-contest-only-resolution)).
 
 ## Evaluation Seal and Anchor Non-Poisonability
 
-The `last_seal_advancing_event` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
+The `lastSealAdvancingEvent` is the SAID of the most recent `Evl` or `Sea` event. It is the chain's **evaluation seal** (advanced by both kinds — `Evl` evolves policy and advances the seal; `Sea` advances the seal without policy evolution).
 
-> **Policy immunity rule.** Any policy referenced as a chain's `auth_policy` or `governance_policy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
+> **Policy immunity rule.** Any policy referenced as a chain's `authPolicy` or `governancePolicy` MUST have `immune: true`. Both the merge engine (at submit time) and the verifier (at verification time) reject any `Icp` or `Evl` event that introduces or evolves a policy whose `immune` flag is not set. Both layers enforce because the verifier processes data from any source — gossip, peer pulls, restored backups, bootstrap — and cannot trust that the originating node enforced the rule (the "DB cannot be trusted" invariant; see [../../protocol-doctrine.md](../../protocol-doctrine.md)).
 
 **Why this matters: once an IEL event lands, the governance satisfaction it proves is final.** `immune: true` makes a policy impervious to poisoning in the evaluator (`evaluate_anchored_policy` skips poison checks for immune policies), so no anchor used in any chain authorization (auth or governance) can ever be poisoned. Past `Evl` / `Cnt` / `Dec` evaluations stay satisfied by construction.
 
-**Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `auth_policy` or `governance_policy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` / `Cnt` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
+**Revocation via policy evolution, not poison.** To remove an endorser's authority going forward, evolve the policy via `Evl` (declaring a new `authPolicy` or `governancePolicy` SAID that excludes the endorser); the new policy must itself be immune. Past events stay authorized under the policy in effect when they landed. For compromise of an underlying anchoring KEL, the corrective mechanism is `Rec` / `Cnt` on that KEL (see [§Trust Caveat below](#trust-caveat--recovered-anchoring-kels)).
 
-**Every `Evl` must be a real evolution.** A no-op `Evl` (both `auth_policy` and `governance_policy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
+**Every `Evl` must be a real evolution.** A no-op `Evl` (both `authPolicy` and `governancePolicy` identical to the predecessor) is rejected as a structural error — that's `Sea`'s job. Keeping the two kinds structurally distinct preserves `Evl`'s meaning as "policy evolution" and `Sea`'s as "seal advance without policy change" (see [../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance)). The seal-cap is enforced uniformly by both kinds; only the policy-state semantics differ.
 
 ## Divergence and Contest-Only Resolution
 
@@ -120,7 +120,7 @@ The divergence invariant guarantees:
 - **Maximum 2 events at the divergence serial `d`** — every IEL event is privileged, so no non-privileged divergent set can form, and the upgrade-rule path doesn't exist on IEL (the general "max 3 at `v_d`" rule applies to KEL and SEL only). The chain transitions to contested-terminal at first observation of 2-event divergence, and the contested-state gate rejects all subsequent submissions (including any further `Evl`, `Sea`, `Cnt`, or `Dec` arriving via gossip at `v_d`).
 - No events at serials > `d` — the chain is contested-terminal as of `d`.
 - Every event lives at a serial at-or-after the chain's last seal (`event_serial >= seal_serial` — the seal-cap rejects events landing strictly before the seal; see [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded)). Combined with the rule that every IEL event advances the seal (`Evl`/`Sea`) or terminates (`Cnt`/`Dec`), the seal coincides with the tip on IEL — within-window forks structurally don't exist on IEL. A linear-chain Cnt on IEL — extending `v_{tip-1}` on a chain where seal coincides with tip — lands at `event_serial = d = seal_serial`; this is the parent-at-(seal − 1) boundary case the seal-cap explicitly admits (Cnt's parent `v_{d-1}` sits at seal − 1, the new event itself lives at the seal).
-- **Bounded verifier processing at the divergent generation.** When the verifier walks a chain whose v_d generation holds two events (the linear tip and the linear-chain Cnt that extended `v_{tip-1}` on the submitting node, or any 2-event subset observable after gossip-merge with a concurrent submission on another node), it processes them as siblings of the same generation under the inline chain walk: branch state from processing `v_{d-1}` holds the tracked governance_policy, and both events at `v_d` are verified consuming that same `v_{d-1}` governance context. Total verifier work at the v_d generation is bounded by single-event verification cost regardless of chain length.
+- **Bounded verifier processing at the divergent generation.** When the verifier walks a chain whose v_d generation holds two events (the linear tip and the linear-chain Cnt that extended `v_{tip-1}` on the submitting node, or any 2-event subset observable after gossip-merge with a concurrent submission on another node), it processes them as siblings of the same generation under the inline chain walk: branch state from processing `v_{d-1}` holds the tracked governancePolicy, and both events at `v_d` are verified consuming that same `v_{d-1}` governance context. Total verifier work at the v_d generation is bounded by single-event verification cost regardless of chain length.
 
 ### Why no Rpr
 
@@ -149,7 +149,7 @@ The security dials differ by cause: against compromise, threshold height (high e
 
 `Cnt.previous = v_{tip-1}.said = v_{d-1}.said` — the parent of the chain's current tip on a linear chain. On IEL this is Cnt's only valid acceptance shape: a node accepts Cnt only as a linear-chain extension of its own tip, landing the Cnt at `v_d`. All auth checks resolve against the node's linear-chain state at submission time. Acceptance creates fresh 2-event divergence at `v_d` (the existing linear tip + the new Cnt, both extending `v_{d-1}`); the privileged-divergence-is-terminal rule fires and the chain transitions to contested-terminal. Whatever shape other nodes converge on after gossip — same 2-event set, or a different 2-event set produced by a concurrent `Evl`/`Cnt` submission on another node and locked in by that node's contested-state gate before Cnt arrives via gossip — is emergent from gossip-merge, not part of the acceptance rule. A Cnt arriving via gossip to a node that has already observed 2-event divergence at `v_d` is rejected by the contested-state gate. Cross-node propagation of a linear-chain Cnt works because `v_{d-1}` is structurally shared — it lands cleanly before any divergence — so Cnt with `previous = v_{d-1}.said` validates uniformly across nodes.
 
-Authorization satisfies the same `governance_policy` required to accept `v_{tip}` — i.e., the policy declared at `v_{tip-1}` for events that extend it. Authorization failure is HARD: a Cnt whose anchor does not satisfy that policy is rejected by the verifier and the chain stays at its prior state.
+Authorization satisfies the same `governancePolicy` required to accept `v_{tip}` — i.e., the policy declared at `v_{tip-1}` for events that extend it. Authorization failure is HARD: a Cnt whose anchor does not satisfy that policy is rejected by the verifier and the chain stays at its prior state.
 
 **Distinction from KEL Rec / SEL Rpr.** KEL Rec and SEL Rpr resolve divergence by archiving events via the discriminator. They take two parent shapes: branch-tip-extending (`previous = v_d.said` for one of the two branch tips, lands at `v_{d+1}`, archives the other branch) and divergence-ancestor-extending (`previous = v_{d-1}.said`, lands at `v_d`, archives both branches at `v_d`). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d` (parent = `v_{d-1}`), the privileged-divergence-is-terminal rule fires, the chain transitions to contested-terminal. IEL has no Rec/Rpr — there is no recovery primitive on IEL.
 
@@ -188,11 +188,11 @@ This split between contested and decommissioned IELs is the operator's recovery 
 
 ## Multi-Party Governance Synchronization
 
-When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or any other out-of-band serialization mechanism). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
+When more than one party can satisfy an IEL's `authPolicy` or `governancePolicy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or any other out-of-band serialization mechanism). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
 
 ## Cross-Chain Anchor Stability
 
-IEL is the cornerstone of cross-chain consistency for the federation. Every SEL event at v1+ binds to a specific IEL event by SAID via `iel_event`. The immunity rule on IEL is what makes this binding stable across time.
+IEL is the cornerstone of cross-chain consistency for the federation. Every SEL event at v1+ binds to a specific IEL event by SAID via `ielEvent`. The immunity rule on IEL is what makes this binding stable across time.
 
 ### Why IEL stability matters to SEL
 
@@ -213,7 +213,7 @@ SEL→IEL authorization resolution for a SEL Upd at v1+:
 
   SEL Upd                                    IEL chain
   ───────                                    ─────────
-  iel_event = X.said  ────────────►  IEL_event_X (Icp or Evl)
+  ielEvent = X.said  ────────────►  IEL_event_X (Icp or Evl)
                                                 │
                                                 ├─ declares / evolves
                                                 │   auth_policy_X
@@ -225,7 +225,7 @@ SEL→IEL authorization resolution for a SEL Upd at v1+:
                                                 └─►  NO  → SEL Upd rejected
 
 The same shape applies for SEL Sea/Rpr/Cnt/Dec — they resolve through
-governance_policy rather than auth_policy at the same IEL event. See
+governancePolicy rather than authPolicy at the same IEL event. See
 [../sel/events.md §Validation rules](../sel/events.md#validation-rules-path-agnostic--submit-gossip-bootstrap-re-verification)
 for the canonical per-kind binding rule.
 ```
@@ -236,15 +236,15 @@ KELS data is path-agnostic: an event accepted at one node should be acceptable a
 
 For an SEL event at v1+, all paths (submit, gossip ingestion, bootstrap, re-verification) check:
 
-- `iel_event` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
-- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `auth_policy` for SEL `Est`/`Upd`, `governance_policy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
+- `ielEvent` references an IEL event in IEL's authentic chain (`prefix == SEL.identity`).
+- That IEL event declared (`Icp`) or evolved (`Evl`) the relevant policy — `authPolicy` for SEL `Est`/`Upd`, `governancePolicy` for SEL `Sea`/`Rpr`/`Cnt`/`Dec`.
 - IEL is not divergent at the bound event's branch.
 - SEL.said is anchored under the resolved policy.
-- **Per-event parent-monotonic on `iel_event`** (SEL-specific): each SEL event's `iel_event` must be at-or-after its parent event's `iel_event` in IEL chain order, where "parent" is the event referenced by `previous` SAID. The check is applied per branch — the verifier walks each branch independently, comparing each event's `iel_event` against the previous event's on the same branch. Branches with different parent-chains do not constrain each other's `iel_event` values.
+- **Per-event parent-monotonic on `ielEvent`** (SEL-specific): each SEL event's `ielEvent` must be at-or-after its parent event's `ielEvent` in IEL chain order, where "parent" is the event referenced by `previous` SAID. The check is applied per branch — the verifier walks each branch independently, comparing each event's `ielEvent` against the previous event's on the same branch. Branches with different parent-chains do not constrain each other's `ielEvent` values.
 
 This rule is unique to the SEL↔IEL cross-chain binding. SEL is the only primitive whose authorization is referenced via a separate field pointing at another chain; KEL and IEL resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}` and have no analog rule.
 
-There is no chain-wide watermark gate. The chain's `last_iel_event` (the highest `iel_event` observed across all events in the chain) is a derived aggregate, computed after the fact, used by consumers to query "what's the highest IEL binding this SEL has reached" — not used to gate new event acceptance. New event acceptance is gated by the per-event parent-monotonic check on the branch the event extends.
+There is no chain-wide watermark gate. The chain's `lastIelEvent` (the highest `ielEvent` observed across all events in the chain) is a derived aggregate, computed after the fact, used by consumers to query "what's the highest IEL binding this SEL has reached" — not used to gate new event acceptance. New event acceptance is gated by the per-event parent-monotonic check on the branch the event extends.
 
 **Consequence for divergent SEL chains**: branches may reference different IEL events at the same SEL serial, and may resolve to different governance/auth policies on each branch. This within-chain policy variation is bounded structurally by SEL's seal-cap (no fork at-or-before the seal — caps how far back branches can diverge) and by privileged-divergence-is-terminal (any privileged event in the divergent set ends the chain — caps how long the chain can stay in a divergent state). KEL and IEL never have within-chain policy variation.
 
@@ -252,20 +252,20 @@ There is no separate "most recent at submit time" rule. Such a rule would create
 
 ### What parent-monotonic blocks (and what it doesn't)
 
-Parent-monotonic prevents an adversary from extending a branch with a regressed `iel_event` — once a branch's tip is bound to IEL_v5, no further event extending that same branch can bind to anything earlier than v5. On actively-maintained chains, the legitimate operator's recent events on the live branch have advanced `iel_event` forward; an adversary with stale (revoked-since) authority cannot insert new events on that same branch bound to their old IEL state.
+Parent-monotonic prevents an adversary from extending a branch with a regressed `ielEvent` — once a branch's tip is bound to IEL_v5, no further event extending that same branch can bind to anything earlier than v5. On actively-maintained chains, the legitimate operator's recent events on the live branch have advanced `ielEvent` forward; an adversary with stale (revoked-since) authority cannot insert new events on that same branch bound to their old IEL state.
 
 Parent-monotonic does NOT prevent three scenarios. None breaks the system: each has an operator-side defense covered in [§Consumer-side discipline](#consumer-side-discipline), [§Operator-discipline corollary for governance evolution](#operator-discipline-corollary-for-governance-evolution), or [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The three are worth understanding when designing enrollment flows and operator routines.
 
 #### Brand-new chain races (not blocked)
 
-Before any legitimate v1+ event lands, a party with `auth_policy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — `Icp` dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with `parent = Icp.said` (extending `Icp` via dedup-equivalence per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline); operators never extend adversary events). This creates a non-privileged divergent set with `Est_stale` — both auth-authorized; Est-Est race shape.
+Before any legitimate v1+ event lands, a party with `authPolicy` authority on the bound IEL can submit `[Icp, Est_stale]` first, establishing the chain with their content at v1. The legitimate operator's enrollment-time response is `[Icp, Est_legit]` — `Icp` dedups (same content, same SAID across submitters); `Est_legit` lands at v=1 with `parent = Icp.said` (extending `Icp` via dedup-equivalence per [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline); operators never extend adversary events). This creates a non-privileged divergent set with `Est_stale` — both auth-authorized; Est-Est race shape.
 
-The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending their `Est_legit` branch. `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain — see [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
+The operator then submits `Rpr` (governance-authorized via the bound IEL's current `governancePolicy`) extending their `Est_legit` branch. `Rpr` archives `Est_stale` and the chain becomes the operator's. The race is bounded by the user's enrollment window: until enrollment completes (including any `Rpr` cleanup), the user is treated as inactive in the system, and no consumers honor authorizations rooted in the in-progress chain — see [§Application-developer enrollment patterns](#application-developer-enrollment-patterns). The SEL inception batch rule (`[Icp, Est]` minimum) makes this race well-defined: every chain starts with both content and a binding.
 
 ```
 Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1:
 
-  [Icp_v0] → [Est_stale @ v_1, iel_event=IEL_v_old]   (chain tip)
+  [Icp_v0] → [Est_stale @ v_1, ielEvent=IEL_v_old]   (chain tip)
 
 Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
 Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
@@ -273,8 +273,8 @@ Icp.said (extending Icp via dedup-equivalence; never extending Est_stale):
   Icp dedups (deterministic prefix + SAID across submitters).
   Est_legit lands at v_1 alongside Est_stale:
 
-  [Icp_v0] ─┬─ [Est_stale @ v_1, iel_event=IEL_v_old]
-            └─ [Est_legit @ v_1, iel_event=IEL_v_current]
+  [Icp_v0] ─┬─ [Est_stale @ v_1, ielEvent=IEL_v_old]
+            └─ [Est_legit @ v_1, ielEvent=IEL_v_current]
 
   Both auth-authorized; neither privileged → non-privileged divergent.
 
@@ -293,50 +293,50 @@ extending shape):
 
 #### Stale governance termination on unratcheted branches (not blocked)
 
-An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `iel_event` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `iel_event` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `iel_event` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
+An adversary with stale governance authority can submit `Cnt` or `Dec` extending a branch tip whose `ielEvent` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, the operator submits a `Sea` on each dependent SEL to advance the branch tip's `ielEvent` forward to the current IEL event. After this advancement, an adversary's stale-bound `Cnt`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `ielEvent` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
 
 ```
 IEL evolves governance:
   IEL: [Icp] → [Evl_old] → [Evl_new]
 
 Vulnerable window (SEL tip not yet ratcheted):
-  SEL: [Icp] → ... → [Upd_v_N, iel_event=Evl_old.said]   (tip)
+  SEL: [Icp] → ... → [Upd_v_N, ielEvent=Evl_old.said]   (tip)
                                           ↑
                                     adversary with stale gov_old
                                     authority can submit:
 
     Cnt_stale.previous       = Upd_v_N.said       (extends tip)
-    Cnt_stale.iel_event = Evl_old.said       (stale binding)
+    Cnt_stale.ielEvent = Evl_old.said       (stale binding)
 
     Per-event parent-monotonic check:
-      parent's iel_event = Evl_old.said
+      parent's ielEvent = Evl_old.said
       Cnt_stale's             = Evl_old.said
       Evl_old ≥ Evl_old → SATISFIED → accepted; chain terminates.
 
 After operator-discipline Sea ratchet (post-Sea state):
-  SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, iel_event=Evl_new.said]  (tip)
+  SEL: ... → [Upd_v_N] → [Sea_v_{N+1}, ielEvent=Evl_new.said]  (tip)
 
 Same adversary tries again:
     Cnt_stale.previous       = Sea_v_{N+1}.said
-    Cnt_stale.iel_event = Evl_old.said
+    Cnt_stale.ielEvent = Evl_old.said
 
     Per-event parent-monotonic check:
-      parent's iel_event = Evl_new.said
+      parent's ielEvent = Evl_new.said
       Cnt_stale's             = Evl_old.said
       Evl_old < Evl_new → REGRESS → HARD-fail rejection.
 ```
 
-#### Cnt fork-contest with low iel_event (not blocked)
+#### Cnt fork-contest with low ielEvent (not blocked)
 
-A `Cnt` that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.iel_event >= v_{d-1}.iel_event`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch.
+A `Cnt` that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `Cnt.ielEvent >= v_{d-1}.ielEvent`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches from this Cnt's branch.
 
-This is intentional. Chain-wide watermark would otherwise reject `Cnt` fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `iel_event`s than the Cnt's binding. The per-branch framing is what makes operator contest viable when the live branches are stale.
+This is intentional. Chain-wide watermark would otherwise reject `Cnt` fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `ielEvent`s than the Cnt's binding. The per-branch framing is what makes operator contest viable when the live branches are stale.
 
 ```
 Pre-state (existing non-priv divergent at v_d with high SEL serials but
-low iel_event on the diverged branches):
+low ielEvent on the diverged branches):
 
-  SEL: [Icp] → ... → [Upd_{d-1}, iel_event=IEL_v3] ─┬─ Upd_a @ v_d  ┐
+  SEL: [Icp] → ... → [Upd_{d-1}, ielEvent=IEL_v3] ─┬─ Upd_a @ v_d  ┐
                                                     └─ Upd_b @ v_d  ┘
                                                     (both bound to IEL_v3)
 
@@ -345,18 +345,18 @@ forks from v_{d-1} as a new singleton branch at v_d:
 
   Cnt.previous       = v_{d-1}.said      (parent is divergence ancestor)
   Cnt.serial         = d
-  Cnt.iel_event      = IEL_v5.said       (operator's current binding)
+  Cnt.ielEvent      = IEL_v5.said       (operator's current binding)
 
 Per-event parent-monotonic check (per branch, against THIS branch's
 parent — v_{d-1}, NOT against Upd_a/Upd_b which are on independent
 branches):
-  parent's iel_event = IEL_v3.said
+  parent's ielEvent = IEL_v3.said
   Cnt's              = IEL_v5.said
   IEL_v5 ≥ IEL_v3 → SATISFIED → Cnt joins the divergent set as a
   3rd event at v_d via upgrade rule → privileged-divergence-is-terminal
   fires → chain becomes contested-terminal.
 
-Cnt's binding is unrelated to Upd_a/Upd_b's `iel_event` because
+Cnt's binding is unrelated to Upd_a/Upd_b's `ielEvent` because
 they're on structurally independent branches from Cnt's. Chain-wide
 watermark would block this — rightly understood as overconstraining.
 ```
@@ -367,13 +367,13 @@ Independent of any submit/verify gates, a consumer reading an SEL can detect sta
 
 ### Operator-discipline corollary for governance evolution
 
-When the IEL's `governance_policy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` extending the new branch tip — once the tip's `iel_event` is at the new Evl, any subsequent same-branch event must bind at-or-after the new Evl, so a regressed-binding event on that branch fails parent-monotonic.
+When the IEL's `governancePolicy` evolves (an `Evl` on IEL changes who has governance authority), the operator should immediately submit a `Sea` on each dependent SEL to advance the live branch's tip `ielEvent` forward to the new IEL `Evl`. This closes the window in which an adversary with revoked governance could submit a stale-bound `Cnt`/`Dec` extending the new branch tip — once the tip's `ielEvent` is at the new Evl, any subsequent same-branch event must bind at-or-after the new Evl, so a regressed-binding event on that branch fails parent-monotonic.
 
 This is an operator best practice, not a protocol-enforced rule. Future automation could auto-issue SEL Seas on IEL governance evolution, but is out of scope for v1 of this design.
 
 ### Application-developer enrollment patterns
 
-The brand-new chain race described above is defused by enrollment-time discipline on the application-developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governance_policy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full developer guidance: [../../../development/enrollment.md](../../../development/enrollment.md).
+The brand-new chain race described above is defused by enrollment-time discipline on the application-developer side: register all required SEL topics atomically, detect and `Rpr`-resolve prior chain content (the bound IEL's current `governancePolicy` outranks the auth-only racing party), and treat the user as inactive until enrollment completes (no consumers honor authorizations rooted in in-progress chains during the inactive window). The pattern eliminates the race as an authorization-bearing concern. Full developer guidance: [../../../development/enrollment.md](../../../development/enrollment.md).
 
 ## Trust Caveat — Recovered or Contested Anchoring KELs
 
@@ -398,12 +398,12 @@ Contest is the terminal state for IEL — reachable from divergence (any `Cnt` r
 
 ### Authorization asymmetry vs. KEL Cnt
 
-KEL `Cnt` requires **dual signatures** — both signing key (preimage of prior `rotation_hash`) and recovery key (preimage of prior `recovery_hash`). IEL `Cnt` requires only `governance_policy` satisfaction; it does NOT separately require `auth_policy`. The asymmetry is structural, not arbitrary:
+KEL `Cnt` requires **dual signatures** — both signing key (preimage of prior `rotationHash`) and recovery key (preimage of prior `recoveryHash`). IEL `Cnt` requires only `governancePolicy` satisfaction; it does NOT separately require `authPolicy`. The asymmetry is structural, not arbitrary:
 
 - KEL's signing key and recovery key are **independent cryptographic primitives**. Neither structurally encompasses the other; both must be exercised together to prove dual control. Hence dual-signature on terminal events.
-- IEL's `governance_policy` is a **policy** — a composable predicate that can be crafted to be inclusive of `auth_policy`. A properly-designed IEL has `governance_policy` that subsumes `auth_policy` (any party who could satisfy `auth_policy` can also satisfy `governance_policy`, but not vice versa). Hence single-policy gate on terminal events: governance is the higher bar and inclusion of auth is a chain-design property.
+- IEL's `governancePolicy` is a **policy** — a composable predicate that can be crafted to be inclusive of `authPolicy`. A properly-designed IEL has `governancePolicy` that subsumes `authPolicy` (any party who could satisfy `authPolicy` can also satisfy `governancePolicy`, but not vice versa). Hence single-policy gate on terminal events: governance is the higher bar and inclusion of auth is a chain-design property.
 
-If an IEL is misconfigured such that `governance_policy` does NOT subsume `auth_policy` (i.e., a party authorized to write under `auth_policy` cannot terminate under `governance_policy`), that's a chain-design error — not a case the kind structure should defend against. The design assumes the immunity rule plus a sane policy hierarchy; chains that violate that hierarchy are operating outside the supported model.
+If an IEL is misconfigured such that `governancePolicy` does NOT subsume `authPolicy` (i.e., a party authorized to write under `authPolicy` cannot terminate under `governancePolicy`), that's a chain-design error — not a case the kind structure should defend against. The design assumes the immunity rule plus a sane policy hierarchy; chains that violate that hierarchy are operating outside the supported model.
 
 The symmetry of *intent* — terminal authority assertion — is preserved on both sides. The mechanism differs because the underlying primitives differ. Same logic applies to SEL `Cnt` (see [../sel/events.md](../sel/events.md)).
 
@@ -420,11 +420,11 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 - Pre-flight: full chain re-verification.
 - Bundles pending events into the batch (mirrors SEL).
 - Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
-- Resolves authorization via `v_{tip-1}`'s `governance_policy` and constructs the anchor accordingly.
+- Resolves authorization via `v_{tip-1}`'s `governancePolicy` and constructs the anchor accordingly.
 
 ### Cascading effect on dependent SELs
 
-A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so the SEL's IEL-resolved `auth_policy` and `governance_policy` (resolved through each SEL event's `iel_event` binding) are effectively frozen at whatever IEL state was current when contestation occurred.
+A contested IEL freezes the IEL. SELs bound to the contested IEL face ambiguous future authorization: the IEL has no path forward, so the SEL's IEL-resolved `authPolicy` and `governancePolicy` (resolved through each SEL event's `ielEvent` binding) are effectively frozen at whatever IEL state was current when contestation occurred.
 
 Operator response per SEL:
 - **Migrate**: incept a new SEL bound to a different IEL.
@@ -465,7 +465,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 
 **Code:**
 - `lib/kels/src/types/iel/event.rs` — `IdentityEventKind` enum (`Icp`/`Evl`/`Sea`/`Cnt`/`Dec`); `validate_structure` per per-kind field rules.
-- `lib/kels/src/types/iel/verification.rs` — `IelVerifier`, `IelVerification`, branch state with tracked `auth_policy` and tracked `governance_policy`.
+- `lib/kels/src/types/iel/verification.rs` — `IelVerifier`, `IelVerification`, branch state with tracked `authPolicy` and tracked `governancePolicy`.
 - `lib/kels/src/identity_builder.rs` — `IdentityEventBuilder` with `evolve()`, `contest()`, `decommission()`; pending-events bundling; pre-flight server-chain re-verification.
 - Server submit handler — terminal gate, immunity gate, divergent-rejection routing (returns `ContestRequired` for non-`Cnt` events on divergent chains), algorithmic `ContestRequired` trigger for events at-or-before evaluation seal.
 - Storage — `iel_events` table. **No archive table** (no `Rpr` to archive into).

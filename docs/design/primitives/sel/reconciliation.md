@@ -8,19 +8,19 @@ For lifecycle prose (states, divergence, repair, contest, decommission, evaluati
 
 All cases below depend on these invariants:
 
-1. **Identity-rooted authorization**: every v1+ SEL event carries `iel_event` referencing a specific IEL event. Authorization for `Upd` resolves to the IEL's tracked `auth_policy` at that event; for `Sea`/`Rpr`/`Cnt`/`Dec`, to the IEL's tracked `governance_policy`. The IEL primitive's immunity rule guarantees those policies' contents are stable across time.
+1. **Identity-rooted authorization**: every v1+ SEL event carries `ielEvent` referencing a specific IEL event. Authorization for `Upd` resolves to the IEL's tracked `authPolicy` at that event; for `Sea`/`Rpr`/`Cnt`/`Dec`, to the IEL's tracked `governancePolicy`. The IEL primitive's immunity rule guarantees those policies' contents are stable across time.
 
 2. **Inception is permissionless but bounded by batch rule**: SEL Icp prefix derives deterministically from `(identity, topic)`. Anyone can submit `[Icp]` content-wise, but the verifier rejects any chain whose tip is still `Icp` (`IncompleteInception` from `SelVerifier::finish_internal`). Every chain is born with both content and a binding.
 
 3. **Proactive-evaluation compliance**: Every SEL has an evaluation event (`Sea` / `Rpr` / `Cnt` / `Dec`) at least every `MAX_NON_EVALUATION_EVENTS = 63` non-evaluation events. Surfaced by `SelVerifier` and enforced by the submit handler; the builder auto-inserts `Sea` when the bound is about to be crossed.
 
-4. **Bounded divergence**: An adversary can only fork after the last evaluation event. Combined with invariant 3, divergence spans at most 63 events from the fork point. An adversary without `governance_policy` (via the bound IEL's tracked governance) can only submit `Upd`, and proactive-evaluation enforcement limits them to at most 63 events before rejection.
+4. **Bounded divergence**: An adversary can only fork after the last evaluation event. Combined with invariant 3, divergence spans at most 63 events from the fork point. An adversary without `governancePolicy` (via the bound IEL's tracked governance) can only submit `Upd`, and proactive-evaluation enforcement limits them to at most 63 events before rejection.
 
 5. **Bounded operations**: Repair batch (`pending + Rpr`) ≤ 64, contest batch (`pending + Cnt`) ≤ 64, adversary chain to archive ≤ 63. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
 6. **No retroactive poisoning** (lives on IEL): every IEL-tracked policy is immune. Past authorizations stay satisfied by construction. See [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability).
 
-7. **Per-event parent-monotonic on `iel_event`** (SEL-specific; KEL/IEL have no analog because their authorization is intrinsic, not referenced via a separate field): each SEL event's `iel_event` is at-or-after its parent event's `iel_event` (parent via `previous` SAID) in IEL chain order, applied per branch independently. Branches with different parent-chains do not constrain each other; the chain-wide `last_iel_event` is a derived aggregate (max across all events) used by consumers, not a flowing watermark gate. Within-chain policy variation across branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
+7. **Per-event parent-monotonic on `ielEvent`** (SEL-specific; KEL/IEL have no analog because their authorization is intrinsic, not referenced via a separate field): each SEL event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. Branches with different parent-chains do not constrain each other; the chain-wide `lastIelEvent` is a derived aggregate (max across all events) used by consumers, not a flowing watermark gate. Within-chain policy variation across branches is bounded by the seal-cap and by privileged-divergence-is-terminal.
 
 These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible — and what make cross-chain authorization stable as IEL evolves.
 
@@ -31,7 +31,7 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Empty** | No events for this prefix. |
 | **Incepted, no v1** | Reachable transient state: someone submitted just `[Icp]`. **The verifier rejects this** (`SelVerifier::finish_internal` → `IncompleteInception` whenever any branch tip is `Icp`), so this state should never persist in storage; included here for completeness. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `last_seal_advancing_event` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Upd`/`Sea` submissions return `ContestRequired`. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Upd`/`Sea` submissions return `ContestRequired`. |
 | **Divergent** | Fork detected, no `Rpr`/`Cnt`/`Dec` yet. |
 | **Divergent, sealed** | Sub-state of Divergent where the seal has advanced past the divergence point — typically via an adversary's `Rpr` or `Sea` that landed before owner could repair. Owner's only legitimate response is `Cnt`. |
 | **Repaired** | Clean chain after `Rpr` archived adversary events. |
@@ -45,9 +45,9 @@ What happens when a client submits events to the submit handler on a single node
 | SEL State | Upd | Sea | Rpr / pending+Rpr | Cnt / pending+Cnt | Dec |
 |-----------|-----|-----|-------------------|-------------------|-----|
 | **Empty** (no Icp) | Reject (no chain) | Reject | Reject | Reject | Reject |
-| **Empty** (`[Icp, Est]` minimum) | Append ✓ if `iel_event` binding + anchor satisfy IEL auth_policy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
-| **Active** | Append ✓ (auth_policy via IEL) | Append ✓ (governance_policy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`Upd` at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Empty** (`[Icp, Est]` minimum) | Append ✓ if `ielEvent` binding + anchor satisfy IEL authPolicy; else `BadIdentityBinding` | n/a | n/a | n/a | n/a |
+| **Active** | Append ✓ (authPolicy via IEL) | Append ✓ (governancePolicy via IEL) | Repair ✓ (clean: no-op archival; adversary extension: archives adversary chain) | Contest ✓ → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Upd` at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rpr` cannot truncate at-or-before the seal) | Contest ✓ → Contested | Append ✓ → Decommissioned |
 | **Divergent** | `RepairRequired` | `RepairRequired` | Discriminator-driven repair ✓ | Contest ✓ → Contested (joins set via upgrade rule) | `RepairRequired` |
 | **Divergent (sealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
 | **Repaired** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
@@ -56,14 +56,14 @@ What happens when a client submits events to the submit handler on a single node
 
 Additional rejection cases that don't fit per-state cells:
 - `IncompleteInception` — inception submission of `[Icp]` alone (no `Est`); verifier rejects whenever any branch tip is `Icp`. See [§Chain States](#chain-states) row "Incepted, no v1".
-- `BadIdentityBinding` — `iel_event` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
+- `BadIdentityBinding` — `ielEvent` doesn't resolve to a real IEL event with matching prefix, or fails the per-event parent-monotonic check.
 - `IelDivergent` — bound IEL event lives on a divergent IEL branch.
 
 ### Notes on cell routing
 
 - **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
-- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `last_seal_advancing_event` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
+- **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
 - **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../protocol-doctrine.md §Forks are Seal-Bounded](../../protocol-doctrine.md#forks-are-seal-bounded).
 - **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `DecommissionedSel`. See [../../protocol-doctrine.md §Cnt Overrides Dec](../../protocol-doctrine.md#cnt-overrides-dec).
 
@@ -71,7 +71,7 @@ Additional rejection cases that don't fit per-state cells:
 
 The submit handler treats a batch atomically:
 
-- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `iel_event` and is anchored under the bound IEL's auth_policy (tier 2 per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
+- **`[Icp, Est]`** — minimum legal inception batch. Icp permissionless and deterministic; Est at v1 carries `ielEvent` and is anchored under the bound IEL's authPolicy (tier 2 per [../../protocol-doctrine.md §Anchor Tier Elevation](../../protocol-doctrine.md#anchor-tier-elevation)). Inception batches without v1 Est are rejected.
 - **`[pending..., Rpr]`** — owner's pre-flush staged events plus the repair extending the last pending event (or owner's verified tip if pending is empty). At most one page (`MINIMUM_PAGE_SIZE = 64`). The discriminator preserves owner's chain; non-owner events at serial ≥ `first_divergent_serial` are archived.
 - **`[pending..., Cnt]`** — owner's pending plus the contest. At most one page.
 - **`[pending..., Dec]`** — owner's pending plus the decommission. At most one page.
@@ -151,7 +151,7 @@ The single-page-fetch + resume-verifier trust gate + in-memory walkback shape mi
 
 ### 1. Adversary Sea as normal append
 
-The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governance_policy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at serial ≤ the new seal triggers `ContestRequired`.
+The adversary submits `Sea` to a non-divergent chain (normal append, no divergence) — possible if the adversary satisfies the bound IEL's `governancePolicy` (e.g., a controller of one of the endorsing KELs went rogue). This advances the seal. Any future divergence at serial ≤ the new seal triggers `ContestRequired`.
 
 ```
 Pre-state (linear at v_N; seal at last Sea/Rpr/Cnt/Dec ≤ N):
@@ -159,7 +159,7 @@ Pre-state (linear at v_N; seal at last Sea/Rpr/Cnt/Dec ≤ N):
   [Icp] → [Upd_v1] → ... → [Upd_v_N]   (tip)
 
 Adversary submits Sea with previous = v_N.said (governance authorization
-satisfied via bound IEL's current governance_policy):
+satisfied via bound IEL's current governancePolicy):
 
   [Icp] → ... → [Upd_v_N] → [Sea_v_{N+1}]   (seal advances to N+1)
 
@@ -294,13 +294,13 @@ synchronization. Both nodes' chains stay as forensic record.
 
 > **Operator never extends `Est_stale`.** Extending an adversary event would be a structural attestation that the predecessor is acceptable — equivalent to endorsing the adversary's content. The operator extends `Icp` (which is attested-shared via dedup-equivalence), not the adversary's `Est`. See [../../protocol-doctrine.md §Extension Discipline](../../protocol-doctrine.md#extension-discipline).
 
-Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governance_policy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
+Adversary submits `[Icp, Est_stale]` — Icp is permissionless (dedup-idempotent across submitters), Est_stale binds to an old IEL event where the adversary still had auth. The chain is born with adversary's content at v_1. Operator submits `[Icp, Est_legit]` where `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence). `Icp` dedups; `Est_legit` lands at `v_1` alongside `Est_stale`, creating a non-privileged divergent set (both auth-authorized; Est-Est race shape). Operator submits `Rpr` (governance-authorized via the bound IEL's current `governancePolicy`) extending the `Est_legit` branch; the discriminator archives `Est_stale`. Chain becomes the operator's; `Est_stale` moves to the archive table (forensic-readable; not live).
 
 ```
 Step 1 — Adversary submits [Icp, Est_stale] first; chain born at v_1
 with adversary's content:
 
-  [Icp_v0] → [Est_stale @ v_1, iel_event=IEL_v_old]   (chain tip)
+  [Icp_v0] → [Est_stale @ v_1, ielEvent=IEL_v_old]   (chain tip)
 
 Step 2 — Operator submits [Icp, Est_legit] with Est_legit.previous =
 Icp.said (extending Icp directly, NOT Est_stale):
@@ -310,8 +310,8 @@ Icp.said (extending Icp directly, NOT Est_stale):
   Est_legit lands at v_1 alongside Est_stale, creating non-priv divergent
   set:
 
-  [Icp_v0] ─┬─ [Est_stale @ v_1, iel_event=IEL_v_old]
-            └─ [Est_legit @ v_1, iel_event=IEL_v_current]
+  [Icp_v0] ─┬─ [Est_stale @ v_1, ielEvent=IEL_v_old]
+            └─ [Est_legit @ v_1, ielEvent=IEL_v_current]
 
   Both auth-authorized; neither privileged → non-privileged divergent.
 
@@ -334,7 +334,7 @@ The operator's response **never extends `Est_stale`** — extending an adversary
 
 ### 7. IEL evolves, owner advances dependent SEL's branch tip
 
-After IEL governance evolves (an Evl on IEL changes governance_policy), owner submits `Sea` on each dependent SEL to advance the live branch's tip `iel_event` forward to the new IEL Evl. After this advancement, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` extending that branch tip fails the per-event parent-monotonic check (the adversary's `iel_event` regresses relative to its parent's). See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
+After IEL governance evolves (an Evl on IEL changes governancePolicy), owner submits `Sea` on each dependent SEL to advance the live branch's tip `ielEvent` forward to the new IEL Evl. After this advancement, an adversary with revoked governance who tries to submit a stale-bound `Cnt`/`Dec` extending that branch tip fails the per-event parent-monotonic check (the adversary's `ielEvent` regresses relative to its parent's). See [../iel/event-log.md §Operator-discipline corollary for governance evolution](../iel/event-log.md#operator-discipline-corollary-for-governance-evolution).
 
 ```
 IEL chain evolves governance from gov_old to gov_new:
@@ -343,24 +343,24 @@ IEL chain evolves governance from gov_old to gov_new:
 
 Dependent SEL pre-Sea (live branch tip bound to IEL's Evl_old):
 
-  SEL:  [Icp] → [Est_v1, iel_event=Evl_old.said] → ...
-        → [Upd_v_N, iel_event=Evl_old.said]   (tip)
+  SEL:  [Icp] → [Est_v1, ielEvent=Evl_old.said] → ...
+        → [Upd_v_N, ielEvent=Evl_old.said]   (tip)
 
 Operator advances SEL via Sea bound to IEL's current governance event:
 
-  SEL:  ... → [Upd_v_N] → [Sea_v_{N+1}, iel_event=Evl_new.said]   (tip)
+  SEL:  ... → [Upd_v_N] → [Sea_v_{N+1}, ielEvent=Evl_new.said]   (tip)
                                   ↑
-                                  tip's iel_event now Evl_new.said
+                                  tip's ielEvent now Evl_new.said
 
 Adversary (holds gov_old preimage only) tries to extend the tip with
 stale-bound Cnt/Dec:
 
   Cnt_stale.previous       = Sea_v_{N+1}.said    (would extend the Sea tip)
-  Cnt_stale.iel_event = Evl_old.said        (stale binding)
+  Cnt_stale.ielEvent = Evl_old.said        (stale binding)
 
   Per-event parent-monotonic check (per branch):
-    Cnt_stale's parent: Sea_v_{N+1}, iel_event=Evl_new.said
-    Cnt_stale's      : iel_event=Evl_old.said
+    Cnt_stale's parent: Sea_v_{N+1}, ielEvent=Evl_new.said
+    Cnt_stale's      : ielEvent=Evl_old.said
     Evl_old < Evl_new in IEL chain order → REGRESS → HARD-fail rejection.
 
 The Sea-advanced tip closes the regression window for adversaries
@@ -381,16 +381,16 @@ IEL chain (now divergent at v_d, immediately contested-terminal):
 
 Dependent SEL trying to extend:
 
-  SEL:  [Icp] → ... → [Upd_v_N, iel_event=Evl_{d-1}.said]   (tip)
+  SEL:  [Icp] → ... → [Upd_v_N, ielEvent=Evl_{d-1}.said]   (tip)
 
   Submitter tries:
-    [Upd_v_new, iel_event=Evl_d_a.said]   ← bound to a divergent IEL event
+    [Upd_v_new, ielEvent=Evl_d_a.said]   ← bound to a divergent IEL event
 
   IEL resolver: "bound event lives at v_d ≥ first_divergent_serial"
    → rejects with IelDivergent.
 
   Submitter tries with pre-divergence binding:
-    [Upd_v_new, iel_event=Evl_{d-1}.said]   ← bound at v_{d-1} (pre-div)
+    [Upd_v_new, ielEvent=Evl_{d-1}.said]   ← bound at v_{d-1} (pre-div)
 
   IEL resolver: "bound event in pre-divergence shared prefix" → chain-validity
    OK; but consumer trust on a contested IEL is whole-chain-suspect (see

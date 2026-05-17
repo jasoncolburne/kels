@@ -5,7 +5,7 @@
 Kels is a fail-secure application framework built on **decentralized, tamper-evident, authentic data**. All system state lives in append-only chains of cryptographically-linked events that entities throughout the network hold and verify independently — no central authority, no trust by fiat. Each primitive plays a distinct structural role:
 
 - **KEL** — anchors authenticity to devices. A device's cryptographic chain of custody; signing a SAID under a KEL `Ixn` proves the device produced or endorsed that data.
-- **IEL** — governs identities. Aggregates devices and other identities into logical groupings via `auth_policy` and `governance_policy` declarations on its event chain; immunity rules keep past authorizations stable. Identity is the unit at which credentials are issued.
+- **IEL** — governs identities. Aggregates devices and other identities into logical groupings via `authPolicy` and `governancePolicy` declarations on its event chain; immunity rules keep past authorizations stable. Identity is the unit at which credentials are issued.
 - **SEL** — content-addressed application data. Identity-rooted chains (each SEL binds at inception to an IEL prefix) carrying domain payloads — exchange-key publications, custody envelopes, etc. Auth resolves through the bound IEL.
 - **Credentials** — verifiable claims that permit access to resources based on authenticated identity. Issued under policies anchored in KELs/IELs; verified by the resource holder against the issuer's chain state.
 
@@ -21,7 +21,7 @@ For any gap, deviation, or design choice: does it preserve or strengthen tamper-
 
 - **`Cnt` is the protocol-level termination event; its parent is `v_{tip-1}`.** A unifying parent rule across linear and divergent chain shapes — `Cnt` extends the parent of the chain's current tip and lands at the tip's serial, structurally shared cross-node. On KEL specifically, this preserves operator recourse against signing-key-only Rot takeover. See [docs/design/protocol-doctrine.md §Privileged Divergence is Terminal](docs/design/protocol-doctrine.md#privileged-divergence-is-terminal-cnt-triggers-it-uniformly).
 
-- **Forks are seal-bounded.** A new event's serial must land at-or-after the chain's most-recent privileged-non-terminal event (`last_seal_advancing_event`). The bound is protocol-enforced on KEL/SEL via proactive caps; on IEL every non-terminal event advances the seal so there is no post-seal window, and stale-policy hygiene is operator-side via `Evl`. See [docs/design/protocol-doctrine.md §Forks are Seal-Bounded](docs/design/protocol-doctrine.md#forks-are-seal-bounded).
+- **Forks are seal-bounded.** A new event's serial must land at-or-after the chain's most-recent privileged-non-terminal event (`lastSealAdvancingEvent`). The bound is protocol-enforced on KEL/SEL via proactive caps; on IEL every non-terminal event advances the seal so there is no post-seal window, and stale-policy hygiene is operator-side via `Evl`. See [docs/design/protocol-doctrine.md §Forks are Seal-Bounded](docs/design/protocol-doctrine.md#forks-are-seal-bounded).
 
 - **Defense against current-state compromise is layered.** KEL's dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` blocks signing/rotation-key compromise (exfiltration, brute force, coerced signing, side channels) regardless of where the recovery key is custodied — a single-device deployment is first-class. IEL policy composition (high thresholds, `M > N` redundancy across distinct custodians) handles total device compromise: burn the device, rotate it out via `Evl`. KEL-internal custody separation (recovery key on a different device, HSM, ceremony-gated) is an optional deployment hardening for threat shapes where signing and recovery would otherwise fall together.
 
@@ -82,7 +82,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **CESR** — binary-safe encoding for cryptographic primitives (SAIDs, signatures, keys, digests).
 
-**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotation_hash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/kel/events.md`, `docs/design/primitives/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
+**Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotationHash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/kel/events.md`, `docs/design/primitives/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
 
 **Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/primitives/kel/event-log.md`, `docs/design/primitives/kel/recovery-workflow.md`, `docs/design/primitives/kel/reconciliation.md`.
 
@@ -96,23 +96,23 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Exchange** — ESSR authenticated encryption, ML-KEM key publication via SAD Event Logs. See `docs/design/features/exchange.md`.
 
-**Federation** — itself an identity. Membership lives on a single shared IEL (the *federation IEL*) whose `auth_policy` declares authorized peers; membership changes are governance-authorized `Evl` events. Each peer publishes its own network endpoints via a per-peer address SEL at a deterministic prefix. Handshake authorization is `evaluate_signed_policy` against the federation IEL's current `auth_policy`. See `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`, `docs/design/infrastructure/peer-identity.md`.
+**Federation** — itself an identity. Membership lives on a single shared IEL (the *federation IEL*) whose `authPolicy` declares authorized peers; membership changes are governance-authorized `Evl` events. Each peer publishes its own network endpoints via a per-peer address SEL at a deterministic prefix. Handshake authorization is `evaluate_signed_policy` against the federation IEL's current `authPolicy`. See `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`, `docs/design/infrastructure/peer-identity.md`.
 
-**SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`).
+**SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `ielEvent` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `authPolicy`; Sea/Rpr/Cnt/Dec → IEL `governancePolicy`).
 
 - Kind set (sort-priority order): `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`, `Cnt`.
 - Inception: `Icp` is permissionless; `[Icp, Est]` is the minimum inception batch.
-- Authorization and evolution: `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `iel_event`.
+- Authorization and evolution: `Est` is tier-2 anchored per anchor-tier-elevation; `Rpr` repairs unsealed divergence; `Sea` re-evaluates the IEL binding and may advance `ielEvent`.
 
 See `docs/design/primitives/sel/events.md` and `docs/design/primitives/sel/event-log.md`.
 
-**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `auth_policy` and `governance_policy` declarations (`Icp`) and evolutions (`Evl`); `Sea` advances the seal without policy evolution; terminal via `Cnt` (contest) or `Dec` (decommission). Every IEL event is governance-authorized (anchored under the chain's `governance_policy`); `auth_policy` is the per-event policy declaration consumed by SEL `Est`/`Upd` via `iel_event` binding. Every introduced/evolved policy must be `immune: true`. IEL divergence is structurally contested-terminal at first 2-event observation; IEL has no `Rpr`.
+**Identity Event Log (IEL)** — chain primitive that governs an identity. Carries `authPolicy` and `governancePolicy` declarations (`Icp`) and evolutions (`Evl`); `Sea` advances the seal without policy evolution; terminal via `Cnt` (contest) or `Dec` (decommission). Every IEL event is governance-authorized (anchored under the chain's `governancePolicy`); `authPolicy` is the per-event policy declaration consumed by SEL `Est`/`Upd` via `ielEvent` binding. Every introduced/evolved policy must be `immune: true`. IEL divergence is structurally contested-terminal at first 2-event observation; IEL has no `Rpr`.
 
 Storage: `iel_events` table; `/api/v1/iel/events*` routes; `iel_updates` Redis channel; `kels/gossip/v1/topics/iel` gossip topic.
 
 See `docs/design/primitives/iel/events.md`, `docs/design/primitives/iel/event-log.md`, `docs/design/primitives/iel/verification.md`, `docs/design/primitives/iel/merge.md`.
 
-**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `auth_policy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/iel/event-log.md §Cascading effect on dependent SELs`.
+**Custody** — per-SAD-object authority. Inline `custody.write` (IELSaid; one-time anchored write attestation; satisfied at write time) and `custody.read` (IELPrefix; identity-current; resolved through the IEL's current `authPolicy` at read time). Decoupled from `availability` (replication + lifecycle; sibling top-level field). See `docs/design/infrastructure/sadstore.md` and `docs/design/primitives/iel/event-log.md §Cascading effect on dependent SELs`.
 
 ## Architecture
 

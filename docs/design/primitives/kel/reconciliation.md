@@ -37,7 +37,7 @@ What happens when a client submits events to the merge engine on a single node.
 |-----------|---------|-----|---------------|------------------|-----|
 | **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
 | **Active** | Append ✓ | Append ✓ | Append ✓ (gossip-sync of recovered KELs) | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `last_seal_advancing_event` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rec` cannot truncate at-or-before the seal) | Contest ✓ → Contested | `ContestRequired` |
+| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rec` cannot truncate at-or-before the seal) | Contest ✓ → Contested | `ContestRequired` |
 | **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | Contest ✓ → Contested (joins set via upgrade rule) | `RecoverRequired` |
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
 | **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
@@ -114,7 +114,7 @@ Archival happens synchronously within the merge transaction that accepts the `re
 
 The merge engine identifies owner events via two strategies depending on the divergence geometry:
 
-- **`collect_all_adversary_saids`** — owner has no events at the divergence serial. All events from `diverged_at` onward not on the owner walkback are adversary.
+- **`collect_all_adversary_saids`** — owner has no events at the divergence serial. All events from `divergedAt` onward not on the owner walkback are adversary.
 - **`collect_adversary_chain_saids`** — owner has events at the divergence serial. Walk backward from the adversary event at the divergence point to identify the adversary chain, then forward-trace to capture any adversary extensions.
 
 Everything not in the owner's chain is archived to mirror tables.

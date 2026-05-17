@@ -48,7 +48,7 @@ Six composable node types:
 
 ```
 endorse(PREFIX)                    # leaf: this KEL prefix must anchor the credential SAID
-identity(PREFIX)                   # leaf: resolve PREFIX's IEL tip, evaluate its current auth_policy here
+identity(PREFIX)                   # leaf: resolve PREFIX's IEL tip, evaluate its current authPolicy here
 delegate(DELEGATOR)                # leaf: any KEL the delegator has dip-delegated and anchored may endorse
 threshold(MIN, [NODE, ...])        # M-of-N children must be satisfied
 weighted(MIN_WEIGHT, [NODE:W, ...])# sum of satisfied weights >= min_weight
@@ -62,7 +62,7 @@ any(NODE_1, ..., NODE_n)           # = threshold(1, [NODE_1, ..., NODE_n])  — 
 all(NODE_1, ..., NODE_n)           # = threshold(n, [NODE_1, ..., NODE_n])  — every one
 ```
 
-`any(...)` is the standard shape for the "user-style" auth_policy (any device speaks for the identity) and for federation-IEL auth_policy (any member acts at handshake time). `all(...)` is for unanimous-quorum policies. Both are syntactic sugar — they parse to and serialize as the underlying `threshold` node.
+`any(...)` is the standard shape for the "user-style" authPolicy (any device speaks for the identity) and for federation-IEL authPolicy (any member acts at handshake time). `all(...)` is for unanimous-quorum policies. Both are syntactic sugar — they parse to and serialize as the underlying `threshold` node.
 
 Nodes nest freely:
 
@@ -88,7 +88,7 @@ This is the fleet-scaling primitive: an HSM-backed service (DELEGATOR) sub-deleg
 
 ### Identity Resolution
 
-`identity(PREFIX)` resolves PREFIX as an IEL (identity-chain) prefix. At evaluation time the evaluator walks PREFIX's IEL chain to its current tip, reads the tip's tracked `auth_policy` SAID, resolves that policy, and evaluates it in place — the `identity(X)` leaf is, semantically, the current `auth_policy` of X expanded at the position the leaf occupies. This is the load-bearing primitive that lets every other subsystem hold a stable reference to a user-facing identity: devices come and go under X's IEL, but a policy `identity(X)` keeps resolving to whatever endorsers X currently authorizes, with no edit to the referencing policy.
+`identity(PREFIX)` resolves PREFIX as an IEL (identity-chain) prefix. At evaluation time the evaluator walks PREFIX's IEL chain to its current tip, reads the tip's tracked `authPolicy` SAID, resolves that policy, and evaluates it in place — the `identity(X)` leaf is, semantically, the current `authPolicy` of X expanded at the position the leaf occupies. This is the load-bearing primitive that lets every other subsystem hold a stable reference to a user-facing identity: devices come and go under X's IEL, but a policy `identity(X)` keeps resolving to whatever endorsers X currently authorizes, with no edit to the referencing policy.
 
 Identity resolution composes. The policy at X's tip may itself contain `identity(...)` leaves naming other identities; those resolve through the same mechanism. A policy expressing "X plus any 2-of-3 federation members, where each member is itself an identity" nests transparently.
 
@@ -101,7 +101,7 @@ Identity resolution composes. The policy at X's tip may itself contain `identity
 **DSL examples.**
 
 ```
-# Single-identity endorsement: anyone alice's current auth_policy admits.
+# Single-identity endorsement: anyone alice's current authPolicy admits.
 identity(EAliceIdentity...)
 
 # Threshold of identities: any 2 of 3 named identities.
@@ -124,7 +124,7 @@ threshold(2, [
 Same pattern as credential compaction. Strip variable parts (delegates), recompute SAID:
 
 - `endorse(PREFIX)` stays as-is
-- `identity(PREFIX)` stays as-is — the identity prefix is structurally stable (chosen at IEL inception, fixed for the chain's life); only the *resolved* `auth_policy` evolves, and that's fetched at evaluation, not baked into the policy
+- `identity(PREFIX)` stays as-is — the identity prefix is structurally stable (chosen at IEL inception, fixed for the chain's life); only the *resolved* `authPolicy` evolves, and that's fetched at evaluation, not baked into the policy
 - `delegate(DELEGATOR)` stays as-is — the leaf names only the delegator; specific delegates are discovered at evaluation time, never baked into the policy
 - `threshold`, `weighted`, `policy` recursively compact children
 - `poison` expression is also compacted
@@ -146,7 +146,7 @@ For the operator-facing intuition behind redundancy — adversary patience, the 
 ```rust
 pub enum PolicyNode {
     Endorse(String),                          // specific KEL prefix
-    Identity(String),                         // IEL prefix; resolves to its current auth_policy at evaluation
+    Identity(String),                         // IEL prefix; resolves to its current authPolicy at evaluation
     Delegate(String),                         // delegator only; delegates are discovered at evaluation time
     Weighted(u64, Vec<(PolicyNode, u64)>),    // min_weight, (child, weight)
     Policy(String),                           // nested policy SAID
@@ -215,14 +215,14 @@ pub trait PolicyResolver: Sync {
 
 `InMemoryPolicyResolver` wraps a `BTreeMap<String, Policy>` for tests and simple use cases.
 
-For `Identity(prefix)` resolution, the evaluator additionally takes an IEL source — the same shape that `AnchoredPolicyChecker` uses for IEL access, parallel to its KEL source. The IEL source supplies "tip event + tracked `auth_policy` at the tip" for an identity prefix; the resulting `auth_policy` SAID is then passed through the same `PolicyResolver`. Tests can in-memory both sources side by side; production wires them to the live KEL/IEL infrastructure.
+For `Identity(prefix)` resolution, the evaluator additionally takes an IEL source — the same shape that `AnchoredPolicyChecker` uses for IEL access, parallel to its KEL source. The IEL source supplies "tip event + tracked `authPolicy` at the tip" for an identity prefix; the resulting `authPolicy` SAID is then passed through the same `PolicyResolver`. Tests can in-memory both sources side by side; production wires them to the live KEL/IEL infrastructure.
 
 ## Evaluation
 
 `evaluate_policy(policy, credential_said, source, resolver)` walks the AST:
 
 1. For `Endorse(prefix)`: verify prefix's KEL, check for credential SAID anchoring and (unless immune) poison hash
-2. For `Identity(prefix)`: walk prefix's IEL chain to its current tip via the IEL source, read the tip's tracked `auth_policy` SAID, resolve that policy via `PolicyResolver`, evaluate it recursively in place. Push `prefix` onto the identity-resolution stack before the recursive call and pop after; reject as a cycle if `prefix` is already on the stack. Results are memoized for the remainder of the evaluation under the key `(prefix, chain_tip_SAID)`.
+2. For `Identity(prefix)`: walk prefix's IEL chain to its current tip via the IEL source, read the tip's tracked `authPolicy` SAID, resolve that policy via `PolicyResolver`, evaluate it recursively in place. Push `prefix` onto the identity-resolution stack before the recursive call and pop after; reject as a cycle if `prefix` is already on the stack. Results are memoized for the remainder of the evaluation under the key `(prefix, chain_tip_SAID)`.
 3. For `Delegate(delegator)`: discover any KEL X that DELEGATOR has dip-delegated and anchored; check whether X anchors the credential SAID. The specific X is found at evaluation time by walking DELEGATOR's KEL for anchored delegate prefixes that satisfy the `dip`-inception rule.
 4. For `Weighted(min_weight, pairs)`: sum weights of satisfied children, compare to min_weight (threshold is weighted with unit weights)
 5. For `Policy(said)`: resolve via `PolicyResolver`, parse, evaluate recursively
@@ -248,8 +248,8 @@ pub struct Credential<T: Claims> {
     pub schema: String,
     pub policy: String,              // policy SAID (was: issuer prefix)
     pub subject: Option<String>,
-    pub issued_at: StorageDatetime,
-    // ... (nonce, claims, expires_at, edges, rules)
+    pub issuedAt: StorageDatetime,
+    // ... (nonce, claims, expiresAt, edges, rules)
 }
 ```
 
