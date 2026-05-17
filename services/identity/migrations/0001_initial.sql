@@ -142,3 +142,21 @@ CREATE TABLE IF NOT EXISTS identity_sel_events (
 );
 
 CREATE INDEX IF NOT EXISTS identity_sel_events_prefix_idx ON identity_sel_events(prefix);
+
+-- SAD object cache — layer 0 of identity's CascadingSadStore
+-- [RepositorySadStore, RemoteSadStore]. Holds SAD bodies the node authored,
+-- plus any remote bodies cached on a previous fetch.
+--
+-- `said` is the entry's own SAID (derived from `(object_said, object)` via
+-- the SelfAddressed derive). `object_said` is the contained SAD's own SAID
+-- — what consumers look up by — and is unique. Identical objects produce
+-- identical SAIDs at both levels, so `ON CONFLICT DO NOTHING` on `said` is
+-- idempotent.
+CREATE TABLE IF NOT EXISTS identity_sad_objects (
+    said TEXT PRIMARY KEY,
+    object_said TEXT NOT NULL,
+    object JSONB NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS identity_sad_objects_object_said_idx
+    ON identity_sad_objects(object_said);

@@ -94,8 +94,8 @@ pub use sad::{
 pub use sad_builder::{FlushOutcome, SadEventBuilder};
 pub use serving::{KelServer, serve_kel_page};
 pub use store::{
-    FileKelStore, FileSadStore, IdentityStore, InMemoryIdentityStore, InMemorySadStore, KelStore,
-    KelStoreSink, RepositoryKelStore, SadStore,
+    CascadingSadStore, FileKelStore, FileSadStore, IdentityStore, InMemoryIdentityStore,
+    InMemorySadStore, KelStore, KelStoreSink, RemoteSadStore, RepositoryKelStore, SadStore,
 };
 pub use types::{
     ADDRESS_SEL_TOPIC, AdditionHistory, AdditionWithVotes, AddressSad, AdminRequest,

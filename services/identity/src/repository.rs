@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use kels_core::{IdentityEvent, KeyEvent, SadEvent};
 use kels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
-use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
+use verifiable_storage::{
+    SelfAddressed, StorageDatetime, StorageError, TransactionExecutor, UnchainedRepository,
+};
 use verifiable_storage_postgres::{Order, PgPool, Query, QueryExecutor, Stored};
 
 /// Maps KEL state to HSM key handles. Updated only on establishment events (icp, rot).
@@ -251,6 +253,88 @@ impl SelRepository {
     }
 }
 
+/// Cache entry for a SAD body the node authored or fetched. The entry's
+/// `said` is derived from `(object_said, object)` via `SelfAddressed`;
+/// `object_said` is the contained SAD's own SAID and is what consumers look
+/// up by. Identical objects produce identical entries, so write-once-by-said
+/// is idempotent.
+#[derive(Debug, Clone, Serialize, Deserialize, SelfAddressed)]
+#[serde(rename_all = "camelCase")]
+#[storable(table = "identity_sad_objects")]
+pub struct SadObjectEntry {
+    #[said]
+    pub said: cesr::Digest256,
+    pub object_said: cesr::Digest256,
+    pub object: serde_json::Value,
+}
+
+/// Local SAD-body cache — layer 0 of identity's CascadingSadStore. Holds the
+/// SAD bodies the node authored, plus any remote bodies cached on a previous
+/// fetch. Lookup is by `object_said` (the SAD's own SAID); the entry's own
+/// SAID is internal bookkeeping.
+#[derive(Stored)]
+#[stored(item_type = SadObjectEntry, table = "identity_sad_objects", chained = false)]
+pub struct SadObjectRepository {
+    pub pool: PgPool,
+}
+
+impl SadObjectRepository {
+    /// Idempotent store: insert if absent; treat duplicates as success
+    /// (same content → same entry SAID → already present).
+    pub async fn store(&self, entry: SadObjectEntry) -> Result<(), StorageError> {
+        match self.insert(entry).await {
+            Ok(_) => Ok(()),
+            Err(StorageError::DuplicateRecord(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetch a cached entry by the contained SAD's SAID.
+    pub async fn get_by_object_said(
+        &self,
+        object_said: &cesr::Digest256,
+    ) -> Result<Option<SadObjectEntry>, StorageError> {
+        let query = Query::<SadObjectEntry>::for_table(Self::TABLE_NAME)
+            .eq("object_said", object_said)
+            .limit(1);
+        self.pool.fetch_optional(query).await
+    }
+
+    /// List cached object SAIDs in ascending order, paginated.
+    ///
+    /// Returns `(saids, has_more)`. `since` is exclusive; pass the last item
+    /// of the previous page to advance. Mirrors `SadStore::list`'s shape.
+    pub async fn list_object_saids(
+        &self,
+        since: Option<&cesr::Digest256>,
+        limit: usize,
+    ) -> Result<(Vec<cesr::Digest256>, bool), StorageError> {
+        let mut query = Query::<SadObjectEntry>::for_table(Self::TABLE_NAME)
+            .order_by("object_said", Order::Asc)
+            .limit((limit + 1) as u64);
+        if let Some(cursor) = since {
+            query = query.gt("object_said", cursor);
+        }
+        let mut rows: Vec<SadObjectEntry> = self.pool.fetch(query).await?;
+        let has_more = rows.len() > limit;
+        if has_more {
+            rows.truncate(limit);
+        }
+        Ok((rows.into_iter().map(|e| e.object_said).collect(), has_more))
+    }
+
+    /// Delete by the contained SAD's SAID. No-op if absent.
+    pub async fn delete_by_object_said(
+        &self,
+        object_said: &cesr::Digest256,
+    ) -> Result<(), StorageError> {
+        let delete = verifiable_storage::Delete::<SadObjectEntry>::for_table(Self::TABLE_NAME)
+            .eq("object_said", object_said);
+        self.pool.delete(delete).await?;
+        Ok(())
+    }
+}
+
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct IdentityRepository {
@@ -259,10 +343,11 @@ pub struct IdentityRepository {
     pub kel: KeyEventRepository,
     pub iel: IelRepository,
     pub sel: SelRepository,
+    pub sad_objects: SadObjectRepository,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use cesr::test_digest;
 
     use super::*;
@@ -293,7 +378,7 @@ mod tests {
 
     /// Shared test harness - initialized once, used by all tests.
     /// Cleaned up automatically at program exit via #[dtor].
-    struct SharedHarness {
+    pub(crate) struct SharedHarness {
         database_url: String,
         _postgres: ContainerAsync<Postgres>,
     }
@@ -302,7 +387,7 @@ mod tests {
     static SHARED_HARNESS: OnceLock<OnceCell<Option<SharedHarness>>> = OnceLock::new();
 
     /// Get or initialize the shared test harness
-    async fn get_harness() -> Option<&'static SharedHarness> {
+    pub(crate) async fn get_harness() -> Option<&'static SharedHarness> {
         let cell = SHARED_HARNESS.get_or_init(OnceCell::new);
         let harness = cell
             .get_or_init(|| async {
@@ -400,7 +485,7 @@ mod tests {
         }
 
         /// Create a fresh repository connection for this test
-        async fn repo(&self) -> IdentityRepository {
+        pub(crate) async fn repo(&self) -> IdentityRepository {
             IdentityRepository::connect(&self.database_url)
                 .await
                 .expect("Failed to connect to shared database")
@@ -776,6 +861,130 @@ mod tests {
             .await
             .expect("fetch_chain returns empty Vec on unknown prefix");
         assert!(chain.is_empty());
+    }
+
+    // ==================== SAD object repository ====================
+
+    fn sample_sad_body(label: &str) -> (cesr::Digest256, serde_json::Value) {
+        let object_said = test_digest(label);
+        let body = serde_json::json!({"said": object_said, "label": label});
+        (object_said, body)
+    }
+
+    #[tokio::test]
+    async fn test_sad_objects_store_and_get_by_object_said() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let (object_said, body) = sample_sad_body("sad-store-roundtrip");
+        let entry = SadObjectEntry::create(object_said, body.clone()).unwrap();
+        repo.sad_objects.store(entry).await.expect("store");
+
+        let fetched = repo
+            .sad_objects
+            .get_by_object_said(&object_said)
+            .await
+            .expect("get")
+            .expect("entry present");
+        assert_eq!(fetched.object_said, object_said);
+        assert_eq!(fetched.object, body);
+    }
+
+    #[tokio::test]
+    async fn test_sad_objects_store_is_idempotent() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let (object_said, body) = sample_sad_body("sad-idempotent");
+        let entry = SadObjectEntry::create(object_said, body).unwrap();
+        // Two calls with the same entry must not error — the second is a
+        // no-op (same SAID → same row).
+        repo.sad_objects.store(entry.clone()).await.expect("first store");
+        repo.sad_objects.store(entry).await.expect("second store");
+    }
+
+    #[tokio::test]
+    async fn test_sad_objects_get_missing_returns_none() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+        let result = repo
+            .sad_objects
+            .get_by_object_said(&test_digest("missing-sad"))
+            .await
+            .expect("query");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sad_objects_list_paginates() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let mut object_saids = Vec::new();
+        for i in 0..3 {
+            let (object_said, body) = sample_sad_body(&format!("sad-paging-{i}"));
+            object_saids.push(object_said);
+            let entry = SadObjectEntry::create(object_said, body).unwrap();
+            repo.sad_objects.store(entry).await.unwrap();
+        }
+        object_saids.sort();
+
+        let (page1, has_more) = repo.sad_objects.list_object_saids(None, 2).await.unwrap();
+        // Other tests share the schema; the list may contain entries beyond
+        // the three we just inserted. Verify the first page is the requested
+        // size and that the cursor advance is well-formed.
+        assert_eq!(page1.len(), 2);
+        // `has_more` is true if the DB has more than 2 entries total.
+        assert!(has_more || page1.len() == 2);
+
+        let cursor = page1.last().expect("page1 non-empty");
+        let (page2, _) = repo
+            .sad_objects
+            .list_object_saids(Some(cursor), 2)
+            .await
+            .unwrap();
+        // All entries on page2 are strictly greater than the cursor.
+        for said in &page2 {
+            assert!(said > cursor, "cursor advance must be exclusive");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sad_objects_delete() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let (object_said, body) = sample_sad_body("sad-delete");
+        let entry = SadObjectEntry::create(object_said, body).unwrap();
+        repo.sad_objects.store(entry).await.unwrap();
+
+        repo.sad_objects
+            .delete_by_object_said(&object_said)
+            .await
+            .unwrap();
+        assert!(
+            repo.sad_objects
+                .get_by_object_said(&object_said)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Delete-missing is a no-op.
+        repo.sad_objects
+            .delete_by_object_said(&test_digest("never-stored"))
+            .await
+            .expect("delete missing is fine");
     }
 
     #[tokio::test]

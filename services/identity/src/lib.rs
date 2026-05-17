@@ -16,6 +16,7 @@
 pub mod handlers;
 pub mod hsm;
 pub mod repository;
+pub mod repository_sad_store;
 pub mod server;
 
 pub use server::run;
