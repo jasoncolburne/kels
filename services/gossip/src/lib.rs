@@ -363,13 +363,38 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // iel-aware PolicyChecker, all bound to the local sadstore + kels
     // HTTP surfaces. Used for both federation IEL chain validation
     // (load_federation_state) and handshake authorization (is_peer_authorized).
-    let federation_evaluator =
-        FederationEvaluator::new(&config.sadstore_url(), &config.kels_url())?;
+    let federation_evaluator = Arc::new(FederationEvaluator::new(
+        &config.sadstore_url(),
+        &config.kels_url(),
+    )?);
+
+    // Federation-aware address resolver: per-call walks the federation
+    // IEL → enumerates members → walks each member's peer/services chain
+    // → returns `(peer_iel_prefix, base_domain)` pairs (excluding self).
+    // Replaces the legacy SharedAllowlist URL-lookup callsites; the
+    // SharedAllowlist plumbing itself is retired in the next sub-gap.
+    let resolver_sadstore_store: Arc<dyn kels_core::SadStore> = Arc::new(
+        kels_core::RemoteSadStore::new(
+            kels_core::SadStoreClient::new(&config.sadstore_url()).map_err(|e| {
+                ServiceError::Config(format!(
+                    "Failed to build sadstore client for address resolver: {e}"
+                ))
+            })?,
+        ),
+    );
+    let address_resolver: Arc<dyn kels_core::AddressResolver> =
+        Arc::new(address_resolver::FederationAddressResolver::new(
+            federation_iel_prefix,
+            Arc::clone(&federation_evaluator),
+            resolver_sadstore_store,
+            Some(local_iel_prefix),
+        ));
 
     // Transitional empty allowlist. Source of peer URLs (`base_domain`,
-    // `gossip_addr`) was the registry-fetch path pre-#194; #195's address
-    // SELs supply the replacement. Sync paths that look up peer URLs
-    // gracefully no-op under the empty map.
+    // `gossip_addr`) was the registry-fetch path pre-#194; #195's
+    // `address_resolver` above supplies the replacement. URL-lookup
+    // callsites in sync.rs route through the resolver; the SharedAllowlist
+    // type alias + parameter threading is retired in the next sub-gap.
     let allowlist: SharedAllowlist = Arc::new(RwLock::new(HashMap::new()));
 
     // Create Redis connection manager early — used by both bootstrap and retry/anti-entropy loops
@@ -604,7 +629,12 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let pending_map: Option<pending::PendingMap> =
         redis_conn_manager.clone().map(pending::PendingMap::new);
     let drain_executor: Option<sync::DrainExecutor> = match pending_map.clone() {
-        Some(pm) => match sync::DrainExecutor::new(&config.sadstore_url(), allowlist.clone(), pm) {
+        Some(pm) => match sync::DrainExecutor::new(
+            &config.sadstore_url(),
+            allowlist.clone(),
+            Arc::clone(&address_resolver),
+            pm,
+        ) {
             Ok(d) => Some(d),
             Err(e) => {
                 error!("Failed to build DrainExecutor: {}", e);
@@ -717,7 +747,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let signer = IdentityGossipSigner::new(&config.identity_url, local_iel_prefix)?;
     let verifier = KelsPeerVerifier::new(
         federation_iel_prefix,
-        federation_evaluator.clone(),
+        (*federation_evaluator).clone(),
         config.kels_url(),
     );
 
@@ -789,6 +819,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let mail_url = config.mail_url().clone();
     let sync_command_tx = command_tx.clone();
     let sync_allowlist = allowlist.clone();
+    let sync_address_resolver = Arc::clone(&address_resolver);
     let sync_redis = redis_for_sync.clone();
     let sync_signer = peer_request_signer.clone();
     let sync_pending = pending_map.clone();
@@ -800,6 +831,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             event_rx,
             sync_command_tx,
             sync_allowlist,
+            sync_address_resolver,
             recently_stored,
             sync_redis,
             sync_signer,
@@ -902,6 +934,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     if let Some(ref redis) = redis_for_sync {
         let ae_redis = redis.clone();
         let ae_allowlist = allowlist.clone();
+        let ae_resolver = Arc::clone(&address_resolver);
         let ae_kels_url = config.kels_url().clone();
         let ae_signer = peer_request_signer.clone();
         let ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
@@ -909,6 +942,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync::run_anti_entropy_loop(
                 ae_redis,
                 ae_allowlist,
+                ae_resolver,
                 ae_kels_url,
                 ae_signer,
                 ae_interval,
@@ -919,6 +953,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // SAD anti-entropy loop
         let sad_ae_redis = redis.clone();
         let sad_ae_allowlist = allowlist.clone();
+        let sad_ae_resolver = Arc::clone(&address_resolver);
         let sad_ae_signer = peer_request_signer.clone();
         let sad_ae_sadstore_url = config.sadstore_url().clone();
         let sad_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
@@ -926,6 +961,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync::run_sad_anti_entropy_loop(
                 sad_ae_redis,
                 sad_ae_allowlist,
+                sad_ae_resolver,
                 sad_ae_signer,
                 sad_ae_sadstore_url,
                 sad_ae_interval,
@@ -938,6 +974,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         // ever propagating to the parking peer.
         let iel_ae_redis = redis.clone();
         let iel_ae_allowlist = allowlist.clone();
+        let iel_ae_resolver = Arc::clone(&address_resolver);
         let iel_ae_signer = peer_request_signer.clone();
         let iel_ae_sadstore_url = config.sadstore_url().clone();
         let iel_ae_interval = Duration::from_secs(config.anti_entropy_interval_secs);
@@ -945,6 +982,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync::run_iel_anti_entropy_loop(
                 iel_ae_redis,
                 iel_ae_allowlist,
+                iel_ae_resolver,
                 iel_ae_signer,
                 iel_ae_sadstore_url,
                 iel_ae_interval,

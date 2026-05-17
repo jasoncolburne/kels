@@ -533,7 +533,11 @@ pub(crate) fn deferred_deps_to_park_inputs(
 #[derive(Clone)]
 pub struct DrainExecutor {
     sadstore_client: kels_core::SadStoreClient,
+    /// Transitional — retained for parameter-shape compatibility while the
+    /// SharedAllowlist plumbing is deleted in the next sub-gap.
+    #[allow(dead_code)]
     allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     pending: PendingMap,
     permits: Arc<tokio::sync::Semaphore>,
 }
@@ -542,12 +546,14 @@ impl DrainExecutor {
     pub fn new(
         sadstore_url: &str,
         allowlist: SharedAllowlist,
+        address_resolver: Arc<dyn kels_core::AddressResolver>,
         pending: PendingMap,
     ) -> Result<Self, KelsError> {
         let n = kels_core::env_usize("KELS_DEFERRED_DRAIN_PERMITS", 8);
         Ok(Self {
             sadstore_client: kels_core::SadStoreClient::new(sadstore_url)?,
             allowlist,
+            address_resolver,
             pending,
             permits: Arc::new(tokio::sync::Semaphore::new(n)),
         })
@@ -601,10 +607,16 @@ impl DrainExecutor {
         });
     }
 
-    async fn peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
-        let guard = self.allowlist.read().await;
-        let peer = guard.get(peer_kel_prefix)?;
-        Some(format!("http://sadstore.{}", peer.base_domain))
+    async fn peer_sadstore_url(&self, peer_iel_prefix: &cesr::Digest256) -> Option<String> {
+        let domain = self
+            .address_resolver
+            .resolve_domain(peer_iel_prefix)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(peer = %peer_iel_prefix, error = %e, "address resolver failed for peer/services");
+                None
+            })?;
+        Some(kels_core::service_url("sadstore", &domain))
     }
 
     /// Drain a single parked record: read → look up origin URL → acquire
@@ -755,11 +767,16 @@ pub struct SyncHandler {
     signer: Arc<dyn kels_core::PeerSigner>,
     /// Tracks the latest known SAID for each prefix
     local_saids: HashMap<cesr::Digest256, cesr::Digest256>,
-    /// Shared allowlist for peer URL lookups
+    /// Transitional shared allowlist (empty no-op; retired in the next
+    /// sub-gap).
+    #[allow(dead_code)]
     allowlist: SharedAllowlist,
+    /// Federation-aware peer URL resolver (replaces the SharedAllowlist
+    /// URL-lookup callsites). Keyed by peer IEL prefix.
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     /// Tracks recently stored events to prevent Redis feedback loop
     recently_stored: RecentlyStoredFromGossip,
-    /// Per-peer fetch rate limiting: maps peer_kel_prefix -> (count, window_start)
+    /// Per-peer fetch rate limiting: maps peer IEL prefix -> (count, window_start)
     peer_fetch_counts: HashMap<cesr::Digest256, (u32, Instant)>,
     /// Redis connection for recording stale prefixes
     redis: OptionalRedis,
@@ -779,6 +796,7 @@ impl SyncHandler {
         sadstore_url: &str,
         mail_url: &str,
         allowlist: SharedAllowlist,
+        address_resolver: Arc<dyn kels_core::AddressResolver>,
         recently_stored: RecentlyStoredFromGossip,
         redis: OptionalRedis,
         signer: Arc<dyn kels_core::PeerSigner>,
@@ -793,6 +811,7 @@ impl SyncHandler {
             signer,
             local_saids: HashMap::new(),
             allowlist,
+            address_resolver,
             recently_stored,
             peer_fetch_counts: HashMap::new(),
             redis,
@@ -879,13 +898,20 @@ impl SyncHandler {
         }
     }
 
-    /// Get all peer KELS URLs from the allowlist
+    /// Enumerate `(peer_iel_prefix, kels_url)` for every currently-resolvable
+    /// federation peer. URL via the subdomain convention applied to the
+    /// peer's published base domain.
     async fn get_peer_kels_urls(&self) -> Vec<(cesr::Digest256, String)> {
-        let guard = self.allowlist.read().await;
-        guard
-            .values()
-            .map(|peer| (peer.kel_prefix, format!("http://kels.{}", peer.base_domain)))
-            .collect()
+        match self.address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("kels", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "address resolver list_domains failed; returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Process a gossip event
@@ -1396,11 +1422,18 @@ impl SyncHandler {
         }
     }
 
-    /// Derive a peer's SADStore URL from their base domain.
-    async fn get_peer_sadstore_url(&self, peer_kel_prefix: &cesr::Digest256) -> Option<String> {
-        let guard = self.allowlist.read().await;
-        let peer = guard.get(peer_kel_prefix)?;
-        Some(format!("http://sadstore.{}", peer.base_domain))
+    /// Derive a peer's SADStore URL from its published base domain via
+    /// the subdomain convention.
+    async fn get_peer_sadstore_url(&self, peer_iel_prefix: &cesr::Digest256) -> Option<String> {
+        let domain = self
+            .address_resolver
+            .resolve_domain(peer_iel_prefix)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(peer = %peer_iel_prefix, error = %e, "address resolver failed for peer/services");
+                None
+            })?;
+        Some(kels_core::service_url("sadstore", &domain))
     }
 
     /// Handle an announcement from a peer.
@@ -1630,6 +1663,7 @@ pub async fn run_sync_handler(
     mut event_rx: mpsc::Receiver<GossipEvent>,
     command_tx: mpsc::Sender<GossipCommand>,
     allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     recently_stored: RecentlyStoredFromGossip,
     redis: OptionalRedis,
     signer: Arc<dyn kels_core::PeerSigner>,
@@ -1641,6 +1675,7 @@ pub async fn run_sync_handler(
         &sadstore_url,
         &mail_url,
         allowlist,
+        address_resolver,
         recently_stored,
         redis,
         signer,
@@ -1986,10 +2021,12 @@ async fn drain_stale_prefixes(
 pub async fn run_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     local_kels_url: String,
     signer: Arc<dyn PeerSigner>,
     interval: Duration,
 ) {
+    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match KelsClient::new(&local_kels_url) {
         Ok(c) => c,
         Err(e) => {
@@ -2001,12 +2038,15 @@ pub async fn run_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://kels.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("kels", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -2282,10 +2322,12 @@ pub async fn record_sad_stale_prefix(
 pub async fn run_sad_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
 ) {
+    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match kels_core::SadStoreClient::new(&sadstore_url) {
         Ok(c) => c,
         Err(e) => {
@@ -2297,12 +2339,15 @@ pub async fn run_sad_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://sadstore.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("sadstore", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "SAD AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -2746,10 +2791,12 @@ pub async fn record_iel_stale_prefix(
 pub async fn run_iel_anti_entropy_loop(
     redis: Arc<redis::aio::ConnectionManager>,
     allowlist: SharedAllowlist,
+    address_resolver: Arc<dyn kels_core::AddressResolver>,
     signer: Arc<dyn kels_core::PeerSigner>,
     sadstore_url: String,
     interval: Duration,
 ) {
+    let _ = allowlist; // transitional — see SharedAllowlist note in lib.rs.
     let local_client = match kels_core::SadStoreClient::new(&sadstore_url) {
         Ok(c) => c,
         Err(e) => {
@@ -2761,12 +2808,15 @@ pub async fn run_iel_anti_entropy_loop(
     loop {
         tokio::time::sleep(interval).await;
 
-        let peers: Vec<(cesr::Digest256, String)> = {
-            let guard = allowlist.read().await;
-            guard
-                .values()
-                .map(|p| (p.kel_prefix, format!("http://sadstore.{}", p.base_domain)))
-                .collect()
+        let peers: Vec<(cesr::Digest256, String)> = match address_resolver.list_domains().await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|(iel, domain)| (iel, kels_core::service_url("sadstore", &domain)))
+                .collect(),
+            Err(e) => {
+                debug!(error = %e, "IEL AE loop: address resolver list_domains failed");
+                Vec::new()
+            }
         };
 
         if peers.is_empty() {
@@ -3154,17 +3204,39 @@ mod tests {
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
         let signer: Arc<dyn kels_core::PeerSigner> = Arc::new(TestSigner);
+        let address_resolver: Arc<dyn kels_core::AddressResolver> =
+            Arc::new(TestAddressResolver);
         SyncHandler::new(
             "http://localhost:8080",
             "http://localhost:8081",
             "http://localhost:8083",
             allowlist,
+            address_resolver,
             recently_stored,
             None,
             signer,
             None,
         )
         .unwrap()
+    }
+
+    /// Empty resolver for unit tests — always returns None / empty
+    /// pairs. Test handlers don't exercise URL lookup paths.
+    struct TestAddressResolver;
+
+    #[async_trait::async_trait]
+    impl kels_core::AddressResolver for TestAddressResolver {
+        async fn resolve_domain(
+            &self,
+            _peer_identity: &cesr::Digest256,
+        ) -> Result<Option<String>, kels_core::KelsError> {
+            Ok(None)
+        }
+        async fn list_domains(
+            &self,
+        ) -> Result<Vec<(cesr::Digest256, String)>, kels_core::KelsError> {
+            Ok(Vec::new())
+        }
     }
 
     // ==================== Constants Tests ====================
@@ -3232,6 +3304,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<GossipEvent>(10);
         let allowlist = Arc::new(RwLock::new(HashMap::new()));
         let recently_stored = Arc::new(RwLock::new(HashMap::new()));
+        let address_resolver: Arc<dyn kels_core::AddressResolver> =
+            Arc::new(TestAddressResolver);
 
         // Drop the sender to close the channel
         drop(event_tx);
@@ -3245,6 +3319,7 @@ mod tests {
             event_rx,
             command_tx,
             allowlist,
+            address_resolver,
             recently_stored,
             None,
             signer,
