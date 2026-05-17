@@ -70,7 +70,7 @@ The two policies share the same member set and differ only in threshold shape. T
 
 `identity(X)` is a DSL leaf that is satisfied when an event is anchored under the current `auth_policy` of IEL `X`. It resolves through the IEL prefix at evaluation time, so member identities can evolve their internal `auth_policy` (e.g., rotating gossip-service keys) without invalidating the federation `auth_policy` that references them.
 
-`identity(X)` is distinct from `endorse(KEL_PREFIX)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `identity(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
+`identity(X)` is distinct from `endorse(kel_prefix)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `identity(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
 
 ### Membership is the policy
 
@@ -117,23 +117,26 @@ This is fully deterministic. Given the peer's identity prefix (which the federat
 
 ### Address SAD schema
 
-The `content` field of each `Upd` on the address SEL carries:
+The `content` field of each `Upd` on the address SEL is the SAID of an address SAD object stored in the sadstore. `said` is the SAID computed from the SAD content per the standard SAID derivation. The chain topic (`kels/sel/v1/peer/addresses`) is encoded in the SEL prefix, not in the SAD.
 
 ```
 {
+  "said": "K...",
+  "read_policy": "K...",
   "endpoints": [
     { "address": "203.0.113.4:4001", "region": "us-east" },
-    { "address": "[2001:db8::4]:4001", "region": "us-east" }
+    { "address": "[2001:db8::4]:4001" }
   ]
 }
 ```
 
 - `endpoints` is an array. Multi-address support is first-class — peers commonly publish IPv4/IPv6 pairs, regional alternates, or transitional endpoints during a migration.
 - `address` is a TCP gossip endpoint, `host:port`. Gossip carries its own transport (ML-KEM-1024 key exchange, ML-DSA-65/87 signatures, AES-GCM-256 sessions); the published address is the network endpoint only.
-- `region` is optional, opaque, free-form (`"us-east"`, `"eu-west"`, etc.). Latency-aware clients may prefer in-region endpoints; absence is meaningful (peer didn't tag region).
+- `region` is optional, opaque, free-form (`"us-east"`, `"eu-west"`, etc.) — the IPv6 entry above omits it for illustration. Latency-aware clients may prefer in-region endpoints; absence is meaningful (peer didn't tag region).
+- `read_policy` is the SAID of a policy SAD with expression `identity(FEDERATION_IEL_PREFIX)`. Per [sadstore.md §Custody](sadstore.md#custody-per-sad-object-authority), this gates fetch-time access via `evaluate_signed_policy` against a `SignedRequest`'s verified prefix set — `identity(FED_IEL)` resolves to the federation IEL's current `auth_policy`, so only currently-authorized federation members can fetch the endpoints body. The SEL chain itself (`Icp`, `Upd`, `Sea`) still gossips publicly (custody is forbidden on chain events per `sadstore.md`); only the per-object SAD content is gated. External observers can verify the chain shape and the federation IEL but cannot enumerate peer endpoints.
 - **No `role` field, by design.** Role-bearing self-declarations would let an identity holder elevate their own privileges without going through the federation `governance_policy`. Capabilities are determined by what the federation IEL authorizes the peer to do; a peer cannot self-declare additional capabilities.
 
-The current address is whatever the latest accepted `Upd` on the chain says. Address rotation is a standard SEL `Upd`; revocation is implicit (publish a new `Upd`).
+The current address is whatever the latest accepted `Upd` on the chain says. Address rotation is `[Upd, Sea]` per the Sea-after-Upd ratchet (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern)); revocation is implicit (publish a new `Upd`, sealed by the trailing `Sea`). Conforming tooling never produces an Upd-tailed address SEL.
 
 ## Discovery flow
 
@@ -198,7 +201,7 @@ governance threshold M(n) =
 
 - Floor of 3 prevents trivial collusion in small federations.
 - The 6-member step bumps the bar to 4 before one-third scaling takes over.
-- One-third-quorum scaling at larger sizes is KERI-inspired (`F+1` immunity bound).
+- One-third-quorum scaling at larger sizes is KERI-inspired (`F+1` immunity bound, where `F` is the max number of byzantine members the threshold tolerates — the policy is satisfied as long as `n − F` honest members remain).
 - When n crosses a stair boundary (5 → 6 or 9 → 10), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
 
 **The IEL verifier does not enforce the formula.** A federation that chose a different M(n) would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the libkels federation-policy-shape helper (next subsection) — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol, at the cost of consumers no longer being able to verify the standard shape.
@@ -229,13 +232,17 @@ A new federation is born via a single Icp event on a fresh federation IEL. The c
 
 ### Roles and procedure
 
+The ceremony has two roles and four logical phases. Concrete CLI mechanics — which commands run where, in what order — live in [discovery.md §Bootstrapping the federation](discovery.md#bootstrapping-the-federation). This subsection gives the design-level overview.
+
 - **Coordinator** — one founding peer is designated coordinator for the ceremony. Coordinator is an operational role (one-shot, ceremony-scoped), not a protocol role.
-- **Founding members** — each prepares a signature on the proposed federation IEL Icp event using its founding identity (KEL+IEL prepared in advance).
-- The coordinator's `kels` and `sadstore` services are reachable over HTTP at a domain known out-of-band to the founding operators (chat, ticketing, runbook — not a runtime config of the gossip service).
-- **Signature collection.** Each founding member submits its signature on the Icp candidate to the coordinator's `kels` and `sadstore` services via standard HTTP submit endpoints. When all required signatures are present, the Icp event is accepted on the coordinator's node.
-- **Redistribution.** The coordinator pushes the accepted federation IEL to every other founding node via the `transfer_*_events` CLI (the existing point-to-point event-transfer abstractions, parameterized with the coordinator's stores as the source).
-- **Address SELs.** Each founding member's address SEL (`Icp` + initial `Upd` carrying that member's endpoints) flows through the same `transfer_*_events` mechanism — either bundled with the federation IEL push, or as a follow-up pass.
-- **Mesh formation.** Once every founding node's sadstore holds the federation IEL and every other member's address SEL — and the founding members' KELs are in the local kels service for anchor verification — each node's gossip service can compute peer SEL prefixes and resolve endpoints by querying its local services. The HyParView initial-view set populates from this resolution, and gossip mesh formation proceeds normally. From there, propagation runs as announcements (PlumTree) with dependency tracking for out-of-order arrivals and anti-entropy filling any remaining gaps.
+- **Founding members** — each holds a prepared founding identity (KEL + IEL) and participates in producing the federation IEL `Icp` event.
+
+Logical phases:
+
+1. **Anchor.** Each founding member anchors the proposed federation IEL `Icp` SAID in its own KEL via a tier-2 `Rot`. This is the cryptographic act that constitutes the member's endorsement of the `Icp`.
+2. **Gather.** Each founding member pushes its identity bundle (KEL + IEL + address SEL) to the coordinator's local kels/sadstore services so the coordinator can verify the `Icp`'s anchor checks.
+3. **Submit.** The coordinator submits the `Icp` to its own kels/sadstore; the anchor checks succeed because the contributing KELs are now present locally.
+4. **Redistribute.** The coordinator pushes the accepted federation IEL plus every founding member's address SEL bundle to every other founding node, after which gossip mesh formation proceeds normally — PlumTree announcements drive primary propagation, dependency tracking handles out-of-order arrivals, anti-entropy fills any remaining gaps.
 
 The Icp's `auth_policy` and `governance_policy` are agreed out-of-band by the founding operators. There is no protocol-level "voting" on the Icp — the chain begins with whatever shape its founders cryptographically commit to, and consumers of the federation accept that shape on the strength of the founders' identities.
 
@@ -282,7 +289,8 @@ If the federation IEL goes contested (concurrent `Evl`s land, divergence is dete
 3. **Bootstrap a fresh federation IEL.** Same ceremony as initial bootstrap: choose a primary, collect Icp signatures from the participating operators, assemble the new Icp, distribute the new federation IEL to all founding nodes via `transfer_*_events`.
 4. **Distribute the new prefix as runtime override.** Every gossip node sets `FEDERATION_IEL_PREFIX` to the new prefix and restarts. Each node logs a startup warning (runtime value differs from compile-time default); this is expected and acknowledged.
 5. **Verify mesh comes up against new prefix.** Discovery flow on each node now reads the new federation IEL's `auth_policy`, walks the founding members' address SELs (unchanged — they're under the peers' own identities, not under the federation IEL), and reconnects.
-6. **Schedule a binary rebuild.** At leisure, rebuild binaries with the compile-time default updated to the new prefix and roll the deployment. Once defaults align, `FEDERATION_IEL_PREFIX` can be unset.
+6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `read_policy` references the *new* federation IEL prefix. Existing address SADs reference a `read_policy` SAD naming the old (now contested-terminal) federation IEL; `identity(OLD_FED_IEL)` resolves to a dead policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
+7. **Schedule a binary rebuild.** At leisure, rebuild binaries with the compile-time default updated to the new prefix and roll the deployment. Once defaults align, `FEDERATION_IEL_PREFIX` can be unset.
 
 ### What survives recovery
 
@@ -301,7 +309,7 @@ A contested federation IEL stays contested forever — that is the structural me
 - [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
 - [primitives/iel/events.md](../primitives/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
-- [protocol-doctrine.md §Multi-Party Governance Synchronization](../protocol-doctrine.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
+- [primitives/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
 - [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).
 - [discovery.md](discovery.md) — node-side discovery (`auth_policy` enumeration + address SEL walks).
 - [peer-identity.md](peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.

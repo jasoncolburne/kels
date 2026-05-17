@@ -43,7 +43,7 @@ A new federation is created by, first, bringing at least three nodes online. Onc
 2. All peers invoke their identity service CLI to anchor the `Icp` SAID in their KEL via a `Rot` (tier-2). The `Icp` event is delivered out of band.
 3. All peers invoke their identity service CLI to create and anchor address SEL events `[Icp, Upd, Sea]`. The tooling should enforce batched submission of all three events. Shape:
   - `Icp(identity_prefix, "kels/sel/v1/peer/addresses")` — unsigned; chain prefix is `compute_sel_prefix(identity_prefix, "kels/sel/v1/peer/addresses")`
-  - `Upd(address_object_prefix)` — tier-1
+  - `Upd(address_object_prefix)` — tier-1; `address_object_prefix` is the SAID of the address SAD object (endpoints list) stored in the sadstore
   - `Sea` — tier-2 (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern))
 4. Non-coordinating peers invoke their identity service CLI with the parameters `sync --sync-identity-to={COORDINATING DOMAIN}`, pushing their identity KELs, IELs, and address SELs to the coordinator's services.
 5. The coordinating node submits the original federation IEL `Icp`. The peers' KEL `Rot` anchors are already on the coordinator from step 4, so the `Icp` is accepted on submission.

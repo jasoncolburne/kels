@@ -141,7 +141,6 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 | `FEDERATION_IEL_PREFIX` | Runtime override of the compile-time federation IEL prefix (see [federation.md §Configuration](federation.md#configuration)) | (optional) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
-| `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |
 | `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
@@ -158,22 +157,21 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 
 ### HSM-backed gossip identity
 
-Gossip nodes use persistent HSM-backed identities. Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). See [peer-identity.md](peer-identity.md) for the gossip identity model.
+Gossip identity, accepted algorithms, key custody, and the handshake authorization check against the federation IEL are documented in [peer-identity.md](peer-identity.md). This subsection covers the **transport-layer handshake mechanics** that establish the encrypted session once authorization has succeeded.
 
-- Each node's identity is cryptographically bound to ML-DSA-65 or ML-DSA-87 keys in the HSM — the identity does not change across restarts
-- The peer identity prefix (44-char CESR-encoded; a single-KEL IEL prefix per [peer-identity.md](peer-identity.md)) identifies the node in the gossip mesh
-- A node must be listed in the federation IEL's current `auth_policy` to be authorized; handshakes from unauthorized identities are rejected
-- Only ML-DSA-65/87 peers are accepted (P-256 peers are rejected)
-- The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
-  1. Exchange 44-byte prefixes
-  2. Initiator generates ML-KEM-1024 keypair, sends encapsulation key (qb64)
-  3. Acceptor encapsulates, sends ciphertext back (qb64)
-  4. Both derive 32-byte shared secret
-  5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65/87
-  6. Exchange and verify signatures against peer's KEL public key
-  7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
-- Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security
-- See [Peer Identity](peer-identity.md) for the handshake authorization model (federation IEL `auth_policy` check)
+Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
+
+The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
+
+1. Exchange 44-byte prefixes
+2. Initiator generates ML-KEM-1024 keypair, sends encapsulation key (qb64)
+3. Acceptor encapsulates, sends ciphertext back (qb64)
+4. Both derive 32-byte shared secret
+5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65/87
+6. Exchange and verify signatures against peer's KEL public key
+7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
+
+Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security.
 
 ### Delta-based sync with full-fetch fallback
 
