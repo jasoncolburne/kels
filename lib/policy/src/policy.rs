@@ -197,9 +197,7 @@ fn collect_iel_prefixes(node: &PolicyNode, prefixes: &mut BTreeSet<cesr::Digest2
 
 fn collect_policy_saids(node: &PolicyNode, saids: &mut BTreeSet<cesr::Digest256>) {
     match node {
-        PolicyNode::Kel(_)
-        | PolicyNode::Iel(_)
-        | PolicyNode::Delegate(_, _) => {}
+        PolicyNode::Kel(_) | PolicyNode::Iel(_) | PolicyNode::Delegate(_, _) => {}
         PolicyNode::Weighted(_, pairs) => {
             for (node, _) in pairs {
                 collect_policy_saids(node, saids);
@@ -239,12 +237,8 @@ mod tests {
     fn test_create_poisonable() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let policy = Policy::build(
-            &format!("kel({a})"),
-            Some(&format!("kel({b})")),
-            false,
-        )
-        .unwrap();
+        let policy =
+            Policy::build(&format!("kel({a})"), Some(&format!("kel({b})")), false).unwrap();
         assert!(policy.is_poisonable());
         assert!(!policy.is_immune());
     }
@@ -259,11 +253,7 @@ mod tests {
     fn test_create_immune_with_poison_rejected() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let result = Policy::build(
-            &format!("kel({a})"),
-            Some(&format!("kel({b})")),
-            true,
-        );
+        let result = Policy::build(&format!("kel({a})"), Some(&format!("kel({b})")), true);
         assert!(result.is_err());
     }
 
@@ -271,12 +261,8 @@ mod tests {
     fn test_create_with_poison() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let policy = Policy::build(
-            &format!("kel({a})"),
-            Some(&format!("kel({b})")),
-            false,
-        )
-        .unwrap();
+        let policy =
+            Policy::build(&format!("kel({a})"), Some(&format!("kel({b})")), false).unwrap();
         assert!(policy.poison.is_some());
         assert_eq!(policy.poison.as_deref(), Some(format!("kel({b})").as_str()));
     }
@@ -286,12 +272,7 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let p1 = Policy::build(&format!("kel({a})"), None, false).unwrap();
-        let p2 = Policy::build(
-            &format!("kel({a})"),
-            Some(&format!("kel({b})")),
-            false,
-        )
-        .unwrap();
+        let p2 = Policy::build(&format!("kel({a})"), Some(&format!("kel({b})")), false).unwrap();
         assert_ne!(p1.said, p2.said);
     }
 
@@ -443,12 +424,8 @@ mod tests {
     fn test_serialization_includes_poison() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let policy = Policy::build(
-            &format!("kel({a})"),
-            Some(&format!("kel({b})")),
-            false,
-        )
-        .unwrap();
+        let policy =
+            Policy::build(&format!("kel({a})"), Some(&format!("kel({b})")), false).unwrap();
         let json = serde_json::to_string(&policy).unwrap();
         assert!(json.contains("poison"));
     }

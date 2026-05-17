@@ -34,8 +34,7 @@ use tracing::warn;
 
 use kels_core::{
     AnchoredIelResolver, HttpIelSource, HttpKelSource, IelResolver, KelsError, PagedIelSource,
-    PagedKelSource, PolicyChecker, SadStoreClient, UnavailableIelResolver,
-    verify_identity_events,
+    PagedKelSource, PolicyChecker, SadStoreClient, UnavailableIelResolver, verify_identity_events,
 };
 use kels_policy::{
     AnchoredPolicyChecker, FederationPolicyShape, FederationPolicyShapeError, Policy,
@@ -66,7 +65,9 @@ pub fn resolve_federation_iel_prefix() -> Result<Digest256, FederationAuthError>
         );
     }
     Digest256::from_qb64(&raw).map_err(|e| {
-        FederationAuthError::Config(format!("FEDERATION_IEL_PREFIX is not a valid CESR digest: {e}"))
+        FederationAuthError::Config(format!(
+            "FEDERATION_IEL_PREFIX is not a valid CESR digest: {e}"
+        ))
     })
 }
 
@@ -139,10 +140,7 @@ struct SadStoreSourcedPolicyResolver {
 
 #[async_trait::async_trait]
 impl PolicyResolver for SadStoreSourcedPolicyResolver {
-    async fn resolve_policy(
-        &self,
-        said: &Digest256,
-    ) -> Result<Policy, kels_policy::PolicyError> {
+    async fn resolve_policy(&self, said: &Digest256) -> Result<Policy, kels_policy::PolicyError> {
         let value = self.client.get_sad_object(said).await.map_err(|e| {
             kels_policy::PolicyError::ResolutionError(format!("fetch {}: {}", said, e))
         })?;
@@ -192,34 +190,31 @@ impl FederationEvaluator {
                 FederationAuthError::Config(format!("kel source for {kels_url}: {e}"))
             })?,
         );
-        let iel_source: Arc<dyn PagedIelSource + Send + Sync> = Arc::new(
-            HttpIelSource::new(sadstore_url).map_err(|e| {
+        let iel_source: Arc<dyn PagedIelSource + Send + Sync> =
+            Arc::new(HttpIelSource::new(sadstore_url).map_err(|e| {
                 FederationAuthError::Config(format!("iel source for {sadstore_url}: {e}"))
-            })?,
-        );
+            })?);
 
         let inner_iel_resolver: Arc<dyn IelResolver + Send + Sync> =
             Arc::new(UnavailableIelResolver);
-        let inner_checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(
-            AnchoredPolicyChecker::new(
+        let inner_checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AnchoredPolicyChecker::new(
                 Arc::clone(&kel_source),
                 Arc::clone(&policy_resolver),
                 Arc::clone(&inner_iel_resolver),
-            ),
-        );
+            ));
         let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(AnchoredIelResolver::new(
             Arc::clone(&iel_source),
             inner_checker,
             kels_core::page_size(),
             kels_core::max_pages(),
         ));
-        let iel_aware_checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(
-            AnchoredPolicyChecker::new(
+        let iel_aware_checker: Arc<dyn PolicyChecker + Send + Sync> =
+            Arc::new(AnchoredPolicyChecker::new(
                 Arc::clone(&kel_source),
                 Arc::clone(&policy_resolver),
                 Arc::clone(&iel_resolver),
-            ),
-        );
+            ));
 
         Ok(Self {
             policy_resolver,
@@ -277,12 +272,14 @@ pub async fn walk_federation_iel(
             tip.said
         ))
     })?;
-    let gov_policy_said = verification.governance_policy_at(&tip.said).ok_or_else(|| {
-        FederationAuthError::IelVerification(format!(
-            "governance_policy not recorded at tip {} (chain integrity)",
-            tip.said
-        ))
-    })?;
+    let gov_policy_said = verification
+        .governance_policy_at(&tip.said)
+        .ok_or_else(|| {
+            FederationAuthError::IelVerification(format!(
+                "governance_policy not recorded at tip {} (chain integrity)",
+                tip.said
+            ))
+        })?;
 
     let auth_policy = evaluator
         .policy_resolver
@@ -313,9 +310,7 @@ fn map_verification_error(err: KelsError) -> FederationAuthError {
         KelsError::ContestedIel(_) => FederationAuthError::Contested,
         KelsError::IelDecommissioned(_) => FederationAuthError::Decommissioned,
         KelsError::IelDivergent(_) => FederationAuthError::Divergent,
-        KelsError::NotFound(_) => {
-            FederationAuthError::FederationIelNotFound(Digest256::default())
-        }
+        KelsError::NotFound(_) => FederationAuthError::FederationIelNotFound(Digest256::default()),
         other => FederationAuthError::IelVerification(other.to_string()),
     }
 }
@@ -380,10 +375,7 @@ mod tests {
             std::env::remove_var("FEDERATION_IEL_PREFIX");
         }
         let resolved = resolve_federation_iel_prefix().expect("default parses");
-        assert_eq!(
-            resolved.qb64(),
-            COMPILE_TIME_FEDERATION_IEL_PREFIX
-        );
+        assert_eq!(resolved.qb64(), COMPILE_TIME_FEDERATION_IEL_PREFIX);
     }
 
     // ==================== is_peer_authorized tests ====================
@@ -400,9 +392,7 @@ mod tests {
     // e2e harness (see `docs/audit/deviations/README.md`).
 
     use async_trait::async_trait;
-    use kels_core::{
-        IdentityEvent, IdentityEventKind, IelChainPositionBatch, IelSatisfaction,
-    };
+    use kels_core::{IdentityEvent, IdentityEventKind, IelChainPositionBatch, IelSatisfaction};
     use kels_policy::{InMemoryPolicyResolver, Policy};
     use std::collections::BTreeMap;
 
@@ -450,19 +440,17 @@ mod tests {
         ) -> Result<IelSatisfaction, KelsError> {
             Err(KelsError::NotFound("not used".to_string()))
         }
-        async fn resolve_identity_for_event(
-            &self,
-            _: &Digest256,
-        ) -> Result<Digest256, KelsError> {
+        async fn resolve_identity_for_event(&self, _: &Digest256) -> Result<Digest256, KelsError> {
             Err(KelsError::NotFound("not used".to_string()))
         }
         async fn resolve_current_auth_policy(
             &self,
             identity: &Digest256,
         ) -> Result<Digest256, KelsError> {
-            self.auth_policies.get(identity).copied().ok_or_else(|| {
-                KelsError::NotFound(format!("IEL {identity} not in test resolver"))
-            })
+            self.auth_policies
+                .get(identity)
+                .copied()
+                .ok_or_else(|| KelsError::NotFound(format!("IEL {identity} not in test resolver")))
         }
     }
 
@@ -516,7 +504,11 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn fixture(
         members: &[(&str, &str)],
-    ) -> (FederationState, FederationEvaluator, BTreeMap<Digest256, Digest256>) {
+    ) -> (
+        FederationState,
+        FederationEvaluator,
+        BTreeMap<Digest256, Digest256>,
+    ) {
         let mut policies = Vec::new();
         let mut iel_to_policy_said = BTreeMap::new();
         let mut iel_to_kel = BTreeMap::new();
@@ -526,8 +518,8 @@ mod tests {
             let iel = d(iel_label);
             let kel = d(kel_label);
             // Each peer IEL's current authPolicy is `kel(peer_kel)`.
-            let peer_policy = Policy::build(&format!("kel({kel})"), None, true)
-                .expect("peer policy builds");
+            let peer_policy =
+                Policy::build(&format!("kel({kel})"), None, true).expect("peer policy builds");
             iel_to_policy_said.insert(iel, peer_policy.said);
             iel_to_kel.insert(iel, kel);
             policies.push(peer_policy);
@@ -536,22 +528,19 @@ mod tests {
 
         // Federation authPolicy is `any(iel(X1), ..., iel(Xn))`.
         let inner: Vec<String> = member_iels.iter().map(|i| format!("iel({i})")).collect();
-        let fed_auth_policy =
-            Policy::build(&format!("any({})", inner.join(", ")), None, true)
-                .expect("federation authPolicy builds");
+        let fed_auth_policy = Policy::build(&format!("any({})", inner.join(", ")), None, true)
+            .expect("federation authPolicy builds");
         let fed_auth_policy_said = fed_auth_policy.said;
         policies.push(fed_auth_policy);
 
         let policy_resolver: Arc<dyn PolicyResolver + Send + Sync> =
             Arc::new(InMemoryPolicyResolver::new(policies));
-        let iel_resolver: Arc<dyn IelResolver + Send + Sync> =
-            Arc::new(InMemoryIelResolver {
-                auth_policies: iel_to_policy_said,
-            });
+        let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(InMemoryIelResolver {
+            auth_policies: iel_to_policy_said,
+        });
         let iel_aware_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
             Arc::new(DummyPolicyChecker);
-        let iel_source: Arc<dyn kels_core::PagedIelSource + Send + Sync> =
-            Arc::new(DummyIelSource);
+        let iel_source: Arc<dyn kels_core::PagedIelSource + Send + Sync> = Arc::new(DummyIelSource);
 
         let evaluator = FederationEvaluator {
             policy_resolver,
@@ -647,10 +636,9 @@ mod tests {
         let auth_policy_said = auth_policy.said;
         let policy_resolver: Arc<dyn PolicyResolver + Send + Sync> =
             Arc::new(InMemoryPolicyResolver::new(vec![auth_policy]));
-        let iel_resolver: Arc<dyn IelResolver + Send + Sync> =
-            Arc::new(InMemoryIelResolver {
-                auth_policies: BTreeMap::new(),
-            });
+        let iel_resolver: Arc<dyn IelResolver + Send + Sync> = Arc::new(InMemoryIelResolver {
+            auth_policies: BTreeMap::new(),
+        });
         let evaluator = FederationEvaluator {
             policy_resolver,
             iel_resolver,

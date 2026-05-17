@@ -100,8 +100,11 @@ pub fn verify_federation_policy_shape(
         FederationPolicyShapeError::AuthPolicyShape,
     )?
     .1;
-    let (gov_threshold, gov_members) =
-        extract_iel_threshold(&gov_ast, None, FederationPolicyShapeError::GovernancePolicyShape)?;
+    let (gov_threshold, gov_members) = extract_iel_threshold(
+        &gov_ast,
+        None,
+        FederationPolicyShapeError::GovernancePolicyShape,
+    )?;
 
     if auth_members != gov_members {
         return Err(FederationPolicyShapeError::MemberSetMismatch);
@@ -156,9 +159,7 @@ fn extract_iel_threshold(
         match child {
             PolicyNode::Iel(prefix) => {
                 if !members.insert(*prefix) {
-                    return Err(err_ctor(format!(
-                        "duplicate iel({prefix}) leaf"
-                    )));
+                    return Err(err_ctor(format!("duplicate iel({prefix}) leaf")));
                 }
             }
             _ => {
@@ -183,9 +184,7 @@ mod tests {
     use super::*;
 
     fn iels(n: usize) -> Vec<cesr::Digest256> {
-        (0..n)
-            .map(|i| test_digest(&format!("iel-{i}")))
-            .collect()
+        (0..n).map(|i| test_digest(&format!("iel-{i}"))).collect()
     }
 
     fn auth_expr(members: &[cesr::Digest256]) -> String {
@@ -266,7 +265,10 @@ mod tests {
         let auth = Policy::build(&auth_expr(&members), None, false).unwrap();
         let gov = Policy::build(&gov_expr(3, &members), None, true).unwrap();
         let err = verify_federation_policy_shape(&auth, &gov).unwrap_err();
-        assert!(matches!(err, FederationPolicyShapeError::AuthPolicyNotImmune));
+        assert!(matches!(
+            err,
+            FederationPolicyShapeError::AuthPolicyNotImmune
+        ));
     }
 
     #[test]
@@ -288,7 +290,10 @@ mod tests {
         let auth = Policy::build(&gov_expr(2, &members), None, true).unwrap();
         let gov = Policy::build(&gov_expr(3, &members), None, true).unwrap();
         let err = verify_federation_policy_shape(&auth, &gov).unwrap_err();
-        assert!(matches!(err, FederationPolicyShapeError::AuthPolicyShape(_)));
+        assert!(matches!(
+            err,
+            FederationPolicyShapeError::AuthPolicyShape(_)
+        ));
     }
 
     #[test]
@@ -309,7 +314,10 @@ mod tests {
         let gov_members = vec![iel_0, iel_1, kel_p];
         let gov = Policy::build(&gov_expr(3, &gov_members), None, true).unwrap();
         let err = verify_federation_policy_shape(&auth, &gov).unwrap_err();
-        assert!(matches!(err, FederationPolicyShapeError::AuthPolicyShape(_)));
+        assert!(matches!(
+            err,
+            FederationPolicyShapeError::AuthPolicyShape(_)
+        ));
     }
 
     #[test]
@@ -343,11 +351,17 @@ mod tests {
     fn test_duplicate_member_rejected() {
         let m = test_digest("iel-dup");
         let auth = Policy::build(&format!("any(iel({m}), iel({m}))"), None, true).unwrap();
-        let gov =
-            Policy::build(&format!("threshold(3, [iel({m}), iel({m}), iel({m})])"), None, true)
-                .unwrap();
+        let gov = Policy::build(
+            &format!("threshold(3, [iel({m}), iel({m}), iel({m})])"),
+            None,
+            true,
+        )
+        .unwrap();
         let err = verify_federation_policy_shape(&auth, &gov).unwrap_err();
-        assert!(matches!(err, FederationPolicyShapeError::AuthPolicyShape(_)));
+        assert!(matches!(
+            err,
+            FederationPolicyShapeError::AuthPolicyShape(_)
+        ));
     }
 
     #[test]
@@ -382,6 +396,9 @@ mod tests {
         let auth = Policy::build(&auth_all, None, true).unwrap();
         let gov = Policy::build(&gov_expr(3, &members), None, true).unwrap();
         let err = verify_federation_policy_shape(&auth, &gov).unwrap_err();
-        assert!(matches!(err, FederationPolicyShapeError::AuthPolicyShape(_)));
+        assert!(matches!(
+            err,
+            FederationPolicyShapeError::AuthPolicyShape(_)
+        ));
     }
 }

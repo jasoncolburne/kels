@@ -1045,13 +1045,12 @@ async fn verify_custody_read(
     // cycle — see the matching comment in `verify_custody_write` above.
     let inner_iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
         Arc::new(kels_core::UnavailableIelResolver);
-    let inner_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
-        kels_policy::AnchoredPolicyChecker::new(
+    let inner_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+        Arc::new(kels_policy::AnchoredPolicyChecker::new(
             Arc::clone(&kel_source),
             Arc::clone(&policy_resolver_arc),
             Arc::clone(&inner_iel_resolver),
-        ),
-    );
+        ));
     let resolver_arc: Arc<RepositoryIelResolver> = Arc::new(RepositoryIelResolver::new(
         state.repo.clone(),
         Arc::clone(&inner_checker),
@@ -2644,11 +2643,9 @@ pub async fn submit_identity_events(
                 Arc::clone(&policy_resolver),
                 Arc::clone(&inner_iel_resolver),
             ));
-        let iel_resolver_outer: Arc<dyn kels_core::IelResolver + Send + Sync> =
-            Arc::new(RepositoryIelResolver::new(
-                state.repo.clone(),
-                Arc::clone(&inner_checker),
-            ));
+        let iel_resolver_outer: Arc<dyn kels_core::IelResolver + Send + Sync> = Arc::new(
+            RepositoryIelResolver::new(state.repo.clone(), Arc::clone(&inner_checker)),
+        );
         let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
             Arc::new(kels_policy::AnchoredPolicyChecker::new(
                 Arc::clone(&kel_source),

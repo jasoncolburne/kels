@@ -396,9 +396,7 @@ async fn evaluate_iel_anchored(
         )));
     }
 
-    let policy_said = iel_resolver
-        .resolve_current_auth_policy(iel_prefix)
-        .await?;
+    let policy_said = iel_resolver.resolve_current_auth_policy(iel_prefix).await?;
     // Mirror the `Policy(said)` branch's cycle-guard semantics for nested
     // policy resolution — the same SAID space, the same visited set.
     if !visited.insert(policy_said) {
@@ -428,7 +426,9 @@ async fn evaluate_iel_anchored(
     // already-recorded statuses (the outer policy may have evaluated the
     // same KEL prefix at a different scope first).
     for (prefix, status) in &verification.endorsements {
-        endorsements.entry(*prefix).or_insert_with(|| status.clone());
+        endorsements
+            .entry(*prefix)
+            .or_insert_with(|| status.clone());
     }
     let satisfied = verification.is_satisfied;
     nested.insert(policy_said, verification);
@@ -684,9 +684,7 @@ async fn evaluate_iel_signed(
         )));
     }
 
-    let policy_said = iel_resolver
-        .resolve_current_auth_policy(iel_prefix)
-        .await?;
+    let policy_said = iel_resolver.resolve_current_auth_policy(iel_prefix).await?;
     let verification = evaluate_signed_policy_inner(
         &policy_said,
         verified_prefixes,
@@ -700,7 +698,9 @@ async fn evaluate_iel_signed(
     iel_ctx.stack.remove(iel_prefix);
 
     for (prefix, status) in &verification.endorsements {
-        endorsements.entry(*prefix).or_insert_with(|| status.clone());
+        endorsements
+            .entry(*prefix)
+            .or_insert_with(|| status.clone());
     }
     let satisfied = verification.is_satisfied;
     nested.insert(policy_said, verification);
@@ -841,9 +841,10 @@ mod tests {
             &self,
             identity: &cesr::Digest256,
         ) -> Result<cesr::Digest256, KelsError> {
-            self.auth_policies.get(identity).copied().ok_or_else(|| {
-                KelsError::NotFound(format!("test IEL {identity} not in resolver"))
-            })
+            self.auth_policies
+                .get(identity)
+                .copied()
+                .ok_or_else(|| KelsError::NotFound(format!("test IEL {identity} not in resolver")))
         }
     }
 
@@ -889,10 +890,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_satisfied);
         assert_eq!(
@@ -909,10 +915,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.is_satisfied);
         assert_eq!(
@@ -948,10 +959,15 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_satisfied);
         assert_eq!(
@@ -983,10 +999,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store_a.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.is_satisfied);
     }
@@ -1004,10 +1025,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.is_satisfied);
         assert_eq!(
@@ -1028,10 +1054,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.is_satisfied);
         assert_eq!(
@@ -1053,10 +1084,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_satisfied);
         assert_eq!(
@@ -1090,10 +1126,15 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         // Threshold would be met (A endorsed), but poisonable policy means B's poison kills it
         assert!(!result.is_satisfied);
@@ -1172,10 +1213,15 @@ mod tests {
 
         let source = StoreKelSource::new(kel_store_a.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_satisfied);
     }
@@ -1213,10 +1259,15 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         // Admin poisoned → policy unsatisfied
         assert!(!result.is_satisfied);
@@ -1251,10 +1302,15 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         // B is not in poison_expression, so B's poison hash is ignored → still satisfied
         assert!(result.is_satisfied);
@@ -1296,10 +1352,15 @@ mod tests {
 
         let source = StoreKelSource::new(shared_store.as_ref());
         let resolver = InMemoryPolicyResolver::empty();
-        let result =
-            evaluate_anchored_policy(&policy, &credential_said, &source, &resolver, &StubIelResolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &policy,
+            &credential_said,
+            &source,
+            &resolver,
+            &StubIelResolver,
+        )
+        .await
+        .unwrap();
 
         // Only 1-of-2 admins poisoned → poison threshold not met → still satisfied
         assert!(result.is_satisfied);
@@ -1517,7 +1578,10 @@ mod tests {
 
         let result =
             evaluate_signed_policy(&outer.said, &verified, &policy_resolver, &iel_resolver).await;
-        assert!(result.is_err(), "expected loud error on unresolvable iel(X)");
+        assert!(
+            result.is_err(),
+            "expected loud error on unresolvable iel(X)"
+        );
     }
 
     #[tokio::test]
@@ -1571,8 +1635,7 @@ mod tests {
         let iel_a = test_digest("iel-a");
         let iel_b = test_digest("iel-b");
         let policy_a = Policy::build(&format!("iel({iel_b})"), None, true).unwrap();
-        let policy_b =
-            Policy::build(&format!("threshold(1, [iel({iel_a})])"), None, true).unwrap();
+        let policy_b = Policy::build(&format!("threshold(1, [iel({iel_a})])"), None, true).unwrap();
         let outer = Policy::build(&format!("iel({iel_a})"), None, true).unwrap();
         // Sanity: all three SAIDs must be distinct, otherwise the
         // visited-policy guard short-circuits before the iel-stack guard.
@@ -1580,15 +1643,10 @@ mod tests {
         assert_ne!(outer.said, policy_b.said);
         assert_ne!(policy_a.said, policy_b.said);
 
-        let policy_resolver = InMemoryPolicyResolver::new(vec![
-            policy_a.clone(),
-            policy_b.clone(),
-            outer.clone(),
-        ]);
-        let iel_resolver = InMemoryIelResolver::new(vec![
-            (iel_a, policy_a.said),
-            (iel_b, policy_b.said),
-        ]);
+        let policy_resolver =
+            InMemoryPolicyResolver::new(vec![policy_a.clone(), policy_b.clone(), outer.clone()]);
+        let iel_resolver =
+            InMemoryIelResolver::new(vec![(iel_a, policy_a.said), (iel_b, policy_b.said)]);
         let verified = std::collections::HashSet::new();
 
         let result =
@@ -1685,7 +1743,10 @@ mod tests {
                 .unwrap();
         assert!(result.is_satisfied);
         let calls = *iel_resolver.calls.lock().unwrap();
-        assert_eq!(calls, 1, "per-evaluation cache must short-circuit repeat iel(X)");
+        assert_eq!(
+            calls, 1,
+            "per-evaluation cache must short-circuit repeat iel(X)"
+        );
     }
 
     #[tokio::test]
@@ -1704,10 +1765,15 @@ mod tests {
         let policy_resolver = InMemoryPolicyResolver::new(vec![inner.clone(), outer.clone()]);
         let iel_resolver = InMemoryIelResolver::new(vec![(iel_x, inner.said)]);
 
-        let result =
-            evaluate_anchored_policy(&outer, &credential_said, &source, &policy_resolver, &iel_resolver)
-                .await
-                .unwrap();
+        let result = evaluate_anchored_policy(
+            &outer,
+            &credential_said,
+            &source,
+            &policy_resolver,
+            &iel_resolver,
+        )
+        .await
+        .unwrap();
         assert!(result.is_satisfied);
         assert!(result.nested_verifications.contains_key(&inner.said));
     }

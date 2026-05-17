@@ -76,7 +76,6 @@ pub enum ServiceError {
     FederationAuth(#[from] FederationAuthError),
 }
 
-
 /// Service configuration
 #[derive(Clone)]
 pub struct Config {
@@ -299,7 +298,8 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // iel-aware PolicyChecker, all bound to the local sadstore + kels
     // HTTP surfaces. Used for both federation IEL chain validation
     // (load_federation_state) and handshake authorization (is_peer_authorized).
-    let federation_evaluator = FederationEvaluator::new(&config.sadstore_url(), &config.kels_url())?;
+    let federation_evaluator =
+        FederationEvaluator::new(&config.sadstore_url(), &config.kels_url())?;
 
     // Transitional empty allowlist. Source of peer URLs (`base_domain`,
     // `gossip_addr`) was the registry-fetch path pre-#194; #195's address
@@ -407,15 +407,10 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     // peer-data sync) is gone — peer-address discovery moves to address
     // SELs in #195; until then the node just polls the federation IEL.
     loop {
-        let auth_check = match walk_federation_iel(
-            &federation_iel_prefix,
-            &federation_evaluator,
-        )
-        .await
+        let auth_check = match walk_federation_iel(&federation_iel_prefix, &federation_evaluator)
+            .await
         {
-            Ok(state) => {
-                is_peer_authorized(&state, &local_kel_prefix, &federation_evaluator).await
-            }
+            Ok(state) => is_peer_authorized(&state, &local_kel_prefix, &federation_evaluator).await,
             Err(e) => Err(e),
         };
         match auth_check {

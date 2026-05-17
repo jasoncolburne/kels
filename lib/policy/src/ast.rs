@@ -157,10 +157,7 @@ mod tests {
     fn test_display_weighted() {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
-        let node = PolicyNode::Weighted(
-            5,
-            vec![(PolicyNode::Kel(a), 3), (PolicyNode::Kel(b), 2)],
-        );
+        let node = PolicyNode::Weighted(5, vec![(PolicyNode::Kel(a), 3), (PolicyNode::Kel(b), 2)]);
         assert_eq!(
             node.to_string(),
             format!("weighted(5, [kel({a}):3, kel({b}):2])")

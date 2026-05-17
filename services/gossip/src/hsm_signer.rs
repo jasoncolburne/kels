@@ -163,7 +163,6 @@ impl KelsPeerVerifier {
 
         Ok(vk.clone())
     }
-
 }
 
 /// Verify a CESR-encoded signature against a public key. Free function so

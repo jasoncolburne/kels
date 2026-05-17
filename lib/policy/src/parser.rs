@@ -443,7 +443,10 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let node = parse(&format!("any(kel({a}), kel({b}))")).unwrap();
-        assert_eq!(node.to_string(), format!("threshold(1, [kel({a}), kel({b})])"));
+        assert_eq!(
+            node.to_string(),
+            format!("threshold(1, [kel({a}), kel({b})])")
+        );
     }
 
     #[test]
@@ -451,7 +454,10 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let node = parse(&format!("all(kel({a}), kel({b}))")).unwrap();
-        assert_eq!(node.to_string(), format!("threshold(2, [kel({a}), kel({b})])"));
+        assert_eq!(
+            node.to_string(),
+            format!("threshold(2, [kel({a}), kel({b})])")
+        );
     }
 
     #[test]
@@ -478,10 +484,7 @@ mod tests {
         let node = parse(&format!("weighted(5, [kel({a}):3, kel({b}):2])")).unwrap();
         assert_eq!(
             node,
-            PolicyNode::Weighted(
-                5,
-                vec![(PolicyNode::Kel(a), 3), (PolicyNode::Kel(b), 2),]
-            )
+            PolicyNode::Weighted(5, vec![(PolicyNode::Kel(a), 3), (PolicyNode::Kel(b), 2),])
         );
     }
 
@@ -498,9 +501,8 @@ mod tests {
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
         let s = test_digest("said-a");
-        let expr = format!(
-            "threshold(2, [kel({a}), weighted(3, [kel({b}):2, kel({c}):1]), policy({s})])"
-        );
+        let expr =
+            format!("threshold(2, [kel({a}), weighted(3, [kel({b}):2, kel({c}):1]), policy({s})])");
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
@@ -529,10 +531,7 @@ mod tests {
         let node = parse(&format!("any(iel({a}), iel({b}))")).unwrap();
         assert_eq!(
             node,
-            PolicyNode::Weighted(
-                1,
-                vec![(PolicyNode::Iel(a), 1), (PolicyNode::Iel(b), 1)]
-            )
+            PolicyNode::Weighted(1, vec![(PolicyNode::Iel(a), 1), (PolicyNode::Iel(b), 1)])
         );
     }
 
@@ -566,10 +565,7 @@ mod tests {
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
-            PolicyNode::Weighted(
-                2,
-                vec![(PolicyNode::Kel(a), 1), (PolicyNode::Kel(b), 1),]
-            )
+            PolicyNode::Weighted(2, vec![(PolicyNode::Kel(a), 1), (PolicyNode::Kel(b), 1),])
         );
     }
 
@@ -656,10 +652,7 @@ mod tests {
             vec![
                 (PolicyNode::Kel(a), 1),
                 (
-                    PolicyNode::Weighted(
-                        3,
-                        vec![(PolicyNode::Kel(b), 2), (PolicyNode::Kel(c), 1)],
-                    ),
+                    PolicyNode::Weighted(3, vec![(PolicyNode::Kel(b), 2), (PolicyNode::Kel(c), 1)]),
                     1,
                 ),
                 (PolicyNode::Policy(s), 1),
@@ -693,8 +686,7 @@ mod tests {
         let a = test_digest("prefix-a");
         let b = test_digest("prefix-b");
         let c = test_digest("prefix-c");
-        let expr =
-            format!("weighted(3, [threshold(1, [kel({a}), kel({b})]):2, kel({c}):1])");
+        let expr = format!("weighted(3, [threshold(1, [kel({a}), kel({b})]):2, kel({c}):1])");
         let node = parse(&expr).unwrap();
         assert_eq!(
             node,
