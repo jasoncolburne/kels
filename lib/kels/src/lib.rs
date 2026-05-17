@@ -29,6 +29,7 @@ macro_rules! retry_once {
 }
 
 #[cfg(feature = "redis")]
+pub mod address_resolver;
 pub mod cache;
 
 #[cfg(feature = "server")]
@@ -77,6 +78,9 @@ pub use client::{
 pub use crypto::{
     FileKeyStateStore, KeyProvider, KeyStateStore, ProviderConfig, SoftwareKeyProvider,
     SoftwareProviderConfig, aes_gcm_decrypt, aes_gcm_encrypt, derive_aes_key, generate_nonce,
+};
+pub use address_resolver::{
+    AddressResolver, ClientAddressResolver, resolve_peer_services_domain, service_url,
 };
 pub use disclosure::{PathToken, parse_disclosure};
 pub use error::{

@@ -30,6 +30,7 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result)
 )]
 
+mod address_resolver;
 mod authorization;
 mod bootstrap;
 mod bootstrap_merge;
