@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use kels_core::KeyEvent;
+use kels_core::{IdentityEvent, KeyEvent, SadEvent};
 use kels_derive::SignedEvents;
 use serde::{Deserialize, Serialize};
 use verifiable_storage::{SelfAddressed, StorageDatetime, StorageError, TransactionExecutor};
@@ -178,12 +178,87 @@ impl kels_core::PageLoader for LockedKelTransaction {
     }
 }
 
+/// Local IEL events — the node's own IEL chain. Identity is the source of
+/// truth; sadstore holds the infrastructure-distributed copy. Single-author
+/// chain (the node never diverges its own IEL), so no divergence/contest
+/// handling here — those live in sadstore.
+#[derive(Stored)]
+#[stored(item_type = IdentityEvent, table = "identity_iel_events", chained = true)]
+pub struct IelRepository {
+    pub pool: PgPool,
+}
+
+impl IelRepository {
+    /// Fetch all events for an IEL prefix, ordered by version ascending.
+    pub async fn fetch_chain(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Vec<IdentityEvent>, StorageError> {
+        let query = Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", Order::Asc);
+        self.pool.fetch(query).await
+    }
+
+    /// Fetch the tip event for an IEL prefix.
+    pub async fn fetch_tip(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<IdentityEvent>, StorageError> {
+        let query = Query::<IdentityEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", Order::Desc)
+            .limit(1);
+        self.pool.fetch_optional(query).await
+    }
+}
+
+/// Local SEL events — the node's own SEL chains (address SEL, and any future
+/// identity-owned SEL types). Identity is the source of truth; sadstore holds
+/// the infrastructure-distributed copy. Single-author per chain prefix here,
+/// so no divergence/repair/contest handling.
+///
+/// Stores `kels_core::SadEvent` items (legacy type name — the *chain* is a SEL
+/// per `feedback_sel_vs_sad_language`).
+#[derive(Stored)]
+#[stored(item_type = SadEvent, table = "identity_sel_events", chained = true)]
+pub struct SelRepository {
+    pub pool: PgPool,
+}
+
+impl SelRepository {
+    /// Fetch all events for a SEL prefix, ordered by version ascending.
+    pub async fn fetch_chain(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Vec<SadEvent>, StorageError> {
+        let query = Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", Order::Asc);
+        self.pool.fetch(query).await
+    }
+
+    /// Fetch the tip event for a SEL prefix.
+    pub async fn fetch_tip(
+        &self,
+        prefix: &cesr::Digest256,
+    ) -> Result<Option<SadEvent>, StorageError> {
+        let query = Query::<SadEvent>::for_table(Self::TABLE_NAME)
+            .eq("prefix", prefix)
+            .order_by("version", Order::Desc)
+            .limit(1);
+        self.pool.fetch_optional(query).await
+    }
+}
+
 #[derive(Stored)]
 #[stored(migrations = "migrations")]
 pub struct IdentityRepository {
     pub hsm_bindings: HsmBindingRepository,
     pub authority: AuthorityRepository,
     pub kel: KeyEventRepository,
+    pub iel: IelRepository,
+    pub sel: SelRepository,
 }
 
 #[cfg(test)]
@@ -599,5 +674,140 @@ mod tests {
         assert!(retrieved.version >= 1);
         assert_eq!(retrieved.kel_prefix, kel_prefix_v1);
         assert_eq!(retrieved.last_said, last_said_v1);
+    }
+
+    // ==================== IEL repository ====================
+
+    #[tokio::test]
+    async fn test_iel_fetch_chain_empty_when_no_events() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let chain = repo
+            .iel
+            .fetch_chain(&test_digest("iel-empty-prefix"))
+            .await
+            .expect("fetch_chain returns empty Vec on unknown prefix");
+        assert!(chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_iel_fetch_tip_none_when_no_events() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let tip = repo
+            .iel
+            .fetch_tip(&test_digest("iel-no-tip-prefix"))
+            .await
+            .expect("fetch_tip returns Ok(None) on unknown prefix");
+        assert!(tip.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_iel_round_trip_single_icp() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let auth_policy = test_digest("iel-rt-auth");
+        let governance_policy = test_digest("iel-rt-gov");
+        let icp =
+            IdentityEvent::icp(auth_policy, governance_policy, "kels/iel/v1/test/icp-only").unwrap();
+
+        repo.iel.insert(icp.clone()).await.expect("insert Icp");
+
+        let tip = repo.iel.fetch_tip(&icp.prefix).await.unwrap().unwrap();
+        assert_eq!(tip.said, icp.said);
+        assert_eq!(tip.version, 0);
+
+        let chain = repo.iel.fetch_chain(&icp.prefix).await.unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].said, icp.said);
+    }
+
+    #[tokio::test]
+    async fn test_iel_fetch_chain_ordered_by_version_ascending() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let auth = test_digest("iel-ord-auth");
+        let gov = test_digest("iel-ord-gov");
+        let icp = IdentityEvent::icp(auth, gov, "kels/iel/v1/test/ordering").unwrap();
+        let evl = IdentityEvent::evl(&icp, None, None).unwrap();
+        let cnt = IdentityEvent::cnt(&evl).unwrap();
+
+        // Insert in non-version order to confirm fetch_chain sorts.
+        repo.iel.insert(evl.clone()).await.expect("insert Evl");
+        repo.iel.insert(cnt.clone()).await.expect("insert Cnt");
+        repo.iel.insert(icp.clone()).await.expect("insert Icp");
+
+        let chain = repo.iel.fetch_chain(&icp.prefix).await.unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].said, icp.said);
+        assert_eq!(chain[1].said, evl.said);
+        assert_eq!(chain[2].said, cnt.said);
+
+        // Tip is the highest-version event.
+        let tip = repo.iel.fetch_tip(&icp.prefix).await.unwrap().unwrap();
+        assert_eq!(tip.said, cnt.said);
+        assert_eq!(tip.version, 2);
+    }
+
+    // ==================== SEL repository ====================
+
+    #[tokio::test]
+    async fn test_sel_fetch_chain_empty_when_no_events() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let chain = repo
+            .sel
+            .fetch_chain(&test_digest("sel-empty-prefix"))
+            .await
+            .expect("fetch_chain returns empty Vec on unknown prefix");
+        assert!(chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sel_round_trip_inception_batch() {
+        let Some(harness) = get_harness().await else {
+            return;
+        };
+        let repo = harness.repo().await;
+
+        let identity_prefix = test_digest("sel-rt-identity");
+        let icp =
+            kels_core::SadEvent::icp(identity_prefix, kels_core::ADDRESS_SEL_TOPIC).unwrap();
+        let iel_event = test_digest("sel-rt-iel-event");
+        let content = test_digest("sel-rt-address-sad");
+        let upd = kels_core::SadEvent::upd(&icp, iel_event, content).unwrap();
+        let sea = kels_core::SadEvent::sea(&upd, iel_event).unwrap();
+
+        repo.sel.insert(icp.clone()).await.expect("insert Icp");
+        repo.sel.insert(upd.clone()).await.expect("insert Upd");
+        repo.sel.insert(sea.clone()).await.expect("insert Sea");
+
+        let chain = repo.sel.fetch_chain(&icp.prefix).await.unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].said, icp.said);
+        assert_eq!(chain[1].said, upd.said);
+        assert_eq!(chain[2].said, sea.said);
+
+        let tip = repo.sel.fetch_tip(&icp.prefix).await.unwrap().unwrap();
+        assert_eq!(tip.said, sea.said);
+        assert_eq!(tip.kind, kels_core::SadEventKind::Sea);
+        // Sea preserves the Upd's content (the address-SAD SAID), which is the
+        // address-resolution payload the discovery walker reads.
+        assert_eq!(tip.content, Some(content));
     }
 }

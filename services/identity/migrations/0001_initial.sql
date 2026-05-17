@@ -92,3 +92,53 @@ CREATE TABLE IF NOT EXISTS identity_recovery_events (
     event_said TEXT NOT NULL REFERENCES identity_archived_events(said) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS identity_recovery_events_recovery_idx ON identity_recovery_events(recovery_said);
+
+-- Identity Event Log (IEL) events — local copy of the node's own IEL.
+--
+-- The identity service is the source of truth for the node's own KEL, IEL,
+-- and address SEL; the kels and sadstore services hold infrastructure-
+-- distributed copies. The schema mirrors `sadstore.iel_events` so events
+-- round-trip without re-serialization (same column shape => same SAID).
+--
+-- No archive table: IEL has no `Rpr` kind, and the node never diverges its
+-- own chain (it is the sole signer). Divergence/contest handling lives in
+-- sadstore; here the identity service produces events and pushes them out.
+CREATE TABLE IF NOT EXISTS identity_iel_events (
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
+    version BIGINT NOT NULL,
+    topic TEXT NOT NULL,
+    kind TEXT NOT NULL,              -- kels/iel/v1/events/{icp,evl,cnt,dec}
+    auth_policy TEXT NOT NULL,       -- declared at Icp; preserved or evolved at Evl (at least one of auth/governance MUST evolve per Evl); preserved at Cnt/Dec
+    governance_policy TEXT NOT NULL  -- same shape
+);
+
+CREATE INDEX IF NOT EXISTS identity_iel_events_prefix_idx ON identity_iel_events(prefix);
+
+-- SAD Event Log (SEL) events — local copy of the node's own address SEL
+-- (`compute_address_sel_prefix(peer_identity)` at topic `kels/sel/v1/peer/addresses`).
+--
+-- Column shape mirrors sadstore's SEL table (which sadstore confusingly calls
+-- `sad_events`); identity uses the precise `identity_sel_events` name so the
+-- IEL/SEL parity is visible in the schema.
+--
+-- Identity owns and signs its address SEL; the infrastructure copy lives in
+-- sadstore and is gossip-replicated.
+--
+-- No archive: identity-owned SELs are single-author and don't diverge or
+-- repair locally; if a divergence ever appears in the infrastructure copy it
+-- is observed there, not here.
+CREATE TABLE IF NOT EXISTS identity_sel_events (
+    said TEXT PRIMARY KEY,
+    prefix TEXT NOT NULL,
+    previous TEXT,
+    version BIGINT NOT NULL,
+    topic TEXT NOT NULL,
+    content TEXT,
+    kind TEXT NOT NULL,              -- kels/sad/v1/events/{icp,upd,sea,rpr,cnt,dec}
+    identity TEXT,                   -- non-NULL only on Icp; participates in chain prefix derivation alongside `topic`
+    identity_event TEXT              -- NULL on Icp; NOT NULL on every v1+ kind (SAID of authorizing IEL event)
+);
+
+CREATE INDEX IF NOT EXISTS identity_sel_events_prefix_idx ON identity_sel_events(prefix);
