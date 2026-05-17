@@ -22,7 +22,7 @@ Fields:
 - `prefix` — Chain identifier (derived from inception content)
 - `previous` — SAID of previous event (None for v0)
 - `serial` — Monotonically increasing (0, 1, 2, ...)
-- `topic` — Event type (e.g., `kels/sad/v1/keys/mlkem`)
+- `topic` — Event type (e.g., `kels/sel/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
 - `iel_event` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `auth_policy` for `Upd` and `governance_policy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/sel/events.md) for the full per-kind matrix.

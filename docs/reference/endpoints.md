@@ -1,5 +1,7 @@
 # KELS Endpoints Reference
 
+> **⚠️ Document in transition.** Auth-mechanism and federation-related entries below reference the previous registry-service trust-anchor and allowlist model. The current design ([#190](https://github.com/jasoncolburne/kels/issues/190)) replaces those with the federation IEL (compile-time-default + runtime `FEDERATION_IEL_PREFIX` override) and federation-IEL `auth_policy` handshake checks. Affected entries will be refreshed in a follow-up. See [../design/infrastructure/federation.md](../design/infrastructure/federation.md) and [../design/infrastructure/peer-identity.md](../design/infrastructure/peer-identity.md).
+
 Complete inventory of HTTP endpoints, gossip protocols, and internal RPC across all services.
 
 ## Identity Service

@@ -1,351 +1,317 @@
-# Multi-Registry Federation
+# Federation
 
-> **⚠️ Design in transition.** This document describes the current voting + registry + Raft federation model. A redesign replacing this with federation-as-identity (single federation IEL, identity-rooted membership, no registry service, no Raft) is in flight — see [#190](https://github.com/jasoncolburne/kels/issues/190). When that design lands, this document is substantially rewritten per the tracker's plan.
+A KELS federation is **itself an identity**. Membership lives on a single shared IEL — the *federation IEL* — and membership changes are governance-authorized `Evl` events on that chain. Discovery, authorization, and burn semantics all reduce to operations on that one identity.
 
-This document describes the multi-registry federation architecture that enables independent registries across different clouds/regions with consensus-based peer management.
+This document explains the model and its load-bearing properties. For node-side discovery mechanics see [discovery.md](discovery.md); for the handshake-time authorization check see [peer-identity.md](peer-identity.md).
 
-## Overview
+## Why federation reduces to identity
 
-Federation enables:
-- **Peer set**: Global allowlist shared by all registries via Raft consensus
-- **Leader election**: Raft consensus for peer set management
-- **Multi-party operation**: Different organizations can run their own registries while sharing a global trust backbone
+The federation answers three operational questions:
 
-## Architecture
+- *Who is allowed to participate in the gossip mesh?*
+- *How does that set change over time?*
+- *Where do I reach them on the network?*
+
+Identity primitives already answer the first two:
+
+- An IEL's `auth_policy` is the policy a chain event must satisfy to be authoritative at the moment of evaluation. Under the federation convention, `auth_policy` is shaped as `any(identity(X_1), …, identity(X_n))` — any single member identity may speak for the federation at handshake time. The set of `identity(...)` leaves *is* the membership set.
+- An IEL's `governance_policy` is the policy an `Evl` must satisfy to evolve `auth_policy` (or `governance_policy` itself). Under the federation convention, `governance_policy` is shaped as `threshold(M(n), identity(X_1), …, identity(X_n))` over the *same* member set, where M(n) is a stair function of federation size (see [§Threshold formula](#threshold-formula-application-level)). The membership-change protocol is exactly this threshold check.
+- The IEL policy-immunity rule ([primitives/iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../primitives/iel/event-log.md#evaluation-seal-and-anchor-non-poisonability)) guarantees past authorizations stay final — a former member's past endorsements cannot be retroactively repudiated.
+
+The third question — network addresses — is answered by per-peer SELs, one per member identity, each peer publishing its own current endpoints under its own authority. Nothing federation-wide needs to track addresses centrally.
+
+## Architecture at a glance
 
 ```
-                    REGISTRY FEDERATION (Raft Consensus)
-    ┌─────────────────────────────────────────────────────────────┐
-    │                                                             │
-    │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-    │   │ Registry A  │◄──►│ Registry B  │◄──►│ Registry C  │     │
-    │   │ (Leader)    │    │ (Follower)  │    │ (Follower)  │     │
-    │   │ Party: Acme │    │ Party: Beta │    │ Party: Gamma│     │
-    │   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘     │
-    │          │                  │                  │            │
-    │          │     PEER SET (replicated via Raft)  │            │
-    └─────────────────────────────────────────────────────────────┘
-               │                  │                  │
-               ▼                  ▼                  ▼
-    ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-    │ KELS nodes      │  │ KELS nodes      │  │ KELS nodes      │
-    │ (Acme region)   │  │ (Beta region)   │  │ (Gamma region)  │
-    │                 │  │                 │  │                 │
-    │ Trust: peer set │  │ Trust: peer set │  │ Trust: peer set │
-    │                 │  │                 │  │                 │
-    └─────────────────┘  └─────────────────┘  └─────────────────┘
+                 FEDERATION IEL  (prefix: F)
+                 ──────────────
+            governance_policy: how membership evolves
+                 auth_policy: { node_a, node_b, node_c, ... }
+                       │
+       ┌───────────────┼───────────────┐
+       │               │               │
+       ▼               ▼               ▼
+   ┌────────┐      ┌────────┐      ┌────────┐
+   │ node_a │◄────►│ node_b │◄────►│ node_c │       gossip mesh
+   │ gossip │      │ gossip │      │ gossip │   (HyParView + PlumTree
+   └───┬────┘      └───┬────┘      └───┬────┘    over PQ transport)
+       │               │               │
+       ▼               ▼               ▼
+   address SEL    address SEL     address SEL    (one per peer, under
+   (peer-owned)   (peer-owned)    (peer-owned)    that peer's identity)
 ```
 
-## Raft Consensus
+- The **federation IEL** is a single IEL whose `auth_policy` enumerates member identities. On each node, the federation IEL is replicated into the local sadstore service; the supporting member KELs (used for anchor checks during verification) live in the local kels service. Both are gossip's sources of truth for federation state. Propagation uses the normal gossip mechanics: PlumTree announcement-driven primary path, dependency tracking for events whose parents haven't arrived yet, and anti-entropy as fallback for gaps.
+- Each member identity is a **gossip-service identity** — a KEL holding the gossip service's HSM-backed signing key, wrapped in a single-KEL IEL (`auth_policy = endorse(gossip_kel_prefix)`). "Peer" throughout this doc means a gossip-service instance.
+- Each member publishes its current network endpoints via a **per-peer address SEL**, owned and signed by that member.
 
-Federation uses [OpenRaft](https://github.com/datafuselabs/openraft) for distributed consensus.
+The mesh is symmetric: every peer holds the federation IEL, every peer's own identity is listed in the IEL's `auth_policy`, every peer manages its own address SEL. No node has a special role.
 
-### Leader Election
-- Leader is automatically elected from federation members
-- Leader commits approved peer modifications to the Raft log
-- Follower registries reject peer writes with an error message indicating the current leader
+## The federation IEL
 
-### State Machine
-The Raft state machine maintains:
-- List of peers (peer_prefix, node_id, active status)
-- Each entry is anchored in a trusted registry's KEL (current leader)
+### Same membership, different thresholds
 
-### Fault Tolerance
-- Minimum 3 votes required for peer approval regardless of federation size, scaling to ceil(n/3) for 10+ members
-- Leader election occurs automatically if current leader fails
+The federation IEL follows a strict policy-shape convention:
 
-## Configuration
-
-All services use **compile-time trusted prefixes** for zero-trust security. The prefixes must be baked into binaries at build time - they cannot be changed at runtime.
-
-### Deployment Impact
-
-Adding a new registry to the federation is a multi-step process: the new registry must be started first so it can incept its identity and produce a prefix. Once the prefix is known, gossip nodes and client binaries are rebuilt with the updated `TRUSTED_REGISTRY_PREFIXES`, and the registry service is rebuilt with updated `TRUSTED_REGISTRY_MEMBERS`. The kels and identity services do not need recompilation — they don't use trusted registry prefixes. The new registry is then redeployed alongside them with the same full set of trusted members and prefixes. Until this happens, existing members will reject messages from the unknown prefix. Unlike a PKI, however, this only needs to happen once per registry. Key rotations are handled transparently by the KEL and do not require redeployment.
-
-### Registry Configuration
-
-**Compile-time (via Dockerfile build args):**
-```bash
-# Trusted registry members for federation - MUST be set at compile time
-# TRUSTED_REGISTRY_MEMBERS is a JSON array of {id, prefix, active} objects used by the registry
-# service for Raft node identity (compile-time, registry only).
-TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"KRegistryAcme...","active":true},{"id":2,"prefix":"KRegistryBeta...","active":true},{"id":3,"prefix":"KRegistryGamma...","active":true}]'
-
-# TRUSTED_REGISTRY_PREFIXES is used by gossip nodes and client binaries (via the
-# `federation` feature on kels-core). Not needed by kels or identity services.
-TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryBeta...,KRegistryGamma...
+```
+auth_policy       = any(identity(X_1), …, identity(X_n))           // = threshold(1, …)
+governance_policy = threshold(M(n),
+                              identity(X_1), …, identity(X_n))
 ```
 
-**Runtime (container environment):**
-```bash
-# This registry's identity (must be in TRUSTED_REGISTRY_PREFIXES)
-FEDERATION_SELF_PREFIX=KRegistryAcme_______________________________
+Same membership set in both. Different thresholds:
 
-# URLs for reaching federation members (prefix=url pairs)
-FEDERATION_URLS=KRegistryAcme...=https://registry.acme.com,KRegistryBeta...=https://registry.beta.io,KRegistryGamma...=https://registry.gamma.net
+- **`auth_policy = any(...)`** — any single member can act for the federation. Used at every handshake. Low bar, high frequency.
+- **`governance_policy = threshold(M, ...)`** — M of n members must endorse changes to `auth_policy` (or `governance_policy` itself). High bar, low frequency.
+
+The two policies share the same member set and differ only in threshold shape. This is the property a consumer can structurally verify (see [§Federation policy shape verification](#federation-policy-shape-verification) below).
+
+### The `identity(...)` leaf
+
+`identity(X)` is a DSL leaf that is satisfied when an event is anchored under the current `auth_policy` of IEL `X`. It resolves through the IEL prefix at evaluation time, so member identities can evolve their internal `auth_policy` (e.g., rotating gossip-service keys) without invalidating the federation `auth_policy` that references them.
+
+`identity(X)` is distinct from `endorse(kel_prefix)`, which checks a direct KEL `Ixn` anchor. Federation member references go through `identity(...)` because a member is an *identity* (an IEL prefix), not a single KEL.
+
+### Membership is the policy
+
+There is **no denormalized member list**. Enumeration of the current membership walks the `identity(...)` leaves of the current `auth_policy`. Anything that wants to know "who's currently a member" reads the policy and extracts the leaves.
+
+### Immunity is mandatory
+
+The IEL policy-immunity rule requires every policy referenced as `auth_policy` or `governance_policy` to have `immune: true`. The federation IEL is no exception. Two consequences:
+
+- **No poisoning of past authorizations.** A peer whose endorsements appeared on past federation `Evl`s cannot retroactively repudiate them, even after the peer is removed.
+- **Revocation happens by evolution, not by poison.** To drop a member, evolve `auth_policy` to a new SAID that excludes them. The dropped member's past endorsements remain final; new endorsements from them are simply not counted against the new policy.
+
+## Gossip-service identity
+
+Each node runs a gossip service. That service is a **degenerate single-KEL identity**:
+
+- One KEL holds the gossip service's signing key (HSM-backed; ML-DSA-65 or ML-DSA-87).
+- One IEL declares `auth_policy = endorse(gossip_kel_prefix)` and a `governance_policy` of the operator's choosing.
+- The IEL prefix is the **peer identity** referenced from the federation IEL's `auth_policy`.
+
+The gossip service is the only service on a node that participates in federation authentication. Other services on the same node (`sadstore`, `mail`, the `kels` service, identity service) are workers; they don't carry federation identities and don't authenticate with peers themselves. When this doc says "peer," it means a gossip-service instance — not a host, not a deployment, not an operator.
+
+The HSM ceremony is documented in [peer-identity.md](peer-identity.md).
+
+## Per-peer address publication
+
+Address publication is **per-peer, self-managed**, using a SEL chain bound to each peer's identity. The federation IEL holds *who is authorized*; the per-peer SELs hold *where to reach them*.
+
+### Why a SEL, not a federation-wide record
+
+- Each peer can update its own endpoints (IP rotation, scale events, region migration) without needing federation-wide governance approval. Auth on each `Upd` is the peer's own `auth_policy`.
+- Cross-peer auth concerns disappear: peer A cannot publish addresses for peer B because the address SEL is bound to peer B's own identity.
+- The federation IEL's `auth_policy` stays the sole authoritative source for membership. The address SEL is an **address resolution mechanism for an already-authorized peer**, not an additional authorization mechanism.
+
+### Deterministic SEL prefix
+
+Each peer's address SEL prefix is:
+
+```
+compute_sel_prefix(peer_identity_prefix, "kels/sel/v1/peer/addresses")
 ```
 
-Registries verify incoming federation messages by:
-1. Checking sender prefix is in compiled-in `TRUSTED_REGISTRY_MEMBERS`
-2. Verifying message signature against sender's KEL
+This is fully deterministic. Given the peer's identity prefix (which the federation IEL's `auth_policy` lists), any node can compute the address SEL prefix and fetch the chain — no separate lookup, no directory service.
 
-### Gossip Node Configuration
+### Address SAD schema
 
-**Compile-time (via Dockerfile build args):**
-```bash
-# Trusted registry prefixes - MUST be set at compile time
-TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryBeta...,KRegistryGamma...
+The `content` field of each `Upd` on the address SEL is the SAID of an address SAD object stored in the sadstore. `said` is the SAID computed from the SAD content per the standard SAID derivation. The chain topic (`kels/sel/v1/peer/addresses`) is encoded in the SEL prefix, not in the SAD.
+
 ```
-
-**Runtime (container environment):**
-```bash
-# Registry URL to connect to
-REGISTRY_URL=https://registry.acme.com
-```
-
-The gossip service discovers the registry's prefix by fetching its KEL at startup and verifies it against the compiled-in trusted prefixes.
-
-## Administration
-
-### Viewing Federation Status
-
-```bash
-# On any registry
-registry-admin federation status
-
-# Output:
-Federation Status
-==================================================
-Node ID:       1
-Self Prefix:   KRegistryAcme...
-Is Leader:     Yes
-Leader ID:     1
-Leader Prefix: KRegistryAcme...
-Term:          3
-Last Log Idx:  42
-Last Applied:  42
-
-Federation Members:
-  KRegistryAcme... (leader)
-  KRegistryBeta...
-  KRegistryGamma...
-```
-
-### Adding Peers (Multi-Party Approval)
-
-Peers require multi-party approval from federation members. This prevents any single compromised registry from unilaterally adding malicious peers — though a malicious peer could at most deny service, since all KEL events require valid signatures from the owner's keys and are verified during merge.
-
-**Approval Threshold** (where n = number of federation members):
-
-| n | threshold |
-|---|-----------|
-| 0-5 | 3 |
-| 6-9 | 4 |
-| 10+ | ceil(n/3) |
-
-Minimum threshold is always 3 votes to prevent trivial collusion. Inspired by KERI's immunity constraint (M = F+1, F = (N-1)/3), with a hard floor of 3 and a smooth transition toward ceil(n/3) at scale.
-
-**Step 1: Propose a new peer**
-
-Any federation member can propose a new peer:
-
-```bash
-# From any registry in the federation
-registry-admin peer propose \
-  --peer-kel-prefix Qm... \
-  --node-id node-1 \
-  --kels-url http://kels.node-1.example.com \
-  --gossip-addr gossip.node-1.example.com:4001
-
-# Output:
-# Proposal created: EProposal123...
-# Waiting for 3 approvals (0/3 so far)
-```
-
-**Step 2: Vote on the proposal**
-
-Other federation members vote to approve:
-
-```bash
-# On another registry
-registry-admin peer vote --proposal-prefix EProposal123... --approve
-
-# Output:
-# Vote recorded. Status: 2/2 approvals - APPROVED
-# Peer added to peer set.
-```
-
-**Step 3: Monitor proposals**
-
-```bash
-# List pending proposals
-registry-admin peer proposals
-
-# Check specific proposal status
-registry-admin peer proposal-status --proposal-prefix EProposal123...
-```
-
-**Proposal Expiration**: Proposals expire after 7 days if threshold is not met.
-
-### Removing Peers (Multi-Party Approval)
-
-Peer removal follows the same multi-party approval process as additions.
-
-**Step 1: Propose removal of a peer**
-
-```bash
-# From any registry in the federation
-registry-admin peer propose-removal \
-  --peer-kel-prefix Km...
-
-# Output:
-# Removal proposal created: EProposal456...
-# Removal proposal created. Need 3 approvals.
-```
-
-**Step 2: Vote on the removal proposal**
-
-```bash
-# On another registry
-registry-admin peer vote --proposal-prefix KProposal456... --approve
-
-# Output:
-# Removal approved! Peer Qm... removed from peer set.
-# Progress: 3/3 approvals
-# Peer has been removed from the peer set.
-```
-
-After approval, the peer is deactivated and moved from active to inactive in the Raft state machine. The peer can be re-added later via a new addition proposal.
-
-## Security Considerations
-
-The full layered model — compile-time trust, KEL-based message auth, follower-side verification, multi-party voting, tamper-evident chaining — is documented in [federation-state-machine.md §Defense in Depth](federation-state-machine.md#defense-in-depth). Operator-facing summary:
-
-- Membership is controlled by the compile-time `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` constants — only known registry prefixes can participate in consensus, and these cannot be changed at runtime.
-- All Raft messages are signed with the sender's HSM-backed identity key; recipients verify signatures against the sender's KEL and reject messages from prefixes outside `TRUSTED_REGISTRY_MEMBERS`.
-- Member-KEL distribution runs outside Raft: identity pushes events to `POST /api/v1/member-kels/events`, which fans out to peers, and a 30s anti-entropy loop fills gaps. Recovery propagates naturally. See [federation-state-machine.md §Member KELs](federation-state-machine.md#member-kels) and [federation-state-machine.md §KEL Sync Loop](federation-state-machine.md#kel-sync-loop) for the sync mechanism; [Registry Removal](../../operations/registry-removal.md) for decommission; [Recovery Workflow](../primitives/kel/recovery-workflow.md) for recovery.
-
-## Disaster Recovery
-
-### Rogue Registry Scenario
-
-This section is the operator playbook for responding to a compromise. For the *defensive* analysis — what the protocol does to limit damage *before* operators intervene — see [federation-state-machine.md §Rogue Leader Attack](federation-state-machine.md#rogue-leader-attack).
-
-If a federation member is compromised:
-
-1. **Detection**: Audit logs show unexpected peer changes with the rogue registry's prefix
-
-2. **Isolation**: Update `TRUSTED_REGISTRY_MEMBERS` and `TRUSTED_REGISTRY_PREFIXES` on honest services to exclude the rogue:
-   ```bash
-   TRUSTED_REGISTRY_MEMBERS='[{"id":1,"prefix":"KRegistryAcme...","active":true},{"id":3,"prefix":"KRegistryGamma...","active":true}]'  # Beta removed
-   TRUSTED_REGISTRY_PREFIXES=KRegistryAcme...,KRegistryGamma...  # Beta removed
-   ```
-
-3. **Redeploy**: Restart honest registries with updated config
-   - Rogue is excluded from consensus
-   - New leader elected from remaining members
-
-4. **Recovery**: If peer set was compromised, peers must be re-added via the standard proposal/vote process (`registry-admin peer propose` followed by `registry-admin peer vote` from the remaining honest registries). There is no direct `peer add` command.
-
-5. **Gossip nodes auto-heal**: Next allowlist refresh removes unauthorized peers
-
-### Approval Requirements
-
-Peer changes require the approval threshold described above — minimum 3 votes, scaling to ceil(n/3) at scale. A single compromised registry cannot unilaterally modify the peer set.
-
-#### Threshold Verification
-
-The approval threshold is stored on each proposal at creation time and verified in two layers — exact-match at the leader's HTTP handler (rejects below-config thresholds), floor-check during Raft `apply()` (rejects below-minimum-of-3 during log replay). See [federation-state-machine.md §Threshold Verification](federation-state-machine.md#threshold-verification) for the full rationale and the safety argument across federation growth.
-
-### Split-Brain Protection
-
-- Raft requires majority quorum for log replication
-- Minority partition cannot replicate approved changes
-- Minority partition is read-only until quorum is restored
-
-## API Endpoints
-
-These endpoints are served by registries running in federated mode. See [secure-registration.md](secure-registration.md) for the request-authorization details.
-
-Peer discovery and member-KEL sync:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/peers` | Get the peer allowlist from the Raft state machine |
-| `POST` | `/api/v1/member-kels/events` | Submit member key events (push model); fans out only when the prefix matches the receiver's own |
-| `GET` | `/api/v1/member-kels/kel/:prefix` | Get a specific member's KEL (`?limit=N&since=SAID`) |
-| `GET` | `/api/v1/member-kels/kel/:prefix/effective-said` | Get effective SAID for sync comparison |
-
-Federation protocol:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/federation/status` | Federation status (leader, term, members) |
-| `GET` | `/api/v1/federation/proposals` | Completed proposals with votes (for independent verification) |
-| `POST` | `/api/v1/federation/rpc` | Internal Raft RPC between registries (not intended for external use) |
-
-Admin API (signed requests):
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/admin/addition-proposals` | Propose a new peer (addition) |
-| `POST` | `/api/v1/admin/removal-proposals` | Propose removal of a peer |
-| `GET` | `/api/v1/federation/proposals/:proposal_prefix` | Get proposal details |
-| `POST` | `/api/v1/admin/proposals/:proposal_prefix/vote` | Vote on a proposal (addition or removal) |
-
-## Testing
-
-### Multi-Registry Federation Testing
-
-The Garden configuration supports three federated registry environments:
-
-```bash
-# Deploy three federated registries
-garden deploy --env=registry-a
-garden run fetch-registry-prefix --env=registry-a
-
-garden deploy --env=registry-b
-garden run fetch-registry-prefix --env=registry-b
-
-garden deploy --env=registry-c
-garden run fetch-registry-prefix --env=registry-c
-
-# Wait for leader election
-sleep 10
-
-# Deploy nodes
-garden deploy --env=node-a
-garden deploy --env=node-b
-garden deploy --env=node-c
-
-# Add peers (requires multi-party approval)
-# Step 1: Propose from registry-a
-garden run propose-add-node-a --env=registry-a
-# Output includes proposal prefix
-
-# Step 2: Vote from registry-b (use proposal prefix from above)
-garden run vote-peer --env=registry-b --var proposal=EProposal...
-
-# Repeat for node-b and node-c
-
-# View federation status
-kubectl exec -n registry-a deploy/registry -- \
-  /app/registry-admin federation status
-```
-
-### Registry Prefix Management
-
-Registry prefixes are stored in `.kels/federated-registries.json`:
-
-```json
 {
-  "registry-a": "KRegistryAcme...",
-  "registry-b": "KRegistryBeta...",
-  "registry-c": "KRegistryGamma..."
+  "said": "K...",
+  "read_policy": "K...",
+  "endpoints": [
+    { "address": "203.0.113.4:4001", "region": "us-east" },
+    { "address": "[2001:db8::4]:4001" }
+  ]
 }
 ```
 
-Node environments are mapped to their registries:
-- `node-a`, `node-d` -> `registry-a`
-- `node-b`, `node-e` -> `registry-b`
-- `node-c`, `node-f` -> `registry-c`
+- `endpoints` is an array. Multi-address support is first-class — peers commonly publish IPv4/IPv6 pairs, regional alternates, or transitional endpoints during a migration.
+- `address` is a TCP gossip endpoint, `host:port`. Gossip carries its own transport (ML-KEM-1024 key exchange, ML-DSA-65/87 signatures, AES-GCM-256 sessions); the published address is the network endpoint only.
+- `region` is optional, opaque, free-form (`"us-east"`, `"eu-west"`, etc.) — the IPv6 entry above omits it for illustration. Latency-aware clients may prefer in-region endpoints; absence is meaningful (peer didn't tag region).
+- `read_policy` is the SAID of a policy SAD with expression `identity(FEDERATION_IEL_PREFIX)`. Per [sadstore.md §Custody](sadstore.md#custody-per-sad-object-authority), this gates fetch-time access via `evaluate_signed_policy` against a `SignedRequest`'s verified prefix set — `identity(FED_IEL)` resolves to the federation IEL's current `auth_policy`, so only currently-authorized federation members can fetch the endpoints body. The SEL chain itself (`Icp`, `Upd`, `Sea`) still gossips publicly (custody is forbidden on chain events per `sadstore.md`); only the per-object SAD content is gated. External observers can verify the chain shape and the federation IEL but cannot enumerate peer endpoints.
+- **No `role` field, by design.** Role-bearing self-declarations would let an identity holder elevate their own privileges without going through the federation `governance_policy`. Capabilities are determined by what the federation IEL authorizes the peer to do; a peer cannot self-declare additional capabilities.
+
+The current address is whatever the latest accepted `Upd` on the chain says. Address rotation is `[Upd, Sea]` per the Sea-after-Upd ratchet (see [protocol-doctrine.md §Sea-after-Upd ratchet](../protocol-doctrine.md#sea-after-upd-ratchet-application-pattern)); revocation is implicit (publish a new `Upd`, sealed by the trailing `Sea`). Conforming tooling never produces an Upd-tailed address SEL.
+
+## Discovery flow
+
+When a node joins or refreshes its peer view:
+
+1. Read the federation IEL's current `auth_policy` to enumerate authorized member identities.
+2. For each member identity, compute the address SEL prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`).
+3. Walk that address SEL to its tip and read the current `endpoints` array.
+4. Connect.
+
+The federation IEL is replicated to the sadstore on every gossip node, so step 1 is a local-service read (gossip → sadstore over HTTP, same-node). The address SELs are also in the sadstore; step 3 is a normal SEL read against the same local service. Chain verification (IEL/SEL anchor checks) additionally reads the supporting member KELs from the local kels service — also same-node HTTP.
+
+This steady-state flow assumes the node already holds the federation IEL and every member's address SEL. Initial state arrives during the federation ceremony (or during a peer onboarding) via `transfer_*_events` — see [§Bootstrap](#bootstrap-one-time-ceremony) below. There is no runtime-config-driven cold-start discovery surface; if a node has no state at all, it isn't yet a federation participant.
+
+## Handshake authorization
+
+When a connecting peer initiates a gossip handshake:
+
+1. The connecting peer presents its identity prefix and a signature over the handshake transcript with its gossip signing key.
+2. The accepting peer evaluates the connecting peer's identity against the current federation IEL `auth_policy` via `evaluate_signed_policy`.
+3. If the policy is satisfied (i.e., the connecting identity is currently authorized), the handshake proceeds. Otherwise it's rejected.
+
+For the cryptographic handshake (prefix exchange, ML-KEM-1024 KEM, mutual ML-DSA signature, BLAKE3-derived AES-GCM-256 session key), see [gossip.md §HSM-backed gossip identity](gossip.md#hsm-backed-gossip-identity).
+
+## Membership evolution
+
+Adding or removing a member is the same primitive in both directions: an `Evl` event on the federation IEL evolving `auth_policy`, satisfying the current `governance_policy`.
+
+### Symmetric add/remove
+
+There is no asymmetry between add and remove. Both use `Evl` against `governance_policy`. The procedural difference is operational, not structural:
+
+- **Adding peer X:** M(n) of the current n members endorse an `Evl` that includes `identity(X)` in the new `auth_policy` and updates `governance_policy`'s threshold value if n crossed a stair boundary. X itself does not need to endorse.
+- **Removing peer X:** M(n−1) of the *other* `n − 1` members endorse an `Evl` that excludes `identity(X)` from both `auth_policy` and `governance_policy` (and updates the threshold value if `n − 1` crossed a stair boundary). X itself, predictably, does not endorse its own removal.
+
+Whether the burn is a clean drop ("X retired, please remove") or an adversarial expulsion ("X compromised, drop now") is the same chain operation; only the operator urgency differs.
+
+### No withdrawal, no poison
+
+The federation `auth_policy` and `governance_policy` are `immune: true` (mandatory under the IEL policy-immunity rule). There is no withdrawal primitive and no poison-based revocation on the federation IEL. **All revocation goes through `Evl`.** This is not an inconvenience; it is the structural guarantee that past authorizations stay final — every endorsement a peer made while a member remains valid forever, by construction.
+
+### Threshold formula (application-level)
+
+The threshold value in the federation's `governance_policy` is a stair function of the federation size n. The `auth_policy` stays at `any(...)` regardless of n — any single member can act at handshake time. The governance threshold is what scales with federation size.
+
+```
+governance threshold M(n) =
+  3            if n ≤ 5
+  4            if 6 ≤ n ≤ 9
+  ⌈n / 3⌉      if n ≥ 10
+```
+
+| n | M(n) |
+|---|---|
+| 3 | 3 |
+| 5 | 3 |
+| 6 | 4 |
+| 9 | 4 |
+| 10 | 4 |
+| 21 | 7 |
+| 25 | 9 |
+
+- Floor of 3 prevents trivial collusion in small federations.
+- The 6-member step bumps the bar to 4 before one-third scaling takes over.
+- One-third-quorum scaling at larger sizes is KERI-inspired (`F+1` immunity bound, where `F` is the max number of byzantine members the threshold tolerates — the policy is satisfied as long as `n − F` honest members remain).
+- When n crosses a stair boundary (5 → 6 or 9 → 10), the same `Evl` that adds the new peer also evolves `governance_policy` to encode the new threshold value. Both changes batch into one event.
+
+**The IEL verifier does not enforce the formula.** A federation that chose a different M(n) would still produce structurally valid IEL chains; the verifier checks only chain-validity invariants (immunity, signatures, `governance_policy` satisfaction). The formula lives in the node/gossip application layer and the libkels federation-policy-shape helper (next subsection) — operator convention, not protocol surface. A federation operator who needs a different threshold can configure one without forking the protocol, at the cost of consumers no longer being able to verify the standard shape.
+
+### Federation policy shape verification
+
+libkels provides a helper that verifies a federation IEL's `(auth_policy, governance_policy)` pair conforms to the convention. The helper:
+
+- Walks `auth_policy`; confirms it's `any(...)` (i.e., `threshold(1, ...)`) over `identity(...)` leaves only; extracts the member set.
+- Walks `governance_policy`; confirms it's `threshold(M, ...)` over `identity(...)` leaves only; extracts the member set and M.
+- Confirms set equality between the two member sets.
+- Confirms `M == M(n)` where `n = |members|` (per the stair function defined above).
+- Confirms both policies have `immune: true`.
+
+Application code calls this helper on every federation IEL it loads (compile-time default at startup; runtime override on env-var set). A federation that doesn't conform fails the check and the node refuses to start.
+
+Consumer-side: anyone evaluating a federation's trust posture runs the same helper and additionally verifies that the identities they care about appear in the member set. The structural conformance check + member-set inspection is the full "should I trust this federation?" workflow — no need to reason about arbitrary policy shapes.
+
+The general policy DSL stays unconstrained — other IELs (user identities, organizational identities, etc.) use whatever shape they need. Only the federation IEL is structurally restricted to this convention.
+
+### Multi-peer simultaneous compromise
+
+If `n − M` or more member identities are compromised at once, normal governance cannot evolve — the honest members cannot reach the threshold. Recovery is the contested-federation procedure (see [§Recovery](#recovery) below). This is the operationally catastrophic case; the threshold formula is sized so that blocking governance requires compromising a non-trivial fraction of the federation, which raises the operational hardness of mounting the attack — but it is operational hardness, not protocol-level prevention.
+
+## Bootstrap (one-time ceremony)
+
+A new federation is born via a single Icp event on a fresh federation IEL. The ceremony is point-to-point HTTP between founding nodes — the gossip mesh doesn't exist yet, and the `auth_policy`/`governance_policy` shape that would gate gossip is exactly what the ceremony is producing.
+
+### Roles and procedure
+
+The ceremony has two roles and four logical phases. Concrete CLI mechanics — which commands run where, in what order — live in [discovery.md §Bootstrapping the federation](discovery.md#bootstrapping-the-federation). This subsection gives the design-level overview.
+
+- **Coordinator** — one founding peer is designated coordinator for the ceremony. Coordinator is an operational role (one-shot, ceremony-scoped), not a protocol role.
+- **Founding members** — each holds a prepared founding identity (KEL + IEL) and participates in producing the federation IEL `Icp` event.
+
+Logical phases:
+
+1. **Anchor.** Each founding member anchors the proposed federation IEL `Icp` SAID in its own KEL via a tier-2 `Rot`. This is the cryptographic act that constitutes the member's endorsement of the `Icp`.
+2. **Gather.** Each founding member pushes its identity bundle (KEL + IEL + address SEL) to the coordinator's local kels/sadstore services so the coordinator can verify the `Icp`'s anchor checks.
+3. **Submit.** The coordinator submits the `Icp` to its own kels/sadstore; the anchor checks succeed because the contributing KELs are now present locally.
+4. **Redistribute.** The coordinator pushes the accepted federation IEL plus every founding member's address SEL bundle to every other founding node, after which gossip mesh formation proceeds normally — PlumTree announcements drive primary propagation, dependency tracking handles out-of-order arrivals, anti-entropy fills any remaining gaps.
+
+The Icp's `auth_policy` and `governance_policy` are agreed out-of-band by the founding operators. There is no protocol-level "voting" on the Icp — the chain begins with whatever shape its founders cryptographically commit to, and consumers of the federation accept that shape on the strength of the founders' identities.
+
+### Why not gossip for the redistribution
+
+The natural question is whether the federation IEL itself could be redistributed via gossip rather than via `transfer_*_events`. It can't, by chicken-and-egg: gossip handshake authorization depends on the federation IEL's `auth_policy`, but the federation IEL doesn't exist on the non-coordinator nodes yet. The only authorization context the non-coordinator nodes have at this point is what their compile-time-default (or runtime-override) federation IEL prefix tells them to *expect* — they don't have the chain to evaluate handshakes against. Point-to-point HTTP via `transfer_*_events`, parameterized with the coordinator's address, is the bootstrap channel; gossip takes over once every node has the federation IEL locally and `IelVerifier` has accepted it under the expected prefix.
+
+The same chicken-and-egg applies to peer onboarding (adding a new member post-bootstrap) and to single-node disaster recovery — both cases use `transfer_*_events` from an existing peer, coordinated out-of-band, until the recovering/joining node has enough chain state to participate in the mesh.
+
+## Configuration
+
+Each node needs to know which federation IEL is its federation. The prefix is configured in two layers:
+
+- **Compile-time default**: a federation IEL prefix is baked into the binary at build. This is the federation-as-shipped — the prefix the binary was tested and audited against.
+- **Runtime override** (`FEDERATION_IEL_PREFIX`): optional env var. When set, the binary uses the env var as authoritative. If it differs from the compile-time default, the binary logs a startup warning so operators are aware the deployment has been redirected.
+
+The runtime override exists for recovery: operators can repoint a federation to a fresh IEL prefix on existing binaries when the federation IEL becomes contested, then align the compile-time default at the next release.
+
+HSM and gossip identity config: see [gossip.md](gossip.md) and [peer-identity.md](peer-identity.md).
+
+Bootstrap and onboarding flows use `transfer_*_events` parameterized with the coordinator-of-the-moment's store addresses at invocation time — a CLI argument, not a service env var. See [§Bootstrap](#bootstrap-one-time-ceremony).
+
+## Concurrent-Evl coordination
+
+The federation IEL is exposed to the same divergence risk as any IEL: two governance-authorized parties submitting concurrent `Evl` events at the same serial diverge the chain, and IEL divergence is structurally contested-terminal (see [primitives/iel/event-log.md §Divergence and Contest-Only Resolution](../primitives/iel/event-log.md#divergence-and-contest-only-resolution)). Federation IEL divergence is catastrophic — the federation dies under that prefix.
+
+The protocol does not prevent this. The defense is operational:
+
+- **Federation `Evl`s are infrequent.** Adding or removing a peer is a meaningful operational event, not a routine action.
+- **Each `Evl` already requires multi-party coordination.** Collecting M endorsements is itself a coordination point; operators naturally serialize this through whatever out-of-band channel they use (chat, ticketing, change management).
+- **No protocol-level leader election.** A "primary" is whoever is driving the change; the role is not protocol-enforced, and any peer that holds enough endorsements can submit.
+- **Single-submitter convention at submission time.** Once endorsements are collected, one designated submitter posts the `Evl`. Operators must not collect endorsements for two competing `Evl`s in parallel.
+
+Multi-party governance guidance is generic across IEL identities (federation root, identity-hierarchy roots, any high-stakes IEL); see [../../operations/multi-party-governance.md](../../operations/multi-party-governance.md).
+
+## Recovery
+
+If the federation IEL goes contested (concurrent `Evl`s land, divergence is detected, the chain becomes contested-terminal), the federation under that prefix is dead. Recovery is a same-shape ceremony as the original bootstrap.
+
+### Runbook
+
+1. **Confirm contest.** Multiple nodes report the federation IEL as contested via the standard IEL contested-state surface. (Gossip will have propagated the divergent set; every node will see the same contest.)
+2. **Convene currently-trusted operators.** Out-of-band coordination among the operators who collectively can incept a replacement. This is operator policy, not protocol-pinned — it's whoever the operator community trusts to satisfy the new IEL's `governance_policy`. In the most common case, this is the surviving honest members of the contested federation.
+3. **Bootstrap a fresh federation IEL.** Same ceremony as initial bootstrap: choose a primary, collect Icp signatures from the participating operators, assemble the new Icp, distribute the new federation IEL to all founding nodes via `transfer_*_events`.
+4. **Distribute the new prefix as runtime override.** Every gossip node sets `FEDERATION_IEL_PREFIX` to the new prefix and restarts. Each node logs a startup warning (runtime value differs from compile-time default); this is expected and acknowledged.
+5. **Verify mesh comes up against new prefix.** Discovery flow on each node now reads the new federation IEL's `auth_policy`, walks the founding members' address SELs (unchanged — they're under the peers' own identities, not under the federation IEL), and reconnects.
+6. **Each peer publishes a fresh address `[Upd, Sea]`** whose SAD `read_policy` references the *new* federation IEL prefix. Existing address SADs reference a `read_policy` SAD naming the old (now contested-terminal) federation IEL; `identity(OLD_FED_IEL)` resolves to a dead policy, so the old SAD bodies become unreadable to anyone post-recovery. The address SEL chain itself continues unchanged (per §What survives recovery); only the SAD content needs republication. Until each peer's republish lands, that peer's endpoints are not fetchable by other federation members.
+7. **Schedule a binary rebuild.** At leisure, rebuild binaries with the compile-time default updated to the new prefix and roll the deployment. Once defaults align, `FEDERATION_IEL_PREFIX` can be unset.
+
+### What survives recovery
+
+- **Each peer's identity.** Peer identity IELs are independent of the federation IEL. No re-inception of peer identities is needed.
+- **Each peer's address SEL.** Address SELs are bound to each peer's own identity, not to the federation. They continue working as-is.
+- **Per-peer KEL state, HSM keys, gossip transport state.** All independent of the federation IEL.
+
+What changes: the federation IEL prefix, the binaries' `auth_policy` lookup target, and (eventually) the compiled default. The application-level data on each node — KELs, IELs, SELs, anchoring, custody — is preserved.
+
+### What does not survive
+
+A contested federation IEL stays contested forever — that is the structural meaning of contested-terminal. The replacement federation IEL is a *different* identity under a different prefix; consumers that pinned the old prefix (e.g., long-running client deployments) must be updated. For internal infrastructure this is mechanical; for external clients it is the cost of the contest.
+
+## References
+
+- [primitives/iel/event-log.md](../primitives/iel/event-log.md) — IEL chain semantics, policy immunity, divergence, contest.
+- [primitives/iel/events.md](../primitives/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
+- [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
+- [primitives/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
+- [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).
+- [discovery.md](discovery.md) — node-side discovery (`auth_policy` enumeration + address SEL walks).
+- [peer-identity.md](peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
+- [gossip.md](gossip.md) — gossip protocol mechanics (HyParView+PlumTree, PQ transport).
+- [../../operations/multi-party-governance.md](../../operations/multi-party-governance.md) — operator playbook for serializing high-stakes governance submissions.

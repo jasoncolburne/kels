@@ -96,7 +96,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Exchange** — ESSR authenticated encryption, ML-KEM key publication via SAD Event Logs. See `docs/design/features/exchange.md`.
 
-**Federation** — peer lifecycle via registries, gossip mesh, secure registration. See `docs/design/infrastructure/federation-state-machine.md`, `docs/design/infrastructure/secure-registration.md`, `docs/operations/registry-removal.md`, `docs/design/infrastructure/rejection-threshold.md`.
+**Federation** — itself an identity. Membership lives on a single shared IEL (the *federation IEL*) whose `auth_policy` declares authorized peers; membership changes are governance-authorized `Evl` events. Each peer publishes its own network endpoints via a per-peer address SEL at a deterministic prefix. Handshake authorization is `evaluate_signed_policy` against the federation IEL's current `auth_policy`. See `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`, `docs/design/infrastructure/peer-identity.md`.
 
 **SAD Event Log (SEL)** — append-only, identity-rooted data chain. Each chain is bound at inception to a specific Identity Event Log (`identity` field on `Icp`); every v1+ event references a specific IEL event by SAID via `iel_event` to resolve its authorization. SEL events do not carry policy fields — auth and governance resolve via `IelResolver` against the bound IEL event (Est/Upd → IEL `auth_policy`; Sea/Rpr/Cnt/Dec → IEL `governance_policy`).
 
@@ -120,8 +120,7 @@ See `docs/design/primitives/iel/events.md`, `docs/design/primitives/iel/event-lo
 
 - **kels** — KEL submission and retrieval
 - **sadstore** — content-addressed data store (RustFS + PostgreSQL). Also hosts Identity Event Log routes (`/api/v1/iel/events*`). See `docs/design/infrastructure/sadstore.md`, `docs/design/primitives/iel/`
-- **gossip** — KEL/SAD sync between peers (HyParView + PlumTree). See `docs/gossip.md`
-- **registry** — peer lifecycle via OpenRaft. See `docs/registry.md`
+- **gossip** — KEL/SAD sync between peers (HyParView + PlumTree); also hosts the federation IEL locally and walks per-peer address SELs for discovery. See `docs/design/infrastructure/gossip.md`, `docs/design/infrastructure/federation.md`, `docs/design/infrastructure/discovery.md`
 - **identity** — node KEL and signing keys
 
 ### Libraries

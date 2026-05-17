@@ -188,7 +188,7 @@ This split between contested and decommissioned IELs is the operator's recovery 
 
 ## Multi-Party Governance Synchronization
 
-When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or Raft over the registry). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
+When more than one party can satisfy an IEL's `auth_policy` or `governance_policy`, concurrent submissions can produce two `Evl` events at the same serial — divergence on IEL → contested-terminal immediately. Operators must serialize governance submissions above the protocol (designated submitter, leader election, or any other out-of-band serialization mechanism). This is load-bearing for high-stakes IEL identities (federation root, identity-hierarchy roots, anything whose reincept would cascade widely) — not optional. Synchronization defends against accidental races; threshold compromise is a separate concern handled by operational hardening + threshold redundancy. Full operator guidance: [../../../operations/multi-party-governance.md](../../../operations/multi-party-governance.md).
 
 ## Cross-Chain Anchor Stability
 

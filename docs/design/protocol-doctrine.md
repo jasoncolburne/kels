@@ -304,6 +304,24 @@ IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — p
 
 Anchor tier elevation is a **verifier-side rule**. The verifier walks each IEL/SEL event and checks anchor presence of the required kind in candidate policy members' KELs as part of computing threshold satisfaction. Submit handlers invoke the verifier; consumers reading gossip-received, replicated, or bootstrapped data enforce the same check. No submit-handler-only carve-out exists.
 
+#### Sea-after-Upd ratchet (application pattern)
+
+This is an **application-protocol convention, not a protocol invariant** — the verifier does not require `Sea`-trailing structure. Applications that want the properties below enforce the convention at their construction layer.
+
+An application protocol can require trailing SEL `Upd`s be followed by `Sea`, batching `[Upd..., Sea]` as the atomic application operation. Plain `Upd`-tailed chains are application-invalid by construction — conforming tooling never produces them, and consumers reject any chain whose tip is an unsealed `Upd`.
+
+`Sea` is tier-2 anchored — it must anchor in a KEL `Rot`. So the pattern forces a key rotation on every sealed batch. Three layered properties result:
+
+- **Exposure-window bounding (cryptographic).** Each operating signing key is exposed to operations for at most one batch. Pre-rotation hides the next key behind its hash until `Rot` reveals it: the next public key is structurally unreachable from cryptanalysis on the current key (offline signature analysis, side-channel observation, harvest-now-decrypt-later quantum attacks against the signature stream all operate on the current key's public bytes; the next key's bytes have not been observed). By the time the current key would be vulnerable, the chain has already rotated to a key the adversary has never seen. The property holds independent of custody arrangement — pre-rotation defends through *exposure surface*, not through where the keys are stored.
+- **Policy-layer separation (when `auth_policy ≠ governance_policy`).** `Sea` is governance-authorized. An auth-key-only holder can produce `Upd`s but not `Sea`. Multi-device or otherwise composed identities get real cryptographic separation between "auth-set wrote this" and "governance-set sealed this."
+- **Consumer-visibility.** Conforming tooling batches `[Upd..., Sea]` atomically, so an Upd-tailed chain is structurally invalid under the convention — not a legitimate intermediate state. Consumers that observe an unsealed `Upd` at the tip detect a convention violation (tooling bypass, buggy producer, or a producer that cannot produce the `Sea`) and reject the chain.
+
+The exposure-window property is the load-bearing one and applies even to degenerate single-KEL IELs where `auth_policy = governance_policy`. KERI's entire security story leans on pre-rotation for the same reason; KELS inherits it and the Sea-after-Upd ratchet makes the rotation cadence application-driven rather than operator-paced.
+
+**Where it applies:** any IEL+SEL composition where the operator wants exposure-window bounding on durable state, or where governance and auth need to be cryptographically separated, or where governance-aware consumers need a chain-completeness signal. For peer-address SELs on degenerate gossip-service IELs, exposure-window bounding is the primary motivation.
+
+**Operational cost:** every sealed batch forces a `Rot`. The operator's rotation cadence is set by application traffic, not by an operator-defined schedule. For peer addresses where updates are infrequent, this is cheap; for high-frequency SEL traffic, the rotation overhead is non-trivial and the operator should batch `Upd`s aggressively before sealing.
+
 #### Trust Model on Contested Chains
 
 A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
@@ -452,6 +470,23 @@ Convergence is the load-bearing assumption that makes the protocol's cryptograph
 Convergence is among gossip-participating nodes. **Permanent node loss before propagation completes** (a node going offline while it still holds events not yet seen by other peers) is a deployment-shape concern — replication factor, node uptime, backup procedures, and clean retirement workflows. It is not a doctrine concern: the protocol asserts what convergence *means* and how it's computed; operators bear responsibility for keeping enough nodes online long enough for it to occur in practice. Operational guidance lives in the operations docs.
 
 Per-primitive proof matrices in [primitives/kel/reconciliation.md](primitives/kel/reconciliation.md), [primitives/iel/reconciliation.md](primitives/iel/reconciliation.md), and [primitives/sel/reconciliation.md](primitives/sel/reconciliation.md) demonstrate convergence holds for each primitive under all state × submission × gossip combinations.
+
+#### Worked example: the federation IEL
+
+The federation itself is an instance of the primitive that depends on convergence. A KELS federation is a single IEL — the *federation IEL* — whose `auth_policy` declares the set of member identities authorized to participate in the gossip mesh. On every node, the federation IEL is replicated to the local sadstore service and the supporting member KELs to the local kels service; gossip queries those local services as its sources of truth for federation state. Propagation uses the normal gossip mechanics — PlumTree announcement-driven primary path, dependency tracking for out-of-order arrivals, anti-entropy as fallback. The federation has no separate consensus algorithm and no central state machine.
+
+Convergence is what makes this work:
+
+- **Identical `auth_policy` view across nodes.** Every gossip node deterministically resolves the federation IEL's tip from the events it holds. If two nodes hold the same event set, they compute the same effective SAID and read the same current `auth_policy`. Anti-entropy converges any two nodes whose effective SAIDs differ.
+- **Handshake authorization is path-agnostic.** A connecting peer's identity is checked against the federation IEL's current `auth_policy` via `evaluate_signed_policy`. Two nodes that both hold the federation IEL's authentic tip produce identical authorization decisions. The "which node did the handshake reach?" question doesn't change the answer.
+- **Membership evolution converges.** A governance-authorized `Evl` event evolving `auth_policy` propagates via the standard IEL gossip channel. Two nodes that have both received the `Evl` see identical post-evolution policy.
+- **Contested-terminal is also convergent.** If two governance-authorized `Evl`s land concurrently at the same serial, IEL divergence makes the chain contested-terminal across all nodes (per [§Privileged Divergence is Terminal](#privileged-divergence-is-terminal-cnt-triggers-it-uniformly), trivially on IEL since every IEL event is privileged). The federation dies under that prefix; recovery is a fresh federation IEL inception, propagated again via gossip. The catastrophic outcome converges; convergence is not contingent on the chain's success.
+
+The per-peer address SEL pattern is the resolution-side companion. Each member identity owns a SEL bound to its own IEL at a deterministic prefix (`compute_sel_prefix(peer_identity, "kels/sel/v1/peer/addresses")`); each peer publishes its current network endpoints there. Discovery on any node reads the federation IEL's `auth_policy`, enumerates the member identities, walks each peer's address SEL, and connects. Convergence applies twice: once to the federation IEL (members agree on who's authorized), once per peer's address SEL (everyone resolves the same current endpoints for each peer).
+
+The federation IEL therefore relies on convergence for the same reason any IEL does — convergent identity state under gossip — but its operational role makes the dependency especially visible: a federation with divergent `auth_policy` views across nodes would have nodes accepting different sets of peers as "current members," and the gossip mesh would partition along those views. The protocol's convergence guarantee, combined with the IEL primitive's structural properties, prevents that partition from ever forming under healthy gossip.
+
+Full design: [infrastructure/federation.md](infrastructure/federation.md).
 
 ### Extension Discipline
 

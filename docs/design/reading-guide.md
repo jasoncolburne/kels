@@ -73,12 +73,10 @@ Applications built on the primitives. Read once you've internalized the primitiv
 Runtime services and system components that store/serve/replicate the primitives. Read when reasoning about deployment, gossip mechanics, or the federation layer.
 
 - [sadstore.md](infrastructure/sadstore.md) — SADStore service architecture.
-- [federation.md](infrastructure/federation.md) — multi-registry federation.
-- [federation-state-machine.md](infrastructure/federation-state-machine.md) — Raft state machine for federation peer management.
-- [gossip.md](infrastructure/gossip.md) — gossip protocol mechanics, anti-entropy.
-- [registry.md](infrastructure/registry.md) — node registry and bootstrap sync.
-- [secure-registration.md](infrastructure/secure-registration.md) — peer authorization.
-- [rejection-threshold.md](infrastructure/rejection-threshold.md) — federation peer-proposal rejection rule.
+- [federation.md](infrastructure/federation.md) — federation-as-identity model: federation IEL, per-peer address SELs, membership evolution, bootstrap ceremony, recovery.
+- [discovery.md](infrastructure/discovery.md) — node-side peer discovery (federation IEL `auth_policy` enumeration + per-peer address SEL walks).
+- [peer-identity.md](infrastructure/peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
+- [gossip.md](infrastructure/gossip.md) — gossip protocol mechanics, anti-entropy, transport layer.
 
 ## Operations
 

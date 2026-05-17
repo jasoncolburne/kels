@@ -82,7 +82,7 @@ pub struct SignedEssrEnvelope {
 
 ## Key Publication
 
-ML-KEM encapsulation keys are published as SADStore event chains with kind `kels/sad/v1/keys/mlkem`. The SADStore replicates them network-wide via gossip.
+ML-KEM encapsulation keys are published as SADStore event chains with kind `kels/sel/v1/keys/mlkem`. The SADStore replicates them network-wide via gossip.
 
 **Publication flow:**
 1. Generate ML-KEM keypair (768 or 1024, matched to signing key strength)
@@ -90,7 +90,7 @@ ML-KEM encapsulation keys are published as SADStore event chains with kind `kels
 3. Create `EncapsulationKeyPublication` SAD object, upload to SADStore
 4. Create `SadEvent` chain (v0 inception + v1 with content_said), submit signed
 
-**Discovery:** Anyone computes the SEL prefix offline: take the publisher's IEL identity prefix and call `compute_sel_prefix(identity, "kels/sad/v1/keys/mlkem")`. Query any SADStore node for the latest event.
+**Discovery:** Anyone computes the SEL prefix offline: take the publisher's IEL identity prefix and call `compute_sel_prefix(identity, "kels/sel/v1/keys/mlkem")`. Query any SADStore node for the latest event.
 
 **Rotation:** Append a new event to the chain with updated content_said. The tip event is always the current key.
 

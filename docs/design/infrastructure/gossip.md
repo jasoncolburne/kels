@@ -2,7 +2,7 @@
 
 ## Overview
 
-The gossip service (`services/gossip`) synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). All gossip connections use ML-KEM-1024 regardless of peer signing algorithm — peers using ML-DSA-65 get stronger transport security than their signing keys require, while ML-DSA-87 peers get matched security. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other peers in the allowlist.
+The gossip service (`services/gossip`) synchronizes KELs between independent KELS deployments using a custom gossip protocol (HyParView membership + PlumTree epidemic broadcast over TCP with ML-KEM-1024 key exchange + ML-DSA-65/87 mutual authentication + AES-GCM-256 authenticated encryption). All gossip connections use ML-KEM-1024 regardless of peer signing algorithm — peers using ML-DSA-65 get stronger transport security than their signing keys require, while ML-DSA-87 peers get matched security. Nodes announce KEL updates as `prefix:said` pairs via PlumTree broadcast — events themselves are not transmitted over the gossip layer. When a node receives an announcement with an unfamiliar SAID, it fetches the missing events via HTTP — first from the origin peer, then falling back to other federation-authorized peers.
 
 ## Architecture
 
@@ -84,7 +84,7 @@ services/gossip/
     ├── server.rs       # HTTP server for ready endpoint
     ├── sync.rs         # Redis subscriber, sync handler, anti-entropy loop
     ├── protocol.rs     # Message types (KelAnnouncement, SadAnnouncement)
-    ├── allowlist.rs    # Connection filtering based on verified peer allowlist
+    ├── authorization.rs # Handshake authorization against the federation IEL `auth_policy`
     ├── bootstrap.rs    # Bootstrap sync from existing peers
     └── hsm_signer.rs   # HSM-backed request signing and peer verification
 ```
@@ -138,14 +138,13 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 | `HSM_SLOT` | PKCS#11 slot number | (required) |
 | `HSM_PIN` | PKCS#11 PIN | (required) |
 | `IDENTITY_URL` | Identity service URL | `http://identity` |
-| `FEDERATION_REGISTRY_URLS` | Comma-separated registry URLs for peer discovery and HA | (required) |
+| `FEDERATION_IEL_PREFIX` | Runtime override of the compile-time federation IEL prefix (see [federation.md §Configuration](federation.md#configuration)) | (optional) |
 | `GOSSIP_LISTEN_ADDR` | TCP listen address (host:port) | `0.0.0.0:4001` |
 | `GOSSIP_ADVERTISE_ADDR` | Advertised address for peer connections | same as listen |
-| `GOSSIP_TOPIC` | Gossip topic name | `kels/events/v1` |
 | `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
-| `ALLOWLIST_REFRESH_INTERVAL_SECS` | Allowlist refresh interval | `60` |
+| `AUTH_POLICY_REFRESH_INTERVAL_SECS` | Background interval to re-check the federation IEL `auth_policy` (defense against missed gossip-driven invalidations) | `60` |
 
 ## Design Decisions
 
@@ -158,23 +157,21 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 
 ### HSM-backed gossip identity
 
-Gossip nodes use persistent HSM-backed identities. Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.). See [secure-registration.md §HSM identity model](secure-registration.md) for the cross-service HSM model.
+Gossip identity, accepted algorithms, key custody, and the handshake authorization check against the federation IEL are documented in [peer-identity.md](peer-identity.md). This subsection covers the **transport-layer handshake mechanics** that establish the encrypted session once authorization has succeeded.
 
-- Each node's identity is cryptographically bound to ML-DSA-65 or ML-DSA-87 keys in the HSM — the identity does not change across restarts
-- The NodePrefix (44-char CESR-encoded) identifies the node in the gossip mesh and verified allowlist
-- Nodes must be added to the peer allowlist before they can connect to the gossip mesh
-- Unauthorized peers are rejected during the gossip handshake
-- Only ML-DSA-65/87 peers are accepted (P-256 peers are rejected)
-- The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
-  1. Exchange 44-byte prefixes
-  2. Initiator generates ML-KEM-1024 keypair, sends encapsulation key (qb64)
-  3. Acceptor encapsulates, sends ciphertext back (qb64)
-  4. Both derive 32-byte shared secret
-  5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65/87
-  6. Exchange and verify signatures against peer's KEL public key
-  7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
-- Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security
-- See [Secure Registration](secure-registration.md) for details on the peer allowlist
+Development deployments load `kels-mock-hsm` (a PKCS#11 cdylib backed by fips204) — do not use it in production; swap `PKCS11_LIBRARY_PATH` to a real HSM's PKCS#11 .so (CloudHSM, Luna, etc.).
+
+The handshake uses ML-KEM-1024 key exchange + ML-DSA-65/87 signature authentication:
+
+1. Exchange 44-byte prefixes
+2. Initiator generates ML-KEM-1024 keypair, sends encapsulation key (qb64)
+3. Acceptor encapsulates, sends ciphertext back (qb64)
+4. Both derive 32-byte shared secret
+5. Each side signs JSON payload `{our_ek, their_ek, their_prefix}` with ML-DSA-65/87
+6. Exchange and verify signatures against peer's KEL public key
+7. Derive AES-GCM-256 session keys from shared secret via BLAKE3 KDF with context `"kels/gossip/v1/keys/..."`
+
+Security properties: forward secrecy (ephemeral ML-KEM), mutual authentication (ML-DSA signatures), post-quantum security.
 
 ### Delta-based sync with full-fetch fallback
 
@@ -185,57 +182,21 @@ Gossip nodes use persistent HSM-backed identities. Development deployments load 
 - Archived adversary events are submitted first (establishes the adversary branch), then the clean chain is split before the event preceding the first recovery-revealing event and submitted in stages so merge() processes recovery correctly. The owner's event at the divergence serial is bundled with the recovery event — this ensures nodes that have only adversary events at that serial (no owner event) can insert the owner event as part of recovery processing (the submit handler's divergent recovery branch handles this via look-ahead for `rec` in the batch)
 - KELS handles duplicate events idempotently
 
-### Registry-based discovery (not hardcoded bootstrap peers)
+### Federation-IEL-based discovery (not hardcoded bootstrap peers)
 
-- Nodes register with the registry service on startup
-- New nodes query the registry for existing peers and bootstrap sync
+- Nodes hold the federation IEL locally and enumerate authorized peers from its current `auth_policy`
+- Each peer publishes its current network endpoints via a per-peer address SEL; nodes walk those SELs to resolve addresses
+- Initial state on a fresh node arrives via `transfer_*_events` (operator-coordinated, point-to-point) during the federation bootstrap ceremony or peer-onboarding; after that, the node participates in the gossip mesh and propagation runs normally
 - Peers discover each other dynamically via the gossip mesh (HyParView membership protocol)
-- No hardcoded peer addresses needed in configuration
-- See [registry.md](registry.md) for details on the registration protocol
+- See [discovery.md](discovery.md) for the full node-side discovery flow and [federation.md](federation.md) for the federation-as-identity model
 
-## Kubernetes Deployment
+## Transport reachability
 
-### Cross-namespace communication
+The gossip protocol is TCP-based. Each peer publishes its advertised gossip endpoint (`host:port`) in its per-peer address SEL (see [discovery.md](discovery.md)). Other peers connect to that endpoint to gossip.
 
-Gossip nodes in different namespaces connect via the registry service. The registry runs in its own namespace and nodes register with it on startup.
+Production deployments must ensure each peer's advertised endpoint is reachable from every other peer in the federation — by whatever mechanism the deployment provides (public IPs, mesh routing, NAT traversal, LoadBalancer / NodePort / Gateway API TCPRoute in Kubernetes, etc.). The endpoint published in the address SEL must be the externally-routable one, not a local-only address; the gossip service surfaces this via `GOSSIP_ADVERTISE_ADDR`.
 
-### Services
-
-Each namespace has:
-- `gossip` - ClusterIP service for gossip TCP connections
-
-**Cross-cluster note:** The test harness colocates all nodes in one Kubernetes cluster with cross-namespace routing via CoreDNS rewrites. In a production deployment where nodes are in separate clusters or networks, each node's gossip TCP port must be externally reachable — e.g., via a LoadBalancer service, NodePort, or Gateway API TCPRoute. The gossip advertise address (`GOSSIP_ADVERTISE_ADDR`) should be set to the externally routable hostname and port.
-
-### CoreDNS Configuration for `.kels` Domains
-
-Nodes advertise URLs using `.kels` domains (e.g., `http://kels.node-a.kels`) so that the same URLs work for both:
-- **External clients** (iOS, CLI) - resolved via `/etc/hosts` or local DNS
-- **Internal services** - resolved via CoreDNS inside the cluster
-
-To enable internal resolution, CoreDNS must be configured with rewrite rules:
-
-```bash
-scripts/coredns.sh apply
-```
-
-This applies rewrite rules that translate `.kels` domains to `.svc.cluster.kels`:
-
-```
-rewrite name regex (.*)\.registry-(.)\.kels {1}.registry-{2}.svc.cluster.kels
-rewrite name regex (.*)\.node-(.)\.kels {1}.node-{2}.svc.cluster.kels
-```
-
-**Platform-specific notes:**
-
-| Platform | Notes |
-|----------|-------|
-| Docker Desktop | Works as-is with the provided script |
-| minikube | May need to edit the `coredns` ConfigMap in `kube-system` namespace manually |
-| kind | CoreDNS config is in `coredns` ConfigMap; may need cluster recreation to apply |
-| EKS/GKE/AKS | Use cluster-specific DNS customization (e.g., CoreDNS ConfigMap or NodeLocal DNSCache) |
-| k3s | Uses CoreDNS by default; same ConfigMap approach works |
-
-If your Kubernetes distribution uses a different DNS provider or configuration method, adapt the rewrite rules accordingly. The key requirement is that `*.node-X.kels` resolves to `*.node-X.svc.cluster.kels` inside the cluster.
+The in-repo Kubernetes test harness (see [`../../validation/k8s-test-harness.md`](../../validation/k8s-test-harness.md)) configures cross-namespace TCP via ClusterIP services and CoreDNS rewrites inside a single cluster. That is a test setup, not a production deployment recipe.
 
 ## Anti-Entropy Repair
 
