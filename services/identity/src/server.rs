@@ -82,7 +82,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
     ));
     let kel_store: Arc<dyn KelStore> = Arc::new(RepositoryKelStore::new(kel_repo.clone()));
 
-    let builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
+    let mut builder = if let Some(mapping) = repo.authority.get_by_name(AUTHORITY_IDENTITY_NAME).await?
     {
         let prefix = mapping.kel_prefix;
         info!("Found identity prefix: {}", prefix);
@@ -207,6 +207,16 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         builder
     };
 
+    // Reconcile IEL — incept if absent, restore if present. Identity stores
+    // locally; gossip pushes to sadstore at its own startup (matches the
+    // KEL push pattern). Operates against `builder` directly so the
+    // anchor `Ixn` lands before AppState wraps it in a lock.
+    let kel_prefix = *builder.prefix().ok_or("builder missing KEL prefix")?;
+    let iel_prefix = crate::reconciliation::reconcile_iel(&repo, &mut builder, kel_prefix)
+        .await
+        .map_err(|e| format!("IEL reconciliation: {e}"))?;
+    info!(iel_prefix = %iel_prefix, "IEL reconciliation complete");
+
     let state = Arc::new(AppState {
         repo: Arc::new(repo),
         builder: RwLock::new(builder),
@@ -214,7 +224,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         forward_url,
         forward_path_prefix,
         http_client,
-        iel_prefix: RwLock::new(None),
+        iel_prefix: RwLock::new(Some(iel_prefix)),
     });
 
     let rotation_state = state.clone();
