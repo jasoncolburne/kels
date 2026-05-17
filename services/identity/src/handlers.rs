@@ -228,6 +228,77 @@ pub async fn get_identity_events(
     Ok(Json(page))
 }
 
+/// Serving endpoint — returns paginated SEL events for a given chain
+/// prefix the identity service owns (peer/services or peer/gossip). No
+/// verification needed; the receiver verifies.
+pub async fn get_sel_events(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadEventPageRequest>,
+) -> Result<Json<kels_core::SadEventPage>, ApiError> {
+    let chain = state
+        .repo
+        .sel
+        .fetch_chain(&request.prefix)
+        .await
+        .map_err(|e| ApiError::internal(format!("SEL fetch: {e}")))?;
+
+    let limit = request
+        .limit
+        .unwrap_or(kels_core::page_size())
+        .min(kels_core::page_size());
+
+    let start = match request.since.as_ref() {
+        Some(cursor) => chain
+            .iter()
+            .position(|e| &e.said == cursor)
+            .map(|i| i + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    let end_inclusive = start.saturating_add(limit);
+    let has_more = end_inclusive < chain.len();
+    let end = end_inclusive.min(chain.len());
+
+    let page = kels_core::SadEventPage {
+        events: if start >= chain.len() {
+            Vec::new()
+        } else {
+            chain[start..end].to_vec()
+        },
+        has_more,
+    };
+    Ok(Json(page))
+}
+
+/// Serving endpoint — returns a cached SAD body by its SAID. Used at
+/// gossip startup to fetch the SAD bodies the node authored (so gossip
+/// can push them to sadstore before pushing the referencing SEL `Upd`
+/// events).
+///
+/// Returns `404` if the SAD is not in the local cache (i.e. not authored
+/// by this node).
+pub async fn get_sad_object(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<kels_core::SadFetchRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let entry = state
+        .repo
+        .sad_objects
+        .get_by_object_said(&request.said)
+        .await
+        .map_err(|e| ApiError::internal(format!("SAD object fetch: {e}")))?;
+
+    match entry {
+        Some(e) => Ok(Json(e.object)),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("SAD {} not found", request.said),
+            }),
+        )),
+    }
+}
+
 /// Best-effort forward KEL events to the colocated service (KELS or registry).
 pub(crate) async fn forward_kel(state: &AppState, prefix: &cesr::Digest256) {
     let forward_url = match state.forward_url.as_ref() {

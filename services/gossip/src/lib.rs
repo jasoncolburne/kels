@@ -308,6 +308,27 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         }
     }
 
+    // Propagate the peer/services SEL chain (and the SAD bodies it
+    // references) to local sadstore. Identity reconciles the chain at its
+    // startup (#195 Gap 8b-3); gossip pushes it here. SAD bodies are
+    // pushed first because sadstore's submit handler rejects `Upd`
+    // events whose content body is absent.
+    if let Some(local_iel_prefix) = identity_client
+        .get_iel_prefix()
+        .await
+        .map_err(|e| ServiceError::Config(format!("Failed to fetch IEL prefix: {}", e)))?
+    {
+        let services_prefix = kels_core::compute_peer_services_sel_prefix(local_iel_prefix)
+            .map_err(|e| ServiceError::Config(format!("Failed to derive peer/services prefix: {}", e)))?;
+        push_peer_sel_to_sadstore(
+            &identity_client,
+            &local_sadstore_client,
+            &services_prefix,
+            "peer/services",
+        )
+        .await;
+    }
+
     // Identity signer for authenticated peer-to-peer requests (signs via
     // identity service). Used by sync paths for cross-peer fetches when an
     // address-source supplies peer URLs (#195 address SELs replace what
@@ -941,6 +962,84 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
             sync_handle.abort();
             Ok(())
         }
+    }
+}
+
+/// Push a per-peer SEL chain owned by the local identity to the local
+/// sadstore. Pushes the SAD bodies referenced by each `Upd` event first
+/// (sadstore's submit handler rejects `Upd` events whose content body is
+/// absent), then submits the SEL events themselves.
+///
+/// Best-effort across the board — failures are warned, not propagated.
+/// On first boot before identity has incepted the chain, the page is
+/// empty and this no-ops. On subsequent boots the sadstore returns 409
+/// for already-present events; treated as success.
+async fn push_peer_sel_to_sadstore(
+    identity_client: &kels_core::IdentityClient,
+    sadstore_client: &kels_core::SadStoreClient,
+    sel_prefix: &cesr::Digest256,
+    label: &str,
+) {
+    use tracing::{debug, info, warn};
+
+    let page = match identity_client
+        .get_sel_events(sel_prefix, None, kels_core::page_size())
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(label, error = %e, "Failed to fetch identity SEL events; skipping push");
+            return;
+        }
+    };
+    let events = page.events;
+    if events.is_empty() {
+        debug!(label, "Identity SEL chain empty; nothing to push");
+        return;
+    }
+
+    // Push the SAD bodies referenced by each event's `content` field.
+    // Deduplicate by SAID — the same content can be referenced by Sea +
+    // its preceding Upd.
+    let mut pushed_bodies: std::collections::HashSet<cesr::Digest256> =
+        std::collections::HashSet::new();
+    for event in &events {
+        let Some(content_said) = event.content else {
+            continue;
+        };
+        if !pushed_bodies.insert(content_said) {
+            continue;
+        }
+        let body = match identity_client.get_sad_object(&content_said).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    label,
+                    said = %content_said,
+                    error = %e,
+                    "Failed to fetch SAD body from identity; skipping"
+                );
+                continue;
+            }
+        };
+        if let Err(e) = sadstore_client.post_sad_object(&body).await {
+            warn!(
+                label,
+                said = %content_said,
+                error = %e,
+                "SAD body submission to sadstore returned an error (continuing)"
+            );
+        }
+    }
+
+    if let Err(e) = sadstore_client.submit_sel_events(&events).await {
+        warn!(
+            label,
+            error = %e,
+            "Identity SEL submission to sadstore returned an error (continuing)"
+        );
+    } else {
+        info!(label, count = events.len(), "Identity SEL submitted to local sadstore");
     }
 }
 

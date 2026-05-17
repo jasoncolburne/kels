@@ -22,7 +22,10 @@ use cesr::Digest256;
 use tracing::info;
 use verifiable_storage::{ChainedRepository, StorageError};
 
-use kels_core::{IdentityEvent, KeyEventBuilder};
+use kels_core::{
+    IdentityEvent, KeyEventBuilder, PeerServicesSad, SadEvent, SadEventKind,
+    compute_peer_services_sel_prefix,
+};
 use kels_policy::Policy;
 
 use crate::{
@@ -35,6 +38,16 @@ use crate::{
 /// `(KEL_prefix, this_topic)` so per-node chains are deterministically
 /// distinct.
 const PEER_IDENTITY_IEL_TOPIC: &str = "kels/iel/v1/peer-identity";
+
+/// Configuration the reconciliation flow consumes. Loaded from env vars at
+/// service startup.
+#[derive(Debug, Clone)]
+pub struct ReconcileConfig {
+    /// `PEER_DOMAIN` — base domain published in the peer/services SAD.
+    /// Consumers derive service URLs as `http://{service}.{domain}` per
+    /// the federation subdomain convention.
+    pub domain: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReconciliationError {
@@ -112,6 +125,152 @@ pub async fn reconcile_iel(
         .map_err(ReconciliationError::Kels)?;
 
     Ok(iel_prefix)
+}
+
+/// Reconcile the peer/services SEL.
+///
+/// - If the chain is absent locally, incept `[Icp, Upd, Sea]` with a fresh
+///   [`PeerServicesSad`] for `config.domain`.
+/// - If the chain is present and its tip's published domain matches
+///   `config.domain`, no-op.
+/// - If the chain is present but the tip's domain differs from
+///   `config.domain` (operator changed `PEER_DOMAIN` between boots),
+///   rotate `[Upd, Sea]` with a fresh SAD for the new domain.
+///
+/// Each step persists locally only; gossip propagates to sadstore at its
+/// own startup. The IEL Icp's SAID (looked up from the local IEL chain) is
+/// used as the `identity_event` binding on Upd/Sea — under the degenerate
+/// single-KEL IEL, that event's `authPolicy` = `governancePolicy` =
+/// `kel(KEL_prefix)`, satisfied by anchoring each SEL SAID in the KEL via
+/// `Ixn`.
+pub async fn reconcile_peer_services_sel(
+    repo: &IdentityRepository,
+    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    iel_prefix: Digest256,
+    config: &ReconcileConfig,
+) -> Result<(), ReconciliationError> {
+    let iel_tip = repo
+        .iel
+        .fetch_tip(&iel_prefix)
+        .await?
+        .ok_or_else(|| {
+            ReconciliationError::Storage(StorageError::StorageError(format!(
+                "IEL {iel_prefix} has no events; reconcile_iel must run first"
+            )))
+        })?;
+    let iel_event_said = iel_tip.said;
+
+    let sel_prefix = compute_peer_services_sel_prefix(iel_prefix)?;
+
+    match repo.sel.fetch_tip(&sel_prefix).await? {
+        None => {
+            info!(
+                sel_prefix = %sel_prefix,
+                domain = %config.domain,
+                "Incepting peer/services SEL"
+            );
+            incept_peer_services(repo, builder, iel_prefix, iel_event_said, &config.domain)
+                .await?;
+        }
+        Some(tip) => {
+            let current_domain = read_services_domain_from_tip(repo, &tip).await?;
+            if current_domain.as_deref() == Some(config.domain.as_str()) {
+                info!(
+                    sel_prefix = %sel_prefix,
+                    domain = %config.domain,
+                    "peer/services SEL up-to-date"
+                );
+                return Ok(());
+            }
+            info!(
+                sel_prefix = %sel_prefix,
+                current = ?current_domain,
+                new = %config.domain,
+                "Rotating peer/services SEL"
+            );
+            rotate_peer_services(repo, builder, &tip, iel_event_said, &config.domain).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Inspect the tip's content SAID and return the published domain from the
+/// associated [`PeerServicesSad`] body, if both the tip's content and the
+/// cached body resolve. Returns `Ok(None)` when the chain's tip is not a
+/// `Sea` (non-conforming local state) or the body isn't cached locally —
+/// either of those triggers a re-incept / rotate path at the call site.
+async fn read_services_domain_from_tip(
+    repo: &IdentityRepository,
+    tip: &SadEvent,
+) -> Result<Option<String>, ReconciliationError> {
+    if tip.kind != SadEventKind::Sea {
+        return Ok(None);
+    }
+    let Some(content_said) = tip.content else {
+        return Ok(None);
+    };
+    let Some(entry) = repo.sad_objects.get_by_object_said(&content_said).await? else {
+        return Ok(None);
+    };
+    let sad: PeerServicesSad = serde_json::from_value(entry.object)?;
+    Ok(Some(sad.domain))
+}
+
+async fn incept_peer_services(
+    repo: &IdentityRepository,
+    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    iel_prefix: Digest256,
+    iel_event_said: Digest256,
+    domain: &str,
+) -> Result<(), ReconciliationError> {
+    let sad = PeerServicesSad::create(domain.to_string())?;
+    cache_services_body(repo, &sad).await?;
+
+    let icp = SadEvent::icp(iel_prefix, kels_core::PEER_SERVICES_SEL_TOPIC)?;
+    let upd = SadEvent::upd(&icp, iel_event_said, sad.said)?;
+    let sea = SadEvent::sea(&upd, iel_event_said)?;
+
+    repo.sel.insert(icp.clone()).await?;
+    repo.sel.insert(upd.clone()).await?;
+    repo.sel.insert(sea.clone()).await?;
+
+    builder.interact(&icp.said).await?;
+    builder.interact(&upd.said).await?;
+    builder.interact(&sea.said).await?;
+    Ok(())
+}
+
+async fn rotate_peer_services(
+    repo: &IdentityRepository,
+    builder: &mut KeyEventBuilder<HsmKeyProvider>,
+    tip: &SadEvent,
+    iel_event_said: Digest256,
+    new_domain: &str,
+) -> Result<(), ReconciliationError> {
+    let sad = PeerServicesSad::create(new_domain.to_string())?;
+    cache_services_body(repo, &sad).await?;
+
+    let upd = SadEvent::upd(tip, iel_event_said, sad.said)?;
+    let sea = SadEvent::sea(&upd, iel_event_said)?;
+
+    repo.sel.insert(upd.clone()).await?;
+    repo.sel.insert(sea.clone()).await?;
+
+    builder.interact(&upd.said).await?;
+    builder.interact(&sea.said).await?;
+    Ok(())
+}
+
+/// Cache the peer/services SAD body in the local SAD object store. Gossip
+/// propagates to remote sadstore at its own startup.
+async fn cache_services_body(
+    repo: &IdentityRepository,
+    sad: &PeerServicesSad,
+) -> Result<(), ReconciliationError> {
+    let value = serde_json::to_value(sad)?;
+    let entry = SadObjectEntry::create(sad.said, value)?;
+    repo.sad_objects.store(entry).await?;
+    Ok(())
 }
 
 #[cfg(test)]
