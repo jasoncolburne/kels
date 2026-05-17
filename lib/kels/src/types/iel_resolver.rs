@@ -293,3 +293,83 @@ pub trait IelResolver: Send + Sync {
         identity: &cesr::Digest256,
     ) -> Result<cesr::Digest256, KelsError>;
 }
+
+/// Loud-fail [`IelResolver`] stub for callers without an IEL context.
+///
+/// Every method returns [`KelsError::NotFound`]. Used at API surfaces (JSON
+/// API, FFI) that don't accept an IEL store argument: a policy containing an
+/// `iel(...)` leaf will error visibly rather than silently evaluating false.
+/// Per `docs/design/features/policy.md §Identity Resolution` "fail loudly"
+/// trust model.
+///
+/// Production callers that have an IEL store should construct
+/// [`crate::AnchoredIelResolver`] instead. This stub exists for surfaces
+/// where no IEL store can be plumbed in.
+pub struct UnavailableIelResolver;
+
+#[async_trait::async_trait]
+impl IelResolver for UnavailableIelResolver {
+    async fn fetch_iel_event(
+        &self,
+        _identity: &cesr::Digest256,
+        _iel_event_said: &cesr::Digest256,
+    ) -> Result<IdentityEvent, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved \
+             in this context (see UnavailableIelResolver docs)"
+                .to_string(),
+        ))
+    }
+    async fn resolve_auth_policy_at(
+        &self,
+        _identity: &cesr::Digest256,
+        _iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+    async fn resolve_governance_policy_at(
+        &self,
+        _identity: &cesr::Digest256,
+        _iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+    async fn iel_chain_positions(
+        &self,
+        _identity: &cesr::Digest256,
+        _saids: &[cesr::Digest256],
+    ) -> Result<IelChainPositionBatch, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+    async fn is_satisfied(
+        &self,
+        _identity: &cesr::Digest256,
+        _said: &cesr::Digest256,
+    ) -> Result<IelSatisfaction, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+    async fn resolve_identity_for_event(
+        &self,
+        _iel_event_said: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+    async fn resolve_current_auth_policy(
+        &self,
+        _identity: &cesr::Digest256,
+    ) -> Result<cesr::Digest256, KelsError> {
+        Err(KelsError::NotFound(
+            "no IEL resolver available — iel(...) leaves cannot be resolved".to_string(),
+        ))
+    }
+}

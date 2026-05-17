@@ -166,8 +166,16 @@ pub(crate) fn sad_store_anchored_checker(
         Arc::new(SadStoreSourcedPolicyResolver {
             client: sad_client.clone(),
         });
+    // CLI staging helpers don't have an in-process IEL store at hand; iel(...)
+    // leaves in any policy reached from here will loud-fail per the
+    // UnavailableIelResolver contract. CLI commands that need iel-resolution
+    // can wire a real resolver explicitly when they're added.
+    let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
     Ok(Arc::new(kels_policy::AnchoredPolicyChecker::new(
-        kel_source, resolver,
+        kel_source,
+        resolver,
+        iel_resolver,
     )))
 }
 

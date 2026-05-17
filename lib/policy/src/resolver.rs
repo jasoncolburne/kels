@@ -53,7 +53,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolver_with_policy() {
         let policy = Policy::build(
-            "endorse(KBfd1234567890123456789012345678901234567890)",
+            "kel(KBfd1234567890123456789012345678901234567890)",
             None,
             false,
         )

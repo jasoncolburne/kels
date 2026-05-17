@@ -308,12 +308,12 @@ async fn setup_kel_iel_policy(harness: &SharedHarness, label: &str) -> Setup {
         .unwrap_or_else(|e| panic!("incept KEL [{}]: {:?}", label, e));
     let kel_prefix = *kel_builder.prefix().expect("KEL has prefix after incept");
 
-    // --- Policy: `endorse(KEL_PREFIX)`, used for both IEL auth + governance. ---
+    // --- Policy: `kel(KEL_PREFIX)`, used for both IEL auth + governance. ---
     // #147 IEL requires `immune: true` on both auth_policy and
     // governance_policy at Icp (see `docs/design/iel/events.md`'s
     // immunity rule). Build the policy with `immune=true` so the IEL
     // verifier accepts the inception.
-    let policy = Policy::build(&format!("endorse({})", kel_prefix), None, true)
+    let policy = Policy::build(&format!("kel({})",kel_prefix), None, true)
         .unwrap_or_else(|e| panic!("build policy [{}]: {:?}", label, e));
 
     let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
@@ -368,7 +368,9 @@ fn build_checker(harness: &SharedHarness, policy: Policy) -> Arc<dyn PolicyCheck
     );
     let resolver: Arc<dyn PolicyResolver + Send + Sync> =
         Arc::new(InMemoryPolicyResolver::new(vec![policy]));
-    Arc::new(AnchoredPolicyChecker::new(kel_source, resolver))
+    let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
+    Arc::new(AnchoredPolicyChecker::new(kel_source, resolver, iel_resolver))
 }
 
 /// Upload a fresh content SAD object for use as `Upd` content.
@@ -602,9 +604,9 @@ async fn create_iel_divergence(
     let fake_endorser_a = Digest256::blake3_256(format!("fake-endorser-a-{label}").as_bytes());
     let fake_endorser_b = Digest256::blake3_256(format!("fake-endorser-b-{label}").as_bytes());
     let policy_a =
-        Policy::build(&format!("endorse({})", fake_endorser_a), None, true).expect("policy a");
+        Policy::build(&format!("kel({})",fake_endorser_a), None, true).expect("policy a");
     let policy_b =
-        Policy::build(&format!("endorse({})", fake_endorser_b), None, true).expect("policy b");
+        Policy::build(&format!("kel({})",fake_endorser_b), None, true).expect("policy b");
     assert_ne!(
         policy_a.said, policy_b.said,
         "[{label}] policies must differ"
@@ -671,8 +673,13 @@ async fn verify_chain_with_policies(
     );
     let resolver_inner: Arc<dyn PolicyResolver + Send + Sync> =
         Arc::new(InMemoryPolicyResolver::new(all));
-    let checker: Arc<dyn PolicyChecker + Send + Sync> =
-        Arc::new(AnchoredPolicyChecker::new(kel_source, resolver_inner));
+    let iel_resolver_inner: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
+    let checker: Arc<dyn PolicyChecker + Send + Sync> = Arc::new(AnchoredPolicyChecker::new(
+        kel_source,
+        resolver_inner,
+        iel_resolver_inner,
+    ));
     // SEL pre-walk to collect identity_event SAIDs, mirroring the production
     // pattern in `SadEventBuilder::verify_server_chain_pre_action`.
     let queried = kels_core::collect_identity_event_saids(

@@ -286,8 +286,8 @@ async fn setup_kel_and_immune_policy(
     kel_builder.incept().await.expect("incept KEL");
     let prefix = *kel_builder.prefix().expect("KEL has prefix after incept");
 
-    // Immune `endorse(prefix)` — IEL submit handler rejects non-immune policies.
-    let policy = Policy::build(&format!("endorse({})", prefix), None, true)
+    // Immune `kel(prefix)` — IEL submit handler rejects non-immune policies.
+    let policy = Policy::build(&format!("kel({})",prefix), None, true)
         .expect("build immune endorse policy");
 
     let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
@@ -300,13 +300,13 @@ async fn setup_kel_and_immune_policy(
     (prefix, kel_builder, policy, sad_client)
 }
 
-/// Upload a non-immune `endorse(prefix)` policy to exercise the immunity-rejection paths.
+/// Upload a non-immune `kel(prefix)` policy to exercise the immunity-rejection paths.
 async fn upload_non_immune_policy(
     harness: &SharedHarness,
     kel_prefix: &cesr::Digest256,
     label: &str,
 ) -> Policy {
-    let policy = Policy::build(&format!("endorse({})", kel_prefix), None, false)
+    let policy = Policy::build(&format!("kel({})",kel_prefix), None, false)
         .expect("build non-immune policy");
     let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
     let policy_json = serde_json::to_value(&policy).unwrap();
@@ -330,7 +330,9 @@ fn build_checker(
     );
     let resolver: Arc<dyn PolicyResolver + Send + Sync> =
         Arc::new(InMemoryPolicyResolver::new(policies));
-    Arc::new(AnchoredPolicyChecker::new(kel_source, resolver))
+    let iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
+    Arc::new(AnchoredPolicyChecker::new(kel_source, resolver, iel_resolver))
 }
 
 /// Compute the IEL prefix for a `(auth_policy, governance_policy, topic)` triple.
@@ -1237,7 +1239,7 @@ async fn upload_immune_policy(
         .unwrap_or_else(|e| panic!("incept second KEL for {}: {:?}", label, e));
     let second_prefix = *second_kel.prefix().expect("second KEL has prefix");
 
-    let policy = Policy::build(&format!("endorse({})", second_prefix), None, true)
+    let policy = Policy::build(&format!("kel({})",second_prefix), None, true)
         .expect("build immune policy");
     let sad_client = SadStoreClient::new(&harness.sad_url).expect("sad client");
     let policy_json = serde_json::to_value(&policy).unwrap();

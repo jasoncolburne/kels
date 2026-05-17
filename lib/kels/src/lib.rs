@@ -106,6 +106,7 @@ pub use types::{
     IdentityEventKind, IdentityEventPage, IdentityEventPageRequest, IdentityEventTerminalState,
     IdentityKelPageRequest, IdentityStorePageLoader, IelChainPosition, IelChainPositionBatch,
     IelPageLoader, IelResolver, IelSatisfaction, IelVerification, IelVerifier,
+    UnavailableIelResolver,
     KelEffectiveSaidRequest, KelEventExistsRequest, KelMergeResult, KelPageRequest,
     KelRecoveriesRequest, KelRecoveryEvent, KelRecoveryEventsRequest, KelStorePageLoader,
     KelVerification, KelVerifier, KeyEvent, KeyEventKind, KeyEventSignature, MissingDependency,

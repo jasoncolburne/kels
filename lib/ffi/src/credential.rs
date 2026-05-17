@@ -434,7 +434,7 @@ mod tests {
 
         let policy_json = r#"{
             "said": "",
-            "expression": "endorse(KTestPrefix1234567890123456789012345678901)"
+            "expression": "kel(KTestPrefix1234567890123456789012345678901)"
         }"#;
         let mut policy_value: serde_json::Value = serde_json::from_str(policy_json).expect("valid");
         policy_value.derive_said().expect("derive said");

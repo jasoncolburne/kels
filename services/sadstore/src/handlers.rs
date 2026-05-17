@@ -710,13 +710,32 @@ async fn verify_custody_write(
             policies: state.repo.clone(),
             object_store: state.object_store.clone(),
         });
+    // Two-checker construction breaks the AnchoredPolicyChecker ↔ IelResolver
+    // cycle (the checker holds an IelResolver; the IelResolver holds a checker
+    // for its internal IEL-chain walks). `inner_checker` is IEL-unaware via
+    // `UnavailableIelResolver` and is used to validate peer-IEL chains during
+    // iel(X) resolution; peer IELs carry kel()-only policies so no recursion
+    // fires. `checker` is iel-aware and is the one the IEL chain verifier
+    // sees, so federation-style iel()-leaf policies resolve correctly.
+    let inner_iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
+    let inner_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+        Arc::new(kels_policy::AnchoredPolicyChecker::new(
+            Arc::clone(&kel_source),
+            Arc::clone(&policy_resolver),
+            Arc::clone(&inner_iel_resolver),
+        ));
+    let resolver_arc: Arc<RepositoryIelResolver> = Arc::new(
+        RepositoryIelResolver::new(state.repo.clone(), Arc::clone(&inner_checker))
+            .with_queried_saids(std::iter::once(*write_iel_said)),
+    );
     let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
         Arc::new(kels_policy::AnchoredPolicyChecker::new(
             Arc::clone(&kel_source),
             Arc::clone(&policy_resolver),
+            Arc::clone(&resolver_arc) as Arc<dyn kels_core::IelResolver + Send + Sync>,
         ));
-    let resolver = RepositoryIelResolver::new(state.repo.clone(), Arc::clone(&checker))
-        .with_queried_saids(std::iter::once(*write_iel_said));
+    let resolver = &*resolver_arc;
 
     let identity = resolver
         .resolve_identity_for_event(write_iel_said)
@@ -1022,17 +1041,38 @@ async fn verify_custody_read(
             policies: state.repo.clone(),
             object_store: state.object_store.clone(),
         });
-    let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
-        kels_policy::AnchoredPolicyChecker::new(kel_source, Arc::clone(&policy_resolver_arc)),
+    // Two-checker construction breaks the AnchoredPolicyChecker ↔ IelResolver
+    // cycle — see the matching comment in `verify_custody_write` above.
+    let inner_iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::new(kels_core::UnavailableIelResolver);
+    let inner_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> = Arc::new(
+        kels_policy::AnchoredPolicyChecker::new(
+            Arc::clone(&kel_source),
+            Arc::clone(&policy_resolver_arc),
+            Arc::clone(&inner_iel_resolver),
+        ),
     );
-    let resolver = RepositoryIelResolver::new(state.repo.clone(), checker);
+    let resolver_arc: Arc<RepositoryIelResolver> = Arc::new(RepositoryIelResolver::new(
+        state.repo.clone(),
+        Arc::clone(&inner_checker),
+    ));
+    let resolver = &*resolver_arc;
 
     let auth_policy = resolver
         .resolve_current_auth_policy(read_prefix)
         .await
         .map_err(custody_read_resolver_error)?;
 
-    match kels_policy::evaluate_signed_policy(&auth_policy, &verified, &policy_resolver).await {
+    let iel_resolver_for_eval: Arc<dyn kels_core::IelResolver + Send + Sync> =
+        Arc::clone(&resolver_arc) as Arc<dyn kels_core::IelResolver + Send + Sync>;
+    match kels_policy::evaluate_signed_policy(
+        &auth_policy,
+        &verified,
+        &policy_resolver,
+        &*iel_resolver_for_eval,
+    )
+    .await
+    {
         Ok(v) if v.is_satisfied => Ok(()),
         Ok(_) => Err((StatusCode::FORBIDDEN, "custody.read not satisfied").into_response()),
         Err(e) => {
@@ -1775,10 +1815,15 @@ pub async fn submit_sad_events(
         // Build the verifier (shared across all routing branches that need
         // to verify the chain). `RepositoryIelResolver` reads the in-process
         // IEL repository directly so cross-chain auth works without HTTP.
+        // Two-checker construction breaks the AnchoredPolicyChecker ↔
+        // IelResolver cycle — see `verify_custody_write` above.
+        let inner_iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+            Arc::new(kels_core::UnavailableIelResolver);
         let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
             Arc::new(kels_policy::AnchoredPolicyChecker::new(
                 Arc::clone(&kel_source),
                 Arc::clone(&policy_resolver),
+                Arc::clone(&inner_iel_resolver),
             ));
 
         // SEL pre-walk: stream the SEL (storage + new events), accumulate
@@ -2585,10 +2630,30 @@ pub async fn submit_identity_events(
         // Build verifier; verify the existing chain + the new batch. The
         // verifier surfaces immunity violations, Cnt/Dec policy preservation,
         // Icp self-anchoring (soft), and Evl/Cnt/Dec governance anchoring.
+        // Two-checker construction: `inner_checker` is kel-only so it can
+        // back the `RepositoryIelResolver` used to resolve iel(X) leaves on
+        // the *outer* chain (federation IEL governance with iel() leaves);
+        // `checker` then wraps that resolver so the IelVerifier sees an
+        // iel-aware policy checker for the chain it's walking. See
+        // `verify_custody_write` for the matching pattern.
+        let inner_iel_resolver: Arc<dyn kels_core::IelResolver + Send + Sync> =
+            Arc::new(kels_core::UnavailableIelResolver);
+        let inner_checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
+            Arc::new(kels_policy::AnchoredPolicyChecker::new(
+                Arc::clone(&kel_source),
+                Arc::clone(&policy_resolver),
+                Arc::clone(&inner_iel_resolver),
+            ));
+        let iel_resolver_outer: Arc<dyn kels_core::IelResolver + Send + Sync> =
+            Arc::new(RepositoryIelResolver::new(
+                state.repo.clone(),
+                Arc::clone(&inner_checker),
+            ));
         let checker: Arc<dyn kels_core::PolicyChecker + Send + Sync> =
             Arc::new(kels_policy::AnchoredPolicyChecker::new(
                 Arc::clone(&kel_source),
                 Arc::clone(&policy_resolver),
+                Arc::clone(&iel_resolver_outer),
             ));
         let mut verifier = kels_core::IelVerifier::new(Some(iel_prefix), checker);
         if let Err(response) =
