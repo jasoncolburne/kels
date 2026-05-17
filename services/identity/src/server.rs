@@ -214,6 +214,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
         forward_url,
         forward_path_prefix,
         http_client,
+        iel_prefix: RwLock::new(None),
     });
 
     let rotation_state = state.clone();

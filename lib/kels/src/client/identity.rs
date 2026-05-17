@@ -9,7 +9,12 @@ use crate::{KelsError, SignedKeyEventPage};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityInfo {
-    pub prefix: cesr::Digest256,
+    /// The node's gossip-service KEL prefix.
+    pub kel_prefix: cesr::Digest256,
+    /// The node's identity (IEL) prefix. `None` until the IEL has been
+    /// incepted (post-reconciliation in identity startup).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub iel_prefix: Option<cesr::Digest256>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,11 +148,27 @@ impl IdentityClient {
         self.parse_response(response).await
     }
 
-    pub async fn get_prefix(&self) -> Result<cesr::Digest256, KelsError> {
+    /// Full identity info: KEL prefix (always present) and IEL prefix
+    /// (`None` until the IEL has been incepted by the identity service's
+    /// reconciliation step). One HTTP round-trip.
+    pub async fn get_info(&self) -> Result<IdentityInfo, KelsError> {
         let url = format!("{}/api/v1/identity", self.base_url);
         let response = self.client.get(&url).send().await?;
-        let info: IdentityInfo = self.parse_response(response).await?;
-        Ok(info.prefix)
+        self.parse_response(response).await
+    }
+
+    /// The node's gossip-service KEL prefix. Always present after KEL
+    /// inception (the very first step of identity startup).
+    pub async fn get_kel_prefix(&self) -> Result<cesr::Digest256, KelsError> {
+        Ok(self.get_info().await?.kel_prefix)
+    }
+
+    /// The node's identity (IEL) prefix. `None` until the IEL has been
+    /// incepted by the identity service's reconciliation step. Callers that
+    /// need the canonical peer identifier should use this rather than the
+    /// KEL prefix.
+    pub async fn get_iel_prefix(&self) -> Result<Option<cesr::Digest256>, KelsError> {
+        Ok(self.get_info().await?.iel_prefix)
     }
 
     pub async fn get_key_events(
@@ -202,7 +223,7 @@ impl IdentityClient {
         &self,
         request: &ManageKelRequest,
     ) -> Result<ManageKelResponse, KelsError> {
-        let prefix = self.get_prefix().await?;
+        let prefix = self.get_kel_prefix().await?;
 
         // as_ref() returns the QB64 &str — same bytes as qb64b() but the identity
         // sign endpoint takes &str, not &[u8].

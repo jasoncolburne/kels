@@ -51,6 +51,9 @@ pub struct AppState {
     pub forward_url: Option<String>,
     pub forward_path_prefix: String,
     pub http_client: reqwest::Client,
+    /// Populated by the reconciliation step once the node's IEL has been
+    /// incepted. `None` before that (initial cold boot, mid-reconciliation).
+    pub iel_prefix: RwLock<Option<cesr::Digest256>>,
 }
 
 pub struct ApiError(pub StatusCode, pub Json<ErrorResponse>);
@@ -96,11 +99,16 @@ pub async fn get_identity(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<IdentityInfo>, ApiError> {
     let builder = state.builder.read().await;
-    let prefix = builder
+    let kel_prefix = builder
         .prefix()
         .ok_or_else(|| ApiError::internal("Builder has no prefix"))?;
 
-    Ok(Json(IdentityInfo { prefix: *prefix }))
+    let iel_prefix = *state.iel_prefix.read().await;
+
+    Ok(Json(IdentityInfo {
+        kel_prefix: *kel_prefix,
+        iel_prefix,
+    }))
 }
 
 pub async fn get_status(
@@ -386,11 +394,30 @@ mod tests {
 
     #[test]
     fn test_identity_info_serialization() {
-        let prefix = test_digest("prefix-123");
-        let info = IdentityInfo { prefix };
+        let kel_prefix = test_digest("kel-prefix-123");
+        let iel_prefix = test_digest("iel-prefix-123");
+        let info = IdentityInfo {
+            kel_prefix,
+            iel_prefix: Some(iel_prefix),
+        };
         let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("prefix"));
-        assert!(json.contains(prefix.as_ref()));
+        assert!(json.contains("kelPrefix"));
+        assert!(json.contains("ielPrefix"));
+        assert!(json.contains(kel_prefix.as_ref()));
+        assert!(json.contains(iel_prefix.as_ref()));
+    }
+
+    #[test]
+    fn test_identity_info_serialization_pre_iel_inception() {
+        let kel_prefix = test_digest("kel-prefix-only");
+        let info = IdentityInfo {
+            kel_prefix,
+            iel_prefix: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("kelPrefix"));
+        // iel_prefix is skip_serializing_if = None → absent on the wire.
+        assert!(!json.contains("ielPrefix"));
     }
 
     #[test]
@@ -461,10 +488,12 @@ mod tests {
     #[test]
     fn test_identity_info_roundtrip() {
         let original = IdentityInfo {
-            prefix: test_digest("prefix"),
+            kel_prefix: test_digest("kel"),
+            iel_prefix: Some(test_digest("iel")),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: IdentityInfo = serde_json::from_str(&json).unwrap();
-        assert_eq!(original.prefix, parsed.prefix);
+        assert_eq!(original.kel_prefix, parsed.kel_prefix);
+        assert_eq!(original.iel_prefix, parsed.iel_prefix);
     }
 }

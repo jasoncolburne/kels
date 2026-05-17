@@ -254,7 +254,7 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
     let identity_client = kels_core::IdentityClient::new(&config.identity_url)
         .map_err(|e| ServiceError::Config(format!("Failed to build identity client: {}", e)))?;
     let local_kel_prefix = identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .map_err(|e| ServiceError::Config(format!("Failed to get identity prefix: {}", e)))?;
     info!("Local PeerPrefix: {}", local_kel_prefix);

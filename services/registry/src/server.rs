@@ -108,7 +108,7 @@ pub async fn run(listener: tokio::net::TcpListener) -> Result<(), Box<dyn std::e
 
     // Fetch the registry prefix from the identity service
     let prefix = identity_client
-        .get_prefix()
+        .get_kel_prefix()
         .await
         .map_err(|e| format!("Failed to get registry prefix from identity service: {}", e))?;
     info!("Registry prefix from identity service: {}", prefix);

@@ -120,7 +120,7 @@ async fn sync_own_kel(
     identity_client: &IdentityClient,
     member_kel_repo: &MemberKelRepository,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let own_prefix = identity_client.get_prefix().await?;
+    let own_prefix = identity_client.get_kel_prefix().await?;
 
     let since_digest = member_kel_repo
         .effective_said(&own_prefix)
@@ -157,7 +157,7 @@ async fn push_to_stale_members(
     identity_client: &IdentityClient,
     member_kel_repo: &MemberKelRepository,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let own_prefix = identity_client.get_prefix().await?;
+    let own_prefix = identity_client.get_kel_prefix().await?;
     let config = node.config();
 
     let local_said = member_kel_repo
