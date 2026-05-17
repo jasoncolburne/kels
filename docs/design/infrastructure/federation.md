@@ -343,7 +343,7 @@ A contested federation IEL stays contested forever — that is the structural me
 - [primitives/iel/events.md](../primitives/iel/events.md) — event kinds (`Icp`, `Evl`, `Sea`, `Cnt`, `Dec`).
 - [protocol-doctrine.md §Federation Convergence](../protocol-doctrine.md#federation-convergence) — the cross-node convergence guarantee the federation relies on.
 - [primitives/iel/event-log.md §Multi-Party Governance Synchronization](../primitives/iel/event-log.md#multi-party-governance-synchronization) — out-of-band serialization of IEL `Evl` submissions.
-- [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `identity`, `endorse`, immunity).
+- [features/policy.md](../features/policy.md) — policy DSL (`threshold`, `iel`, `kel`, immunity).
 - [discovery.md](discovery.md) — node-side discovery (`authPolicy` enumeration + per-peer SEL walks).
 - [peer-identity.md](peer-identity.md) — HSM-backed gossip identity ceremony + handshake authorization against the federation IEL.
 - [gossip.md](gossip.md) — gossip protocol mechanics (HyParView+PlumTree, PQ transport).

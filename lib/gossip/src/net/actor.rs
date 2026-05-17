@@ -147,6 +147,15 @@ pub(crate) struct GossipActor<S, V> {
     /// Monotonically increasing counter for connection generations.
     /// Used to ignore stale disconnect messages from replaced connections.
     connection_generation: u64,
+    /// Peer identities currently allowed by the application layer.
+    /// `None` until the first [`Command::RetainPeers`] — the actor does
+    /// not pre-constrain dials before the application has declared a
+    /// membership view. `Some(set)` thereafter — [`Self::handle_dial_result`]
+    /// consults this snapshot to drop newly-completed dials whose peer
+    /// is no longer in the allowed set, closing the race window where a
+    /// dial in flight outraces a federation IEL `Evl` removing the dial
+    /// target.
+    allowed_peers: Option<HashSet<cesr::Digest256>>,
 }
 
 impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
@@ -184,6 +193,7 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
             dial_tx,
             dial_rx,
             connection_generation: 0,
+            allowed_peers: None,
         }
     }
 
@@ -313,6 +323,14 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
     /// federation `Evl`s (the common case in steady state) thus pay
     /// only a short-circuit scan, not a full teardown loop.
     fn handle_retain_peers(&mut self, allowed: HashSet<cesr::Digest256>) {
+        // Update the application-layer allowed-set snapshot consulted by
+        // `handle_dial_result` to close the race window where a dial in
+        // flight outraces a federation IEL `Evl` removing the dial
+        // target. Update unconditionally so the snapshot stays current
+        // even when the maps are already a subset of `allowed` (the
+        // short-circuit below only avoids the teardown loops).
+        self.allowed_peers = Some(allowed.clone());
+
         let needs_work = self.peers.keys().any(|p| !allowed.contains(p))
             || self.pending_dials.keys().any(|p| !allowed.contains(p))
             || self.peer_addrs.keys().any(|p| !allowed.contains(p));
@@ -404,6 +422,33 @@ impl<S: Signer, V: PeerVerifier> GossipActor<S, V> {
         match result {
             DialResult::Success(conn) => {
                 let peer_kel_prefix = conn.peer_kel_prefix;
+
+                // Close the dial-completion race: if the application has
+                // declared a membership set and this peer isn't in it
+                // (e.g., a federation IEL `Evl` removed them between
+                // dial-spawn and dial-completion), drop the connection
+                // here rather than briefly admitting it to
+                // `self.peers`. The verifier's fresh federation walk at
+                // handshake time closes the same window from the
+                // pre-completion side; this snapshot check closes it
+                // from the post-completion side. `conn` drops on `return`,
+                // closing the underlying TCP stream.
+                if let Some(allowed) = &self.allowed_peers
+                    && !allowed.contains(&peer_kel_prefix)
+                {
+                    let queued_count = self
+                        .pending_dials
+                        .remove(&peer_kel_prefix)
+                        .map(|q| q.len())
+                        .unwrap_or(0);
+                    debug!(
+                        %peer_kel_prefix,
+                        queued_count,
+                        "on-demand dial succeeded but peer no longer in allowed set, dropping"
+                    );
+                    return;
+                }
+
                 let queued = self
                     .pending_dials
                     .remove(&peer_kel_prefix)

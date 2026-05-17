@@ -65,7 +65,7 @@ The authorization check is symmetric: B's identity is independently checked by A
 The federation IEL is the authoritative source for who's authorized, and it propagates to every node via standard IEL gossip. The local view updates automatically:
 
 - A new `Evl` on the federation IEL lands locally → the node's next handshake check sees the new `authPolicy` and behaves accordingly.
-- A peer dropped from `authPolicy` → existing sessions with that peer are torn down at the next session re-check (or sooner, on policy-refresh tick); new handshakes from that peer fail.
+- A peer dropped from `authPolicy` → existing sessions with that peer are torn down synchronously when the federation IEL `Evl` arrives. The federation IEL announcement path re-walks the chain fresh and dispatches an eager teardown across active connections, pending dials, and cached addresses; handshake re-check stays as defense-in-depth, not the primary mechanism.
 - A peer added to `authPolicy` → new handshakes from that peer succeed.
 
 The freshness of the authorization view is the freshness of the federation IEL and the supporting member KELs as held by the local sadstore and kels services on the node, which the gossip mesh keeps current — announcements (PlumTree) drive primary propagation, dependency tracking handles out-of-order arrivals, and anti-entropy catches anything the primary path missed.

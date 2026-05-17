@@ -144,7 +144,6 @@ SAD object and SEL chain announcement types, the Redis channels that drive them 
 | `HTTP_LISTEN_HOST` | HTTP server listen host | `0.0.0.0` |
 | `HTTP_LISTEN_PORT` | HTTP server listen port | `80` |
 | `ANTI_ENTROPY_INTERVAL_SECS` | Anti-entropy repair loop interval | `10` |
-| `AUTH_POLICY_REFRESH_INTERVAL_SECS` | Background interval to re-check the federation IEL `authPolicy` (defense against missed gossip-driven invalidations) | `60` |
 
 ## Design Decisions
 

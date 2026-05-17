@@ -110,7 +110,7 @@ When a federation `Evl` removes a peer from the policy set:
 
 - The peer's identity remains a structurally valid identity (the peer's own IEL is unchanged). The peer can still operate, just not as a federation member.
 - The peer's `peer/services` SEL stays publicly readable. The `peer/gossip` SAD body becomes unfetchable once the peer is no longer a federation member (the `readPolicy` no longer resolves it for that peer's identity). The discovery flow simply doesn't enumerate that peer anymore, because step 2 reads the new `authPolicy`.
-- Existing gossip connections to the removed peer are torn down at the next handshake re-check (or sooner, on an explicit policy-refresh tick). New handshakes from the removed peer fail authorization.
+- Existing gossip connections to the removed peer are torn down synchronously when the federation IEL `Evl` arrives — both the gossip-received announcement path and the local-submission path trigger an immediate re-walk of the chain and dispatch a `RetainPeers(current_members)` sweep at the transport layer (dropping active connections, pending dials, and cached addresses in one pass). Handshake re-check stays as defense-in-depth: new handshakes from the removed peer fail authorization at the transport layer regardless.
 
 The federation IEL's current [conforming policy pair](federation.md#federation-policy-shape-verification) is the source of truth; what's not enumerated in it is not authorized.
 
