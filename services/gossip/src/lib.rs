@@ -33,6 +33,7 @@
 mod authorization;
 mod bootstrap;
 mod bootstrap_merge;
+mod discovery;
 mod gossip_layer;
 mod hsm_signer;
 pub mod pending;
