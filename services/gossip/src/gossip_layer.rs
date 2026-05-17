@@ -28,6 +28,17 @@ pub const IEL_TOPIC: &str = "kels/gossip/v1/topics/iel";
 /// Gossip topic name for mail announcements
 pub const MAIL_TOPIC: &str = "kels/gossip/v1/topics/mail";
 
+/// Per-peer address-SEL chain topic.
+///
+/// Unlike the other constants in this module (gossip pub/sub topic names),
+/// this is the **SEL-chain topic string** carried in the SEL's `topic` field
+/// and participating in chain-prefix derivation alongside the peer's identity
+/// prefix — see [`kels_core::compute_address_sel_prefix`]. It is canonical in
+/// `kels_core::ADDRESS_SEL_TOPIC`; this re-export is the consumer-side handle
+/// used by the discovery walker.
+#[allow(dead_code)] // Consumed by the discovery walker landing in the next gap of #195.
+pub const SEL_TOPIC: &str = kels_core::ADDRESS_SEL_TOPIC;
+
 #[derive(Error, Debug)]
 pub enum GossipError {
     #[error("Transport error: {0}")]
@@ -211,6 +222,12 @@ mod tests {
     #[test]
     fn test_sad_topic_constant() {
         assert_eq!(SAD_TOPIC, "kels/gossip/v1/topics/sad");
+    }
+
+    #[test]
+    fn test_sel_topic_constant_matches_kels_core() {
+        assert_eq!(SEL_TOPIC, "kels/sel/v1/peer/addresses");
+        assert_eq!(SEL_TOPIC, kels_core::ADDRESS_SEL_TOPIC);
     }
 
     #[test]
