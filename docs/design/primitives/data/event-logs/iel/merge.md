@@ -8,7 +8,7 @@ The submit handler integrates new events into an existing IEL while handling:
 - Normal event appends (`Evl`, `Sea`)
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same serial) → chain transitions to contested-terminal directly
-- Decommission (`Dec`) — terminal owner-initiated end
+- Decommission (`Dec`) — terminal event ending the chain
 - Algorithmic `ContestRequired` for normal-event submissions that land at-or-before the evaluation seal on a linear chain (the seal has advanced past the submitter's view)
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).

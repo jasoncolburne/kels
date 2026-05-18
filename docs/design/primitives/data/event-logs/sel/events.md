@@ -167,14 +167,14 @@ If the IEL evolves (an `Evl`-with-auth-policy lands on IEL), subsequent SEL Upds
 ```
 v0  kind=icp  identity=IEL_prefix
 v1  kind=est  ielEvent=IEL_v0_said, content=v1_content
-v2a kind=upd  ielEvent=IEL_v0_said, content=owner_v2_content      (owner)         ← fork
-v2b kind=upd  ielEvent=IEL_v0_said, content=adversary_v2_content  (adversary)
+v2a kind=upd  ielEvent=IEL_v0_said, content=v2a_content         ← fork
+v2b kind=upd  ielEvent=IEL_v0_said, content=v2b_content         ← fork (races with v2a)
     — Divergent (non-privileged), recoverable via Rpr —
-v3  kind=rpr  ielEvent=IEL_governance_event_said, previous=v2a.said, content=owner_v2_content
-                                                                              ← Rpr extends v2a; v2b archived
+v3  kind=rpr  ielEvent=IEL_governance_event_said, previous=v2a.said, content=v2a_content
+                                                                ← Rpr extends v2a (branch-tip-extending shape); v2b archived
 ```
 
-The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (preservation). The `ielEvent` references the IEL event currently establishing `governancePolicy` (typically IEL Icp, but could be a later IEL Evl if governance evolved on IEL).
+The `Rpr` extends v2a (branch-tip-extending shape). Content equals v2a's content (preservation rule — Rpr does not mutate content). The `ielEvent` references the IEL event currently establishing `governancePolicy` (typically IEL Icp, but could be a later IEL Evl if governance evolved on IEL). Whoever currently satisfies the `governancePolicy` dictates which branch Rpr extends and which is archived.
 
 ### Concurrent privileged events producing contested-terminal
 

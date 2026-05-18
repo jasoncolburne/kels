@@ -170,7 +170,7 @@ Accessors:
 - `divergenceAncestor()` — SAID of `v_{d-1}` on a divergent chain (`None` on linear).
 - `is_divergent()` — `branches.len() > 1`.
 - `is_contested()` — equivalent to `is_divergent()` on IEL; wraps it for cross-primitive API symmetry (see §Contested-state derivation above).
-- `is_decommissioned()` — `true` when the linear branch tip is a `Dec` event (a contested chain is never additionally decommissioned, since divergence freezes the chain before any subsequent `Dec` can land).
+- `is_decommissioned()` — `true` when the linear branch tip is a `Dec` event (a contested chain is not also decommissioned — divergence is contested-terminal on IEL by privileged-divergence-is-terminal, so no subsequent `Dec` can land on a contested chain).
 - `effective_tail_said()` — deterministic per-prefix SAID used for cross-node convergence. Single branch (active or terminal-via-Dec): tip event SAID. Contested (= divergent): `hash_effective_said("contested:{prefix}")`. None for the empty chain. Mirrors KEL's contested shape per `lib/kels/src/types/kel/verification.rs:142-158`; the KEL "divergent, not-yet-contested" branch has no IEL analog because divergent IEL is always contested.
 
 ## Key Properties Verified

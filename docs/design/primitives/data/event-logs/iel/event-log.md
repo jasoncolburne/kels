@@ -27,7 +27,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | `Icp` | Inception (v0). Declares `authPolicy` and `governancePolicy`. | `governancePolicy` (Icp.said anchored under the declared governancePolicy — every IEL event is a governance act). | No |
 | `Evl` | Evolve — governance evaluation; advances the seal. MUST evolve at least one of `authPolicy` / `governancePolicy` (a no-op Evl is rejected as a structural error). | `governancePolicy`. | No |
 | `Sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances the seal; no policy fields. | `governancePolicy`. | No |
-| `Dec` | Decommission — terminal owner-initiated end. | `governancePolicy`. | **Yes** |
+| `Dec` | Decommission — terminal event ending the chain. | `governancePolicy`. | **Yes** |
 
 For per-kind field rules and typical chain shapes, see [events.md](events.md). **IEL has no `Rpr` kind** — divergence is preserved as data, and the chain becomes contested-terminal immediately on any divergence (every IEL event is privileged → privileged-divergence-is-terminal fires). See [§Divergence is Contested-Terminal](#divergence-is-contested-terminal) for the structural argument and [§Operator recourse against compromise](#operator-recourse-against-compromise) for the recourse paths.
 
@@ -283,7 +283,7 @@ extending shape):
 
 #### Stale governance termination on unratcheted branches (not blocked)
 
-An adversary with stale governance authority can submit a non-archiving privileged event (`Sea` or `Dec`) extending a branch tip whose `ielEvent` is still at the adversary's stale event. Mitigation is **operator discipline**: after IEL evolves governance, submit a `Sea` on each dependent SEL to advance the branch tip's `ielEvent` forward to the current IEL event. After this advancement, an adversary's stale-bound `Sea`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `ielEvent` would regress relative to its parent) and is rejected. The vulnerable window is "between IEL governance evolution and the SEL Sea advancement" — bounded by gossip latency plus operator reaction time.
+A party holding stale governance authority can submit a non-archiving privileged event (`Sea` or `Dec`) extending a branch tip whose `ielEvent` is still at the stale event. Mitigation is the governance-evolution Sea ratchet (see [§Governance-evolution ratchet via Sea](#governance-evolution-ratchet-via-sea) below): after IEL evolves governance, submit a `Sea` on each dependent SEL to advance the branch tip's `ielEvent` forward to the current IEL event. After this advancement, a stale-bound `Sea`/`Dec` extending the new tip fails parent-monotonic on its own branch (its `ielEvent` would regress relative to its parent) and is rejected. The vulnerable window is between IEL governance evolution and the SEL Sea ratchet — bounded by gossip latency plus the ratchet's submission cadence.
 
 ```
 IEL evolves governance:
@@ -320,7 +320,7 @@ Same adversary tries again:
 
 A non-archiving privileged event (`Sea` or `Dec`) that forks from `v_{d-1}` (forming its own singleton branch at `v_d`) need only satisfy `event.ielEvent >= v_{d-1}.ielEvent`. It does not need to satisfy any constraint relative to the existing diverged branches — those are structurally independent branches.
 
-This is intentional. Chain-wide watermark would otherwise reject fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `ielEvent`s than the contesting submission's binding. The per-branch framing is what makes operator contest viable when the live branches are stale.
+This is intentional. Chain-wide watermark would otherwise reject fork-contest scenarios where a long divergent branch already sits at higher SEL serials with lower `ielEvent`s than the contesting submission's binding. The per-branch framing is what makes fork-contest scenarios converge — the structural admission of a non-archiving privileged event extending `v_{d-1}` is independent of the diverged branches' bindings, so order-independent transitions work uniformly even when the live branches are stale.
 
 ```
 Pre-state (existing non-priv divergent at v_d with high SEL serials but
@@ -385,7 +385,7 @@ The caveat applies to anchors of any kind — IEL events (governance), and trans
 
 ## Decommission (Dec)
 
-Decommission is the clean terminal state for owner-initiated identity end. Same shape as SEL `Dec` and same governance authorization (single-policy gate against the branch's tracked `governancePolicy`).
+Decommission is the clean terminal state — `Dec` lands on a linear chain and ends it. Same shape as SEL `Dec` and same governance authorization (single-policy gate against the branch's tracked `governancePolicy`).
 
 ### Server semantics
 

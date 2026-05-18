@@ -84,7 +84,7 @@ use crate::{handlers::AppState, repository::KelsRepository};
 
 **Key Event Log (KEL)** — append-only chain of key events sharing a prefix. Each event links to the previous via SAID. Forward commitments via `rotationHash = Blake3(next_public_key)`. Recovery/contest/decommission require dual signatures. Delegation trust is NOT verified by the service. See `docs/design/primitives/data/event-logs/kel/events.md`, `docs/design/primitives/data/event-logs/kel/verification.md`, `docs/design/protocol-doctrine.md` §Part 3 (cross-primitive verification doctrine: streaming, tokens, effective-SAID synthetic comparison).
 
-**Divergence** — conflicting events at the same serial. Chain freezes until recovery. See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
+**Divergence** — conflicting events at the same serial. Chain transitions to Divergent (recoverable via `Rec`/`Rpr` when non-privileged) or directly to Contested (terminal — when the divergent set contains a non-archiving privileged event, per privileged-divergence-is-terminal). See `docs/design/primitives/data/event-logs/kel/event-log.md`, `docs/design/primitives/data/event-logs/kel/recovery-workflow.md`, `docs/design/primitives/data/event-logs/kel/reconciliation.md`.
 
 **Effective SAID** — tip SAID for normal chains; `hash_effective_said("divergent:{prefix}")` for divergent; `hash_effective_said("contested:{prefix}")` for contested. See `docs/design/primitives/data/event-logs/kel/merge.md`.
 

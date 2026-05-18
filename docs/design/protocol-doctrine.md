@@ -24,6 +24,8 @@ The structural rules that govern KELS — security invariants, cross-cutting doc
 - [Streaming](#streaming)
 - [Merge Verification](#merge-verification)
 - [Inline reference checking](#inline-reference-checking)
+- [Verifier and merge are distinct treatments](#verifier-and-merge-are-distinct-treatments)
+- [policy_satisfied](#policy_satisfied)
 - [Advisory Locking](#advisory-locking)
 - [Effective-SAID synthetic comparison](#effective-said-synthetic-comparison)
 
@@ -252,7 +254,7 @@ Authorization for a repair event (`Rec` on KEL, `Rpr` on SEL) resolves through t
 - **SEL.** The IEL-resolved governance policy at the SEL's `ielEvent` binding for the parent event (`Rpr.previous`).
 - **IEL.** No repair events on IEL — see §Repair-event absence below.
 
-Repair-event authorization is **HARD** at the merge layer per condition 2a. **General invariant: any event with failed auth is rejected.** A repair event (or `Dec`) whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the merge handler; the chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally.
+Repair-event authorization is **HARD** at the merge layer per condition 2a. **General invariant: any event with failed auth is rejected.** A repair event (or `Dec`) whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the merge handler; the chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally. See [§Verifier and merge are distinct treatments](#verifier-and-merge-are-distinct-treatments) for how the verifier's soft-fail composition is hardened at the merge layer.
 
 **Recourse against signing-tier Rot takeover (KEL specifically)**: an adversary holding the signing key plus the rotation-key preimage at `v_N` (revealing their `Rot` at `v_N`) does not hold the recovery-key preimage committed by the prior establishment's `recoveryHash`. A `Rec` (branch-tip-extending on a divergent chain, or divergence-ancestor-extending where the divergence ancestor's commitments are still legitimate) — subject to the locked-portion bound (condition 2b) — resolves dual-sig against the parent's commitments; the legitimate party's recovery-key preimage satisfies, the adversary's does not. See [primitives/data/event-logs/kel/event-log.md §Operator recourse against signing-tier Rot takeover](primitives/data/event-logs/kel/event-log.md#operator-recourse-against-signing-tier-rot-takeover) for the key-state walkthrough.
 
@@ -277,7 +279,7 @@ Structural reasoning: chain data alone cannot distinguish a legitimate submitter
 
 On IEL specifically, every event is privileged so the contested chain state is equivalent to the divergent chain state — `is_contested ⇔ is_divergent`; any IEL divergence is contested-terminal by construction. The full structural argument lives in [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal).
 
-**Pre-emptive-suspicion gap (acknowledged).** A submitter who detects compromise pre-emptively (e.g., a contributing KEL was breached) and wants to mark a chain as suspect without retiring it has no protocol-level "compromise signal." Available paths: rotate out the compromised key via `Rot` (KEL) or `Evl` (IEL) (chain stays alive, no compromise signal); `Dec` (clean retirement — semantically misleading when compromise is the actual cause); out-of-band attestation under a separate KEL (requires a parallel discovery channel). This trade-off is accepted; the protocol's freeze and recourse paths remain intact.
+**Pre-emptive-suspicion gap (acknowledged).** A submitter who detects compromise pre-emptively (e.g., a contributing KEL was breached) and wants to mark a chain as suspect without retiring it has no protocol-level "compromise signal." Available paths: rotate out the compromised key via `Rot` (KEL) or `Evl` (IEL) (chain stays alive, no compromise signal); `Dec` (clean retirement — semantically misleading when compromise is the actual cause); out-of-band attestation under a separate KEL (requires a parallel discovery channel). This trade-off is accepted; the protocol's terminal and recourse paths remain intact.
 
 #### One Divergent Generation at a Time
 
@@ -605,6 +607,15 @@ When merging new events into an existing chain (submit handler), first verify th
 
 Each verifier supports registering SAIDs of interest before the walk so the walk records what it observed without separate DB queries. KEL registers anchor SAIDs (KEL ixns observed at IEL/SEL Icp time and similar binding points); IEL and SEL register caller-cared-about SAIDs for satisfaction tracking. Registration happens before the walk; results are available on the verification token. The pattern eliminates a second DB pass for SAID-presence questions.
 
+### Verifier and merge are distinct treatments
+
+The verifier and the merge layer share infrastructure — the same verifier walk produces the same `policy_satisfied` signal — but compose it differently.
+
+- **Verifier (reads).** Walks already-landed events and reports trust state on a verification token. Authorization failures past the divergence point are **soft**: they flip `policy_satisfied = false` and the walk continues. The verifier's purpose is to walk authentic chain data and surface findings; erroring out on a chain that contains divergence or governance-failed events would prevent callers from reading the chain at all, including the pre-divergence portion they need for forensic and trust-evaluation purposes. Hard-fail is reserved for structural-integrity violations (SAID mismatch, prefix mismatch, broken chain linkage); chain validity stays separable from policy satisfaction.
+- **Merge layer (gates writes).** The submit handler runs the same verifier under an advisory lock and uses the resulting `policy_satisfied` as a gate on the new batch: if false at the post-batch walk, the submission is rejected and the new events never enter storage. Failed governance → no write. The gate applies uniformly across event kinds — `Ixn`/`Upd` extension, `Sea`/`Rpr`/`Rec`/`Ror`, and `Dec` alike — with no per-kind carve-outs.
+
+One signal, two compositions: the verifier reads through pathology to expose it, the merge layer reads `policy_satisfied` to gate against it. The signal's definition and walk-time pathology list are in [§policy_satisfied](#policy_satisfied) immediately below; the merge-layer hard-auth invariant for repair events is in [§Privileged Divergence is Terminal §Repair-event authorization](#privileged-divergence-is-terminal).
+
 ### policy_satisfied
 
 The verifier produces a `policy_satisfied: bool` on its verification token. Definition: `policy_satisfied = true` iff no walk-time pathology has been observed during the walk. The flag is **monotonic-falsy**: once flipped false, it stays false for the rest of the walk's reporting.
@@ -619,7 +630,7 @@ Walk-time pathologies that flip `policy_satisfied = false`:
 
 The locked-portion doctrine (see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)) means settled events — those whose anchors fell in a clean walk segment, in the locked portion — are immune to subsequent chain pathology. Once `policy_satisfied` is true for a SAID in the locked portion, it stays true regardless of subsequent chain events.
 
-**Merge-layer composition.** A submission whose `policy_satisfied` is false at the post-batch verifier walk is rejected with 403 Forbidden. The new events would not anchor under the agreed-upon (clean walk segment, locked portion) chain interpretation. This is the gate that hard-fails governance-failed `Dec` submissions: the merge layer applies the same `policy_satisfied` check across all event kinds (including `Dec`/`Rpr`/`Rec`), without per-kind carve-outs.
+**Merge-layer composition.** A submission whose `policy_satisfied` is false at the post-batch verifier walk is rejected with 403 Forbidden. The new events would not anchor under the agreed-upon (clean walk segment, locked portion) chain interpretation. This is the gate that hard-fails governance-failed `Dec` submissions: the merge layer applies the same `policy_satisfied` check across all event kinds (including `Dec`/`Rpr`/`Rec`), without per-kind carve-outs. See [§Verifier and merge are distinct treatments](#verifier-and-merge-are-distinct-treatments) for the framing of why the verifier reports rather than rejects on the same pathology.
 
 ### Advisory Locking
 

@@ -11,7 +11,7 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 | `Icp` | `kels/iel/v1/events/icp` | Inception (v0). Declares both `authPolicy` and `governancePolicy`. Seeds prefix derivation via `(authPolicy, governancePolicy, nonce)`. |
 | `Evl` | `kels/iel/v1/events/evl` | Evolve — governance evaluation. Advances `lastSealAdvancingEvent`. MUST evolve at least one of `authPolicy` / `governancePolicy`; a no-op Evl is rejected as a structural error. |
 | `Sea` | `kels/iel/v1/events/sea` | Seal advance — governance-authorized re-evaluation without policy evolution. Advances `lastSealAdvancingEvent`. Carries no policy fields. Closes the post-exclusion window per [../../../../protocol-doctrine.md §Exclusion Evolutions and the Seal Advance](../../../../protocol-doctrine.md#exclusion-evolutions-and-the-seal-advance). |
-| `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal owner-initiated end. |
+| `Dec` | `kels/iel/v1/events/dec` | Decommission — terminal event ending the chain. |
 
 **Every IEL event is governance-authorized.** `Evl`, `Sea`, `Dec` all return `evaluates_governance() = true` — each requires the branch's *tracked* `governancePolicy` to be satisfied. `Icp` is also governance-authorized, but against the policy it *declares at that event* (self-governance-endorsement), not against a previously-tracked policy. See [§Satisfaction model](#satisfaction-model) for the full per-kind rule.
 

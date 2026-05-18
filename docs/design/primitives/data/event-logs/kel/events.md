@@ -14,7 +14,7 @@ For chain lifecycle (states, divergence, recovery via discriminator, decommissio
 | `Ixn` | `kels/kel/v1/events/ixn` | Interaction. Anchors a SAID; does not change keys. |
 | `Rec` | `kels/kel/v1/events/rec` | Recovery. Dual-signed; rotates signing + recovery keys; resolves divergence via archival. |
 | `Ror` | `kels/kel/v1/events/ror` | Recovery rotation. Dual-signed; pre-emptively rotates both keys (no divergence required). |
-| `Dec` | `kels/kel/v1/events/dec` | Decommission. Dual-signed; terminal owner-initiated end. |
+| `Dec` | `kels/kel/v1/events/dec` | Decommission. Dual-signed; terminal event ending the chain. |
 
 `Rec`, `Ror`, `Dec` all return `reveals_recovery_key() = true` — each requires dual signatures (signing + recovery). `Rot`, `Ror`, `Rec` return `reveals_rotation_key() = true`.
 
@@ -76,7 +76,7 @@ The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, dele
 
 `Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a non-archiving privileged event (`Ror` or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
 
-`Ror` is the proactive form: an owner who has not been compromised can rotate both keys ahead of the proactive-ROR cap, revoking any future divergent recovery the adversary might attempt with stale key material.
+`Ror` is the proactive form: the chain holder rotates both keys ahead of the proactive-ROR cap (no divergence required), revoking any future divergent recovery a second party could attempt with the now-stale key material.
 
 ### Forward-key commitments
 
@@ -129,25 +129,25 @@ Acceptance: structural (SAID + signature by `k0`) AND the delegator's KEL must c
 
 ```
 s0..s4  normal chain
-s5a kind=ixn  anchor=owner_anchor       (owner)        ← fork
-s5b kind=ixn  anchor=adversary_anchor   (adversary)    ← fork (races with s5a)
+s5a kind=ixn  anchor=anchor_a                          ← fork
+s5b kind=ixn  anchor=anchor_b                          ← fork (races with s5a)
     — Divergent, recoverable via Rec; divergent effective SAID —
-s6  kind=rec  previous=s5a.said,                       ← Rec extends owner's tip; dual-signed (k5+r0)
+s6  kind=rec  previous=s5a.said,                       ← Rec extends s5a (branch-tip-extending shape); dual-signed (k5+r0)
               publicKey=k6, recoveryKey=r0,
               rotationHash=h(k7), recoveryHash=h(r1)
 ```
 
-The `Rec` extends owner's authentic tip (s5a), not the pre-divergence ancestor. The merge engine walks back from `Rec.previous` to identify the owner's chain; s5b is archived. See [event-log.md](event-log.md#recovery-rec) for the discriminator algorithm and the conditional `Rot` follow-up when the adversary rotated but the owner didn't.
+The `Rec` extends the s5a branch tip (branch-tip-extending shape), not the pre-divergence ancestor. The merge engine walks back from `Rec.previous` to identify the surviving branch; s5b is archived. Whoever holds the recovery key dictates which branch survives. See [event-log.md](event-log.md#recovery-rec) for the discriminator algorithm and the conditional `Rot` follow-up when the archived branch rotated but the surviving branch didn't.
 
 ### Contested-termination after recovery-key revelation
 
 ```
 s0..s4   normal chain
 s5_a     ixn extending s_4                                         (one signing-key holder)
-s5_b     Rec with previous = s_4.said                              (second recovery-key holder)
+s5_b     Rec with previous = s_4.said                              (a recovery-key holder)
          — divergence-ancestor-extending shape; discriminator archives s5_a;
            chain recovered, linear, tip = Rec_b at v_5 —
-s5_c     Dec with previous = s_4.said                              (first holder)
+s5_c     Dec with previous = s_4.said                              (a second recovery-key holder)
          — joins Rec_b at v_5; 2-event privileged divergent set;
            chain contested-terminal —
 ```
@@ -158,14 +158,14 @@ The chain becomes recovered after `Rec_b` lands (`s5_a` archived), but the recov
 
 ```
 s0..sN   normal chain
-sN+1     kind=dec   ← owner ends the KEL cleanly; dual-signed (kN + recovery key)
+sN+1     kind=dec   ← Dec ends the KEL cleanly; dual-signed (kN + recovery key)
 ```
 
 After `Dec`, linear extensions are rejected. The locked-portion bound prevents `Rec` from targeting the pre-Dec portion. A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension at Dec's serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle, recovery, contest, decommission.
+- [event-log.md](event-log.md) — Chain lifecycle, recovery, decommission.
 - [verification.md](verification.md) — `KelVerifier` algorithm.
 - [merge.md](merge.md) — Submit-handler routing.
 - [reconciliation.md](reconciliation.md) — Multi-node correctness matrix.

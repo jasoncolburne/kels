@@ -56,8 +56,8 @@ What happens when a client submits events to the merge engine on a single node.
 
 The merge engine handles batches atomically:
 
-- **`[events + rec + rot]`** — owner's chain from the fork point through recovery. At most 64 events (bounded by proactive ROR). Processed as a single overlap or divergent submission.
-- **`[events + Ror]` or `[events + Dec]`** — owner's chain from the fork point through contested-transition. At most 63 events. The non-archiving privileged event must be last in the batch.
+- **`[events + rec + rot]`** — the surviving chain from the fork point through recovery. At most 64 events (bounded by proactive ROR). Processed as a single overlap or divergent submission.
+- **`[events + Ror]` or `[events + Dec]`** — the contesting chain from the fork point through contested-transition. At most 63 events. The non-archiving privileged event must be last in the batch.
 - **`[ror, ixn]`** — auto-inserted by the builder when an `ixn` would exceed the proactive-ROR interval.
 - **`[rot] → [ror]`** — the builder upgrades `rot` to `ror` when the proactive-ROR interval is due, since `ror` rotates both signing and recovery keys.
 
@@ -67,19 +67,19 @@ When node A syncs a KEL to node B, `transfer_key_events` reads from A and writes
 
 ### Transfer ordering
 
-For divergent source KELs, `send_divergent_events` reorders events to ensure the KEL is reconstructed the same way. With synchronous archival, a recovered source KEL is always a clean linear chain — the adversary events are archived in the merge transaction. In normal operation, only unrecovered and contested cases reach `send_divergent_events`.
+For divergent source KELs, `send_divergent_events` reorders events to ensure the KEL is reconstructed the same way. With synchronous archival, a recovered source KEL is always a clean linear chain — the archived-branch events are removed in the merge transaction. In normal operation, only unrecovered and contested cases reach `send_divergent_events`.
 
-- **Divergent with rec (and no contested-transition)** — Rejected with error. This state cannot exist through normal merge paths: synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
+- **Divergent with rec (and no contested-transition)** — Rejected with error. This state cannot exist through normal merge paths: synchronous archival means a `rec` immediately archives the other-branch events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
 - **Unrecovered (no rec, no contested-transition)** — Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver). Receiver routes the fork event through §6c Overlap → divergent state.
-- **Contested (divergent set contains a non-archiving privileged event)** — Builds two chains by forward-tracing from the two fork events. Sends the non-contesting chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the contesting chain (ending in the `Ror`/`Dec` that triggered the transition) as an atomic batch (creates divergence + freezes; bounded to one page by the proactive-ROR invariant). If the contesting chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
+- **Contested (divergent set contains a non-archiving privileged event)** — Builds two chains by forward-tracing from the two fork events. Sends the non-contesting chain first as paged non-divergent appends (may exceed one page if it extended with multiple ROR cycles before detection), then the contesting chain (ending in the `Ror`/`Dec` that triggered the transition) as an atomic batch (creates the divergent set + triggers privileged-divergence-is-terminal; bounded to one page by the proactive-ROR invariant). If the contesting chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
 
 ### Source → Sink state matrix
 
 Each cell describes what happens when gossip syncs a KEL from a source node (row) to a sink node (column). The source's `transfer_key_events` reads its local KEL and sends events via `store_page` to the sink. The sink's merge engine processes the incoming events against whatever state it already has for that prefix.
 
-"Active (owner)" means the sink has the legitimate owner's non-divergent chain. "Active (adversary)" means the sink has the adversary's non-divergent chain (submitted to that node before divergence was detected elsewhere).
+"Active (surviving)" means the sink has the eventual surviving branch's non-divergent chain. "Active (alternate)" means the sink has the eventual non-surviving branch's non-divergent chain (submitted to that node before divergence was detected elsewhere). The protocol cannot distinguish the two from chain data alone — "surviving" is the branch that `Rec` (whoever holds the recovery key) ultimately extends.
 
-| Source | Sink: Empty | Sink: Active (owner) | Sink: Active (adversary) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
+| Source | Sink: Empty | Sink: Active (surviving) | Sink: Active (alternate) | Sink: Divergent | Sink: Contested | Sink: Decommissioned |
 |--------|-------------|---------------------|-------------------------|----------------|----------------|----------------------|
 | **Active** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` | `KelDecommissioned` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (sink awaiting recovery) | `ContestedKel` | `KelDecommissioned` |
@@ -110,14 +110,14 @@ All nodes must eventually agree on the effective SAID for each prefix.
 
 Archival happens synchronously within the merge transaction that accepts the `rec` (or `rec+rot`) event. No background task or async processing.
 
-### Owner identification
+### Surviving-branch identification
 
-The merge engine identifies owner events via two strategies depending on the divergence geometry:
+The merge engine identifies surviving-branch events via two strategies depending on the divergence geometry:
 
-- **`collect_all_adversary_saids`** — owner has no events at the divergence serial. All events from `divergedAt` onward not on the owner walkback are adversary.
-- **`collect_adversary_chain_saids`** — owner has events at the divergence serial. Walk backward from the adversary event at the divergence point to identify the adversary chain, then forward-trace to capture any adversary extensions.
+- **`collect_all_adversary_saids`** — the surviving branch has no events at the divergence serial (divergence-ancestor-extending shape: `Rec.previous = v_{d-1}.said`). All events from `divergedAt` onward not on the `Rec.previous` walkback are archived.
+- **`collect_adversary_chain_saids`** — the surviving branch has events at the divergence serial (branch-tip-extending shape: `Rec.previous` is a branch tip at `v_d`). Walk backward from the non-surviving branch's event at the divergence point to identify the non-surviving chain, then forward-trace to capture any extensions.
 
-Everything not in the owner's chain is archived to mirror tables.
+Everything not on the surviving branch is archived to mirror tables. Whoever holds the recovery key dictates which branch survives (via choice of `Rec.previous`).
 
 Both strategies use a single page fetch + resume-mode verifier trust gate + in-memory walkback. See [event-log.md §Server-side discriminator](event-log.md#server-side-discriminator) for the algorithmic detail.
 
@@ -125,34 +125,34 @@ Both strategies use a single page fetch + resume-mode verifier trust gate + in-m
 
 | Metric | Bound | Source |
 |--------|-------|--------|
-| Adversary events to archive | ≤ 62 | Proactive ROR limits fork distance |
+| Non-surviving events to archive | ≤ 62 | Proactive ROR limits fork distance |
 | Archival scope | Single transaction | Synchronous in merge, bounded by `MINIMUM_PAGE_SIZE` |
-| Owner events never archived | ✓ | Owner chain identified by backward/forward trace from `rec_previous` |
+| Surviving-branch events never archived | ✓ | Surviving branch identified by backward/forward trace from `rec_previous` |
 
 ## Edge Cases
 
-### 1. Adversary Rec as normal append
+### 1. Rec landing as normal append (no divergence)
 
-The adversary submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` cannot be resolved by `rec` (the recovery key is spent); only contested-termination via a non-archiving privileged event remains.
+A submitter with the recovery key submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` cannot be resolved by `rec` (the recovery key is spent); only contested-termination via a non-archiving privileged event remains.
 
 ```
-Pre-state (linear, owner's chain through s_N):
+Pre-state (linear chain through s_N):
   s_0 → s_1 → ... → s_N   (tip at s_N; seal at last rec-revealing event ≤ N)
 
-Adversary submits rec with previous = s_N.said (and dual-sig satisfied):
-  s_0 → ... → s_N → rec_adv  (s_{N+1}; seal advances to N+1)
+A recovery-key holder submits rec with previous = s_N.said (dual-sig satisfied):
+  s_0 → ... → s_N → rec_x  (s_{N+1}; seal advances to N+1)
 
 Effect: chain stays linear; seal advances to N+1; recovery key now spent for
 this chain. Any future divergence at serial ≤ N+1 triggers ContestRequired
-because the seal-cap forbids forking at-or-before the seal. Owner's recourse
-is a non-archiving privileged event (`Ror` or `Dec`) with previous = v_N.said
-(the parent of the new rec-tip at v_{N+1}); the event lands at v_{N+1} and
-triggers the contested transition.
+because the seal-cap forbids forking at-or-before the seal. Recourse for a
+second recovery-key holder is a non-archiving privileged event (`Ror` or `Dec`)
+with previous = v_N.said (the parent of the new rec-tip at v_{N+1}); the
+event lands at v_{N+1} and triggers the contested transition.
 ```
 
-### 2. Multiple adversary injections across nodes
+### 2. Multiple competing events injected across nodes
 
-Adversary injects different events to different nodes. When gossip syncs, divergence is created. Only one adversary event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after recovery propagates via gossip.
+Different events at the same serial are submitted to different nodes (federation race or threshold compromise — chain-indistinguishable). When gossip syncs, divergence is created. Only one extra event is written per overlap (the fork event). Recovery or contest resolves it. All nodes converge after recovery propagates via gossip.
 
 ```
 Pre-state (linear at s_{d-1}, replicated to nodes A and B):
@@ -160,7 +160,7 @@ Pre-state (linear at s_{d-1}, replicated to nodes A and B):
   Node A:  s_0 → ... → s_{d-1}    (tip)
   Node B:  s_0 → ... → s_{d-1}    (tip)
 
-Adversary injects different events at s_d on each node:
+Different events submitted at s_d on each node:
 
   Node A receives ixn_a:  s_0 → ... → s_{d-1} → ixn_a @ s_d
   Node B receives ixn_b:  s_0 → ... → s_{d-1} → ixn_b @ s_d
@@ -168,78 +168,81 @@ Adversary injects different events at s_d on each node:
 Gossip propagates ixn_a → B, ixn_b → A. Each node's merge engine
 observes overlap at s_d and writes the second event as the fork
 event (one extra event per overlap, dedup-rejection on subsequent
-adversary submissions at the same serial):
+submissions at the same serial):
 
   Both nodes:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d   (non-priv divergent)
                                     └─ ixn_b @ s_d
 
-Owner submits rec to any single node → discriminator archives the
-non-extended branch → recovery propagates via gossip → all nodes
-converge on the post-rec linear state.
+A recovery-key holder submits rec to any single node → discriminator
+archives the non-extended branch → recovery propagates via gossip →
+all nodes converge on the post-rec linear state.
 ```
 
-### 3. Owner events archived by adversary's `rec`
+### 3. Local events archived by a competing `rec`
 
-If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the adversary's `rec`. The builder resubmits those missing events plus a non-archiving privileged event (`Ror` or `Dec`) as an atomic batch.
-
-```
-Pre-state (divergent at s_d; client store holds the owner's branch):
-
-  Server:  s_0 → ... → s_{d-1} ─┬─ owner_a @ s_d → owner_b @ s_{d+1}
-                                └─ adv_a   @ s_d
-
-  Client:  s_0 → ... → s_{d-1} → owner_a → owner_b   (client's local view)
-
-Adversary submits rec extending adv_a (branch-tip-extending shape):
-
-  Discriminator archives owner_a, owner_b; rec_adv lands at s_{d+1}.
-
-  Server (post-archival):  s_0 → ... → s_{d-1} → adv_a → rec_adv
-
-Client detects via find_missing_owner_events that owner_a, owner_b
-no longer exist server-side (event_exists returns false). Owner bundles
-[owner_a, owner_b, dec] (or similar non-archiving privileged terminator)
-as atomic batch and submits to server. The missing events are verified
-server-side and re-established under the batch's atomic transaction.
-Post-batch the chain is linear with tip at owner_b (v_{d+1}); dec with
-previous = owner_a.said (v_d) lands at v_{d+1} as sibling of owner_b →
-2-event privileged divergent set → privileged-divergence-is-terminal
-fires → chain becomes contested-terminal. Owner's lost work is preserved
-as forensic record.
-```
-
-### 4. Post-recovery events synced to adversary node
-
-After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the adversary chain), the overlap handler creates a `RecoveryRecord` and archives adversary events synchronously in the merge transaction.
+If one recovery-key holder submits `rec` archiving the local builder's events synchronously, the local builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the competing `rec`. The builder resubmits those missing events plus a non-archiving privileged event (`Ror` or `Dec`) as an atomic batch.
 
 ```
-Pre-sync state (post-recovery on A; adversary chain still on B):
+Pre-state (divergent at s_d; local store holds branch A):
 
-  Node A:  s_0 → ... → s_{d-1} → owner_a → rec → ixn_new
-           (clean linear chain after rec archived adv_a)
+  Server:  s_0 → ... → s_{d-1} ─┬─ branch_A @ s_d → branch_A' @ s_{d+1}
+                                └─ branch_B @ s_d
 
-  Node B:  s_0 → ... → s_{d-1} → adv_a
-           (still has adversary's chain; rec hasn't propagated)
+  Local:   s_0 → ... → s_{d-1} → branch_A → branch_A'   (local view)
+
+A second recovery-key holder submits rec extending branch_B
+(branch-tip-extending shape):
+
+  Discriminator archives branch_A, branch_A'; rec_B lands at s_{d+1}.
+
+  Server (post-archival):  s_0 → ... → s_{d-1} → branch_B → rec_B
+
+Local builder detects via find_missing_owner_events that branch_A,
+branch_A' no longer exist server-side (event_exists returns false).
+Builder bundles [branch_A, branch_A', dec] (or similar non-archiving
+privileged terminator) as atomic batch and submits to server. The
+missing events are verified server-side and re-established under the
+batch's atomic transaction. Post-batch the chain is linear with tip at
+branch_A' (v_{d+1}); dec with previous = branch_A.said (v_d) lands at
+v_{d+1} as sibling of branch_A' → 2-event privileged divergent set →
+privileged-divergence-is-terminal fires → chain becomes contested-
+terminal. The previously-archived events are preserved as forensic
+record.
+```
+
+### 4. Post-recovery events synced to a node holding the archived branch
+
+After recovery on node A, new events (e.g., `ixn`) are appended. When synced to node B (which has the now-archived branch), the overlap handler creates a `RecoveryRecord` and archives the non-surviving events synchronously in the merge transaction.
+
+```
+Pre-sync state (post-recovery on A; archived branch still on B):
+
+  Node A:  s_0 → ... → s_{d-1} → branch_A @ s_d → rec → ixn_new
+           (clean linear chain after rec archived branch_B)
+
+  Node B:  s_0 → ... → s_{d-1} → branch_B @ s_d
+           (still has the alternate branch; rec hasn't propagated)
 
 Gossip propagates Node A's chain (including rec) to Node B. Node B's
-merge engine observes overlap at s_d (its adv_a vs incoming owner_a),
-sees rec in the batch, runs the discriminator (rec walkback identifies
-owner_a as the surviving branch), and archives adv_a synchronously.
+merge engine observes overlap at s_d (its branch_B vs incoming
+branch_A), sees rec in the batch, runs the discriminator (rec walkback
+identifies branch_A as the surviving branch), and archives branch_B
+synchronously.
 
-  Node B (post-sync):  s_0 → ... → s_{d-1} → owner_a → rec → ixn_new
-                       (matches Node A; adv_a in archive table)
+  Node B (post-sync):  s_0 → ... → s_{d-1} → branch_A → rec → ixn_new
+                       (matches Node A; branch_B in archive table)
 
 All nodes converge on the same effective SAID (tip event SAID).
 ```
 
 ### 5. Contested KELs across nodes
 
-Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before the contested-transition arrived; another received the contesting event first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL where the divergent set contains a non-archiving privileged event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL (e.g., one node archived the non-surviving events via recovery before the contested-transition arrived; another received the contesting event first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL where the divergent set contains a non-archiving privileged event. Anti-entropy sees matching SAIDs and does not re-queue.
 
 ```
 Different event sets, same effective SAID:
 
-  Node A:  s_0 → ... → s_{d-1} ─┬─ adv_a @ s_d ┐
+  Node A:  s_0 → ... → s_{d-1} ─┬─ ixn_a @ s_d ┐
                                 ├─ ixn_b @ s_d ├── 3-event set; contested
                                 └─ ror_c @ s_d ┘   (ror upgraded set via
                                                     upgrade rule on this node)
@@ -248,7 +251,7 @@ Different event sets, same effective SAID:
                                 └─ ror_c @ s_d ┴── 2-event set; contested
                                                    (contested-transition
                                                     closed the gate before
-                                                    adv_a's gossip arrived)
+                                                    ixn_a's gossip arrived)
 
   effective_said(A) = hash_effective_said("contested:{prefix}")
   effective_said(B) = hash_effective_said("contested:{prefix}")

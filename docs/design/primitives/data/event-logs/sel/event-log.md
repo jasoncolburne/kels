@@ -261,7 +261,7 @@ Dec is privileged but terminal — it does not advance the seal on SEL (`lastSea
 ### Builder
 
 `SadEventBuilder::decommission()`:
-- Same pre-flight as `contest()`.
+- Same pre-flight as `repair()`.
 - Bundles pending. Builds `Dec` extending the last bundled event; submits `[pending..., Dec]`.
 
 ## Merge-Observable Case Taxonomy

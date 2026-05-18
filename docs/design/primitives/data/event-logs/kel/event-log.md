@@ -11,7 +11,7 @@ The Key Event Log (KEL) is a per-prefix chain of `SignedKeyEvent` records descri
 | **Active** | Linear chain, latest tip extends cleanly. | Yes — `Ixn`, `Rot`, `Ror`, `Rec`, `Dec` (per signature requirements). |
 | **Divergent (non-privileged)** | Two events at serial `d`, both non-privileged (e.g., `Rot`-`Rot`, `Rot`-`Ixn`, `Ixn`-`Ixn`). Recoverable via `Rec`. | `Rec` (archives one branch; chain resumes); a non-archiving privileged event (`Ror`/`Dec`) with `previous = v_{d-1}.said` joining the set at `v_d` via the upgrade rule → Contested. Bundled pending permitted. See [§Recovery (Rec)](#recovery-rec). |
 | **Contested** | Chain terminated — divergent set contains a non-archiving privileged event (`Ror` or `Dec`). | None. All submissions rejected with `ContestedKel`. |
-| **Decommissioned** | Chain terminated cleanly by operator — exactly one `Dec`, ending a clean chain. | None. All submissions rejected with `KelDecommissioned`. |
+| **Decommissioned** | Chain terminated cleanly via `Dec` — exactly one `Dec`, ending a clean linear chain. | Linear extensions rejected with `KelDecommissioned`. A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain to Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). |
 
 State is computed from the chain's events, never tracked as a separate flag. The `KelVerification` token surfaces:
 - `divergenceAncestor: Option<Digest256>` — SAID of `v_{d-1}` (the unique parent of all events at `v_d`) on a divergent chain, or `None` if linear.
@@ -29,7 +29,7 @@ State is computed from the chain's events, never tracked as a separate flag. The
 | `Ixn` | Interaction (anchor). | Current signing key. | No |
 | `Rec` | Recovery — resolves divergence; rotates both keys. | Dual (signing + recovery). | No |
 | `Ror` | Recovery rotation — pre-emptively rotates both keys (no divergence required). | Dual. | No |
-| `Dec` | Decommission — terminal owner-initiated end. | Dual. | **Yes** |
+| `Dec` | Decommission — terminal event ending the chain. | Dual. | **Yes** |
 
 `Rec`, `Ror`, `Dec` all return `reveals_recovery_key() = true` — each requires dual signatures and exposes the current recovery key.
 
@@ -52,7 +52,7 @@ KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
 The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a non-archiving privileged event (`Ror` or `Dec`) landing at `v_d = seal_serial` has `previous` at `seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded §Parent-at-seal boundary case](../../../../protocol-doctrine.md#parent-at-seal-boundary-case-kelsel-only) for the boundary admission rule.
 
-## Divergence and Freeze
+## Divergence and Termination
 
 Divergence is detected when two events share the same `previous` SAID. The chain transitions per the privileged-divergence rule:
 - If the divergent set contains a privileged event (`Rec`/`Ror`/`Dec`) — directly to **Contested** (terminal).
@@ -116,7 +116,7 @@ All nodes have effective SAID `hash_effective_said("contested:{prefix}")` despit
 
 Recovery resolves a non-privileged-divergent chain by archiving all events at `serial >= divergedAt` not on `Rec.previous`'s walkback, then appending the `Rec` (and optionally a follow-up `Rot`). `Rec.previous` takes one of two shapes:
 
-1. **Branch-tip-extending shape — `Rec.previous` is a branch tip at `v_d`.** Rec extends that branch at `v_{d+1}`. The discriminator's walkback from `Rec.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: one of the two branches at `v_d` is the operator's legitimate content; the operator preserves it via Rec.
+1. **Branch-tip-extending shape — `Rec.previous` is a branch tip at `v_d`.** Rec extends that branch at `v_{d+1}`. The discriminator's walkback from `Rec.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: the submitter chooses one of the two branches at `v_d` as the surviving branch; Rec extends it.
 
    ```
    Pre-state (non-priv divergent at v_d):
@@ -132,12 +132,12 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
                      other branch archived
    ```
 
-2. **Divergence-ancestor-extending shape — `Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rec.
+2. **Divergence-ancestor-extending shape — `Rec.previous` is `v_{d-1}` (the divergence ancestor).** Rec lands at `v_d`. The discriminator's walkback from `Rec.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rec is the only event at `v_d` after the discriminator runs. Use case: the submitter does not preserve either of the existing branches at `v_d` and instead replaces `v_d` entirely with their own Rec extending `v_{d-1}`.
 
    ```
-   Pre-state (non-priv divergent at v_d, both adversary-planted):
-       ... → v_{d-1} ─┬─ adversary-branch-1 tip @ v_d
-                      └─ adversary-branch-2 tip @ v_d
+   Pre-state (non-priv divergent at v_d):
+       ... → v_{d-1} ─┬─ branch-1 tip @ v_d
+                      └─ branch-2 tip @ v_d
 
    Rec construction: rec.previous = v_{d-1}.said
                      rec.serial   = d
@@ -145,12 +145,12 @@ Recovery resolves a non-privileged-divergent chain by archiving all events at `s
    Post-state (linear, recovered, Rec is the only event at v_d):
        ... → v_{d-1} → rec @ v_d
                      ↑
-                     both adversary branches archived
+                     both prior branches archived
    ```
 
    The divergence-ancestor-extending shape's "both branches" archival is exhaustive by construction: a 3-event divergent set at `v_d` would imply a non-archiving privileged event has already joined via the upgrade rule, transitioning the chain to contested-terminal — Rec is rejected by the contested-state gate. Rec applies only to non-privileged 2-event divergent sets at `v_d`; the upgrade rule's privileged-event-joins-divergent-set path is mutually exclusive with the discriminator's archival path.
 
-Whoever holds the recovery key dictates which shape, and (in the branch-tip-extending shape) which branch the Rec extends. Both shapes are handled uniformly by `archive_adversary_chain` — the walkback structure determines which events get archived without a separate code path per shape.
+The Rec submitter (whoever holds the recovery key) dictates which shape, and (in the branch-tip-extending shape) which branch Rec extends. Both shapes are handled uniformly by `archive_adversary_chain` — the walkback structure determines which events get archived without a separate code path per shape.
 
 Non-archiving privileged events (`Ror`, `Dec`) can share the divergence-ancestor-extending parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but have a different effect: they join the existing divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (archiving `Rec` vs non-archiving `Ror`/`Dec`) determines whether the chain recovers (archival) or terminates (no archival).
 
@@ -172,7 +172,7 @@ The library bundles pending into the lifecycle batch by default; the application
 
 **Rule.** `needs_extra_rot = archived_branch_rotated && !extending_branch_rotated`.
 
-The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotationHash`). If the archived branch has already used it but the extending branch hasn't, an extra `Rot` after `Rec` is needed to escape to a key only the operator (whoever holds the recovery key dictates this) knows. The "extending branch" is the branch `Rec.previous` walks back from; the "archived branch" is what the discriminator removes.
+The `Rec` reveals the rotation key that may be known to a second party (preimage of prior `rotationHash`). If the archived branch has already used it but the extending branch hasn't, an extra `Rot` after `Rec` is needed to escape to a key only the Rec submitter (whoever holds the recovery key) knows. The "extending branch" is the branch `Rec.previous` walks back from; the "archived branch" is what the discriminator removes.
 
 Truth table:
 
@@ -249,7 +249,7 @@ On a divergent KEL, the merge engine routes submissions per the divergent-set st
 
 ## Decommission (Dec)
 
-Decommission is the clean terminal state for owner-initiated chain abandonment.
+Decommission is the clean terminal state — `Dec` lands on a linear chain and ends it.
 
 ### Trigger
 
@@ -283,7 +283,7 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | State observed | Batch content | Outcome |
 |---|---|---|
 | Linear, normal append at tip+1 | non-terminal events | Append. `Accepted`, `divergedAt: None`. |
-| Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event, freeze. `Diverged (non-privileged)`, `divergedAt: Some(d)`. |
+| Linear, overlap at earlier serial (non-privileged events only) | non-recovery events | Insert forking event; chain transitions to Divergent (non-privileged). `Diverged (non-privileged)`, `divergedAt: Some(d)`. |
 | Linear (active) | batch ending in `Ror` or `Dec` (`previous = v_{d-1}.said`) | Insert; creates divergence at `v_d` (existing tip + new event); privileged-divergence rule fires; chain becomes contested-terminal. `Contested`. |
 | Linear, overlap, recovery revealed in existing branch | non-(Ror/Dec) events | `ContestRequired`. |
 | Linear, overlap | batch ending in `Rec` | Discriminator-driven recovery. Branch-tip-extending Rec: `Rec.previous` is a branch tip at `v_d`, Rec extends it at `v_{d+1}`, the other branch archived. Divergence-ancestor-extending Rec: `Rec.previous = v_{d-1}.said`, Rec lands at `v_d`, both branches at `v_d` archived (used when both branches are adversary-planted). `Recovered`. |
@@ -292,7 +292,8 @@ When the merge engine processes a submitted batch (full routing logic in [merge.
 | Divergent (non-privileged) | batch ending in `Ror` or `Dec` (`previous = v_{d-1}.said`, joins divergent set via upgrade rule) | Insert as 3rd event at `v_d`; chain becomes contested-terminal. `Contested`. |
 | Linear, no conflict | batch ending in `Dec` | Insert `Dec`, mark decommissioned. `Accepted`. |
 | Contested | any submission | Rejected with `ContestedKel`. |
-| Decommissioned | any submission | Rejected with `KelDecommissioned`. |
+| Decommissioned | non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` | Admitted as divergent extension at Dec's serial per [§Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions); 2-event divergent set forms (the new event + Dec); privileged-divergence-is-terminal fires; chain transitions Decommissioned → Contested. |
+| Decommissioned | any other submission | Rejected with `KelDecommissioned`. |
 
 ## Implementation Map
 

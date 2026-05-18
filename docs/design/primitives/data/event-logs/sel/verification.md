@@ -149,7 +149,7 @@ The chain-wide `lastIelEvent` (the highest `ielEvent` across all events in the c
 
 ### Soft-fail vs hard-fail policy
 
-Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the chain doesn't advance, the verifier returns an error, the submit handler rejects) or a **soft fail** (the chain advances locally but is flagged in content-based terminal state).
+Authorization failures in step 4 (cross-chain authorization) are mapped to either a **hard fail** (the verifier returns an error, the chain doesn't advance, the submit handler rejects) or a **soft fail** (the verifier does not return an error and the event remains in the chain, but `policy_satisfied` flips false for the rest of the walk).
 
 **Default: all authorization gates are HARD.** The table below shows that every kind × failure-mode combination is HARD in the normal case. The only exception — soft-fail propagation in the divergent-but-not-yet-contested window — is described in §Post-divergence soft-fail propagation below.
 

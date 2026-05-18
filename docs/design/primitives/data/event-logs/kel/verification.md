@@ -138,7 +138,7 @@ BranchTip:
 Derived accessors:
 - `current_public_key()` → `None` if divergent (ambiguous)
 - `last_establishment_event()` → `None` if divergent
-- `is_decommissioned()` → contested, or single branch with decommission tip
+- `is_decommissioned()` → `true` when the linear branch tip is a `Dec` event (a contested chain is not also decommissioned — when `Dec` lands in a divergent set the chain transitions directly to Contested via privileged-divergence-is-terminal)
 - `is_divergent()` → `branch_tips.len() > 1`
 - `effective_tail_said()` → single tip SAID, `hash("contested:{prefix}")` for contested, `hash("divergent:{prefix}")` for divergent
 - `is_said_anchored()`, `anchors_all_saids()` → inline anchor checking results
@@ -170,9 +170,11 @@ Verification does NOT fail on divergence. Instead:
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
   - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a privileged event (`Rec`/`Ror`/`Dec` — recovery-revealing)?
+  - Yes → divergent set contains a non-archiving privileged event (`Ror` or `Dec`)?
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
+
+(`Rec` is privileged but archiving — its discriminator removes the divergent set before any divergent-set check fires, so `Rec` never appears in the divergent set at terminal-state-determination time.)
 
 ### Contested-state transition: non-archiving privileged event placement
 

@@ -178,7 +178,7 @@ Bindings at serials strictly less than `first_divergent_serial` resolve cleanly 
 
 ### 4. Multiple adversary injections to different nodes
 
-Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain freezes after the first divergence; subsequent injections are dedup-rejected (only one extra event per serial is accepted as the divergence marker). Chain terminates structurally on first 2-event divergent set; operator re-incepts under a new prefix.
+Adversary injects different `Evl` events to different nodes (each with its own valid governance — implies multiple compromised governance authorities or multiple legitimate parties acting independently). Each node sees its first injection as the "tip"; gossip propagates, divergence is detected. With three or more conflicting events, the chain transitions to Contested at the first 2-event divergent set; subsequent injections are dedup-rejected (only one extra event per serial is accepted as the divergence marker). Chain terminates structurally on first 2-event divergent set; operator re-incepts under a new prefix.
 
 ```
 Pre-state (linear at v_2, replicated to nodes A, B, C):
