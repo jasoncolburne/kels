@@ -5,7 +5,7 @@ This document describes the submit / merge protocol used when new events are sub
 ## Overview
 
 The submit handler integrates new events into an existing IEL while handling:
-- Normal event appends (`Evl`, `Sea`)
+- Normal event appends (`Evl`)
 - Idempotent resubmissions (dedup by SAID)
 - Divergence detection (conflicting events at the same serial) → chain transitions to contested-terminal directly
 - Decommission (`Dec`) — terminal event ending the chain
@@ -53,11 +53,11 @@ for v0 (Icp): verify Icp.said is anchored under the declared governancePolicy
               with tier-2 (Rot) anchor per contributing policy member
               (the inceptor proves membership in the governance policy they're
                declaring — every IEL event is a governance act; the founding
-               declaration is tier-2 like Evl/Sea)
-for v1+ (Evl/Sea/Dec): verifier checks anchoring against branch.trackedGovernancePolicy
+               declaration is tier-2 like Evl)
+for v1+ (Evl/Dec): verifier checks anchoring against branch.trackedGovernancePolicy
               with the kind required by the event's tier — see
               [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation):
-                Evl, Sea  → Rot (tier 2)
+                Evl       → Rot (tier 2)
                 Dec       → Ror (tier 3)
               Wrong-kind anchor for any contributing leaf rejects the event.
 
@@ -66,14 +66,6 @@ for events introducing or evolving authPolicy or governancePolicy
     fetch the referenced policy by SAID
     if not policy.immune: reject with NotImmunePolicy
               (policy immunity rule — see events.md)
-
-for Sea events: verify parent-kind constraint — parent must be Evl
-                (Sea is forbidden after Icp, Sea, or Dec on IEL).
-                Sea-Sea is forbidden on IEL because Sea carries no content
-                field, so consecutive Seas have no semantic difference.
-                See [events.md §Per-Kind Policy Field Discipline](events.md#per-kind-policy-field-discipline).
-                Chain-state check enforced in the verifier walk — validate_structure
-                sees only the event in isolation; parent-kind requires chain context.
 ```
 
 The Icp authorization requirement is structural authentication of the inceptor against their own declared `governancePolicy`. Unlike SEL's Icp, there is no phishing class to defend against — the prefix is structurally unpredictable from outside (the inception `nonce` makes it unguessable).
@@ -88,17 +80,10 @@ Before routing, check whether the chain is already terminal:
 if chain is divergent      → reject ContestedIel
                              (every IEL event is privileged; any divergent set
                               on IEL fires privileged-divergence-is-terminal.)
-if chain has any Dec event:
-    if event.previous = v_{d-1}.said AND event.serial = Dec.serial
-       AND event.kind is non-archiving privileged (Evl/Sea/Dec):
-        → accept as divergent extension at Dec's serial via
-          the order-independent divergent transitions rule
-          (see protocol-doctrine.md §Order-independent divergent transitions);
-          chain transitions Decommissioned → Contested.
-    else:
-        → reject IelDecommissioned
-          (Dec is terminal for linear extension; the locked-portion bound
-           rejects any subsequent repair event targeting the locked portion.)
+if chain has any Dec event → reject IelDecommissioned
+                             (Decommissioned is fully terminal; the seal-cap
+                              rejects any subsequent submission whose parent
+                              sits at-or-before Dec's parent.)
 ```
 
 These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
@@ -136,7 +121,7 @@ Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is 
 
 Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. All future submissions return `IelDecommissioned`.
 
-### 6. Normal Append (Evl / Sea)
+### 6. Normal Append (Evl)
 
 Events chain from the current tip, no divergence, no terminal kind in batch. Inserts via `save_batch`. Returns `applied: true`.
 
@@ -183,7 +168,7 @@ The `IelVerification` token is the trusted context for routing decisions. The DB
 
 ## Pagination
 
-All IEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same serial: `Icp` (0) → `Evl` (1) → `Sea` (2) → `Dec` (3). `MINIMUM_PAGE_SIZE = 64` controls page size.
+All IEL queries use `ORDER BY serial ASC, CASE kind ... END ASC, said ASC` for deterministic pagination across divergent events that share the same serial. The `CASE` expression uses `IdentityEventKind::sort_priority()` to order kinds at the same serial: `Icp` (0) → `Evl` (1) → `Dec` (2). `MINIMUM_PAGE_SIZE = 64` controls page size.
 
 ## Gossip Send-Side Partitioning (divergent IELs)
 
@@ -204,7 +189,7 @@ After step 3 the receiver's chain mirrors the sender's exactly; both nodes conve
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored (the chain is Contested as of that point — no kind extends past divergence on IEL).
 3. **No archival** — no `truncate_and_replace`, no archive table. History is encoded in the data, including divergent branches, forever.
-4. **Contested is fully terminal; Decommissioned admits one divergent extension** — once the chain is Contested, no submission of any kind is accepted. Decommissioned accepts no linear extension; a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested via the order-independent rule (see [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions)).
+4. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted on either state. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 5. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 
 ## References

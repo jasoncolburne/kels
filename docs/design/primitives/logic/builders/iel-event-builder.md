@@ -2,7 +2,7 @@
 
 **Canonical name:** `IelEventBuilder`
 
-Constructs structurally-valid IEL events (`Icp`, `Evl`, `Sea`, `Dec`), wiring `previous`, `serial`, and policy field discipline (`authPolicy` / `governancePolicy` per kind). Used by callers producing IEL events directly.
+Constructs structurally-valid IEL events (`Icp`, `Evl`, `Dec`), wiring `previous`, `serial`, and policy field discipline (`authPolicy` / `governancePolicy` per kind). Used by callers producing IEL events directly.
 
 **Consumers:** SAD event builder; CLI; identity-bootstrap flows (federation IEL).
 

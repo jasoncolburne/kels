@@ -12,7 +12,7 @@ IEL verification ensures:
 - All events have valid self-addressing identifiers (SAIDs)
 - Events chain correctly from current state to inception via `previous` links
 - `Icp` is anchored under its declared `governancePolicy` (self-governance-endorsement — every IEL event is a governance act)
-- `Evl` / `Sea` / `Dec` are anchored under the branch's tracked `governancePolicy`
+- `Evl` / `Dec` are anchored under the branch's tracked `governancePolicy`
 - Any policy referenced as `authPolicy` or `governancePolicy` (introduced at Icp or evolved via Evl) has `immune: true` — the verifier rejects the chain otherwise as a structural error (policy immunity rule; see [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability))
 
 Events are linked by their `previous` SAID. Serial is the position in the chain (inception is serial 0).
@@ -50,15 +50,6 @@ verify_event(event):
     if no matching branch:
         return Error("Previous SAID not found")
 
-    // 6. Sea parent-kind constraint (chain-state, requires predecessor)
-    if event.kind == Sea:
-        parent = lookup event.previous
-        if parent.kind in {Icp, Sea}:
-            return Error("Sea parent must be Evl")
-        // terminal kind (Dec) cannot have children; the terminal-state gate enforces.
-        // back-to-back Sea is forbidden on IEL — Sea carries no content field,
-        // so a Sea extending another Sea would add no semantic information beyond
-        // the parent; see events.md §Per-Kind Policy Field Discipline.
 ```
 
 ### Generation Processing
@@ -88,7 +79,6 @@ verify_policy(event, branch):
     match event.kind:
         Icp           → self_satisfies(event)  // anchored under event.governancePolicy; tier-2 (Rot anchor)
         Evl           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
-        Sea           → satisfies(event, branch.trackedGovernancePolicy)  // tier-2 (Rot anchor)
         Dec           → satisfies(event, branch.trackedGovernancePolicy)  // tier-3 (Ror anchor)
 
     PolicyChecker resolves the policy by SAID, then evaluates anchoring:
@@ -185,7 +175,7 @@ Accessors:
 | Serial monotonicity | Each event's serial equals predecessor's serial + 1 |
 | Inception serial | Inception (no `previous`) must have serial 0 |
 | `governancePolicy` satisfaction at Icp | `evaluate_anchored_policy(event.governancePolicy, event.said)` (self-governance-endorsement) |
-| `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Sea/Dec |
+| `governancePolicy` satisfaction | `evaluate_anchored_policy(branch.trackedGovernancePolicy, event.said)` for Evl/Dec |
 | Policy immunity | Every introduced/evolved authPolicy or governancePolicy must have `immune: true` |
 
 Note: There is no content-preservation rule (IEL has no `content` field). There is no proactive-evaluation bound (every IEL event is governance-authorized — implicit bound).
@@ -242,7 +232,7 @@ let verification = verifier.finish().await?;
 4. Previous-pointer continuity (event chains from a known branch tip)
 5. Structure validation (`validate_structure`)
 6. Topic consistency
-7. Policy satisfaction via `PolicyChecker` (`governancePolicy` for every kind — Icp anchored under its declared `governancePolicy`; Evl/Sea/Dec anchored under the branch's tracked `governancePolicy`)
+7. Policy satisfaction via `PolicyChecker` (`governancePolicy` for every kind — Icp anchored under its declared `governancePolicy`; Evl/Dec anchored under the branch's tracked `governancePolicy`)
 8. Immunity check on policy seed/update
 
 ## Cross-Chain Use: SEL Authorization Resolution

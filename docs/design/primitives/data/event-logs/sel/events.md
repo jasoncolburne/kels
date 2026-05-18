@@ -145,9 +145,9 @@ SEL events do not declare policies, so the immunity rule has no SEL-side fields 
 
 The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves through that IEL event's policy SAID. As long as that policy SAID is immune (which IEL guarantees), the policy's content is fixed and the SEL event's anchor verification produces the same answer forever. See [../iel/event-log.md §Cross-Chain Anchor Stability](../iel/event-log.md#cross-chain-anchor-stability).
 
-### Order-independent divergent transitions
+### Terminal states are fully terminal
 
-See [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions) for the doctrinal mechanic. On SEL, a non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` (extending `Dec`'s parent at `Dec`'s serial) is admitted as a divergent extension and transitions the chain Decommissioned → Contested. The auth check resolves via the IEL-resolved `governancePolicy` for the event's `ielEvent`.
+Once a `Dec` or a contested-state transition has landed, the chain accepts no further submissions of any kind. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ## Typical Chain Shapes
 
@@ -188,7 +188,7 @@ v4'      Dec       previous=v_3.said, serial=4     ← party 2's Dec (on node B)
       Privileged-divergence-is-terminal fires; chain contested-terminal as of v_4. —
 ```
 
-The structural signature of "race" and "compromise" is identical from the chain's perspective. Both events satisfy the same `governancePolicy` at `v_3`; the chain layer cannot distinguish them. The same shape applies when `Dec` lands first on one node and a competing non-archiving privileged event extends `Dec`'s parent on another (order-independent divergent transitions — see [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions)).
+The structural signature of "race" and "compromise" is identical from the chain's perspective. Both events satisfy the same `governancePolicy` at `v_3`; the chain layer cannot distinguish them. When `Dec` lands first on one node and a competing privileged event extends `Dec`'s parent on another, the seal-cap rejects each peer's gossip-arriving submission; federation-level convergence is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 Operator recourse against compromise on a still-Active SEL is via IEL governance evolution: an `Evl` on the bound IEL that excludes the compromised governance member updates the SEL's resolved `governancePolicy` going forward. Subsequent SEL events bind to the new IEL state via a `Sea` ratchet — see [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel).
 
@@ -199,7 +199,7 @@ v0..vN   normal chain
 vN+1     kind=dec   ielEvent=current_IEL_governance_event_said    ← clean chain end
 ```
 
-After `Dec`, linear extensions are rejected with `DecommissionedSel`. A non-archiving privileged event (`Sea` or `Dec`) with `previous = v_{d-1}.said` (where `v_{d-1}` is `Dec`'s parent) is admitted as a divergent extension at `Dec`'s serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Dec`, the chain is fully terminal. The seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 

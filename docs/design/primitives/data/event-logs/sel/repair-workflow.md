@@ -41,7 +41,7 @@ kels-cli sel status        --prefix <prefix>     # Show local chain status (veri
 kels-cli sel list                                # List local SEL prefixes
 ```
 
-After `repair` succeeds, the chain is back to Active state and accepts normal `Upd` / `Sea` submissions. After `decommission`, the chain is Decommissioned — no linear extensions are accepted (a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension transitioning the chain to Contested via the order-independent rule).
+After `repair` succeeds, the chain is back to Active state and accepts normal `Upd` / `Sea` submissions. After `decommission`, the chain is Decommissioned and fully terminal — all submissions are rejected by the seal-cap.
 
 ## Gossip Propagation
 

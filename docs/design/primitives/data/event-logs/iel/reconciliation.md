@@ -8,9 +8,9 @@ For lifecycle prose (states, divergence-is-contested-terminal, evaluation seal),
 
 All cases below depend on these invariants:
 
-1. **Every IEL event is governance-authorized**: `Icp` is self-endorsed under its declared `governancePolicy`; `Evl`, `Sea`, `Dec` all require the branch's tracked `governancePolicy` satisfaction. There are no auth-only events on IEL. This eliminates the auth-vs-governance asymmetry that SEL needs Rpr to handle.
+1. **Every IEL event is governance-authorized**: `Icp` is self-endorsed under its declared `governancePolicy`; `Evl`, `Dec` all require the branch's tracked `governancePolicy` satisfaction. There are no auth-only events on IEL. This eliminates the auth-vs-governance asymmetry that SEL needs Rpr to handle.
 
-2. **No proactive-evaluation bound needed**: every non-terminal post-Icp IEL event advances the seal (`Evl`/`Sea`), and only one Icp lands per chain. There is no "non-evaluation event run" for a bound to cap — the SEL `MAX_NON_EVALUATION_EVENTS` cap has no IEL analog.
+2. **No proactive-evaluation bound needed**: every non-terminal post-Icp IEL event advances the seal (`Evl`), and only one Icp lands per chain. There is no "non-evaluation event run" for a bound to cap — the SEL `MAX_NON_EVALUATION_EVENTS` cap has no IEL analog.
 
 3. **No archival**: history is encoded in the data, including divergent branches, forever. There is no `truncate_and_replace`, no `Rpr`, no archive table.
 
@@ -26,9 +26,9 @@ These invariants are what let IEL ship without `Rpr` or an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Dec` (clean termination) is admissible. |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl` submissions targeting `v_{seal-1}` are rejected by the seal-cap with `ContestRequired`; only events extending the current tip are admissible. |
 | **Contested (= Divergent)** | Chain shape with 2 events at serial `d`; contested-terminal by privileged-divergence-is-terminal (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. On IEL these are the same state — `is_contested ⇔ is_divergent`. |
-| **Decommissioned** | Exactly one `Dec`, ending a clean chain. Accepts no linear extension; admits a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` as a divergent extension, transitioning the chain to Contested (order-independent rule). |
+| **Decommissioned** | Exactly one `Dec`, ending a clean chain. Fully terminal: all submissions rejected with `IelDecommissioned`. |
 
 There is **no Repaired state** — IEL has no `Rpr`. Contested and Divergent are the same state on IEL since every IEL event is privileged.
 
@@ -36,21 +36,20 @@ There is **no Repaired state** — IEL has no `Rpr`. Contested and Divergent are
 
 What happens when a client submits events to the submit handler on a single node.
 
-| IEL State | Icp | Evl | Sea | Dec |
-|-----------|-----|-----|-----|-----|
-| **Empty** | Append ✓ if `governancePolicy` satisfied; else reject | Reject (no chain) | Reject (no chain) | Reject |
-| **Active** | Reject (already incepted) | Append ✓; if creates overlap → Contested | Append ✓; if creates overlap → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`Evl`/`Sea` would land at-or-before `lastSealAdvancingEvent` in chain order) | n/a | `ContestRequired` | `ContestRequired` | Append ✓ → Decommissioned |
-| **Contested (= Divergent)** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` | `ContestedIel` |
-| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
+| IEL State | Icp | Evl | Dec |
+|-----------|-----|-----|-----|
+| **Empty** | Append ✓ if `governancePolicy` satisfied; else reject | Reject (no chain) | Reject |
+| **Active** | Reject (already incepted) | Append ✓; if creates overlap → Contested | Append ✓ → Decommissioned |
+| **Active, sealed** (`Evl` would land at-or-before `lastSealAdvancingEvent` in chain order) | n/a | `ContestRequired` | `ContestRequired` |
+| **Contested (= Divergent)** | Reject (Icp can't appear at v1+) | `ContestedIel` | `ContestedIel` |
+| **Decommissioned** | `IelDecommissioned` | `IelDecommissioned` | `IelDecommissioned` |
 
 ### Notes on cell routing
 
-- **`Sea` shape constraints** — parent must not be `Icp`/`Sea`/`Dec`. See [events.md §Sea](events.md).
-- **`Dec` on Active or Active, sealed** — Dec terminates the chain rather than extending it; routes to decommission regardless of seal position.
+- **`Dec` on Active** — Dec terminates the chain rather than extending it; routes to decommission.
 - **Overlap creates Contested** — a non-Dec event chaining from earlier than the linear tip creates a 2-event divergent set at `v_d`; privileged-divergence-is-terminal fires immediately, transitioning the chain to contested-terminal. There is no recoverable intermediate state — IEL has no `Rpr`.
 - **Contested (= Divergent) IEL → `ContestedIel` everywhere** — contested-terminal accepts no further events of any kind. There is no upgrade path because there's no non-privileged-divergent state to upgrade from on IEL (every IEL event is privileged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
-- **Decommissioned IEL → `IelDecommissioned` for linear extension.** Dec is terminal with respect to linear extension; the locked-portion bound rejects any subsequent repair event targeting the locked portion. A non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions).
+- **Decommissioned IEL → `IelDecommissioned` everywhere.** Dec is fully terminal; the seal-cap rejects any subsequent submission. Federation-race convergence with concurrent competing privileged submissions is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### Batch submissions
 
@@ -76,12 +75,12 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 |--------|-------------|--------------|--------------------------------------|-------------------------------|----------------------|
 | **Active** | Full chain appended ✓ | Duplicates, no-op ✓ | Overlap → contested ✓ | Duplicates of one branch, no-op ✓ | `IelDecommissioned` |
 | **Contested (= Divergent)** | Both fork events appended ✓ (first as clean append, second triggers overlap → contested) | Fork event creates overlap → contested ✓ | Fork event creates overlap → contested ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `IelDecommissioned` |
-| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | Overlap → contested ✓ (Dec lands on one branch and creates the divergent set; pre-Dec tip on the other branch) | `ContestedIel` | Effective SAIDs match; no-op |
+| **Decommissioned** | Full chain (incl. `Dec`) appended ✓ | `Dec` batch → decommission ✓ | `IelDecommissioned` (concurrent priv-event race resolves at infrastructure layer per #205) | `ContestedIel` | Effective SAIDs match; no-op |
 
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns.
-- **Decommissioned → Contested sink** — contested-terminal sink rejects every gossip-delivered event including the source's `Dec` with `ContestedIel`. The Decommissioned source, when it receives the Contested branch's non-archiving privileged event extending `v_{d-1}` via gossip, accepts it under the order-independent divergent transitions rule and transitions Decommissioned → Contested. Both nodes converge on `hash_effective_said("contested:{prefix}")`. See [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions).
+- **Decommissioned ⇄ Contested federation races** — when one node lands `Dec` and another node lands `Evl` extending the same parent, the seal-cap rejects each peer's gossip-arriving event (its parent sits behind the seal advanced by the local first-receive). Nodes do not structurally converge in this case; federation-level convergence is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 - **Contested → Contested sink** — effective SAIDs match by construction (both produce `hash("contested:{prefix}")` since IEL contested-state derives from divergence shape); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
 The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no `Rpr`-driven archival. Contested coincides with Divergent on IEL since every IEL event is privileged.
@@ -94,7 +93,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Contested (= Divergent)** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (covers all divergent-shape chains; IEL sets `is_contested = true` whenever it observes a divergent set, so the same value applies regardless of which fork events each node has) |
-| **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing non-archiving privileged event extending `Dec`'s parent has been submitted to any node, gossip delivery upgrades Dec-first nodes Decommissioned → Contested via the [order-independent rule](../../../../protocol-doctrine.md#order-independent-divergent-transitions); effective SAID becomes `hash_effective_said("contested:{prefix}")`. |
+| **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing privileged event extending `Dec`'s parent has been submitted to a different node, the federation does NOT structurally converge — each node's seal-cap rejects the other's submission; convergence is via the infrastructure layer (see [#205](https://github.com/jasoncolburne/kels/issues/205)). |
 
 ## Edge Cases
 
@@ -214,9 +213,9 @@ Cross-node forensic divergence is acceptable; all nodes converge on the
 same effective SAID for the contested state.
 ```
 
-### 5. Concurrent Evl + Dec at v_d (Decommissioned → Contested via order-independent transition)
+### 5. Concurrent Evl + Dec at v_d — federation race, infrastructure-layer convergence
 
-Two governance-authorized parties submit concurrent privileged events extending `v_{d-1}` at the same serial `d` to different nodes: party 1 submits `Dec` (terminal); party 2 submits `Evl`. Each lands as a linear-chain extension on its submitting node — node A becomes Decommissioned, node B becomes Active with `Evl` as tip. Gossip then delivers each event to the other node, and the [order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions) rule produces convergence:
+Two governance-authorized parties submit concurrent privileged events extending `v_{d-1}` at the same serial `d` to different nodes: party 1 submits `Dec` (terminal); party 2 submits `Evl`. Each lands as a linear-chain extension on its submitting node — node A becomes Decommissioned, node B becomes Active with `Evl` as tip. Gossip then delivers each event to the other node, but the seal-cap rejects each — each peer's submission has `parent_serial = d-1 < seal_serial = d` after the local first-receive. Nodes do not structurally converge:
 
 ```
 Pre-state (linear at v_{d-1}):
@@ -232,24 +231,23 @@ Each event lands as a linear-chain extension on its submitting node.
 
 Gossip propagates:
 
-  Node A (Decommissioned) receives Evl_alt:
-    Evl_alt.previous = v_{d-1}.said matches Dec's parent;
-    order-independent rule accepts Evl_alt as a divergent extension at
-    Dec's serial. The chain transitions Decommissioned → Contested.
-    A's final state: [Icp] → ... → [Evl_{d-1}] ─┬─ Dec     @ v_d ┐
-                                                └─ Evl_alt @ v_d ┴── Contested
+  Node A (Decommissioned at v_d via Dec) receives Evl_alt:
+    Evl_alt.parent_serial = d-1 < seal_serial = d
+    → rejected by seal-cap.
+    A's state unchanged: Decommissioned.
 
-  Node B (Active) receives Dec: overlap → Contested at v_d.
-    B's final state: [Icp] → ... → [Evl_{d-1}] ─┬─ Evl_alt @ v_d ┐
-                                                └─ Dec     @ v_d ┴── Contested
+  Node B (Active at v_d via Evl_alt) receives Dec:
+    Dec.parent_serial = d-1 < seal_serial = d
+    → rejected by seal-cap.
+    B's state unchanged: Active with Evl_alt as tip.
 
   Effective SAIDs:
-    effective_said(A) = hash_effective_said("contested:{prefix}")
-    effective_said(B) = hash_effective_said("contested:{prefix}")
-    A = B → federation converges.
+    effective_said(A) = Dec.said
+    effective_said(B) = Evl_alt.said
+    A ≠ B → federation does not converge at the protocol layer.
 ```
 
-The order-independent divergent transitions rule is what guarantees the convergence. Without it, node A would reject the gossip-arriving Evl_alt with `IelDecommissioned` and remain Decommissioned while node B was Contested — federation would fail to converge.
+Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205) for the design. The seal-cap stays unconditional; relaxing it to admit competing events at a sealed serial would re-open a stale-authority killswitch surface.
 
 ## References
 

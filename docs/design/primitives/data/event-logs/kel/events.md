@@ -139,20 +139,24 @@ s6  kind=rec  previous=s5a.said,                       ← Rec extends s5a (bran
 
 The `Rec` extends the s5a branch tip (branch-tip-extending shape), not the pre-divergence ancestor. The merge engine walks back from `Rec.previous` to identify the surviving branch; s5b is archived. Whoever holds the recovery key dictates which branch survives. See [event-log.md](event-log.md#recovery-rec) for the discriminator algorithm and the conditional `Rot` follow-up when the archived branch rotated but the surviving branch didn't.
 
-### Contested-termination after recovery-key revelation
+### Concurrent recovery-key submissions
 
 ```
 s0..s4   normal chain
 s5_a     ixn extending s_4                                         (one signing-key holder)
-s5_b     Rec with previous = s_4.said                              (a recovery-key holder)
+s5_b     Rec with previous = s_4.said                              (a recovery-key holder, on Node A)
          — divergence-ancestor-extending shape; discriminator archives s5_a;
-           chain recovered, linear, tip = Rec_b at v_5 —
-s5_c     Dec with previous = s_4.said                              (a second recovery-key holder)
-         — joins Rec_b at v_5; 2-event privileged divergent set;
-           chain contested-terminal —
+           Node A is recovered, linear, tip = Rec_b at v_5 —
+s5_c     Dec with previous = s_4.said                              (a second recovery-key holder, on Node B)
+         — Node B is independently terminated at v_5 via Dec —
+
+(Gossip then delivers each event to the other node.)
+
+  Node A receives Dec: Dec.parent_serial = 4 < seal_serial = 5 → rejected by seal-cap.
+  Node B receives Rec_b: Rec_b.parent_serial = 4 < seal_serial = 5 → rejected by seal-cap.
 ```
 
-The chain becomes recovered after `Rec_b` lands (`s5_a` archived), but the recovery key is now revealed — no further `Rec` against the spent key can succeed. A non-archiving privileged event (`Dec` or `Ror`) extending `s_4` joins the divergent set at `v_5` and fires privileged-divergence-is-terminal. The construction: `evt.previous = s_4.said` (the divergence ancestor `v_{d-1}` at `d = 5`); authorization resolves against `s_4`'s commitments. The event is dual-signed under the private keys whose public preimages are committed by `s_4`'s `rotationHash` and `recoveryHash`. The event lands at `v_5 = seal_serial` (Rec_b advanced the seal to v_5); the seal-cap's parent-at-(seal − 1) boundary case admits this (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)). The archived `s5_a` remains in the archive table; `Rec_b` and the contesting event stay in live storage as the divergent set.
+Each node retains its locally-landed first-receive. The seal-cap rejects each peer's gossip-arriving submission unconditionally — no boundary case admits competing privileged events at a sealed serial. Federation-level convergence in this scenario is provided at the infrastructure layer via a contested-prefix table that nodes maintain and gossip-sync; see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205).
 
 ### Clean decommission
 
@@ -161,7 +165,7 @@ s0..sN   normal chain
 sN+1     kind=dec   ← Dec ends the KEL cleanly; dual-signed (kN + recovery key)
 ```
 
-After `Dec`, linear extensions are rejected. The locked-portion bound prevents `Rec` from targeting the pre-Dec portion. A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension at Dec's serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Dec`, the chain is fully terminal. The seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
