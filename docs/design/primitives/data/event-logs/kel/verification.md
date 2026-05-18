@@ -71,7 +71,7 @@ verify_generation(events_at_serial):
 
 ### Establishment event processing
 
-When an establishment event is encountered (icp, dip, rot, rec, ror, cnt, dec), the verifier checks the forward-key commitments made by the previous establishment event. `branch.pending_rotation_hash` and `branch.pending_recovery_hash` are the digests committed by the prior establishment; the current event must reveal a public key whose digest matches.
+When an establishment event is encountered (icp, dip, rot, rec, ror, dec), the verifier checks the forward-key commitments made by the previous establishment event. `branch.pending_rotation_hash` and `branch.pending_recovery_hash` are the digests committed by the prior establishment; the current event must reveal a public key whose digest matches.
 
 ```
 process_establishment(event, branch):
@@ -108,7 +108,7 @@ verify_signatures(signed_event, publicKey):
     signature = parse_signature(signed_event.signature)
     publicKey.verify(data, signature)
 
-    // Recovery signature (dual authorization for rec, ror, cnt, dec)
+    // Recovery signature (dual authorization for rec, ror, dec)
     if signed_event.recovery_signature exists:
         recoveryKey = parse_key(signed_event.event.recoveryKey)
         recovery_sig = parse_signature(signed_event.recovery_signature)
@@ -126,7 +126,7 @@ KelVerification:
     is_contested: bool
     divergenceAncestor: Option<Digest256>          // SAID of v_{d-1} on a divergent chain (None on linear)
     lastSealAdvancingEvent: Option<Digest256>     // SAID of most recent Rec/Ror (seal-cap watermark)
-    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Cnt/Dec (spent-key)
+    lastRecoveryRevealingEvent: Option<Digest256> // SAID of most recent Rec/Ror/Dec (spent-key)
     anchored_saids: BTreeSet<Digest256>
     queried_saids: BTreeSet<Digest256>
 
@@ -170,27 +170,25 @@ Verification does NOT fail on divergence. Instead:
 The verifier's terminal-state-determination rule simplifies to:
 - Divergent at `v_d`?
   - No → linear (active or terminal-via-Dec).
-  - Yes → divergent set contains a privileged event (`Rec`/`Ror`/`Cnt`/`Dec` — recovery-revealing)?
+  - Yes → divergent set contains a privileged event (`Rec`/`Ror`/`Dec` — recovery-revealing)?
     - Yes → contested (terminal).
     - No → divergent (recoverable via `Rec`).
 
-Cnt is a privileged event whose presence in the divergent set triggers contested via this rule. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
+### Contested-state transition: non-archiving privileged event placement
 
-### Cnt parent resolution
+A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = d` lands at `v_d` and joins or creates the divergent set, firing privileged-divergence-is-terminal. The locked-portion bound prevents `previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Worked scenarios — contested-state creation](../../../../protocol-doctrine.md#worked-scenarios--contested-state-creation) for the cross-shape derivation and diagrams. `v_{d-1}` is the unique parent at `serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making the parent shape cross-node-validatable regardless of which divergent contents each node observed.
 
-`Cnt.previous = v_{d-1}.said`; `Cnt.serial = d`. Cnt extends the divergence ancestor and lands at `v_d`. The locked-portion bound prevents `Cnt.previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked diagrams. `v_{d-1}` is the unique parent at `Cnt.serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making Cnt's parent shape cross-node-validatable regardless of which divergent contents each node observed.
-
-**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). Cnt and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — Cnt via dual-signature check, the existing tip via its own establishment check. No new cache slot in branch state.
+**Implementation note.** The contesting event is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). The contesting event and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — the contesting event via dual-signature check, the existing tip via its own establishment check. No new cache slot in branch state.
 
 ### Upgrade rule
 
-When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror`, `Cnt`, or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
+When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Rot`-`Rot`, `Ixn`-`Ixn`, or `Rot`-`Ixn` race) and gossip delivers a non-archiving privileged event for that same `v_d` (`Ror` or `Dec` with `previous = v_{d-1}.said`), the verifier accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal).
 
-`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule (the other non-archiving privileged kinds — `Ror`, `Cnt`, `Dec` — do, when their parent is `v_{d-1}.said`). See [../../../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
+`Rec` is the archiving exception — its discriminator removes the divergent set before any divergent-set check fires, so it never participates in the upgrade rule. See [../../../../protocol-doctrine.md §Two privileged event classes: archiving vs non-archiving](../../../../protocol-doctrine.md#two-privileged-event-classes-archiving-vs-non-archiving) for the doctrinal frame.
 
-### Cnt authorization (HARD)
+### Contested-event authorization (HARD)
 
-Cnt's dual-signature is verified against `v_{d-1}`'s commitments: signing key (preimage of `v_{d-1}`'s `rotationHash`) + recovery key (preimage of `v_{d-1}`'s `recoveryHash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
+The contesting event's dual-signature is verified against `v_{d-1}`'s commitments: signing key (preimage of `v_{d-1}`'s `rotationHash`) + recovery key (preimage of `v_{d-1}`'s `recoveryHash`). Authorization failure is HARD — a contesting event whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
 
 ## Event Types and Their Signatures
 
@@ -204,7 +202,6 @@ Event kind values are version-qualified in serialized form (e.g. `kels/kel/v1/ev
 | `rot` (rotate) | Next signing key (pre-committed) | - |
 | `ror` (rotate recovery) | Next signing key | Recovery key |
 | `rec` (recover) | Next signing key | Recovery key |
-| `cnt` (contest) | Next signing key | Recovery key |
 | `dec` (decommission) | Next signing key | Recovery key |
 
 Events with recovery signatures require dual authorization, making them the highest authority operations in the KEL.

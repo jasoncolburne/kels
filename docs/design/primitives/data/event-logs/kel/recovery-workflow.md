@@ -1,13 +1,12 @@
 # Recovery Workflow
 
-This doc describes the operator-side CLI workflow for KEL `Rec` / `Ror` / `Cnt` / `Dec` ceremonies and their propagation through the registry.
+This doc describes the operator-side CLI workflow for KEL `Rec` / `Ror` / `Dec` ceremonies and their propagation through the registry.
 
 For the chain-state semantics each ceremony reaches, see the design docs:
 
 - What `Rec` archives → [event-log.md §Recovery (Rec)](event-log.md#recovery-rec).
-- How `Cnt` works on KEL → [event-log.md §Contest (Cnt)](event-log.md#contest-cnt).
+- How contested-termination is reached via a non-archiving privileged event (`Ror`/`Dec`) landing in a divergent set → [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
 - The parent-at-(seal − 1) carve-out and the spent-key rule → [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability).
-- How `Cnt` overrides `Dec` on a decommissioned chain → [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
 
 ## Architecture
 
@@ -49,9 +48,9 @@ See [../../../../protocol-doctrine.md §Operation Categories](../../../../protoc
 
 When a member KEL is compromised, the operator uses the identity-admin CLI:
 
-1. **`identity-admin recover`** - Issues a recovery event, reveals the recovery key
-2. **`identity-admin rotate-recovery`** - Rotates both signing and recovery keys
-3. **`identity-admin contest`** - Permanently freezes a divergent KEL (adversary revealed recovery key)
-4. **`identity-admin decommission`** - Ends the KEL permanently
+1. **`identity-admin recover`** - Issues a recovery event (`Rec`), reveals the recovery key
+2. **`identity-admin rotate-recovery`** - Issues a recovery-rotation event (`Ror`), rotates both signing and recovery keys
+3. **`identity-admin contest`** - Issues a non-archiving privileged event (`Ror` or `Dec`) extending `v_{d-1}` to trigger the contested transition, permanently freezing a divergent KEL (when adversary has revealed recovery key)
+4. **`identity-admin decommission`** - Issues a `Dec` event, ends the KEL permanently (clean retirement on a linear chain)
 
 Each of these creates events in the identity service's KEL. The registry sync loop automatically picks them up and propagates them to all federation members.

@@ -2,17 +2,17 @@
 
 > Exhaustive enumeration of all KEL state × submission × gossip combinations, demonstrating that every case terminates correctly and all nodes converge on the same effective SAID. This is the load-bearing correctness argument for the KEL design — without it, the merge engine and gossip layer aren't proven sound. Cross-node convergence as a doctrinal property is stated upstream at [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence); this doc is its per-primitive proof.
 
-For lifecycle prose (states, divergence, recovery via discriminator, contest, decommission, the proactive-ROR seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
+For lifecycle prose (states, divergence, recovery via discriminator, contested-state transitions, decommission, the proactive-ROR seal), see [event-log.md](event-log.md). For per-kind field rules and chain shapes, see [events.md](events.md). For the merge engine routing internals, see [merge.md](merge.md). This doc is the proof; the others are the design.
 
 ## Invariants
 
 All cases below depend on these invariants:
 
-1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `cnt`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2 = 62` non-revealing events. Surfaced by `KelVerifier` and enforced by the merge engine; the builder auto-inserts `ror` when the bound is about to be crossed.
+1. **Proactive ROR compliance**: Every KEL has a recovery-revealing event (`rec`, `ror`, `dec`) at least every `MINIMUM_PAGE_SIZE - 2 = 62` non-revealing events. Surfaced by `KelVerifier` and enforced by the merge engine; the builder auto-inserts `ror` when the bound is about to be crossed.
 
 2. **Bounded divergence**: An adversary can only fork after the last recovery-revealing event (forking before triggers `ContestRequired`). Combined with invariant 1, divergence spans at most 62 events from the fork point. An adversary without the recovery key can only submit non-revealing events (`ixn`, `rot`), so the merge engine's proactive-ROR enforcement limits them to at most 62 events before rejection.
 
-3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contest batch (`events + cnt`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
+3. **Bounded operations**: Recovery batch (`events + rec + rot`) ≤ 64, contested-transition batch (`events + Ror`/`Dec`) ≤ 63, adversary chain to archive ≤ 62. All fit in one page (`MINIMUM_PAGE_SIZE = 64`).
 
 These invariants are what make synchronous archival, single-page discriminator walks, and atomic batched submissions all feasible. The page+resume-verify discriminator (SEL backport) relies on bound 3.
 
@@ -22,42 +22,41 @@ These invariants are what make synchronous archival, single-page discriminator w
 |-------|-------------|
 | **Empty** | No events for this prefix |
 | **Active** | Linear chain, latest tip extends cleanly |
-| **Divergent** | Fork detected, no `rec`/`cnt` yet |
+| **Divergent** | Fork detected, no `Rec` yet and no non-archiving privileged event upgrade |
 | **Recovered** | Clean chain after synchronous archival in the merge transaction |
-| **Contested** | `cnt` present, permanently frozen |
-| **Decommissioned** | `dec` present, permanently frozen |
+| **Contested** | Divergent set contains a non-archiving privileged event (`Ror` or `Dec`); permanently frozen |
+| **Decommissioned** | Exactly one `Dec`, ending a clean (linear) chain; permanently frozen |
 
-"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only `cnt` is accepted; non-`cnt` submissions return `ContestRequired`.
+"Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only a non-archiving privileged event (`Ror`/`Dec`) extending `v_{d-1}` is admissible; non-(Ror/Dec) submissions return `ContestRequired`.
 
 ## Local Submissions Matrix
 
 What happens when a client submits events to the merge engine on a single node.
 
-| KEL State | ixn/rot | ror | rec / rec+rot | cnt / events+cnt | dec |
-|-----------|---------|-----|---------------|------------------|-----|
-| **Empty** | Reject (no KEL) | Reject | Reject | Reject | Reject |
-| **Active** | Append ✓ | Append ✓ | Append ✓ (gossip-sync of recovered KELs) | Contest ✓ → Contested | Append ✓ → Decommissioned |
-| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` | n/a (`Rec` cannot truncate at-or-before the seal) | Contest ✓ → Contested | `ContestRequired` |
-| **Divergent** | `RecoverRequired` | `RecoverRequired` | Recovered ✓ (creates `RecoveryRecord`) | Contest ✓ → Contested (joins set via upgrade rule) | `RecoverRequired` |
-| **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` | `ContestRequired` | Contest ✓ → Contested | `ContestRequired` |
-| **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active | Same as Active |
-| **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
-| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `Cnt` with `previous = v_{d-1}.said` → override → Contested (see [§Cnt mechanics](event-log.md#cnt-mechanics)); other `Cnt` parent shapes → `KelDecommissioned` | `KelDecommissioned` |
+| KEL State | ixn/rot | ror | rec / rec+rot | dec |
+|-----------|---------|-----|---------------|-----|
+| **Empty** | Reject (no KEL) | Reject | Reject | Reject |
+| **Active** | Append ✓ | Append ✓ (linear or contested-creating; see notes) | Append ✓ (gossip-sync of recovered KELs) | Append ✓ → Decommissioned (linear) or Contested (creates divergence at `v_d`) |
+| **Active, sealed** (`ixn`/`rot`/`ror` would land at-or-before `lastSealAdvancingEvent` in chain order) | `ContestRequired` | `ContestRequired` (linear extension); non-archiving privileged extending `v_{seal-1}` → Contested via boundary case | n/a (`Rec` cannot truncate at-or-before the seal) | `ContestRequired` (linear extension); extending `v_{seal-1}` → Contested via boundary case |
+| **Divergent** | `RecoverRequired` | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | Recovered ✓ (creates `RecoveryRecord`) | `RecoverRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
+| **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
+| **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active |
+| **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
+| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
 
 ### Notes on cell routing
 
-- **`Cnt` on Active** — Cnt with `previous = v_{d-1}.said` creates fresh divergence at `v_d` (Cnt and the existing event at `v_d` form a 2-event divergent set); privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
-- **`Cnt` on Divergent / Divergent (recovery revealed)** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
-- **Active, sealed** — Handled algorithmically by §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than by a state precondition; structural behavior matches IEL/SEL. `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
-- **`Divergent (recovery revealed)` → `ContestRequired` for non-Cnt** — once the recovery key is revealed in a divergent branch (via `Rec`/`Ror`/`Dec`/`Cnt`), only Cnt is admissible. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
-- **Cnt-Overrides-Dec** — only Cnt overrides; other event kinds on a Decommissioned chain → `KelDecommissioned`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
+- **Contested-state transition (linear chain)** — A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (the new event + the existing event at `v_d`); privileged-divergence-is-terminal fires. See [event-log.md §Contested-state transitions](event-log.md#contested-state-transitions).
+- **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
+- **Active, sealed** — Non-privileged-revealing extensions return `ContestRequired`. The parent-at-(seal − 1) boundary case admits non-archiving privileged events at `event_serial = seal_serial` to trigger contested-transition; archiving `Rec` is forbidden at the boundary (would erase the seal-defining event).
+- **`Divergent (recovery revealed)` → `ContestRequired` for non-(Ror/Dec)** — once the recovery key is revealed in a divergent branch, only a non-archiving privileged event extending `v_{d-1}` can resolve (by terminating the chain). See [event-log.md §Algorithmic merge-engine triggers](event-log.md#algorithmic-merge-engine-triggers).
 
 ### Batch submissions
 
 The merge engine handles batches atomically:
 
 - **`[events + rec + rot]`** — owner's chain from the fork point through recovery. At most 64 events (bounded by proactive ROR). Processed as a single overlap or divergent submission.
-- **`[events + cnt]`** — owner's chain from the fork point through contest. At most 63 events. The `cnt` must be last in the batch.
+- **`[events + Ror]` or `[events + Dec]`** — owner's chain from the fork point through contested-transition. At most 63 events. The non-archiving privileged event must be last in the batch.
 - **`[ror, ixn]`** — auto-inserted by the builder when an `ixn` would exceed the proactive-ROR interval.
 - **`[rot] → [ror]`** — the builder upgrades `rot` to `ror` when the proactive-ROR interval is due, since `ror` rotates both signing and recovery keys.
 
@@ -69,9 +68,9 @@ When node A syncs a KEL to node B, `transfer_key_events` reads from A and writes
 
 For divergent source KELs, `send_divergent_events` reorders events to ensure the KEL is reconstructed the same way. With synchronous archival, a recovered source KEL is always a clean linear chain — the adversary events are archived in the merge transaction. In normal operation, only unrecovered and contested cases reach `send_divergent_events`.
 
-- **Divergent with rec (no cnt)** — Rejected with error. This state cannot exist through normal merge paths: synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
-- **Unrecovered (no rec, no cnt)** — Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver). Receiver routes the fork event through §6c Overlap → divergent state.
-- **Contested (cnt found)** — Builds two chains by forward-tracing from the two fork events. Sends the non-cnt chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the cnt chain as an atomic batch (creates divergence + freezes; bounded to one page by the proactive-ROR invariant). If the cnt chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
+- **Divergent with rec (and no contested-transition)** — Rejected with error. This state cannot exist through normal merge paths: synchronous archival means a `rec` immediately archives adversary events, leaving a clean chain. A divergent KEL with `rec` in the live tables indicates possible DB tampering. `send_divergent_events` refuses to propagate it.
+- **Unrecovered (no rec, no contested-transition)** — Longer chain first as non-divergent appends. Only the fork event from the shorter chain is sent (no terminal event to deliver). Receiver routes the fork event through §6c Overlap → divergent state.
+- **Contested (divergent set contains a non-archiving privileged event)** — Builds two chains by forward-tracing from the two fork events. Sends the non-contesting chain first as paged non-divergent appends (may exceed one page if the adversary extended with multiple ROR cycles before detection), then the contesting chain (ending in the `Ror`/`Dec` that triggered the transition) as an atomic batch (creates divergence + freezes; bounded to one page by the proactive-ROR invariant). If the contesting chain exceeds `MINIMUM_PAGE_SIZE`, propagation is rejected as possible DB tampering.
 
 ### Source → Sink state matrix
 
@@ -84,13 +83,13 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 | **Active** | Full KEL appended ✓ | Duplicates, no-op ✓ | Overlap → divergence | `RecoverRequired` | `ContestedKel` | `KelDecommissioned` |
 | **Recovered** | Full clean chain ✓ | `rec`+`rot` append ✓ | Overlap → `rec` in batch → recovery ✓ | `RecoverRequired` (sink awaiting recovery) | `ContestedKel` | `KelDecommissioned` |
 | **Divergent (unrecovered)** | Reordered: longer chain + fork event ✓ | Fork event creates overlap → divergence | Fork event creates overlap → divergence | Effective SAIDs match (`hash("divergent:{prefix}")`) ✓ | `ContestedKel` | `KelDecommissioned` |
-| **Contested** | Non-cnt chain (paged) + cnt chain (atomic batch) ✓ | Non-cnt chain appends + cnt batch → contest ✓ | Non-cnt chain appends + cnt batch → contest ✓ | `cnt` batch → contest ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `cnt` batch → override → contest ✓ |
+| **Contested** | Non-contesting chain (paged) + contesting chain (atomic batch ending in `Ror`/`Dec`) ✓ | Non-contesting appends + contesting batch → contested ✓ | Non-contesting appends + contesting batch → contested ✓ | Contesting batch → contested ✓ | Effective SAIDs match (`hash("contested:{prefix}")`) ✓ | `KelDecommissioned` |
 | **Decommissioned** | Full chain + `dec` ✓ | `dec` appends ✓ | Overlap, `dec` in chain ✓ | `RecoverRequired` | `ContestedKel` | Effective SAIDs match (Dec.said) ✓ |
 
 ### Notes on cell routing
 
-- **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns. The exception is **Source: Contested → Sink: Decommissioned**, where the gossip-delivered `Cnt` triggers Cnt-Overrides-Dec.
-- **Cnt-Overrides-Dec** — gossip-delivered `Cnt` lands at `v_d` alongside the sink's `Dec`; privileged-divergence-is-terminal fires; sink transitions to Contested. Effective SAIDs converge on `hash("contested:{prefix}")`. See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec).
+- **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns.
+- **Source: Contested → Sink: Decommissioned** — Decommissioned sink rejects the gossip-delivered contesting events with `KelDecommissioned`; sink remains decommissioned. The federation-race split-brain (Dec-first nodes diverge from contested-first nodes) is an accepted operational cost (no carve-out for repair events targeting the locked portion).
 - **Send-side partitioning** (Source: Divergent, Source: Contested) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [§Transfer ordering](#transfer-ordering) above and [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-kels).
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
@@ -103,8 +102,8 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
-| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes; a chain carrying both `Dec` and `Cnt` resolves here, since `is_contested = true` takes precedence over `is_decommissioned` — see [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec)) |
-| **Decommissioned** | `dec` event SAID | ✓ (identical chains; applies only when no `Cnt` has overridden the `Dec`) |
+| **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes regardless of which divergent events each node holds) |
+| **Decommissioned** | `dec` event SAID | ✓ (identical chains across all Dec-first nodes; the federation-race split-brain — Dec-first nodes diverge from contested-first nodes — is an accepted operational cost) |
 
 ## Archival
 
@@ -133,7 +132,7 @@ Both strategies use a single page fetch + resume-mode verifier trust gate + in-m
 
 ### 1. Adversary Rec as normal append
 
-The adversary submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` requires `cnt` (contest) instead of `rec` (recovery). The owner must contest.
+The adversary submits `rec` to a non-divergent KEL (normal append, no divergence). This reveals the recovery key. Any future divergence at or after this `rec` cannot be resolved by `rec` (the recovery key is spent); only contested-termination via a non-archiving privileged event remains.
 
 ```
 Pre-state (linear, owner's chain through s_N):
@@ -144,9 +143,10 @@ Adversary submits rec with previous = s_N.said (and dual-sig satisfied):
 
 Effect: chain stays linear; seal advances to N+1; recovery key now spent for
 this chain. Any future divergence at serial ≤ N+1 triggers ContestRequired
-because the seal-cap forbids forking at-or-before the seal. Owner's only
-recourse is Cnt with previous = v_N.said (the parent of the new rec-tip at
-v_{N+1}) on the post-rec linear chain; Cnt lands at v_{N+1}.
+because the seal-cap forbids forking at-or-before the seal. Owner's recourse
+is a non-archiving privileged event (`Ror` or `Dec`) with previous = v_N.said
+(the parent of the new rec-tip at v_{N+1}); the event lands at v_{N+1} and
+triggers the contested transition.
 ```
 
 ### 2. Multiple adversary injections across nodes
@@ -179,7 +179,7 @@ converge on the post-rec linear state.
 
 ### 3. Owner events archived by adversary's `rec`
 
-If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the adversary's `rec`. The builder resubmits those missing events + `cnt` as an atomic batch.
+If the adversary submitted `rec` (creating a `RecoveryRecord` and archiving the owner's events synchronously), the owner's builder detects missing events via `find_missing_owner_events`: it loads the last page of events from the local `KelStore`, then walks backward calling `event_exists` on the server for each SAID until it finds one the server still has. Everything after that boundary was archived by the adversary's `rec`. The builder resubmits those missing events plus a non-archiving privileged event (`Ror` or `Dec`) as an atomic batch.
 
 ```
 Pre-state (divergent at s_d; client store holds the owner's branch):
@@ -197,13 +197,14 @@ Adversary submits rec extending adv_a (branch-tip-extending shape):
 
 Client detects via find_missing_owner_events that owner_a, owner_b
 no longer exist server-side (event_exists returns false). Owner bundles
-[owner_a, owner_b, cnt] as atomic batch and submits to server. The
-missing events are verified server-side and re-established under the
-batch's atomic transaction. Post-batch the chain is linear with tip at
-owner_b (v_{d+1}); cnt with previous = owner_a.said (v_d) lands at
-v_{d+1} as sibling of owner_b → 2-event privileged divergent set →
-privileged-divergence-is-terminal fires → chain becomes contested-
-terminal. Owner's lost work is preserved as forensic record.
+[owner_a, owner_b, dec] (or similar non-archiving privileged terminator)
+as atomic batch and submits to server. The missing events are verified
+server-side and re-established under the batch's atomic transaction.
+Post-batch the chain is linear with tip at owner_b (v_{d+1}); dec with
+previous = owner_a.said (v_d) lands at v_{d+1} as sibling of owner_b →
+2-event privileged divergent set → privileged-divergence-is-terminal
+fires → chain becomes contested-terminal. Owner's lost work is preserved
+as forensic record.
 ```
 
 ### 4. Post-recovery events synced to adversary node
@@ -232,7 +233,7 @@ All nodes converge on the same effective SAID (tip event SAID).
 
 ### 5. Contested KELs across nodes
 
-Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before contest arrived; another received the contest first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL with a `cnt` event. Anti-entropy sees matching SAIDs and does not re-queue.
+Different nodes may have different event sets for a contested KEL (e.g., one node archived adversary events via recovery before the contested-transition arrived; another received the contesting event first). Their event counts may differ, but `compute_prefix_effective_said` returns a deterministic `hash_effective_said("contested:{prefix}")` for any KEL where the divergent set contains a non-archiving privileged event. Anti-entropy sees matching SAIDs and does not re-queue.
 
 ```
 Different event sets, same effective SAID:
@@ -244,7 +245,7 @@ Different event sets, same effective SAID:
 
   Node B:  s_0 → ... → s_{d-1} ─┬─ ixn_b @ s_d ┐
                                 └─ ror_c @ s_d ┴── 2-event set; contested
-                                                   (Node B's local Cnt path
+                                                   (contested-transition
                                                     closed the gate before
                                                     adv_a's gossip arrived)
 
@@ -258,67 +259,44 @@ forensic divergence is acceptable (and unavoidable given the gossip-
 window timing).
 ```
 
-### 6. Cnt-Dec override
+### 6. Dec-vs-divergence split-brain
 
-Two parties submit terminal events onto a chain: the operator submits `Dec` (clean retirement) to one node; a second authority-holder submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
-
-**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. The Cnt has `previous = v_{d-1}.said = Dec.previous` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` alongside Dec.
+Two parties submit terminal-or-near-terminal events to different nodes: the operator submits `Dec` (clean retirement) to node A; a second authority-holder submits a non-archiving privileged event (e.g., `Dec` or `Ror`) extending the same parent `v_{d-1}` to node B. On node A, Dec lands first and decommissions the chain; the gossip-delivered competing event is then rejected by the `KelDecommissioned` gate. On node B, the competing event lands first as a clean append; gossip-delivered Dec arrives and creates an overlap, triggering contested-terminal at v_d via the upgrade rule.
 
 ```
-Pre-Cnt state on both nodes (Dec landed on A, gossiped to B):
+Pre-state (linear at v_{d-1}):
 
-  ... → v_{d-1} → dec @ v_d    (tip)
+  Both nodes:  ... → v_{d-1}    (tip)
 
-Node B (second authority, post-Dec view) submits:
+Concurrent submissions:
 
-  cnt.previous = v_{d-1}.said   → cnt lands at v_d on B alongside dec
+  Operator → Node A:           dec.previous = v_{d-1}.said
+                               dec.serial   = d
+  Second holder → Node B:      ror_alt.previous = v_{d-1}.said
+                               ror_alt.serial   = d
 
-After gossip merges:
+Each event lands as a linear-chain extension on its submitting node.
 
-  ... → v_{d-1} ─┬─ dec @ v_d ┐
-                 └─ cnt @ v_d ┴── contested-terminal @ v_d
+Gossip propagates:
+
+  Node A receives ror_alt: KelDecommissioned (Dec already on chain).
+    A's final state: ... → v_{d-1} → dec @ v_d  (decommissioned)
+
+  Node B receives dec: overlap → contested-terminal at v_d.
+    B's final state: ... → v_{d-1} ─┬─ ror_alt @ v_d ┐
+                                    └─ dec     @ v_d ┴── contested
+
+  Effective SAIDs:
+    effective_said(A) = Dec.said
+    effective_said(B) = hash_effective_said("contested:{prefix}")
+    A ≠ B → federation-race split-brain, accepted as an operational cost.
 ```
 
-**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. The Cnt has `previous = v_{d-1}.said` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
-
-```
-Pre-state on both nodes (linear at v_d):
-
-  ... → v_{d-1} → v_d    (tip)
-
-Concurrent submissions (no mutual observation):
-
-  Node A (operator):    dec.previous = v_d.said       → dec lands at v_{d+1} on A
-  Node B (other):       cnt.previous = v_{d-1}.said   → cnt lands at v_d on B
-                                                         (sibling of v_d;
-                                                          contested fires at v_d)
-
-After gossip merges:
-
-  Node A (Dec'd) receives cnt with previous = v_{d-1}.said:
-    decommissioned-state gate accepts (cnt creates divergence with pre-Dec v_d).
-    Chain transitions to contested at v_d:
-
-    ... → v_{d-1} ─┬─ v_d → dec @ v_{d+1}  ┐
-                   └─ cnt @ v_d            ┴── contested-terminal @ v_d
-
-  Node B (contested at v_d) receives dec:
-    contested-state gate rejects; dec is dropped.
-
-    ... → v_{d-1} ─┬─ v_d                  ┐
-                   └─ cnt @ v_d            ┴── contested-terminal @ v_d
-```
-
-Both shapes converge to contested:
-
-  effective_said(A) = hash_effective_said("contested:{prefix}")
-  effective_said(B) = hash_effective_said("contested:{prefix}") = effective_said(A)    ✓
-
-Cross-node forensic divergence (which events each node holds; at which serial contested fires) is acceptable. Anti-entropy compares SAIDs and does not re-queue. Without the override, the federation would split: Dec'd nodes would resolve to `hash("decommissioned:{prefix}") = Dec.said` while Cnt'd nodes would resolve to `hash("contested:{prefix}")`, and anti-entropy would spin forever finding mismatched SAIDs without being able to fix either side — a direct violation of [../../../../protocol-doctrine.md §Federation Convergence](../../../../protocol-doctrine.md#federation-convergence).
+Mitigation is operator-coordinated submission ordering — Dec should only be issued via a synchronized path that ensures no concurrent contesting submission is in flight from another authority-holder. Without coordination, the federation can split between Dec-first nodes (decommissioned) and contested-first nodes (contested-terminal). Cross-node forensic divergence is acceptable; the operator's response when the split is detected is to reincept under a new prefix.
 
 ## References
 
 - [docs/design/kel/events.md](events.md) — Per-kind reference: kinds, field rules, chain shapes.
-- [docs/design/kel/event-log.md](event-log.md) — KEL chain lifecycle: states, divergence, recovery, contest, decommission, proactive-ROR seal, discriminator algorithm.
+- [docs/design/kel/event-log.md](event-log.md) — KEL chain lifecycle: states, divergence, recovery, contested-state transitions, decommission, proactive-ROR seal, discriminator algorithm.
 - [docs/design/kel/merge.md](merge.md) — KEL merge engine; `MergeTransaction` API and full routing.
 - [docs/design/sel/event-log.md](../sel/event-log.md) — SEL counterpart; the discriminator and pending-bundling shape are mirrored on both sides.

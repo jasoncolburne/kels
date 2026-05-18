@@ -2,7 +2,7 @@
 
 Pure structural reference for KEL event kinds, per-kind field rules, and typical chain shapes.
 
-For chain lifecycle (states, divergence, recovery via discriminator, contest, decommission, proactive-ROR invariant), see [event-log.md](event-log.md). For the merge engine that integrates submitted events server-side, see [merge.md](merge.md).
+For chain lifecycle (states, divergence, recovery via discriminator, decommission, proactive-ROR invariant), see [event-log.md](event-log.md). For the merge engine that integrates submitted events server-side, see [merge.md](merge.md).
 
 ## Event Kinds
 
@@ -12,12 +12,11 @@ For chain lifecycle (states, divergence, recovery via discriminator, contest, de
 | `Dip` | `kels/kel/v1/events/dip` | Delegated inception (s0). Same as `Icp` but anchored by a delegating prefix. |
 | `Rot` | `kels/kel/v1/events/rot` | Rotation. Reveals the next signing key (committed by prior `rotationHash`) and commits a new one. |
 | `Ixn` | `kels/kel/v1/events/ixn` | Interaction. Anchors a SAID; does not change keys. |
-| `Rec` | `kels/kel/v1/events/rec` | Recovery. Dual-signed; rotates signing + recovery keys; resolves divergence. |
+| `Rec` | `kels/kel/v1/events/rec` | Recovery. Dual-signed; rotates signing + recovery keys; resolves divergence via archival. |
 | `Ror` | `kels/kel/v1/events/ror` | Recovery rotation. Dual-signed; pre-emptively rotates both keys (no divergence required). |
 | `Dec` | `kels/kel/v1/events/dec` | Decommission. Dual-signed; terminal owner-initiated end. |
-| `Cnt` | `kels/kel/v1/events/cnt` | Contest. Dual-signed; terminal due to authority conflict. |
 
-`Rec`, `Ror`, `Dec`, `Cnt` all return `reveals_recovery_key() = true` — each requires dual signatures (signing + recovery). `Rot`, `Ror`, `Rec` return `reveals_rotation_key() = true`.
+`Rec`, `Ror`, `Dec` all return `reveals_recovery_key() = true` — each requires dual signatures (signing + recovery). `Rot`, `Ror`, `Rec` return `reveals_rotation_key() = true`.
 
 ## Per-Kind Field Rules
 
@@ -34,7 +33,6 @@ For chain lifecycle (states, divergence, recovery via discriminator, contest, de
 | `Ror` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden |
 | `Rec` | `>= 1` | required | **required** | **required** | **required** | **required** | forbidden |
 | `Dec` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden |
-| `Cnt` | `>= 1` | required | **required** | forbidden | **required** | forbidden | forbidden |
 
 The forward-key commitment fields (`rotationHash`, `recoveryKey`, `recoveryHash`) drive the dual-signature mechanic; see §Forward-key commitments below. `delegatingPrefix` is `Dip`-only and supports the `Delegated(delegator)` policy node (see §Authorization model).
 
@@ -49,9 +47,8 @@ The forward-key commitment fields (`rotationHash`, `recoveryKey`, `recoveryHash`
 | `Ror` | dual | optional | 4 |
 | `Rec` | dual | forbidden | 5 |
 | `Dec` | dual | forbidden | 6 |
-| `Cnt` | dual | forbidden | 7 |
 
-The `anchor` field (when present) carries the SAID of an IEL/SEL event being anchored cross-chain — see §Anchor on Rot and Ror below. `Rec`/`Dec`/`Cnt` are anchor-forbidden by design (single-purpose semantics; see §Anchor on Rot and Ror). `sort_priority` is used by the merge engine for deterministic ordering of events at the same serial.
+The `anchor` field (when present) carries the SAID of an IEL/SEL event being anchored cross-chain — see §Anchor on Rot and Ror below. `Rec`/`Dec` are anchor-forbidden by design (single-purpose semantics; see §Anchor on Rot and Ror). `sort_priority` is used by the merge engine for deterministic ordering of events at the same serial.
 
 ### Authorization model
 
@@ -61,7 +58,7 @@ The "authorization" column names which signature(s) the verifier requires for th
 - **Dip** has the same submit-time authorization as Icp (signed by the declared `publicKey`). The Dip-specific delegation surface is detailed in §Dip delegation below.
 - **Rot** is signed by the new `publicKey` it reveals. The verifier checks `Blake3(publicKey) == prev_establishment.rotationHash`, then verifies the signature against `publicKey`. `rotationHash` on `Rot` commits the *next* rotation key.
 - **Ixn** is signed by the current active signing key — the `publicKey` of the most recent establishment event in the chain (Icp / Dip / Rot / Rec / Ror).
-- **Rec / Ror / Dec / Cnt** are dual-signed. The "signing" signature is by the key revealed in `publicKey` (preimage of the prior establishment's `rotationHash`); the "recovery" signature is by the key revealed in `recoveryKey` (preimage of the prior establishment's `recoveryHash`). Both signatures must verify, and both digest commitments must match. This is the privileged primitive — exercising both the rotation key and the recovery key together proves dual control.
+- **Rec / Ror / Dec** are dual-signed. The "signing" signature is by the key revealed in `publicKey` (preimage of the prior establishment's `rotationHash`); the "recovery" signature is by the key revealed in `recoveryKey` (preimage of the prior establishment's `recoveryHash`). Both signatures must verify, and both digest commitments must match. This is the privileged primitive — exercising both the rotation key and the recovery key together proves dual control.
 
 ### Dip delegation
 
@@ -73,11 +70,11 @@ The single-arg open form (`Delegated(delegator)`, not `Delegated(delegator, dele
 
 `Rot.anchor` and `Ror.anchor` are optional fields used for cross-chain anchoring of tier-2 and tier-3 IEL/SEL events per [../../../../protocol-doctrine.md §Anchor Tier Elevation](../../../../protocol-doctrine.md#anchor-tier-elevation). KEL itself does not consume these anchors during its own verification walk — they are read by IEL/SEL verifiers cross-chain when evaluating policy satisfaction at elevated tiers. Anchor format on `Rot`/`Ror` is identical to `Ixn.anchor`: a single `Option<Digest256>` referencing the SAID of the anchored IEL/SEL event.
 
-`Rec`, `Dec`, and `Cnt` are anchor-forbidden by design. `Rec`'s role is divergence resolution (archival); `Dec`/`Cnt` end the chain. The protocol does not conflate event semantics — anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery or terminal primitives. Each event kind carries one explicit purpose; operators compose them rather than combining behaviors in a single event.
+`Rec` and `Dec` are anchor-forbidden by design. `Rec`'s role is divergence resolution (archival); `Dec` ends the chain. The protocol does not conflate event semantics — anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery or terminal primitives. Each event kind carries one explicit purpose; operators compose them rather than combining behaviors in a single event.
 
 ### Recovery-key revelation
 
-`Rec` / `Ror` / `Dec` / `Cnt` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events must be resolved by `Cnt` (contest), not `Rec` (recovery). The merge engine surfaces this via `KelMergeResult::ContestRequired` (see [event-log.md](event-log.md#contest-cnt) for the trigger).
+`Rec` / `Ror` / `Dec` reveal the `recoveryKey` field. Once revealed in any event on the chain, that recovery key is "spent" — future divergent events cannot be resolved via `Rec` against the spent key. After recovery-key revelation, contested-termination via a non-archiving privileged event (`Ror` or `Dec`) landing in a divergent set is the only protocol path that ends the chain.
 
 `Ror` is the proactive form: an owner who has not been compromised can rotate both keys ahead of the proactive-ROR cap, revoking any future divergent recovery the adversary might attempt with stale key material.
 
@@ -90,22 +87,18 @@ Establishment events (every kind except `Ixn`) commit one or both forward-key di
 | `Icp`, `Dip` | required | required |
 | `Rot` | required | forbidden (Rot doesn't change recovery commitment) |
 | `Rec`, `Ror` | required | required |
-| `Dec`, `Cnt` | forbidden (KEL ends) | forbidden (KEL ends) |
+| `Dec` | forbidden (KEL ends) | forbidden (KEL ends) |
 | `Ixn` | forbidden | forbidden |
 
 The verifier seeds `tracked_rotation_hash` / `tracked_recovery_hash` from inception and updates them on each establishment event. Future revelations are checked against the tracked digest.
 
 ### Proactive-ROR bound
 
-`MAX_NON_REVEALING_EVENTS = MINIMUM_PAGE_SIZE - 2 = 62`. After 62 non-recovery-revealing events (i.e., events that aren't `Rec` / `Ror` / `Dec` / `Cnt`), the next event must reveal the recovery key. The `- 2` headroom accommodates a `[rec, rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page.
+`MAX_NON_REVEALING_EVENTS = MINIMUM_PAGE_SIZE - 2 = 62`. After 62 non-recovery-revealing events (i.e., events that aren't `Rec` / `Ror` / `Dec`), the next event must reveal the recovery key. The `- 2` headroom accommodates a `[rec, rot]` recovery batch fitting in one `MINIMUM_PAGE_SIZE`-bounded page.
 
 This bound caps an adversary's fork to 62 events before they need to satisfy the recovery primitive — which they cannot without the recovery key — and bounds the synchronous archival window during recovery to a single page. The builder auto-inserts `Ror` (upgrading a `Rot`) when the bound is about to be crossed.
 
 KEL's proactive-ROR bound is the structural analog of SEL's evaluation seal: both are privileged-primitive caps that bound how far an adversary can fork before they must satisfy a higher bar (recovery-key revelation on KEL; governance evaluation on SEL). The two reads on `lastSealAdvancingEvent` operate identically — see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded) for the cross-primitive frame, and [../sel/events.md §Evaluation bound](../sel/events.md#evaluation-bound) for the SEL-side instantiation.
-
-### Cnt overrides Dec
-
-See [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) for the doctrinal mechanic (a gossip-delivered `Cnt` with `previous = v_{d-1}.said` lands alongside an existing `Dec` at `v_d`; the chain transitions to contested). On KEL, the auth check for the overriding `Cnt` is the dual-signature requirement against `v_{d-1}`'s `rotationHash` and `recoveryHash` commitments.
 
 ## Typical Chain Shapes
 
@@ -146,20 +139,20 @@ s6  kind=rec  previous=s5a.said,                       ← Rec extends owner's t
 
 The `Rec` extends owner's authentic tip (s5a), not the pre-divergence ancestor. The merge engine walks back from `Rec.previous` to identify the owner's chain; s5b is archived. See [event-log.md](event-log.md#recovery-rec) for the discriminator algorithm and the conditional `Rot` follow-up when the adversary rotated but the owner didn't.
 
-### Contest after recovery-key revelation
+### Contested-termination after recovery-key revelation
 
 ```
 s0..s4   normal chain
-s5_a     ixn extending s_4                                         (operator)
+s5_a     ixn extending s_4                                         (one signing-key holder)
 s5_b     Rec with previous = s_4.said                              (second recovery-key holder)
          — divergence-ancestor-extending shape; discriminator archives s5_a;
            chain recovered, linear, tip = Rec_b at v_5 —
-s5_c     Cnt with previous = s_4.said                              (operator)
+s5_c     Dec with previous = s_4.said                              (first holder)
          — joins Rec_b at v_5; 2-event privileged divergent set;
            chain contested-terminal —
 ```
 
-The chain becomes recovered after `Rec_b` lands (operator's `s5_a` archived), but the recovery key is now revealed — no further `Rec` can succeed. `Cnt` is the operator's only protocol-level path to terminate. `Cnt.previous = s_4.said` (the divergence ancestor `v_{d-1}` at `d = 5`); authorization resolves against `s_4`'s commitments. The operator's `Cnt` is dual-signed under the private keys whose public preimages are committed by `s_4`'s `rotationHash` and `recoveryHash` — both held by the operator. Cnt lands at `v_5 = seal_serial` (Rec_b advanced the seal to v_5); the seal-cap's parent-at-(seal − 1) boundary case admits this (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)). The archived `s5_a` remains in the archive table; `Rec_b` and `Cnt_c` stay in live storage as the divergent set.
+The chain becomes recovered after `Rec_b` lands (`s5_a` archived), but the recovery key is now revealed — no further `Rec` against the spent key can succeed. A non-archiving privileged event (`Dec` or `Ror`) extending `s_4` joins the divergent set at `v_5` and fires privileged-divergence-is-terminal. The construction: `evt.previous = s_4.said` (the divergence ancestor `v_{d-1}` at `d = 5`); authorization resolves against `s_4`'s commitments. The event is dual-signed under the private keys whose public preimages are committed by `s_4`'s `rotationHash` and `recoveryHash`. The event lands at `v_5 = seal_serial` (Rec_b advanced the seal to v_5); the seal-cap's parent-at-(seal − 1) boundary case admits this (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)). The archived `s5_a` remains in the archive table; `Rec_b` and the contesting event stay in live storage as the divergent set.
 
 ### Clean decommission
 
@@ -168,7 +161,7 @@ s0..sN   normal chain
 sN+1     kind=dec   ← owner ends the KEL cleanly; dual-signed (kN + recovery key)
 ```
 
-After `Cnt`, all submissions are rejected. After `Dec`, all submissions are rejected with one exception: a gossip-delivered `Cnt` (with `previous = v_{d-1}.said`, where `v_{d-1}` is `Dec`'s parent) overrides `Dec` and transitions the chain to contested per [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Dec`, all submissions are rejected. The locked-portion bound prevents subsequent repair events targeting the pre-Dec portion, and the frozen-state gate rejects events targeting the post-Dec window. See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
