@@ -17,12 +17,11 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 
 **Seal-advancing vs terminal.** Only `Evl` and `Sea` advance `lastSealAdvancingEvent` (the evaluation seal). `Dec` enforces the seal-cap gate but does not advance it.
 
-**Kinds IEL does not have.** Four deliberate omissions distinguish IEL from KEL/SEL:
+**Kinds IEL does not have.** Three deliberate omissions distinguish IEL from KEL/SEL:
 
 - **No `Upd`** — identity chains carry no "content"; the chain's data is its tracked policy state, mutated only via `Evl`.
 - **No `Est`** — both policies are required at `Icp`. Identity chains have structurally unpredictable prefixes (the inception `nonce` makes the derived prefix unguessable from outside), so they don't need the optional-governance-at-Icp dance that SEL uses for camping defense. SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface.
-- **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence and Contest-Only Resolution](event-log.md#divergence-and-contest-only-resolution).
-- **No `Cnt`** — IEL `Cnt` is structurally redundant under the post-#202 doctrine and is dropped. On a compromised IEL the operator's recourse is a competing `Evl` under the still-current policy, which creates divergence and triggers privileged-divergence-is-terminal (every IEL event is privileged). Forensic owner-attribution after a contested IEL lives in out-of-band channels (operator publishes a signed statement under their KEL). See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
+- **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. On a compromised IEL the operator's recourse is a competing `Evl` under the still-current policy, which creates divergence and triggers contested-terminal; forensic owner-attribution after a contested IEL lives in out-of-band channels (operator publishes a signed statement under their KEL). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
 
 ## Per-Kind Field Rules
 
@@ -45,7 +44,7 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 - **Preserved or evolved** — applies on `Evl`. The field's value either equals the predecessor's (preserved) or differs (evolved); the difference is what the verifier interprets as a policy evolution requiring governance authorization.
 - **Forbidden** — applies on `Sea` and `Dec`. `Sea` is the seal-advance-without-evolution event; `Dec` is terminal and has no forward state to declare. The verifier rejects any `Sea`/`Dec` carrying a value.
 
-This mirrors KEL: `rotationHash` and `recoveryHash` are likewise forbidden on terminal kinds (`Dec`, `Cnt` — KEL still has Cnt) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; `Sea` advances the seal without changing policy; terminal events end the chain and have no forward state to declare.
+This mirrors KEL: `rotationHash` and `recoveryHash` are likewise forbidden on the terminal kind (`Dec`) because the KEL ends — see [../kel/events.md §Forward-key commitments](../kel/events.md#forward-key-commitments). The doctrinal frame: the chain's tracked policy state lives in the verifier's branch state, advanced by `Icp`/`Evl`; `Sea` advances the seal without changing policy; terminal events end the chain and have no forward state to declare.
 
 (No `content` field on any kind. IEL events do not carry content.)
 
@@ -166,7 +165,7 @@ Each submission is a linear-chain extension on its submitting node's local state
 
 The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
 
-**Operator recourse on IEL is via competing Evl**, not Cnt (IEL has no Cnt — see [§Kinds IEL does not have](#event-kinds) above). The forensic "this IEL was compromised" attribution lives in out-of-band channels (a signed statement under the operator's KEL); the in-band signal is "the IEL went divergent → contested-terminal at v_5."
+**Operator recourse on IEL is via competing Evl.** The forensic "this IEL was compromised" attribution lives in out-of-band channels (a signed statement under the operator's KEL); the in-band signal is "the IEL went divergent → contested-terminal at v_5."
 
 ### Clean decommission
 

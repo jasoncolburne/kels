@@ -16,9 +16,9 @@ All cases below depend on these invariants:
 
 4. **No retroactive poisoning**: every policy referenced as `authPolicy` or `governancePolicy` MUST have `immune: true`. Both submit and verify enforce. Past evaluations stay satisfied by construction. See [event-log.md §Evaluation Seal and Anchor Non-Poisonability](event-log.md#evaluation-seal-and-anchor-non-poisonability).
 
-5. **No Cnt kind, no contested-state distinct from divergent**: divergence on IEL is contested-terminal directly (every IEL event is privileged → privileged-divergence-is-terminal fires immediately). There is no protocol-level termination event; operator recourse on a compromised IEL is via competing `Evl` which itself produces the terminating divergent set. See [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal).
+5. **Contested-state coincides with divergent state**: divergence on IEL is contested-terminal directly (every IEL event is privileged → privileged-divergence-is-terminal fires immediately). Operator recourse on a compromised IEL is via competing `Evl` which itself produces the terminating divergent set.
 
-These invariants are what let IEL ship without Rpr, Cnt, or an archival path.
+These invariants are what let IEL ship without `Rpr` or an archival path.
 
 ## IEL States
 
@@ -26,11 +26,11 @@ These invariants are what let IEL ship without Rpr, Cnt, or an archival path.
 |-------|-------------|
 | **Empty** | No events for this prefix. |
 | **Active** | Linear, non-divergent, no terminal event. |
-| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Dec` (clean termination) is admissible (IEL has no Cnt — see [event-log.md §Why no Rpr (and no Cnt)](event-log.md#why-no-rpr-and-no-cnt)). |
+| **Active, sealed** | Sub-state of Active where the submitter's view lands at-or-before `lastSealAdvancingEvent` (a governance-authorized party has advanced the seal past the submitter). Non-terminal `Evl`/`Sea` submissions return `ContestRequired`; only `Dec` (clean termination) is admissible. |
 | **Contested (= Divergent)** | Chain shape with 2 events at serial `d`; contested-terminal by privileged-divergence-is-terminal (every IEL event is privileged). Both branches preserved as forensic record. All submissions rejected with `ContestedIel`. On IEL these are the same state — `is_contested ⇔ is_divergent`. |
-| **Decommissioned** | `Dec` present, permanently frozen. |
+| **Decommissioned** | Exactly one `Dec`, ending a clean chain. Permanently frozen. |
 
-There is **no Repaired state** — IEL has no Rpr. Contested and Divergent collapse into one state — IEL has no Cnt.
+There is **no Repaired state** — IEL has no `Rpr`. Contested and Divergent are the same state on IEL since every IEL event is privileged.
 
 ## Local Submissions Matrix
 
@@ -48,9 +48,9 @@ What happens when a client submits events to the submit handler on a single node
 
 - **`Sea` shape constraints** — parent must not be `Icp`/`Sea`/`Dec`. See [events.md §Sea](events.md).
 - **`Dec` on Active or Active, sealed** — Dec terminates the chain rather than extending it; routes to decommission regardless of seal position.
-- **Overlap creates Contested** — a non-Dec event chaining from earlier than the linear tip creates a 2-event divergent set at `v_d`; privileged-divergence-is-terminal fires immediately, transitioning the chain to contested-terminal. There is no recoverable intermediate state — IEL has no Cnt, Rpr, or repair branch.
+- **Overlap creates Contested** — a non-Dec event chaining from earlier than the linear tip creates a 2-event divergent set at `v_d`; privileged-divergence-is-terminal fires immediately, transitioning the chain to contested-terminal. There is no recoverable intermediate state — IEL has no `Rpr`.
 - **Contested (= Divergent) IEL → `ContestedIel` everywhere** — contested-terminal accepts no further events of any kind. There is no upgrade path because there's no non-privileged-divergent state to upgrade from on IEL (every IEL event is privileged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
-- **Decommissioned IEL → `IelDecommissioned` for every kind** — no Cnt-overrides-Dec carve-out (post-#202: IEL has no Cnt). See [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [../../../../analysis/protocol-attack-surface.md §Cnt-Dec Race Convergence](../../../../analysis/protocol-attack-surface.md#cnt-dec-race-convergence) for the federation-race trade-off.
+- **Decommissioned IEL → `IelDecommissioned` for every kind.** Dec is terminal; the locked-portion bound rejects any subsequent submission targeting the locked portion.
 
 ### Batch submissions
 
@@ -60,7 +60,7 @@ The submit handler treats a batch atomically:
 - **`[Icp]`** — chain inception. Standalone batch is fine (unlike SEL, which requires `[Icp, Upd]`). IEL Icp is itself policy-enforced (anchored under declared `governancePolicy`).
 - **`[Icp, Evl]`** also valid — inception with immediate first evolution. (Icp + governance step in same batch.)
 
-There is no `[..., Rpr]` or `[..., Cnt]` batch — IEL has neither kind.
+There is no `[..., Rpr]` batch — IEL has no `Rpr` kind.
 
 ## Gossip Sync
 
@@ -81,10 +81,10 @@ Each cell describes what happens when gossip syncs a chain from a source node (r
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns.
-- **Decommissioned → Contested sink** — contested-terminal sink rejects every gossip-delivered event including the source's `Dec` with `ContestedIel`. Effective SAIDs converge on `hash("contested:{prefix}")` for the sink; the decommissioned source's effective SAID is `Dec.said`, which does not converge — accepted as the federation-race-split-brain cost per [../../../../analysis/protocol-attack-surface.md §Cnt-Dec Race Convergence](../../../../analysis/protocol-attack-surface.md#cnt-dec-race-convergence). The contested-terminal sink is the more conservative state; the source needs gossip from a contested peer to converge.
+- **Decommissioned → Contested sink** — contested-terminal sink rejects every gossip-delivered event including the source's `Dec` with `ContestedIel`. Effective SAIDs converge on `hash("contested:{prefix}")` for the sink; the decommissioned source's effective SAID is `Dec.said`, which does not converge — accepted as the federation-race-split-brain cost ([../../../../analysis/protocol-attack-surface.md §Dec-vs-divergence split-brain](../../../../analysis/protocol-attack-surface.md#dec-vs-divergence-split-brain)). The contested-terminal sink is the more conservative state; the source needs gossip from a contested peer to converge.
 - **Contested → Contested sink** — effective SAIDs match by construction (both produce `hash("contested:{prefix}")` since IEL contested-state derives from divergence shape); full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
-The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no Rpr-driven archival, and Contested collapses with Divergent (no Cnt to mark a distinct contested-via-explicit-termination state).
+The matrix is smaller than SEL's because IEL's gossip layer doesn't have a Repaired state — there's no `Rpr`-driven archival. Contested coincides with Divergent on IEL since every IEL event is privileged.
 
 ### Effective SAID convergence
 
@@ -94,13 +94,13 @@ All nodes must eventually agree on the effective SAID for each prefix.
 |-------|---------------|------------|
 | **Active** | Tip event SAID | ✓ (identical chains after gossip) |
 | **Contested (= Divergent)** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (covers all divergent-shape chains; IEL sets `is_contested = true` whenever it observes a divergent set, so the same value applies regardless of which fork events each node has) |
-| **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes; the federation-race split-brain trade-off — Dec-first nodes diverge from contested-first nodes — is accepted per [../../../../analysis/protocol-attack-surface.md §Cnt-Dec Race Convergence](../../../../analysis/protocol-attack-surface.md#cnt-dec-race-convergence)) |
+| **Decommissioned** | `Dec` event SAID | ✓ (identical chains across all Dec-first nodes; the federation-race split-brain — Dec-first nodes diverge from contested-first nodes — is an accepted operational cost; see [../../../../analysis/protocol-attack-surface.md §Dec-vs-divergence split-brain](../../../../analysis/protocol-attack-surface.md#dec-vs-divergence-split-brain)) |
 
 ## Edge Cases
 
 ### 1. Two governance-authorized parties race a legitimate Evl
 
-Both submit different `Evl` events at v3 within the gossip-propagation window. Each is governance-authorized; neither is "the adversary." Both reach storage at different nodes. Gossip propagates; nodes converge on contested (= divergent) state. The chain terminates structurally — no Cnt is needed (IEL has none); the operator re-incepts under a new prefix.
+Both submit different `Evl` events at v3 within the gossip-propagation window. Each is governance-authorized; neither is "the adversary." Both reach storage at different nodes. Gossip propagates; nodes converge on contested (= divergent) state. The chain terminates structurally; the operator re-incepts under a new prefix.
 
 ```
 Pre-state (linear at v_2, replicated to nodes A and B):
@@ -214,9 +214,9 @@ Cross-node forensic divergence is acceptable; all nodes converge on the
 same effective SAID for the contested state.
 ```
 
-### 5. Concurrent Evl + Dec at v_d (Cnt-Dec split-brain)
+### 5. Concurrent Evl + Dec at v_d (Dec-vs-divergence split-brain)
 
-Two governance-authorized parties submit terminal-or-near-terminal events to different nodes at v_d: party 1 (the operator) submits `Dec` (clean retirement); party 2 (a second governance-authorized party) submits `Evl` extending the same parent. The 2-event divergent set forms on whichever node receives the second event via gossip. On the operator's node, Dec lands first and decommissions the chain; the gossip-delivered Evl is then rejected by the `IelDecommissioned` gate (no Cnt-overrides-Dec carve-out — post-#202 IEL has no Cnt). On the second party's node, Evl lands first as a clean append; gossip-delivered Dec arrives and creates an overlap, triggering contested-terminal at v_d via the overlap path.
+Two governance-authorized parties submit terminal-or-near-terminal events to different nodes at v_d: party 1 (the operator) submits `Dec` (clean retirement); party 2 (a second governance-authorized party) submits `Evl` extending the same parent. The 2-event divergent set forms on whichever node receives the second event via gossip. On the operator's node, Dec lands first and decommissions the chain; the gossip-delivered Evl is then rejected by the `IelDecommissioned` gate. On the second party's node, Evl lands first as a clean append; gossip-delivered Dec arrives and creates an overlap, triggering contested-terminal at v_d via the overlap path.
 
 ```
 Pre-state (linear at v_{d-1}):
@@ -244,11 +244,11 @@ Gossip propagates:
   Effective SAIDs:
     effective_said(A) = Dec.said
     effective_said(B) = hash_effective_said("contested:{prefix}")
-    A ≠ B → federation-race split-brain, accepted as cost per
-    [../../../../analysis/protocol-attack-surface.md §Cnt-Dec Race Convergence](../../../../analysis/protocol-attack-surface.md#cnt-dec-race-convergence).
+    A ≠ B → federation-race split-brain, accepted as cost; see
+    [../../../../analysis/protocol-attack-surface.md §Dec-vs-divergence split-brain](../../../../analysis/protocol-attack-surface.md#dec-vs-divergence-split-brain).
 ```
 
-Mitigation is operator-coordinated submission ordering (multi-party-governance synchronization, per [event-log.md §Multi-Party Governance Synchronization](event-log.md#multi-party-governance-synchronization)) — the same mechanism that bounds Evl-Evl races. The pre-#202 design used a Cnt-overrides-Dec carve-out to converge both nodes on `hash_effective_said("contested:{prefix}")`; the post-#202 doctrine drops that complexity in exchange for the federation-race trade-off documented above.
+Mitigation is operator-coordinated submission ordering (multi-party-governance synchronization, per [event-log.md §Multi-Party Governance Synchronization](event-log.md#multi-party-governance-synchronization)) — the same mechanism that bounds Evl-Evl races.
 
 ## References
 

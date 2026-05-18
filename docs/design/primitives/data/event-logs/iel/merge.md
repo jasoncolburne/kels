@@ -13,7 +13,7 @@ The submit handler integrates new events into an existing IEL while handling:
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
-**There is no `Rpr` or `Cnt` kind on IEL** (see [event-log.md §Why no Rpr (and no Cnt)](event-log.md#why-no-rpr-and-no-cnt) and [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)). Divergence is preserved as data and is structurally terminal: the privileged-divergence-is-terminal rule fires immediately on any divergent set (every IEL event is privileged), and the chain is frozen at the divergent serial with no protocol-level repair path. Operator recourse on a compromised IEL is via competing `Evl`, which itself produces the divergence that terminates the chain.
+**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergence is preserved as data and is structurally terminal: the privileged-divergence-is-terminal rule fires immediately on any divergent set (every IEL event is privileged), and the chain is frozen at the divergent serial with no protocol-level repair path. Operator recourse on a compromised IEL is via competing `Evl`, which itself produces the divergence that terminates the chain.
 
 ## Merge Outcome
 
@@ -88,13 +88,11 @@ Before routing, check whether the chain is already terminal:
 if chain is divergent      → reject ContestedIel
                              (every IEL event is privileged; any divergent set on
                               IEL fires the privileged-divergence-is-terminal rule.
-                              IEL has no Cnt kind — divergence is the contested-state
-                              trigger structurally, not via a Cnt event landing.)
+                              Divergence is the contested-state trigger structurally —
+                              every IEL event is privileged.)
 if chain has any Dec event → reject IelDecommissioned
-                             (no Cnt-overrides-Dec carve-out on IEL — see
-                              [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)
-                              and [../../../../analysis/protocol-attack-surface.md §Cnt-Dec Race Convergence](../../../../analysis/protocol-attack-surface.md#cnt-dec-race-convergence)
-                              for the federation-race trade-off.)
+                             (Dec is terminal; the locked-portion bound rejects any
+                              subsequent repair-event targeting the locked portion.)
 ```
 
 These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
@@ -126,11 +124,11 @@ else → normal append
 
 `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
 
-Note the absence of a repair or contest branch — IEL has no `Rpr` or `Cnt` kind. Divergent IEL is contested-terminal directly via the overlap path; there is no recoverable intermediate state and no protocol-level termination event. Operator recourse on a compromised IEL is via competing `Evl` (which falls through to the overlap path on the node that hadn't yet observed the adversary's event, then creates the divergent set once both events are gossip-merged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly via the overlap path; there is no recoverable intermediate state. Operator recourse on a compromised IEL is via competing `Evl` (which falls through to the overlap path on the node that hadn't yet observed the adversary's event, then creates the divergent set once both events are gossip-merged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
 
 ### 5. Decommission Path
 
-Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. All future submissions return `IelDecommissioned` — no carve-out (the post-#202 doctrine removes the prior Cnt-overrides-Dec exception, since IEL has no Cnt; see [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)).
+Detected when any batch event has `kind = Dec`. Inserts the batch; no archival. Marks chain as decommissioned. All future submissions return `IelDecommissioned`.
 
 ### 6. Normal Append (Evl / Sea)
 
@@ -205,7 +203,7 @@ After step 3 the receiver's chain mirrors the sender's exactly; both nodes conve
 
 ## References
 
-- [event-log.md](event-log.md) — Chain lifecycle (divergence is contested-terminal directly; no Rpr or Cnt).
+- [event-log.md](event-log.md) — Chain lifecycle (divergence is contested-terminal directly; no Rpr).
 - [reconciliation.md](reconciliation.md) — Multi-node correctness proof matrix.
 - [verification.md](verification.md) — `IelVerifier` algorithm.
 - [events.md](events.md) — Per-kind reference.

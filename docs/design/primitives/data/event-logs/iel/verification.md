@@ -109,7 +109,7 @@ Policy state is **branch-tracked**. Two fields:
 - `trackedGovernancePolicy`
   - *Seeded by* `Icp.governancePolicy` after the immunity check AND after the verifier confirms `Icp.said` is anchored under the declared policy (the self-endorsement check).
   - *Updated by* any authorized `Evl` carrying a new `governancePolicy`, subject to the immunity check.
-  - *Consumed by* every IEL event's authorization gate plus SEL `Sea`/`Rpr`/`Cnt`/`Dec` via `ielEvent` binding.
+  - *Consumed by* every IEL event's authorization gate plus SEL `Sea`/`Rpr`/`Dec` via `ielEvent` binding.
 
 **Immunity check.** Whenever `trackedAuthPolicy` or `trackedGovernancePolicy` is seeded or updated, the verifier fetches the referenced policy and confirms `immune: true`. A non-immune policy referenced as either is a structural error; the chain is rejected. Mirrors the merge-time check (see [merge.md](merge.md#1-structural-and-authorization-validation)); both layers enforce because the verifier processes data from any source (gossip, peer pulls, restored backups, bootstrap) and cannot trust that the originating node enforced it.
 
@@ -126,7 +126,7 @@ The verifier's terminal-state-determination rule on IEL is structural:
 
 ### Contested-state derivation
 
-On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. There is no Cnt event on IEL (see [event-log.md §Why no Rpr (and no Cnt)](event-log.md#why-no-rpr-and-no-cnt) and [../../../../protocol-doctrine.md §IEL repair-event absence](../../../../protocol-doctrine.md#privileged-divergence-is-terminal)), so the verifier sets `is_contested = true` whenever it observes a divergent set, not in response to a Cnt-kind event landing. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set can be `is_divergent` without being `is_contested` until a privileged event upgrades it.
+On IEL, the contested chain state is derived structurally from divergence: `is_contested ⇔ is_divergent`. Every IEL event is privileged, so the verifier sets `is_contested = true` whenever it observes a divergent set. Both accessors are exposed for cross-primitive API symmetry with KEL and SEL — `is_contested()` wraps `is_divergent()` on IEL. On KEL and SEL the two diverge: a non-privileged divergent set is `is_divergent` without being `is_contested` until a non-archiving privileged event joins via the upgrade rule.
 
 The handler-level rejection on contested/decommissioned chains is a separate seam that prevents new submits; this verifier-level mechanism handles events that reach the verifier some other way (gossip-pulled chains where the local node hadn't yet observed the terminal, resume from a stored chain that contains a terminal).
 
@@ -195,7 +195,7 @@ Note: There is no content-preservation rule (IEL has no `content` field). There 
 Verification does NOT fail on divergence. Instead:
 - Divergence is detected and tracked in the `IelVerification` token (`is_divergent()`, `divergenceAncestor()`, `is_contested()` — all equivalent on IEL).
 - Both branches of a divergent chain are verified independently (the verifier forks `BranchState` per branch).
-- Divergence is contested-terminal on IEL by the privileged-divergence-is-terminal rule (every IEL event is privileged); there is no `Rpr` or `Cnt` resolver kind. The chain stays divergent forever as forensic record; the operator's recourse is reincept under a new prefix. See [merge.md §Terminal-State Gate](merge.md#2-terminal-state-gate).
+- Divergence is contested-terminal on IEL by the privileged-divergence-is-terminal rule (every IEL event is privileged); there is no `Rpr` to resolve it. The chain stays divergent forever as forensic record; the operator's recourse is reincept under a new prefix. See [merge.md §Terminal-State Gate](merge.md#2-terminal-state-gate).
 
 ## Streaming
 
