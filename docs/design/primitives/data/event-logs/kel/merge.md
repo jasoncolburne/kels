@@ -9,7 +9,7 @@ The merge operation integrates new events into an existing KEL while handling:
 - Idempotent resubmissions
 - Divergence detection (conflicting events at the same generation)
 - Recovery from divergence (via `Rec`)
-- Contest (`Cnt`) — extends `v_{tip-1}` with the dual signature against the keys committed at `v_{tip-1}` (rotation-key preimage AND recovery-key preimage). See [event-log.md §Operator recourse against signing-key-only Rot takeover](event-log.md#operator-recourse-against-signing-key-only-rot-takeover).
+- Contest (`Cnt`) — `Cnt.previous = v_{d-1}.said`; Cnt lands at `v_d` extending the divergence ancestor. Dual-signed against `v_{d-1}`'s commitments (rotation-key preimage AND recovery-key preimage). See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics) and [event-log.md §Operator recourse against signing-key-only Rot takeover](event-log.md#operator-recourse-against-signing-key-only-rot-takeover).
 
 Events are linked by their `previous` SAID field. Generation is the position in the chain (inception is generation 0), computed by counting `previous` links back to inception.
 
@@ -103,7 +103,7 @@ insert events
 return Accepted
 ```
 
-`Cnt` cannot reach this branch: `Cnt.previous = v_{tip-1}.said` (not `tip.said`), so it does not chain from the current tip and routing sends it to §6 Full Path (Overlap subbranch).
+`Cnt` cannot reach this branch: `Cnt.previous = v_{d-1}.said` (not `tip.said` — see [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics)), so it does not chain from the current tip and routing sends it to §6 Full Path (Overlap subbranch).
 
 ### 5. New KEL
 
@@ -144,8 +144,8 @@ If the `KelVerification` shows the KEL is already divergent, the merge engine se
 if batch contains a cnt event:
     if cnt is not the last event: return Error("Contest must be last")
     verify cnt's parent shape: cnt.previous = v_{d-1}.said
-        (cnt joins the existing divergent set at v_d as a 3rd event via the upgrade rule;
-         the new branch is single-event by freeze-on-divergence — its v_{tip-1} is v_{d-1})
+        (cnt extends the divergence ancestor and joins the existing divergent set
+         at v_d as a 3rd event via the upgrade rule)
     continue KEL verification with submitted events
     check proactive ROR compliance
     insert cnt as the 3rd event at v_d

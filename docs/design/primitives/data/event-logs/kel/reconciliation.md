@@ -46,7 +46,7 @@ What happens when a client submits events to the merge engine on a single node.
 
 ### Notes on cell routing
 
-- **`Cnt` on Active** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip` with the existing tip; privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Active** — Cnt with `previous = v_{d-1}.said` creates fresh divergence at `v_d` (Cnt and the existing event at `v_d` form a 2-event divergent set); privileged-divergence-is-terminal fires. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent / Divergent (recovery revealed)** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **Active, sealed** — Handled algorithmically by §6c Overlap routing (`existing events reveal recovery → non-Cnt batch → ContestRequired`) rather than by a state precondition; structural behavior matches IEL/SEL. `Cnt` remains admissible via the parent-at-(seal − 1) carve-out (see [event-log.md §Seal and Key Non-Poisonability](event-log.md#seal-and-key-non-poisonability)).
 - **`Divergent (recovery revealed)` → `ContestRequired` for non-Cnt** — once the recovery key is revealed in a divergent branch (via `Rec`/`Ror`/`Dec`/`Cnt`), only Cnt is admissible. See [event-log.md §Algorithmic trigger — `ContestRequired`](event-log.md#algorithmic-trigger--contestrequired).
@@ -145,7 +145,8 @@ Adversary submits rec with previous = s_N.said (and dual-sig satisfied):
 Effect: chain stays linear; seal advances to N+1; recovery key now spent for
 this chain. Any future divergence at serial ≤ N+1 triggers ContestRequired
 because the seal-cap forbids forking at-or-before the seal. Owner's only
-recourse is Cnt extending v_{tip-1} on the post-rec linear chain.
+recourse is Cnt with previous = v_N.said (the parent of the new rec-tip at
+v_{N+1}) on the post-rec linear chain; Cnt lands at v_{N+1}.
 ```
 
 ### 2. Multiple adversary injections across nodes
@@ -198,9 +199,10 @@ Client detects via find_missing_owner_events that owner_a, owner_b
 no longer exist server-side (event_exists returns false). Owner bundles
 [owner_a, owner_b, cnt] as atomic batch and submits to server. The
 missing events are verified server-side and re-established under the
-batch's atomic transaction; cnt extends v_{tip-1} of the post-batch
-linear chain, joins the existing tip as a 2-event privileged divergent
-set → privileged-divergence-is-terminal fires → chain becomes contested-
+batch's atomic transaction. Post-batch the chain is linear with tip at
+owner_b (v_{d+1}); cnt with previous = owner_a.said (v_d) lands at
+v_{d+1} as sibling of owner_b → 2-event privileged divergent set →
+privileged-divergence-is-terminal fires → chain becomes contested-
 terminal. Owner's lost work is preserved as forensic record.
 ```
 
@@ -260,7 +262,7 @@ window timing).
 
 Two parties submit terminal events onto a chain: the operator submits `Dec` (clean retirement) to one node; a second authority-holder submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
-**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
+**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. The Cnt has `previous = v_{d-1}.said = Dec.previous` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` alongside Dec.
 
 ```
 Pre-Cnt state on both nodes (Dec landed on A, gossiped to B):
@@ -277,7 +279,7 @@ After gossip merges:
                  └─ cnt @ v_d ┴── contested-terminal @ v_d
 ```
 
-**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said`; Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
+**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. The Cnt has `previous = v_{d-1}.said` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
 
 ```
 Pre-state on both nodes (linear at v_d):

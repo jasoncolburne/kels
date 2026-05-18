@@ -178,9 +178,9 @@ Cnt is a privileged event whose presence in the divergent set triggers contested
 
 ### Cnt parent resolution
 
-Cnt's parent rule (`previous = v_{tip-1}.said`) resolves uniformly across linear and divergent chain shapes — see [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked diagrams. KEL-specific: on a divergent chain, the pre-existing branch may have extended past `v_d` up to the proactive-ROR cap; Cnt's parent rule selects `v_{d-1}` for cross-node uniformity.
+`Cnt.previous = v_{d-1}.said`; `Cnt.serial = d`. Cnt extends the divergence ancestor and lands at `v_d`. The locked-portion bound prevents `Cnt.previous` from being in the chain's locked portion; on KEL the seal-cap enforces this. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked diagrams. `v_{d-1}` is the unique parent at `Cnt.serial − 1` shared across all nodes by chain validity (it lands cleanly before any divergence), making Cnt's parent shape cross-node-validatable regardless of which divergent contents each node observed.
 
-**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches the generation at `v_d`, branch state holds `v_{tip-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{tip-1}` was processed and not yet consumed by `v_tip`'s establishment update). Cnt and the existing tip at `v_d` are processed as siblings of the same generation, both consuming `v_{tip-1}`'s commitments — Cnt via its dual-signature check, the tip via its own establishment check. No new cache slot in branch state.
+**Implementation note.** Cnt is processed inline with the chain walk. When the walk reaches `v_d`, branch state holds `v_{d-1}`'s commitments (`rotationHash` and `recoveryHash`, set when `v_{d-1}` was processed and not yet consumed by `v_d`'s establishment update). Cnt and the existing event(s) at `v_d` are processed as siblings of the same generation, both consuming `v_{d-1}`'s commitments — Cnt via dual-signature check, the existing tip via its own establishment check. No new cache slot in branch state.
 
 ### Upgrade rule
 
@@ -190,7 +190,7 @@ When a node has a non-privileged divergent set at `v_d` (max 2 events, e.g., `Ro
 
 ### Cnt authorization (HARD)
 
-Cnt's dual-signature is verified against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotationHash`) + recovery key (preimage of `v_{tip-1}`'s `recoveryHash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
+Cnt's dual-signature is verified against `v_{d-1}`'s commitments: signing key (preimage of `v_{d-1}`'s `rotationHash`) + recovery key (preimage of `v_{d-1}`'s `recoveryHash`). Authorization failure is HARD — a Cnt whose signatures don't verify is rejected by the verifier; the chain stays at its prior state.
 
 ## Event Types and Their Signatures
 

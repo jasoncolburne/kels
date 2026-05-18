@@ -51,7 +51,7 @@ KEL tracks two distinct concepts that share the SAID-of-recent-event pattern:
 
 `lastSealAdvancingEvent` plays the same structural role across all three primitives — see [../iel/event-log.md §Evaluation Seal and Anchor Non-Poisonability](../iel/event-log.md#evaluation-seal-and-anchor-non-poisonability) for the IEL-side discussion. A privileged-non-terminal primitive defines a forward-only watermark per chain; prior advancements are immutable.
 
-The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt extending `v_{tip-1}` lands at `v_tip = seal_serial`, with `parent_serial = seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. The land-serial framing makes this work — Cnt on a Rec/Ror-tipped KEL is structurally permitted.
+The seal-cap rule admits the parent-at-(seal − 1) boundary on KEL when the chain's tip is itself the most recent seal-advancing event (a `Rec`- or `Ror`-tipped chain): a Cnt landing at `v_d = seal_serial` has `Cnt.previous` at `seal_serial − 1`. The land-serial equals the seal; the parent-serial is one below. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the locked-portion bound that admits this shape.
 
 ## Divergence and Freeze
 
@@ -226,22 +226,20 @@ Contest is the terminal state for authority conflict — the recovery key has be
 
 ### Cnt mechanics
 
-`Cnt.previous = v_{tip-1}.said` — a unifying parent rule across linear and divergent chain shapes. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the canonical statement and worked scenarios.
+`Cnt.previous = v_{d-1}.said`; `Cnt.serial = d`. Cnt lands at `v_d` extending the divergence ancestor. The locked-portion bound — `Cnt.previous` must not be in the chain's locked portion — is enforced on KEL by the seal-cap. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation and worked scenarios.
 
-KEL-specific notes:
-
-- **On a linear chain**, Cnt creates fresh divergence at `v_d` (the existing tip's serial).
+- **On a linear chain**, Cnt and the existing event at `v_d` form a 2-event divergent set; `v_{d-1}` becomes the divergence ancestor.
 - **On a divergent chain**, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. The pre-existing branch may have extended past `v_d` before divergence was detected — up to ~62 events per the proactive-ROR cap.
 
-Cnt is privileged (recovery-revealing). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal. There is no separate "explicit Cnt" handling: Cnt is just another privileged event that triggers contested via the divergence rule.
+Cnt is privileged (recovery-revealing). Its presence in any divergent set triggers privileged-divergence-is-terminal — the chain becomes contested-terminal.
 
-**Distinction from Rec.** Cnt and the divergence-ancestor-extending Rec shape (Rec extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. The divergence-ancestor-extending Rec archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rec as the new `v_d` event (recovery; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` creates a contest; submitting `Rec` with `previous = v_{d-1}.said` creates a divergence-ancestor-extending recovery.
+**Distinction from Rec.** Cnt and the divergence-ancestor-extending Rec share parent shape (`previous = v_{d-1}.said`, lands at `v_d`) but differ in effect. Rec archives the other events at `v_d` via the discriminator (chain recovers, continues with Rec as the new `v_d`). Cnt joins the divergent set without archival (privileged-divergence fires; chain ends).
 
 ### Operator recourse against signing-key-only Rot takeover
 
-Cnt's authorization is dual-signed against `v_{tip-1}`'s commitments: signing-key preimage of `v_{tip-1}`'s `rotationHash` + recovery-key preimage of `v_{tip-1}`'s `recoveryHash`.
+Cnt's authorization is dual-signed against `v_{d-1}`'s commitments: signing-key preimage of `v_{d-1}`'s `rotationHash` + recovery-key preimage of `v_{d-1}`'s `recoveryHash`.
 
-This authorization choice gives the operator a recourse against signing-key-only Rot takeover. If a second signing-key holder (whose access was acquired via signing-key-only compromise) submits a Rot at `v_N` to take over, the keys committed by `v_{N-1}` are: signing key revealed by the Rot at `v_N` (both parties have it) + recovery key NOT revealed by Rot (only the original holder, who prepared it, has it; recovery is revealed only by `Rec`/`Ror`/`Cnt`/`Dec`). The original holder's dual-sig succeeds; the second signing-key holder's does not. The original holder can submit Cnt, terminate the chain, and reincept under a new prefix.
+This authorization choice gives the operator recourse against signing-key-only Rot takeover. If a second signing-key holder (whose access was acquired via signing-key-only compromise) submits a Rot at `v_N` to take over, the operator's `Cnt` with `previous = v_{N-1}.said` resolves dual-sig against `v_{N-1}`'s commitments. The keys committed by `v_{N-1}` are: signing key revealed by the Rot at `v_N` (both parties have it) + recovery key NOT revealed by Rot (only the original holder, who prepared it, has it; recovery is revealed only by `Rec`/`Ror`/`Cnt`/`Dec`). The original holder's dual-sig succeeds; the second signing-key holder's does not. The original holder can submit Cnt, terminate the chain, and reincept under a new prefix.
 
 ### Algorithmic trigger — `ContestRequired` vs `RecoverRequired`
 
@@ -258,7 +256,7 @@ On a divergent KEL, the merge engine returns one of two error codes depending on
 
 `KeyEventKind::Cnt`:
 - `reveals_recovery_key() = true` (same gate as `Rec`/`Ror`/`Dec`).
-- Dual-signed against `v_{tip-1}`'s commitments: signing key (preimage of `v_{tip-1}`'s `rotationHash`) + recovery key (preimage of `v_{tip-1}`'s `recoveryHash`).
+- Dual-signed against `v_{d-1}`'s commitments: signing key (preimage of `v_{d-1}`'s `rotationHash`) + recovery key (preimage of `v_{d-1}`'s `recoveryHash`).
 
 `KeyEvent::create_contest(previous, publicKey, recoveryKey)` mirrors `create_decommission`. No future-key commitments — KEL ends. See [§Cnt mechanics](#cnt-mechanics) above for `previous` rule and divergence semantics.
 
@@ -273,9 +271,9 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 
 ### Server semantics
 
-- Verify `Cnt`'s structure, dual signatures against `v_{tip-1}`'s commitments (HARD).
+- Verify `Cnt`'s structure, dual signatures against `v_{d-1}`'s commitments (HARD), and the locked-portion bound on `Cnt.previous`.
 - Insert `Cnt`. **No archival** — the KEL itself is the record (existing events preserved alongside Cnt).
-- Cnt's `previous = v_{tip-1}.said` always creates or contributes to a divergent set at the tip's serial. The privileged-divergence rule (Cnt is recovery-revealing → privileged) makes the chain contested-terminal at that point. Both branches' events (and Cnt) remain in storage as forensic record.
+- Cnt's `previous = v_{d-1}.said` always creates or contributes to a divergent set at `v_d`. Cnt is recovery-revealing → privileged → privileged-divergence-is-terminal fires; the chain becomes contested-terminal. Both branches' events (and Cnt) remain in storage as forensic record.
 - Any `Cnt` event in the chain → `is_contested = true`. All future submissions rejected with `ContestedKel`.
 - Effective SAID for a contested KEL: `hash_effective_said("contested:{prefix}")` — deterministic, cross-node consistent.
 
@@ -285,7 +283,7 @@ The symmetry of *intent* — terminal authority assertion — is preserved on bo
 - Pre-flight: pre-flight server-chain re-verification.
 - Bundles any missing events (events the local store has but the server lost — typically because a prior `Rec` archived them server-side) AND any pending events left in flight.
 - Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
-- Resolves authorization via `v_{tip-1}`'s commitments and constructs the dual signature accordingly.
+- Resolves authorization via `v_{d-1}`'s commitments and constructs the dual signature accordingly.
 - Submits `[missing..., pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
 
