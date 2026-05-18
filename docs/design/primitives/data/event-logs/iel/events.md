@@ -21,7 +21,7 @@ For chain lifecycle (states, divergence, decommission, evaluation seal), see [ev
 
 - **No `Upd`** — identity chains carry no "content"; the chain's data is its tracked policy state, mutated only via `Evl`.
 - **No `Est`** — both policies are required at `Icp`. Identity chains have structurally unpredictable prefixes (the inception `nonce` makes the derived prefix unguessable from outside), so they don't need the optional-governance-at-Icp dance that SEL uses for camping defense. SEL `Est` provides camping defense for SEL's well-known-tuple prefix; IEL has no analogous surface.
-- **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. On a compromised IEL the operator's recourse is a competing `Evl` under the still-current policy, which creates divergence and triggers contested-terminal; forensic owner-attribution after a contested IEL lives in out-of-band channels (operator publishes a signed statement under their KEL). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
+- **No `Rpr`** — divergence on IEL is immediately terminal (every IEL event is privileged, so any divergent set fires the privileged-divergence-is-terminal rule). There's no "preserve one branch, archive the other" shape because the protocol cannot adjudicate from chain data when both branches are governance-authorized. See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal) for the structural argument and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise) for the recourse paths.
 
 ## Per-Kind Field Rules
 
@@ -148,24 +148,23 @@ Both events stay in storage forever as forensic record. Operator re-incepts unde
 
 This is intentional: history is encoded in the data. Divergence is accepted as the chain's structural admission that governance is no longer single-authoritative. Termination is the honest answer; there is no `Rpr` to archive one branch in favor of the other (every branch is governance-authorized; the protocol has no grounds to declare one "the" branch).
 
-### Operator recourse against a compromised IEL (competing Evl)
+### Concurrent governance-authorized events producing contested-terminal
 
 ```
 v0..v4   normal linear chain (across the federation)
-v5       kind=evl   previous=v_4.said, authPolicy=A5_adv     ← compromised party's Evl (threshold-compromise),
-                                                              lands at v_5 on adversary's submitting node
-v5'      kind=evl   previous=v_4.said, authPolicy=A5_op      ← operator's competing Evl (still satisfying v_4's
-                                                              tracked governancePolicy), lands at v_5 on
-                                                              operator's submitting node
-    — 2-event divergent set at v_5 once both propagate via gossip: {Evl_adv, Evl_op}.
+v5       kind=evl   previous=v_4.said, authPolicy=A5_p1      ← party 1's Evl (extends v_4 on
+                                                               party 1's submitting node)
+v5'      kind=evl   previous=v_4.said, authPolicy=A5_p2      ← party 2's Evl (extends v_4 on
+                                                               party 2's submitting node)
+    — 2-event divergent set at v_5 once both propagate via gossip: {Evl_p1, Evl_p2}.
       Privileged-divergence-is-terminal fires; chain contested-terminal as of v_5. —
 ```
 
-Each submission is a linear-chain extension on its submitting node's local state at submission time. The compromised party — authority acquired via threshold compromise on the governance policy at `v_4` — submits `Evl_adv` on their node (whose local tip is v_4); `Evl_adv` extends v_4 and lands at v_5 on their node. The operator, observing the unexpected `Evl_adv` arriving via gossip, submits their own competing `Evl_op` under the same `v_4` governance authority (which the operator still satisfies — they were a member of the policy threshold before the compromise). `Evl_op` extends v_4 (= the operator's own pre-gossip tip) and lands at v_5 on the operator's node. Once gossip merges the two events, the divergent set at v_5 forms, privileged-divergence-is-terminal fires, and the chain becomes contested-terminal.
+Each submission is a linear-chain extension on its submitting node's local state at submission time. Two governance-authorized parties — both satisfying the chain's tracked `governancePolicy` at `v_4` — submit `Evl` events concurrently on different nodes. Each `Evl` extends `v_4` and lands at `v_5` on its submitting node. Once gossip merges the two events, the divergent set at v_5 forms, privileged-divergence-is-terminal fires, and the chain becomes contested-terminal.
 
 The structural signature of "race" and "compromise" is identical from the chain's perspective; consumer-side judgment plus out-of-band knowledge is what determines whether to treat this as accidental race or as intentional takeover. Either way, the chain is contested-terminal once the divergent set forms.
 
-**Operator recourse on IEL is via competing Evl.** The forensic "this IEL was compromised" attribution lives in out-of-band channels (a signed statement under the operator's KEL); the in-band signal is "the IEL went divergent → contested-terminal at v_5."
+Operator recourse against compromise — linear governance evolution if the operator still satisfies the policy, or rotating the IEL out of parent policies if the IEL identity itself is compromised — is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise). Forensic "this IEL was compromised" attribution lives out-of-band as a signed statement under the operator's KEL.
 
 ### Clean decommission
 

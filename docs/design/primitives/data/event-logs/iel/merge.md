@@ -13,7 +13,7 @@ The submit handler integrates new events into an existing IEL while handling:
 
 Events are linked by their `previous` SAID. Authority is via the anchoring model — the server does NOT verify signatures on submit; consumers verify when they use the data. Every IEL event is governance-authorized: the chain's `governancePolicy` (declared at `Icp`, evolvable via `Evl`) is the gate for every kind including `Icp` itself. The chain's `authPolicy` is reserved for SEL Upd authorization through `ielEvent` binding (see [../sel/events.md](../sel/events.md)).
 
-**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergence is preserved as data and is structurally terminal: the privileged-divergence-is-terminal rule fires immediately on any divergent set (every IEL event is privileged), and the chain is frozen at the divergent serial with no protocol-level repair path. Operator recourse on a compromised IEL is via competing `Evl`, which itself produces the divergence that terminates the chain.
+**There is no `Rpr` kind on IEL** (see [event-log.md §Why no Rpr](event-log.md#why-no-rpr)). Divergence is preserved as data and is structurally terminal: the privileged-divergence-is-terminal rule fires immediately on any divergent set (every IEL event is privileged), and the chain transitions to Contested at the divergent serial with no protocol-level repair path. Operator recourse against compromise is described in [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ## Merge Outcome
 
@@ -86,13 +86,19 @@ Before routing, check whether the chain is already terminal:
 
 ```
 if chain is divergent      → reject ContestedIel
-                             (every IEL event is privileged; any divergent set on
-                              IEL fires the privileged-divergence-is-terminal rule.
-                              Divergence is the contested-state trigger structurally —
-                              every IEL event is privileged.)
-if chain has any Dec event → reject IelDecommissioned
-                             (Dec is terminal; the locked-portion bound rejects any
-                              subsequent repair-event targeting the locked portion.)
+                             (every IEL event is privileged; any divergent set
+                              on IEL fires privileged-divergence-is-terminal.)
+if chain has any Dec event:
+    if event.previous = v_{d-1}.said AND event.serial = Dec.serial
+       AND event.kind is non-archiving privileged (Evl/Sea/Dec):
+        → accept as divergent extension at Dec's serial via
+          the order-independent divergent transitions rule
+          (see protocol-doctrine.md §Order-independent divergent transitions);
+          chain transitions Decommissioned → Contested.
+    else:
+        → reject IelDecommissioned
+          (Dec is terminal for linear extension; the locked-portion bound
+           rejects any subsequent repair event targeting the locked portion.)
 ```
 
 These checks fire before any other routing, including dedup — terminal state means no further events of any kind. The IEL-specific `is_divergent → ContestedIel` rule reflects that divergent IEL is structurally contested-terminal: every IEL event is governance-authorized, so any divergent set contains a privileged event by definition.
@@ -124,7 +130,7 @@ else → normal append
 
 `Dec` lands only on a linear chain (divergent IEL is contested-terminal per §2).
 
-Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly via the overlap path; there is no recoverable intermediate state. Operator recourse on a compromised IEL is via competing `Evl` (which falls through to the overlap path on the node that hadn't yet observed the adversary's event, then creates the divergent set once both events are gossip-merged). See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal).
+Note the absence of a repair branch — IEL has no `Rpr` kind. Divergent IEL is contested-terminal directly via the overlap path; there is no recoverable intermediate state. See [event-log.md §Divergence is Contested-Terminal](event-log.md#divergence-is-contested-terminal) and [event-log.md §Operator recourse against compromise](event-log.md#operator-recourse-against-compromise).
 
 ### 5. Decommission Path
 
@@ -196,9 +202,9 @@ After step 3 the receiver's chain mirrors the sender's exactly; both nodes conve
 ## Key Invariants
 
 1. **Events are sorted deterministically** — by `(serial, kind_priority, said)`. The SAID tiebreaker has no semantic meaning but ensures identical ordering across all nodes.
-2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored (the chain freezes after — no kind extends past divergence on IEL).
+2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored (the chain is Contested as of that point — no kind extends past divergence on IEL).
 3. **No archival** — no `truncate_and_replace`, no archive table. History is encoded in the data, including divergent branches, forever.
-4. **Terminal states are permanent** — any divergent set (= contested) or any `Dec` in the chain freezes it; no future submissions accepted.
+4. **Contested is fully terminal; Decommissioned admits one divergent extension** — once the chain is Contested, no submission of any kind is accepted. Decommissioned accepts no linear extension; a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested via the order-independent rule (see [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions)).
 5. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 
 ## References
