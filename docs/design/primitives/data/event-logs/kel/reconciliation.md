@@ -24,8 +24,8 @@ These invariants are what make synchronous archival, single-page discriminator w
 | **Active** | Linear chain, latest tip extends cleanly |
 | **Divergent** | Fork detected, no `Rec` yet and no non-archiving privileged event upgrade |
 | **Recovered** | Clean chain after synchronous archival in the merge transaction |
-| **Contested** | Divergent set contains a non-archiving privileged event (`Ror` or `Dec`); permanently frozen |
-| **Decommissioned** | Exactly one `Dec`, ending a clean (linear) chain; permanently frozen |
+| **Contested** | Divergent set contains a non-archiving privileged event (`Ror` or `Dec`); no event of any kind lands |
+| **Decommissioned** | Exactly one `Dec`, ending a clean (linear) chain. Accepts no linear extension; admits a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = Dec.serial` as a divergent extension, transitioning the chain to Contested (order-independent rule) |
 
 "Divergent with recovery revealed" is a sub-state of **Divergent** where a recovery-revealing event exists on one branch since the divergence point. Only a non-archiving privileged event (`Ror`/`Dec`) extending `v_{d-1}` is admissible; non-(Ror/Dec) submissions return `ContestRequired`.
 
@@ -42,7 +42,7 @@ What happens when a client submits events to the merge engine on a single node.
 | **Divergent (recovery revealed)** | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule | `ContestRequired` | `ContestRequired` (linear); extending `v_{d-1}` → Contested via upgrade rule |
 | **Recovered** | Same as Active | Same as Active | Same as Active | Same as Active |
 | **Contested** | `ContestedKel` | `ContestedKel` | `ContestedKel` | `ContestedKel` |
-| **Decommissioned** | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` | `KelDecommissioned` |
+| **Decommissioned** | `KelDecommissioned` * | `KelDecommissioned` * | `KelDecommissioned` * | `KelDecommissioned` * |
 
 ### Notes on cell routing
 
@@ -50,6 +50,7 @@ What happens when a client submits events to the merge engine on a single node.
 - **Contested-state transition (divergent chain)** — A non-archiving privileged event with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule.
 - **Active, sealed** — Non-privileged-revealing extensions return `ContestRequired`. The parent-at-(seal − 1) boundary case admits non-archiving privileged events at `event_serial = seal_serial` to trigger contested-transition; archiving `Rec` is forbidden at the boundary (would erase the seal-defining event).
 - **`Divergent (recovery revealed)` → `ContestRequired` for non-(Ror/Dec)** — once the recovery key is revealed in a divergent branch, only a non-archiving privileged event extending `v_{d-1}` can resolve (by terminating the chain). See [event-log.md §Algorithmic merge-engine triggers](event-log.md#algorithmic-merge-engine-triggers).
+- **\* Decommissioned exception** — a non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension at Dec's serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). Other submissions (including any submission extending Dec's tip or violating the locked-portion bound) are rejected with `KelDecommissioned`.
 
 ### Batch submissions
 
@@ -89,7 +90,7 @@ Each cell describes what happens when gossip syncs a KEL from a source node (row
 ### Notes on cell routing
 
 - **Sink terminal states** (Contested, Decommissioned) — gossip ignored once sink is terminal; the cell shows the error the sink returns.
-- **Source: Contested → Sink: Decommissioned** — Decommissioned sink rejects the gossip-delivered contesting events with `KelDecommissioned`; sink remains decommissioned. The federation-race split-brain (Dec-first nodes diverge from contested-first nodes) is an accepted operational cost (no carve-out for repair events targeting the locked portion).
+- **Source: Contested → Sink: Decommissioned** — Decommissioned sink admits the contesting chain's non-archiving privileged event extending `v_{d-1}` as a divergent extension at Dec's serial per the [order-independent rule](../../../../protocol-doctrine.md#order-independent-divergent-transitions); the chain transitions Decommissioned → Contested. Other events from the contesting chain are rejected by the now-Contested sink. Both nodes converge on `hash("contested:{prefix}")`.
 - **Send-side partitioning** (Source: Divergent, Source: Contested) — the source partitions the chain into sub-batches the sink will accept under its routing rules. See [§Transfer ordering](#transfer-ordering) above and [merge.md §Gossip Send-Side Partitioning](merge.md#gossip-send-side-partitioning-divergent-kels).
 - **Divergent → Divergent sink** — effective SAIDs match by construction; full anti-entropy may reconcile any-missing-branch-events even when SAIDs already match.
 
@@ -103,7 +104,7 @@ All nodes must eventually agree on the effective SAID for each prefix.
 | **Divergent** | `hash_effective_said("divergent:{prefix}")` — deterministic | ✓ (same value regardless of which fork events each node has; avoids wasted anti-entropy sync) |
 | **Recovered** | Tip event SAID | ✓ (identical clean chains) |
 | **Contested** | `hash_effective_said("contested:{prefix}")` — deterministic | ✓ (same value on all nodes regardless of which divergent events each node holds) |
-| **Decommissioned** | `dec` event SAID | ✓ (identical chains across all Dec-first nodes; the federation-race split-brain — Dec-first nodes diverge from contested-first nodes — is an accepted operational cost) |
+| **Decommissioned** | `dec` event SAID | ✓ (identical chains across all Dec-first nodes when no competing event has been submitted). If a competing non-archiving privileged event extending `Dec`'s parent has been submitted to any node, gossip delivery upgrades Dec-first nodes Decommissioned → Contested via the [order-independent rule](../../../../protocol-doctrine.md#order-independent-divergent-transitions); effective SAID becomes `hash("contested:{prefix}")`. |
 
 ## Archival
 
@@ -259,9 +260,9 @@ forensic divergence is acceptable (and unavoidable given the gossip-
 window timing).
 ```
 
-### 6. Dec-vs-divergence split-brain
+### 6. Concurrent Dec + Ror/Dec at v_d (Decommissioned → Contested via order-independent transition)
 
-Two parties submit terminal-or-near-terminal events to different nodes: the operator submits `Dec` (clean retirement) to node A; a second authority-holder submits a non-archiving privileged event (e.g., `Dec` or `Ror`) extending the same parent `v_{d-1}` to node B. On node A, Dec lands first and decommissions the chain; the gossip-delivered competing event is then rejected by the `KelDecommissioned` gate. On node B, the competing event lands first as a clean append; gossip-delivered Dec arrives and creates an overlap, triggering contested-terminal at v_d via the upgrade rule.
+Two parties submit concurrent privileged events extending `v_{d-1}` at the same serial `d` to different nodes: party 1 submits `Dec` (clean retirement); party 2 submits a non-archiving privileged event (e.g., `Ror` or `Dec`) extending the same parent. Each lands as a linear-chain extension on its submitting node — node A becomes Decommissioned, node B becomes Active with the competing event as tip. Gossip then delivers each event to the other node, and the [order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions) rule produces convergence:
 
 ```
 Pre-state (linear at v_{d-1}):
@@ -270,29 +271,31 @@ Pre-state (linear at v_{d-1}):
 
 Concurrent submissions:
 
-  Operator → Node A:           dec.previous = v_{d-1}.said
-                               dec.serial   = d
-  Second holder → Node B:      ror_alt.previous = v_{d-1}.said
-                               ror_alt.serial   = d
+  Party 1 → Node A:           dec.previous     = v_{d-1}.said, dec.serial     = d
+  Party 2 → Node B:           ror_alt.previous = v_{d-1}.said, ror_alt.serial = d
 
 Each event lands as a linear-chain extension on its submitting node.
 
 Gossip propagates:
 
-  Node A receives ror_alt: KelDecommissioned (Dec already on chain).
-    A's final state: ... → v_{d-1} → dec @ v_d  (decommissioned)
+  Node A (Decommissioned) receives ror_alt:
+    ror_alt.previous = v_{d-1}.said matches Dec's parent; order-independent
+    rule accepts ror_alt as a divergent extension at Dec's serial. The chain
+    transitions Decommissioned → Contested.
+    A's final state: ... → v_{d-1} ─┬─ dec     @ v_d ┐
+                                    └─ ror_alt @ v_d ┴── Contested
 
-  Node B receives dec: overlap → contested-terminal at v_d.
+  Node B (Active) receives dec: overlap → Contested at v_d.
     B's final state: ... → v_{d-1} ─┬─ ror_alt @ v_d ┐
-                                    └─ dec     @ v_d ┴── contested
+                                    └─ dec     @ v_d ┴── Contested
 
   Effective SAIDs:
-    effective_said(A) = Dec.said
+    effective_said(A) = hash_effective_said("contested:{prefix}")
     effective_said(B) = hash_effective_said("contested:{prefix}")
-    A ≠ B → federation-race split-brain, accepted as an operational cost.
+    A = B → federation converges.
 ```
 
-Mitigation is operator-coordinated submission ordering — Dec should only be issued via a synchronized path that ensures no concurrent contesting submission is in flight from another authority-holder. Without coordination, the federation can split between Dec-first nodes (decommissioned) and contested-first nodes (contested-terminal). Cross-node forensic divergence is acceptable; the operator's response when the split is detected is to reincept under a new prefix.
+The order-independent rule is what guarantees the convergence. Without it, node A would reject the gossip-arriving ror_alt with `KelDecommissioned` and remain Decommissioned while node B was Contested — federation would fail to converge.
 
 ## References
 

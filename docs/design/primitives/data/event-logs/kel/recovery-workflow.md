@@ -34,7 +34,7 @@ The submit handler eagerly fans out all KEL appends to other registries. If fan-
 
 When a member KEL needs recovery:
 
-1. **Identity operator** issues a recovery/contest event via identity-admin CLI
+1. **Identity operator** issues a recovery (`Rec`), recovery-rotation (`Ror`), or decommission (`Dec`) event via identity-admin CLI
 2. **Sync loop** picks up the new events from identity
 3. **`forward_key_events`** stores the recovery events locally (merge handles divergence + recovery naturally)
 4. **Sync loop** detects stale members and pushes delta events directly via HTTP
@@ -46,11 +46,12 @@ See [../../../../protocol-doctrine.md §Operation Categories](../../../../protoc
 
 ## Operator Recovery Workflow
 
-When a member KEL is compromised, the operator uses the identity-admin CLI:
+When a member KEL is compromised, the operator's recourse depends on what has been compromised:
 
-1. **`identity-admin recover`** - Issues a recovery event (`Rec`), reveals the recovery key
-2. **`identity-admin rotate-recovery`** - Issues a recovery-rotation event (`Ror`), rotates both signing and recovery keys
-3. **`identity-admin contest`** - Issues a non-archiving privileged event (`Ror` or `Dec`) extending `v_{d-1}` to trigger the contested transition, permanently freezing a divergent KEL (when adversary has revealed recovery key)
-4. **`identity-admin decommission`** - Issues a `Dec` event, ends the KEL permanently (clean retirement on a linear chain)
+1. **`identity-admin recover`** — Issues a recovery event (`Rec`), reveals the recovery key, archives the compromised branch via the discriminator. Applicable when the recovery key is still uncompromised.
+2. **`identity-admin rotate-recovery`** — Issues a recovery-rotation event (`Ror`), rotating both signing and recovery keys. Used for the proactive-ROR cadence and as a forward-secrecy ratchet.
+3. **`identity-admin decommission`** — Issues a `Dec` event, ending the KEL cleanly on a linear chain.
 
-Each of these creates events in the identity service's KEL. The registry sync loop automatically picks them up and propagates them to all federation members.
+If the recovery key has been compromised (no in-band recovery path remains), the recourse is at the IEL layer: rotate the compromised KEL out of the dependent IEL's `governancePolicy` via IEL `Evl`. The protocol has no in-band primitive that re-grants authority to a party who no longer holds the chain's commitments; the KEL prefix is retired from the federation by IEL-policy evolution.
+
+Each CLI command creates events in the identity service's KEL. The registry sync loop automatically picks them up and propagates them to all federation members.

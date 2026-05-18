@@ -208,7 +208,7 @@ return Diverged
     ▼                         ▼
 ┌───────┐               ┌───────────┐
 │  OK   │               │ Contested │
-│(recov)│               │ (frozen)  │
+│(recov)│               │ (terminal)│
 └───────┘               └───────────┘
 ```
 
@@ -251,7 +251,7 @@ Propagating a divergent KEL chain to a remote node requires more than ordering e
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Recovery key revelation prevents recovery** — once a recovery-revealing event exists in a divergent branch, non-recovery submissions return `ContestRequired`; only a non-archiving privileged event extending `v_{d-1}` can resolve (by terminating the chain).
 4. **Contested-termination is the only response when the recovery key is revealed in divergence** — the chain must be terminated via a non-archiving privileged event landing in the divergent set; no further `Rec` is possible because the recovery key is no longer secret.
-5. **Contested KELs are permanently frozen** — no events can be added after the contested transition.
+5. **Contested KELs are fully terminal** — no event of any kind lands after the contested transition. Decommissioned KELs accept no linear extension; a non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension and transitions the chain Decommissioned → Contested (order-independent rule — see [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions)).
 6. **Branch-scoped verifier input on `Rec`** — Rec verification is branch-scoped, not chain-scoped. The walker's running state never carries the divergent set across the archival boundary. See §Branch-scoped Rec verification below.
 
 ### Why sort priority matters

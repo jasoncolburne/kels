@@ -131,7 +131,7 @@ Acceptance: structural (SAID + signature by `k0`) AND the delegator's KEL must c
 s0..s4  normal chain
 s5a kind=ixn  anchor=owner_anchor       (owner)        ← fork
 s5b kind=ixn  anchor=adversary_anchor   (adversary)    ← fork (races with s5a)
-    — KEL frozen, divergent effective SAID —
+    — Divergent, recoverable via Rec; divergent effective SAID —
 s6  kind=rec  previous=s5a.said,                       ← Rec extends owner's tip; dual-signed (k5+r0)
               publicKey=k6, recoveryKey=r0,
               rotationHash=h(k7), recoveryHash=h(r1)
@@ -161,7 +161,7 @@ s0..sN   normal chain
 sN+1     kind=dec   ← owner ends the KEL cleanly; dual-signed (kN + recovery key)
 ```
 
-After `Dec`, all submissions are rejected. The locked-portion bound prevents subsequent repair events targeting the pre-Dec portion, and the frozen-state gate rejects events targeting the post-Dec window. See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Dec`, linear extensions are rejected. The locked-portion bound prevents `Rec` from targeting the pre-Dec portion. A non-archiving privileged event (`Ror` or `Dec`) with `previous = v_{d-1}.said` and `serial = Dec.serial` is admitted as a divergent extension at Dec's serial; the chain transitions Decommissioned → Contested per [../../../../protocol-doctrine.md §Order-independent divergent transitions](../../../../protocol-doctrine.md#order-independent-divergent-transitions). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 
