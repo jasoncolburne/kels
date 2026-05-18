@@ -61,7 +61,7 @@ Additional rejection cases that don't fit per-state cells:
 
 ### Notes on cell routing
 
-- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{tip-1}.said` creates fresh divergence at `v_tip`; privileged-divergence-is-terminal fires. On `Active, sealed`, `Cnt`'s land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
+- **`Cnt` on Active or Active, sealed** — Cnt with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (Cnt + the existing event at `v_d`); privileged-divergence-is-terminal fires. On `Active, sealed`, Cnt's land-serial equals `seal_serial` — admitted by the seal-cap's parent-at-(seal − 1) boundary case. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Cnt` on Divergent** — Cnt with `previous = v_{d-1}.said` joins the divergent set as a third event via the upgrade rule. See [event-log.md §Cnt mechanics](event-log.md#cnt-mechanics).
 - **`Sea` / `Upd` `ContestRequired` on Active, sealed** — non-terminal, non-`Rpr` event at-or-before `lastSealAdvancingEvent` would re-evaluate the seal; only `Cnt` (repudiation) and `Dec` (clean termination) are admissible. See [merge.md §`ContestRequired` algorithmic trigger](merge.md#contestrequired-algorithmic-trigger).
 - **`Rpr` n/a on Active, sealed** — `Rpr.previous = v_{seal-1}.said` would truncate the seal-defining event; archival at-or-before the seal breaks seal integrity. See [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded).
@@ -166,8 +166,8 @@ satisfied via bound IEL's current governancePolicy):
 Effect: chain stays linear; seal advances. Any subsequent submission at
 serial ≤ N+1 (any Upd/Sea/Rpr extending pre-Sea state) triggers
 ContestRequired — the seal-cap forbids forking at-or-before the seal.
-Operator's only recourse is Cnt extending v_{tip-1} on the post-Sea
-linear chain.
+Recourse is Cnt with previous = v_N.said (the parent of the new Sea-
+tip at v_{N+1}) on the post-Sea linear chain; Cnt lands at v_{N+1}.
 ```
 
 ### 2. Multiple adversary injections across nodes
@@ -403,7 +403,7 @@ Dependent SEL trying to extend:
 
 Two parties submit terminal events onto a linear SEL chain: the operator submits `Dec` (clean retirement) to one node; a second governance-authorized party (on the bound IEL) submits `Cnt` (contest) to another. The doctrine in [../../../../protocol-doctrine.md §Cnt Overrides Dec](../../../../protocol-doctrine.md#cnt-overrides-dec) generalizes the merge across two construction shapes — depending on whether the Cnt submitter observed Dec before constructing Cnt.
 
-**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said = Dec.previous`; Cnt lands at `v_d` alongside Dec.
+**Case A — Post-Dec sequential override.** The Cnt submitter observed Dec via gossip; their local tip is `Dec @ v_d`. The Cnt has `previous = v_{d-1}.said = Dec.previous` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` alongside Dec.
 
 ```
 Pre-Cnt state on both nodes (Dec landed on A, gossiped to B):
@@ -420,7 +420,7 @@ After gossip merges:
                              └─ cnt @ v_d ┴── contested-terminal @ v_d
 ```
 
-**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. Per `cnt.previous = v_{tip-1}.said`, the Cnt has `previous = v_{d-1}.said`; Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
+**Case B — Pre-Dec true-concurrent.** Both submitters' local tips are at `v_d` (the chain's pre-Dec tip) at construction; neither observes the other before submitting. The Cnt has `previous = v_{d-1}.said` (per `Cnt.previous = v_{d-1}.said`); Cnt lands at `v_d` as sibling of the pre-Dec tip event. Dec extends the pre-Dec tip and lands at `v_{d+1}` on the surviving (forensic) branch.
 
 ```
 Pre-state on both nodes (linear at v_d):

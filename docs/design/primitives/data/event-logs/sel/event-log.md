@@ -124,9 +124,11 @@ IEL has no analog. Every IEL event is governance-authorized (`Icp` is self-endor
 
 ## Repair (Rpr)
 
-Repair resolves a non-privileged-divergent SEL by archiving all events at `serial >= divergedAt` not on `Rpr.previous`'s walkback, then appending the `Rpr` (which advances the seal). `Rpr.previous` takes one of two shapes:
+Rpr resolves a non-privileged-divergent SEL by archiving all events at `serial >= divergedAt` not on `Rpr.previous`'s walkback, then appending the `Rpr` (which advances the seal). Like Cnt, `Rpr.previous` must not be in the chain's locked portion — the seal-cap enforces this on SEL by preventing repair at-or-before the evaluation seal. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the bound's semantic intent.
 
-1. **Branch-tip-extending shape — `Rpr.previous` is a branch tip at `v_d`.** Rpr extends that branch at `v_{d+1}`. The discriminator's walkback from `Rpr.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived. Use case: one of the two branches at `v_d` is the operator's legitimate content; the operator preserves it via Rpr.
+`Rpr.previous` takes one of two shapes:
+
+1. **Branch-tip-extending shape — `Rpr.previous` is a branch tip at `v_d`.** Rpr extends that branch at `v_{d+1}`. The discriminator's walkback from `Rpr.previous` reaches the surviving-branch tip at `v_d`; events on the other branch are archived.
 
    ```
    Pre-state (non-priv divergent at v_d):
@@ -142,7 +144,7 @@ Repair resolves a non-privileged-divergent SEL by archiving all events at `seria
                      other branch archived
    ```
 
-2. **Divergence-ancestor-extending shape — `Rpr.previous` is `v_{d-1}` (the divergence ancestor).** Rpr lands at `v_d`. The discriminator's walkback from `Rpr.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rpr is the only event at `v_d` after the discriminator runs. Use case: both branches at `v_d` are adversary-planted (the operator's tip is still at `v_{d-1}`); the operator replaces `v_d` entirely with their own Rpr.
+2. **Divergence-ancestor-extending shape — `Rpr.previous` is `v_{d-1}` (the divergence ancestor).** Rpr lands at `v_d`. The discriminator's walkback from `Rpr.previous` stops immediately (serial drops below `divergedAt`); all events at `serial >= d` (both branches) are archived. Rpr is the only event at `v_d` after the discriminator runs.
 
    ```
    Pre-state (non-priv divergent at v_d, both adversary-planted):
@@ -218,21 +220,21 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
 
 ### Cnt mechanics
 
-`Cnt.previous = v_{tip-1}.said` — the parent of the chain's current tip on a linear chain (creates fresh divergence at the tip's serial), or `v_{d-1}` on a divergent chain (the divergence ancestor; the new (divergence-causing) branch is single-event at `v_d` by freeze-on-divergence, so its `v_{tip-1}` is `v_{d-1}` — same `v_{tip-1}` rule, different chain shape). The pre-existing branch may have extended past `v_d` before divergence was detected (up to ~63 events per the proactive-evaluation cap), but Cnt's parent rule selects `v_{d-1}` (the new branch's `v_{tip-1}`) because `v_{d-1}` is structurally shared cross-node. On a divergent chain, Cnt joins the existing divergent set as a third event at `v_d` via the upgrade rule. Cross-node propagation works because `v_{d-1}` is structurally shared (lands cleanly before any divergence).
+`Cnt.previous = v_{d-1}.said`; `Cnt.serial = d`. Cnt lands at `v_d` extending the divergence ancestor. The locked-portion bound — `Cnt.previous` must not be in the chain's locked portion — is enforced on SEL by the seal-cap. See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal §Repair-event conditions](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the cross-shape derivation, the semantic intent behind the bound, and worked scenarios.
 
-*Scenario 1 — Cnt on a linear chain.* Cnt extends `v_{d-1}` (one before the tip) and lands at `v_d` as sibling of the existing tip, creating fresh divergence. Cnt is privileged, so privileged-divergence-is-terminal fires immediately:
+*Scenario 1 — Cnt on a linear chain.* Cnt extends `v_{d-1}` and lands at `v_d` as sibling of the existing event, creating a 2-event divergent set:
 
 ```
-  Pre-state:        ... → v_{d-1} → Upd_v_d   (tip)
+  Pre-state:        ... → v_{d-1} → Upd_v_d
 
-  Cnt construction: cnt.previous = v_{tip-1}.said = v_{d-1}.said
+  Cnt construction: cnt.previous = v_{d-1}.said
                     cnt.serial   = d
 
   Post-state:       ... → v_{d-1} ─┬─ Upd_v_d ┐
                                    └─ Cnt     ┴── contested
 ```
 
-*Scenario 2 — Cnt on an already-divergent SEL.* A non-priv divergent set (e.g., Upd-Upd race) sits at `v_d`. Cnt extends `v_{d-1}` (the divergence ancestor, same as the new branch's `v_{tip-1}`) and joins the divergent set as a 3rd event via the upgrade rule; privileged-divergence-is-terminal fires:
+*Scenario 2 — Cnt on an already-divergent SEL.* A non-priv divergent set (e.g., Upd-Upd race) sits at `v_d`. Cnt extends `v_{d-1}` and joins the divergent set as a 3rd event via the upgrade rule:
 
 ```
   Pre-state:        ... → v_{d-1} ─┬─ Upd_a @ v_d
@@ -246,20 +248,18 @@ This mirrors KEL's `ContestRequired` shape: the privileged primitive (here, gove
                                    └─ Cnt   @ v_d ┘
 ```
 
-Cnt is privileged (governance-authorized). Its presence in any divergent set triggers the privileged-divergence-is-terminal rule — the chain becomes contested-terminal.
+Cnt is privileged (governance-authorized). Its presence in any divergent set triggers privileged-divergence-is-terminal — the chain becomes contested-terminal.
 
-**Distinction from Rpr.** Cnt and the divergence-ancestor-extending Rpr shape (Rpr extending `v_{d-1}` at `v_d`) share the same parent shape but have different effects. The divergence-ancestor-extending Rpr archives the existing events at `v_d` via the discriminator → chain becomes non-divergent with Rpr as the new `v_d` event (repair; chain continues). Cnt does NOT archive — it joins the existing divergent set as a 3rd event at `v_d`, privileged-divergence-is-terminal fires, chain becomes contested-terminal (chain ends). Submitting `Cnt` with `previous = v_{d-1}.said` creates a contest; submitting `Rpr` with `previous = v_{d-1}.said` creates a divergence-ancestor-extending repair.
+**Distinction from Rpr.** Cnt and the divergence-ancestor-extending Rpr shape (Rpr with `previous = v_{d-1}.said` landing at `v_d`) share parent shape but differ in effect. Rpr archives the other events at `v_d` via the discriminator (chain repairs, continues with Rpr as the new `v_d`). Cnt joins the divergent set without archival (privileged-divergence fires; chain ends).
 
-See [../../../../protocol-doctrine.md §Privileged Divergence is Terminal](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) for the doctrinal frame.
-
-Authorization is the same IEL-resolved `governancePolicy` required to accept `v_{tip}` — i.e., the policy resolved through `v_{tip-1}`'s `ielEvent` binding (which resolves to whichever IEL event was current when `v_{tip-1}` landed). Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governancePolicy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `ielEvent` via `Sea` after IEL governance evolves) keeps the resolved policy current.
+Authorization is the IEL-resolved `governancePolicy` at `v_{d-1}`'s `ielEvent` binding. Authorization failure is HARD — a `Cnt` whose anchor does not satisfy the resolved governancePolicy is rejected by the verifier; the chain stays at its prior state. Operator discipline (advancing the live branch's tip `ielEvent` via `Sea` after IEL governance evolves) keeps the resolved policy current.
 
 ### Server semantics
 
-- Verify `Cnt`'s structure and IEL-resolved governance authorization at `v_{tip-1}` (HARD).
+- Verify `Cnt`'s structure, IEL-resolved governance authorization at `v_{d-1}` (HARD), and the locked-portion bound on `Cnt.previous`.
 - Insert `Cnt`. **No archival** — the SEL itself is the record (existing events preserved alongside Cnt).
 - Cnt is privileged → its presence in the divergent set triggers `is_contested = true` via the privileged-divergence-is-terminal rule. All future submissions rejected with `ContestedSel`.
-- On a linear chain, Cnt's insertion creates fresh divergence at the tip's serial (2 events at that serial: existing tip + Cnt); privileged-divergence rule fires immediately. On an already-divergent chain, Cnt becomes the 3rd event at `v_d` via the upgrade rule.
+- Cnt with `previous = v_{d-1}.said` creates a 2-event divergent set at `v_d` (linear chain) or joins an existing divergent set as the 3rd event at `v_d` via the upgrade rule (divergent chain).
 
 ### Builder
 
@@ -267,7 +267,7 @@ Authorization is the same IEL-resolved `governancePolicy` required to accept `v_
 - Pre-flight: `verify_server_chain_pre_action` (full client-side server-chain re-verification).
 - Bundles pending events into the batch.
 - Builds `Cnt` per [§Cnt mechanics](#cnt-mechanics) above.
-- Resolves authorization via `v_{tip-1}`'s IEL-resolved governance policy and constructs the anchor accordingly.
+- Resolves authorization via `v_{d-1}`'s IEL-resolved governance policy and constructs the anchor accordingly.
 - Submits `[pending..., Cnt]`.
 - On success: builder transitions to a contested local state, refuses further staging.
 - **No `contest_with_iel_event_said` override.** When the bound IEL has terminated, the SEL stays in its last state — there is no escape hatch to bind `Cnt` against a stale IEL event. Consumers judge the SEL's status via the IEL's terminal status; the operator's response is reincept the SEL under a new IEL.

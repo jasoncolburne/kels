@@ -119,7 +119,7 @@ For an SEL event at v1+:
 
   > **Note: chain-validity ≠ consumer trust.** A pre-divergence binding to a contested IEL passes the verifier but is treated as suspect by consumers per the whole-chain-suspect rule (see [../iel/event-log.md §Effect on Bound SELs](../iel/event-log.md#effect-on-bound-sels)).
 - SEL.said is anchored under the resolved policy.
-- **Per-event parent-monotonic on `ielEvent`** (SEL-specific): each event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at `v_{tip-1}`. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain).
+- **Per-event parent-monotonic on `ielEvent`** (SEL-specific): each event's `ielEvent` is at-or-after its parent event's `ielEvent` (parent via `previous` SAID) in IEL chain order, applied per branch independently. No rebinding to stale IEL events on a same-branch extension. Branches with different parent-chains do not constrain each other. KEL and IEL have no analog rule — they resolve authorization from commitments/policy intrinsic to their own chain at the parent event. Within-chain policy variation across SEL branches is bounded by the seal-cap (no fork at-or-before seal) and privileged-divergence-is-terminal (any `Sea`/`Rpr`/`Cnt`/`Dec` in the divergent set ends the chain).
 
 Past SEL events stay verified forever: the bound IEL event is immutable (chain history is fixed), the policy it declared is immune (immunity rule on IEL — see [../iel/events.md §Policy immunity requirement](../iel/events.md#policy-immunity-requirement)), and the anchors (KEL ixns) are timeless.
 
@@ -174,7 +174,7 @@ v2a kind=upd  ielEvent=IEL_v0_said, content=owner_v2_content      (owner)       
 v2b kind=upd  ielEvent=IEL_v0_said, content=adversary_v2_content  (adversary)
     — chain frozen, divergent —
 v3  kind=rpr  ielEvent=IEL_governance_event_said, previous=v2a.said, content=owner_v2_content
-                                                                              ← Rpr extends owner's tip; v2b archived
+                                                                              ← Rpr extends v2a; v2b archived
 ```
 
 The `Rpr` extends owner's authentic tip (v2a). Content equals v2a's content (preservation). The `ielEvent` references the IEL event currently establishing `governancePolicy` (typically IEL Icp, but could be a later IEL Evl if governance evolved on IEL).
@@ -192,7 +192,7 @@ v4'      Cnt       previous=v_3.said, serial=4
                      divergent set; chain contested-terminal —
 ```
 
-Cnt's `previous = v_{tip-1}.said = v_3.said` puts authorization at `v_3`'s IEL-resolved `governancePolicy` — the legitimate pre-compromise governance, which the operator still satisfies. Content is preserved from `v_3` per the content carry-forward rule. Cnt's land-serial `v_4 = seal_serial = Sea_v4.serial` satisfies `event_serial >= seal_serial` via the seal-cap's parent-at-(seal − 1) boundary: the parent sits at `seal − 1`, the new event itself lives at the seal (see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded)).
+`Cnt.previous = v_3.said` puts authorization at `v_3`'s IEL-resolved `governancePolicy` — the legitimate pre-compromise governance, which the operator still satisfies. Content is preserved from `v_3` per the content carry-forward rule. Cnt's land-serial `v_4 = seal_serial = Sea_v4.serial` satisfies `event_serial >= seal_serial` via the seal-cap's parent-at-(seal − 1) boundary: the parent sits at `seal − 1`, the new event itself lives at the seal (see [../../../../protocol-doctrine.md §Forks are Seal-Bounded](../../../../protocol-doctrine.md#forks-are-seal-bounded)).
 
 ### Clean decommission
 
