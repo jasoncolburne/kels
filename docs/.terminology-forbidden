@@ -191,7 +191,7 @@ security-invariant\.md
 # at-same-value semantics under divergence, which `serial` (= "Nth in
 # sequence", admits duplicates during forks) captures more accurately than
 # `version` (which implies single-valued state). Math notation `v_d` /
-# `v_{tip-1}` is unchanged — `v` remains the position label regardless of
+# `v_{d-1}` is unchanged — `v` remains the position label regardless of
 # what the field is named.
 
 \bevent_version\b

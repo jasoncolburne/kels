@@ -37,9 +37,9 @@ The invariants below are load-bearing for KELS security. They are stated structu
 
 Three structural concepts referenced throughout the doctrine. Distinct senses; not interchangeable.
 
-- **Locked**: the portion of a chain before its most recent privileged event. **Within-chain rule.** Locked events are structurally immutable within their own chain — `Cnt`, `Rec`, and `Rpr` on this chain cannot target them, and within-chain historical authorizations are not retroactively unsatisfiable. The privileged event ratchets the lock forward. This subsumes the historical-immutability sense used elsewhere in the corpus (e.g., "the chain's history at that serial is locked") — both phrasings describe the same boundary from different angles.
-- **Frozen**: the chain can no longer accept new events. Caused by `Cnt` (contested), `Dec` (decommissioned), or privileged-divergence-is-terminal firing.
-- **Cross-chain anchor satisfaction**: an IEL/SEL event's policy satisfaction at consumer-query time is structurally checked against contributing KEL anchors. If a contributing KEL `Rec`/`Cnt` lands and archives the event that carried the anchor, the KEL verifier reports the SAID as not-anchored on the canonical branch; the IEL/SEL's `policy_satisfied` flips false. **Distinct from locked/frozen** — locked IEL/SEL events remain structurally locked within their own chains; cross-chain anchor satisfaction is a structural verification concern handled by composition redundancy (anchor count above exact threshold). See [§Anchor Tier Elevation §Threshold Composition](#threshold-composition).
+- **Locked**: the portion of a chain before its most recent privileged event. **Within-chain rule.** Locked events are structurally immutable within their own chain — `Rec` (KEL) and `Rpr` (SEL) on this chain cannot target them, and within-chain historical authorizations are not retroactively unsatisfiable. The privileged event ratchets the lock forward. This subsumes the historical-immutability sense used elsewhere in the corpus (e.g., "the chain's history at that serial is locked") — both phrasings describe the same boundary from different angles.
+- **Frozen**: the chain can no longer accept new events. Caused by `Dec` (decommissioned) or privileged-divergence-is-terminal firing on any non-archiving privileged event in a divergent set (contested).
+- **Cross-chain anchor satisfaction**: an IEL/SEL event's policy satisfaction at consumer-query time is structurally checked against contributing KEL anchors. If a contributing KEL `Rec` lands and archives the event that carried the anchor, the KEL verifier reports the SAID as not-anchored on the canonical branch; the IEL/SEL's `policy_satisfied` flips false. **Distinct from locked/frozen** — locked IEL/SEL events remain structurally locked within their own chains; cross-chain anchor satisfaction is a structural verification concern handled by composition redundancy (anchor count above exact threshold). See [§Anchor Tier Elevation §Threshold Composition](#threshold-composition).
 
 ### Operation Categories
 
@@ -67,9 +67,9 @@ Examples: effective-SAID endpoints (per-primitive), anti-entropy comparison, KEL
 
 The protocol grants authority **only to the chain's current state** (and the chain's most-recent shared pre-divergence state, where divergence has occurred). Past keys, past policies, past endorsers — anything that was once authorized but has since been rotated, revoked, or evolved out — has zero structural ability to act on the chain. Per primitive:
 
-- **KEL:** a key compromised in 2023 cannot `Cnt` the chain in 2026 even if the adversary still holds the key material.
-- **IEL:** a `governancePolicy` participant revoked via `Evl` cannot `Cnt` the chain after their revocation.
-- **SEL:** an SEL bound to a stale IEL event whose governance has since rotated cannot be `Cnt`'d by the rotated-out parties — subject to operator-side ratcheting via `Sea` (see [§Exclusion Evolutions and the Seal Advance](#exclusion-evolutions-and-the-seal-advance)).
+- **KEL:** a key compromised in 2023 cannot `Dec` the chain in 2026 — or extend it at all — even if the adversary still holds the key material.
+- **IEL:** a `governancePolicy` participant revoked via `Evl` cannot land further governance acts on the chain after their revocation.
+- **SEL:** an SEL bound to a stale IEL event whose governance has since rotated cannot be `Dec`'d by the rotated-out parties — subject to operator-side ratcheting via `Sea` (see [§Exclusion Evolutions and the Seal Advance](#exclusion-evolutions-and-the-seal-advance)).
 
 This closes the **stale-state kill-switch problem**. Without this rule, every party who ever held authority over a chain would retain protocol-level kill-switch authority over it forever, and any past compromise would become a permanent vulnerability. With this rule, past compromise is structurally a non-event for protocol authority.
 
@@ -83,26 +83,26 @@ Each primitive tracks `lastSealAdvancingEvent` — the SAID of the chain's most 
 - **IEL**: `Evl`/`Sea`.
 - **SEL**: `Sea`/`Rpr`.
 
-Terminal kinds (`Cnt`/`Dec` everywhere) enforce the seal but do not advance it.
+The terminal kind (`Dec` everywhere) enforces the seal but does not advance it.
 
-KEL additionally tracks `lastRecoveryRevealingEvent` (`Rec`/`Ror`/`Cnt`/`Dec`) for the spent-key / non-poisonability rule. This is a distinct concept from the seal — see [primitives/data/event-logs/kel/event-log.md §Seal and Key Non-Poisonability](primitives/data/event-logs/kel/event-log.md#seal-and-key-non-poisonability).
+KEL additionally tracks `lastRecoveryRevealingEvent` (`Rec`/`Ror`/`Dec`) for the spent-key / non-poisonability rule. This is a distinct concept from the seal — see [primitives/data/event-logs/kel/event-log.md §Seal and Key Non-Poisonability](primitives/data/event-logs/kel/event-log.md#seal-and-key-non-poisonability).
 
 A new event's land-serial MUST be at-or-after the seal (`event_serial >= seal_serial`). Any submission whose land-serial is strictly before the seal is rejected (`"Cannot land at serial V — sealed by evaluation/recovery at serial S"`). This guarantees that any new event lives in the post-seal window, so the auth context resolved at the event's parent is the chain's currently-tracked policy / key state — not a stale one.
 
 ##### Parent-at-seal boundary case (KEL/SEL only)
 
-**Why this matters for KEL and SEL.** When a chain's highest-serial event is itself the most recent privileged-non-terminal event — `Rec` or `Ror` on KEL, `Sea` or `Rpr` on SEL — a Cnt extending that event's parent lands at `event_serial = seal_serial` with `parent_serial = seal_serial − 1`. Without the boundary carve-out, this Cnt would be rejected (`event_serial >= seal_serial` is satisfied at equality, but the seal-cap framing without the carve-out reads "parent must sit at the seal or later"). The carve-out admits Cnt at exactly the seal version, preserving Cnt's availability as a termination event on a freshly-sealed chain.
+**Why this matters for KEL and SEL.** When a chain's highest-serial event is itself the most recent privileged-non-terminal event — `Rec` or `Ror` on KEL, `Sea` or `Rpr` on SEL — a non-archiving privileged event (`Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL) extending that event's parent lands at `event_serial = seal_serial` with `parent_serial = seal_serial − 1`. Without the boundary carve-out, this event would be rejected (`event_serial >= seal_serial` is satisfied at equality, but the seal-cap framing without the carve-out reads "parent must sit at the seal or later"). The carve-out admits the event at exactly the seal version, preserving the upgrade-rule path to contested on a freshly-sealed chain.
 
-(IEL has no Cnt — see [§Privileged Divergence is Terminal §IEL repair-event absence](#iel-repair-event-absence) — so the boundary case doesn't apply to IEL. Every IEL event advances the seal so the highest-serial event is always the seal-event, but with no Cnt on IEL there is no "Cnt at the seal" scenario to admit.)
+(IEL has no archiving repair primitive and no within-window forks — every non-terminal IEL event advances the seal, so the seal coincides with the tip on linear chains. The boundary case is structurally vacuous on IEL.)
 
-The land-serial framing makes this work on KEL/SEL. A Cnt extending the parent of a `Rec`/`Ror`/`Sea`/`Rpr`-tipped chain lands at `event_serial = seal_serial` with `parent_serial = seal_serial − 1`. `event_serial = seal_serial` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal.
+The land-serial framing makes this work on KEL/SEL. A non-archiving privileged event extending the parent of a `Rec`/`Ror`/`Sea`/`Rpr`-tipped chain lands at `event_serial = seal_serial` with `parent_serial = seal_serial − 1`. `event_serial = seal_serial` satisfies `>=`; the parent-at-(seal − 1) is admissible because the new event itself lives at the seal.
 
-**Only `Cnt` is admitted at `event_serial = seal_serial`.** The boundary carve-out is `Cnt`-specific by construction. Per-primitive reconciliation matrices show all other kinds either route to `ContestRequired` or are structurally `n/a`:
+**Only non-archiving privileged events are admitted at `event_serial = seal_serial`.** Per-primitive reconciliation matrices show all other kinds either route to `ContestRequired` or are structurally `n/a`:
 
-- **Non-priv events with submitter's local tip at v_{seal-1}** (honest-race `Ixn`/`Upd`/`Evl`/`Ror`/`Sea`/`Dec` landing at `v_seal`): rejected (`ContestRequired` on IEL/SEL `Active, sealed`). The operator's correct response is to rebuild against the new tip and resubmit, or to issue a `Cnt` if the seal-defining event is to be repudiated (KEL/SEL only).
-- **Recovery primitives in divergence-ancestor-extending shape** (`Rec` on KEL, `Rpr` on SEL with `previous = v_{seal-1}.said`): forbidden (`n/a` on SEL `Active, sealed`: "Rpr cannot truncate at-or-before the seal"; same applies to KEL Rec by symmetry). Their archival semantic would erase the seal-defining event at `v_seal`, breaking seal integrity. The recovery primitives' divergence-ancestor-extending shape is admissible only when the seal sits strictly before the divergence point (`seal_serial < event_serial`) — i.e., when the divergent set lives in the post-seal window. At the boundary, `Cnt` is the only legitimate response.
+- **Non-priv events with submitter's local tip at v_{seal-1}** (honest-race `Ixn`/`Upd` landing at `v_seal`): rejected (`ContestRequired` on IEL/SEL `Active, sealed`). The operator's correct response is to rebuild against the new tip and resubmit.
+- **Archiving repair primitives in divergence-ancestor-extending shape** (`Rec` on KEL, `Rpr` on SEL with `previous = v_{seal-1}.said`): forbidden (`n/a` on SEL `Active, sealed`: "Rpr cannot truncate at-or-before the seal"; same applies to KEL Rec by symmetry). Their archival semantic would erase the seal-defining event at `v_seal`, breaking seal integrity. The archiving primitives' divergence-ancestor-extending shape is admissible only when the seal sits strictly before the divergence point (`seal_serial < event_serial`) — i.e., when the divergent set lives in the post-seal window.
 
-The asymmetry follows from semantics: `Cnt` is repudiation (it terminates without archival, leaving the seal-defining event in storage as forensic record); `Rec`/`Rpr` are recovery (they archive, which would destroy seal-defining state). Repudiation at the boundary is sound; recovery at the boundary is not.
+The asymmetry follows from semantics: non-archiving privileged events leave existing state intact and trigger contested via privileged-divergence-is-terminal; `Rec`/`Rpr` archive, which would destroy seal-defining state. Non-archival at the boundary is sound; archival at the boundary is not.
 
 **Bounds on the post-seal window per primitive:**
 
@@ -122,38 +122,36 @@ Each SEL event's `ielEvent` must be at-or-after its parent event's `ielEvent` in
 
 #### Privileged Divergence is Terminal
 
-The protocol's terminal-authority mechanism is three composable rules. Read them in order: rule 1 defines what "privileged divergence" means and when the chain terminates; rule 2 specifies the structural conditions on repair events (`Cnt`/`Rec`/`Rpr`); rule 3 ensures cross-node consistency when non-archiving privileged events land via gossip.
+The protocol's terminal-authority mechanism is three composable rules. Read them in order: rule 1 defines what "privileged divergence" means and when the chain terminates; rule 2 specifies the structural conditions on repair events (`Rec`/`Rpr`); rule 3 ensures cross-node consistency when non-archiving privileged events land via gossip.
 
 **1. Privileged-divergence-is-terminal.** Divergence at a serial where the divergent set contains at least one privileged event makes the chain immediately and terminally contested. Privileged events differ per primitive:
 
-- **KEL privileged**: `Rec`, `Ror`, `Cnt`, `Dec` (all recovery-revealing events).
-- **IEL privileged**: every event kind — `Icp`, `Evl`, `Sea`, `Dec` (all governance-authorized including `Icp`). The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception. **IEL has no `Cnt`** (see §IEL repair-event absence below); operator recourse on a compromised IEL is via competing `Evl` which itself triggers this rule on the resulting divergent set.
-- **SEL privileged**: `Sea`, `Rpr`, `Cnt`, `Dec` (all governance-authorized events).
+- **KEL privileged**: `Rec`, `Ror`, `Dec` (all recovery-revealing events).
+- **IEL privileged**: every event kind — `Icp`, `Evl`, `Sea`, `Dec` (all governance-authorized including `Icp`). The chain cannot be contested before its inception; the rule is structurally vacuous at `Icp` itself but applies uniformly to any divergence post-inception.
+- **SEL privileged**: `Sea`, `Rpr`, `Dec` (all governance-authorized events).
 
-Cnt (KEL/SEL) is one such privileged event; its presence in any divergent set triggers contested via this same rule. There is no "Cnt-specific path" in verifier logic — Cnt is just another privileged event whose presence in the divergent set triggers contested.
+The privileged-divergence-is-terminal transition is reachable by any non-archiving privileged event landing in a divergent set; there is no protocol-level termination event distinct from the rest of the privileged set.
 
-**2. Repair-event conditions.** Three structural conditions apply to repair events — `Cnt` (KEL/SEL), `Rec` (KEL), `Rpr` (SEL) — at the merge layer. They are data-driven (no receiver-state dependency), uniform across primitives with per-primitive instantiations.
+**2. Repair-event conditions.** Two structural conditions apply to repair events — `Rec` (KEL), `Rpr` (SEL) — at the merge layer. They are data-driven (no receiver-state dependency), uniform across primitives with per-primitive instantiations.
 
-2a. **At-most-one Cnt per log.** No other Cnt event exists anywhere on the chain (any branch, any serial). The contested-state gate freezes the chain at first Cnt acceptance. Cnt-specific; does not apply to Rec/Rpr (non-terminal repair events).
-
-2b. **Hard auth at landing.** Governance / signature check hard-fails on rejection at the merge layer; no soft-fail.
-   - **KEL Cnt/Rec**: dual-signed. `publicKey` preimage matches the parent's `rotationHash`; `recoveryKey` preimage matches the parent's `recoveryHash`. Both signatures verify; both digest commitments match.
-   - **SEL Cnt/Rpr**: governance evaluation against the bound IEL event's tracked `governancePolicy` hard-passes threshold. Repair-event SAID is anchored by a tier-3 KEL `Ror` per contributing governance member.
+2a. **Hard auth at landing.** Governance / signature check hard-fails on rejection at the merge layer; no soft-fail.
+   - **KEL Rec**: dual-signed. `publicKey` preimage matches the parent's `rotationHash`; `recoveryKey` preimage matches the parent's `recoveryHash`. Both signatures verify; both digest commitments match.
+   - **SEL Rpr**: governance evaluation against the bound IEL event's tracked `governancePolicy` hard-passes threshold. Repair-event SAID is anchored by a tier-3 KEL `Ror` per contributing governance member.
    - Authority concurrence is a moment-in-time question; "submit and satisfy later" does not generalize from cross-chain content references (which can resolve later because content is fetchable) to authority-tier checks.
 
-2c. **Repair-event `previous` must not be in the locked portion.** `previous.serial ≥` the serial of the most recent privileged event on the chain (any branch). The repair event's own serial = `previous.serial + 1`.
-   - **KEL**: privileged events are `Rec`, `Ror`, `Cnt`, `Dec`. `Cnt` and `Rec` are subject to the bound.
-   - **SEL**: privileged events are `Sea`, `Rpr`, `Cnt`, `Dec`. `Cnt` and `Rpr` are subject to the bound.
-   - **IEL**: no repair events exist on IEL (`Cnt` removed; `Rec`/`Rpr` never existed). The bound is vacuous on IEL.
+2b. **Repair-event `previous` must not be in the locked portion.** `previous.serial ≥` the serial of the most recent privileged event on the chain (any branch). The repair event's own serial = `previous.serial + 1`.
+   - **KEL**: privileged events are `Rec`, `Ror`, `Dec`. Subject to the bound: `Rec`.
+   - **SEL**: privileged events are `Sea`, `Rpr`, `Dec`. Subject to the bound: `Rpr`.
+   - **IEL**: no repair events exist on IEL (no `Rec`/`Rpr`). The bound is vacuous on IEL.
    - If no privileged event has landed (only `Icp` + non-privileged events), the bound holds vacuously — the repair event's `previous` can be any chain event including `Icp`.
 
-**Semantic intent.** The honest construction of a repair event extends its submitter's local tip. A legitimate submitter wouldn't insert events into their own stream from anywhere else, and wouldn't accept adversarial events into their stream and append on top of those (that would imply trust in the adversary's events). Chain data cannot identify a submitter or distinguish "honest extension of submitter's tip" from "adversarial extension of an injected fake-tip" — the protocol has no notion of identity at the chain layer. Condition 2c restricts allowed constructions to those that *could* be honest tip-extensions: anything with `previous` in the chain's locked portion is structurally incompatible with extending a current legitimate tip and is denied.
+**Semantic intent.** The honest construction of a repair event extends its submitter's local tip. A legitimate submitter wouldn't insert events into their own stream from anywhere else, and wouldn't accept adversarial events into their stream and append on top of those (that would imply trust in the adversary's events). Chain data cannot identify a submitter or distinguish "honest extension of submitter's tip" from "adversarial extension of an injected fake-tip" — the protocol has no notion of identity at the chain layer. Condition 2b restricts allowed constructions to those that *could* be honest tip-extensions: anything with `previous` in the chain's locked portion is structurally incompatible with extending a current legitimate tip and is denied.
 
-The bound prevents revival attacks: a party holding stale authority (e.g., a recovery preimage revealed by an earlier `Rec`/`Ror`, or a revoked governance member whose old policy SAID remains immune-resolvable) cannot construct a repair event against an old authority position to freeze or rearrange the chain. Only current authority gates repair events. See [§Terminology](#terminology) for the locked-portion concept.
+The bound prevents revival attacks: a party holding stale authority (e.g., a recovery preimage revealed by an earlier `Rec`/`Ror`, or a revoked governance member whose old policy SAID remains immune-resolvable) cannot construct a repair event against an old authority position to rearrange the chain. Only current authority gates repair events. See [§Terminology](#terminology) for the locked-portion concept.
 
-When a repair event's `previous` is the divergence ancestor (`v_{d-1}`), `Cnt`/`Rec`/`Rpr` land at `v_d`. This shape is cross-node-validatable: `v_{d-1}` is structurally shared across all nodes (it lands cleanly before any divergence), so the repair event validates uniformly regardless of which divergent contents each node received. This is what solves the cross-node propagation problem that breaks tip-extension and combined-digest approaches.
+When a repair event's `previous` is the divergence ancestor (`v_{d-1}`), `Rec`/`Rpr` land at `v_d`. This shape is cross-node-validatable: `v_{d-1}` is structurally shared across all nodes (it lands cleanly before any divergence), so the repair event validates uniformly regardless of which divergent contents each node received. This is what solves the cross-node propagation problem that breaks tip-extension and combined-digest approaches.
 
-**3. Upgrade rule (cross-node consistency).** Applies to non-archiving privileged events with `previous = v_{d-1}.said`: `Ror`, `Cnt`, `Dec` on KEL; `Sea`, `Cnt`, `Dec` on SEL; n/a on IEL (every event is privileged, so no non-privileged divergent set can form to upgrade). When a node has a non-privileged divergent set at `v_d` and gossip delivers such a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states.
+**3. Upgrade rule (cross-node consistency).** Applies to non-archiving privileged events with `previous = v_{d-1}.said`: `Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL; n/a on IEL (every event is privileged, so no non-privileged divergent set can form to upgrade). When a node has a non-privileged divergent set at `v_d` and gossip delivers such a privileged event for that same `v_d`, the node accepts the privileged event as a third event in the divergent set. Local state transitions from non-privileged-divergent (recoverable) to contested (terminal). Without this rule, different nodes that received different subsets of concurrent submissions would converge on different chain states.
 
 The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly one** is privileged — the upgrade event. **3 events with 2+ privileged is structurally unreachable**: any privileged event in the original 2-event divergent set triggers privileged-divergence-is-terminal immediately, and the contested-state gate rejects any subsequent submission. Only when the original 2 events are both non-privileged does the upgrade-rule path open to add a 3rd privileged event.
 
@@ -161,17 +159,15 @@ The divergence invariant relaxes to allow up to 3 events at `v_d` when **exactly
 
 KEL `Rec` and SEL `Rpr` resolve divergence by archiving events via the discriminator. They each take two parent shapes, named by what `previous` points at:
 
-- **Branch-tip-extending shape** — `Rec.previous` / `Rpr.previous` is a branch tip at `v_d`. Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived. Used when one branch is the operator's legitimate content and the operator preserves it.
-- **Divergence-ancestor-extending shape** — `Rec.previous` / `Rpr.previous` is `v_{d-1}`, the divergence ancestor. Rec/Rpr lands at `v_d`; ALL events at `serial >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs. Used when both branches at `v_d` are adversary-planted; the operator replaces `v_d` entirely.
-
-Cnt shares the divergence-ancestor-extending shape's parent (`previous = v_{d-1}.said`, lands at `v_d`) but has a different effect: Cnt joins the divergent set as a 3rd event at `v_d` WITHOUT archival, privileged-divergence-is-terminal fires, and the chain transitions to contested-terminal. The kind discriminator (Rec/Rpr vs Cnt) determines whether the chain recovers (archival) or terminates (no archival).
+- **Branch-tip-extending shape** — `Rec.previous` / `Rpr.previous` is a branch tip at `v_d`. Rec/Rpr extends that branch at `v_{d+1}`; the other branch is archived.
+- **Divergence-ancestor-extending shape** — `Rec.previous` / `Rpr.previous` is `v_{d-1}`, the divergence ancestor. Rec/Rpr lands at `v_d`; ALL events at `serial >= d` (both branches) are archived. Rec/Rpr is the only event at `v_d` after the discriminator runs.
 
 ##### Two privileged event classes: archiving vs non-archiving
 
 Privileged events route by kind in the merge engine, so the upgrade rule's scope is well-defined and the rules above don't conflict with one another:
 
 - **Archiving privileged kinds** — `Rec` (KEL), `Rpr` (SEL). Go through the discriminator's archival path. Either parent shape (branch-tip-extending or divergence-ancestor-extending — see preceding subsection) bypasses the upgrade rule, since the discriminator removes the divergent set before any divergent-set check fires.
-- **Non-archiving privileged kinds** — `Ror`, `Cnt`, `Dec` on KEL; `Sea`, `Cnt`, `Dec` on SEL. Do not archive. When their parent is `v_{d-1}.said` (the divergence ancestor) and a non-privileged divergent set already exists at `v_d`, they join the divergent set as a third event via the upgrade rule, triggering contested via rule 1. `Cnt` reaches this shape per the repair-event bound (rule 2c — `previous` is the divergence ancestor when no privileged event has landed strictly past `v_{d-1}`); `Ror`/`Dec`/`Sea` reach it when the submitter's local tip is at `v_{d-1}` and they extend it directly with `previous = tip.said`. In every case the event lands at `v_d`.
+- **Non-archiving privileged kinds** — `Ror`, `Dec` on KEL; `Sea`, `Dec` on SEL. Do not archive. When their parent is `v_{d-1}.said` (the divergence ancestor) and a non-privileged divergent set already exists at `v_d`, they join the divergent set as a third event via the upgrade rule, triggering contested via rule 1. They reach this shape when the submitter's local tip is at `v_{d-1}` and they extend it directly with `previous = tip.said`; the event lands at `v_d`.
 
 The verifier rule simplifies to:
 - Divergent at `v_d`?
@@ -180,71 +176,80 @@ The verifier rule simplifies to:
     - Yes → contested (terminal).
     - No → divergent (recoverable via Rec on KEL or Rpr on SEL; no recovery primitive on IEL — divergent IEL is auto-contested because every IEL event is privileged).
 
-##### Worked scenarios
+##### Worked scenarios — contested-state creation
 
-The operator picks `Cnt.previous` subject to the locked-portion bound (condition 2c) and `Cnt.serial = previous.serial + 1`. The cross-node-validatable construction extends the divergence ancestor (`v_{d-1}`), landing Cnt at `v_d`. Three scenarios cover the common space.
+A non-archiving privileged event (`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL) landing in a divergent set fires privileged-divergence-is-terminal. The submitter constructs the event with `previous = v_{d-1}.said` and `serial = d`; the event lands at `v_d`. Cross-node propagation works because `v_{d-1}` is structurally shared (it lands cleanly before any divergence). Three scenarios cover the common space.
 
-*Scenario 1 — Cnt on a linear chain (extends the parent of the chain's highest-serial event).* Operator's local chain is linear with the highest-serial event at `v_d`. Operator constructs Cnt with `previous = v_{d-1}.said` and `serial = d`; Cnt lands at `v_d` as a sibling of the existing event:
+*Scenario 1 — Non-archiving privileged event on a linear chain.* Submitter's local tip is at `v_{d-1}`; the existing chain's highest-serial event is `v_d`. Submitter constructs a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = d`; the event lands at `v_d` as a sibling of the existing event:
 
 ```
   Pre-state:        ... → v_{d-1} → v_d  (existing event at v_d)
 
-  Cnt construction: cnt.previous = v_{d-1}.said
-                    cnt.serial   = d
+  Construction:     evt.previous = v_{d-1}.said
+                    evt.serial   = d
 
   Post-state:       ... → v_{d-1} ─┬─ existing @ v_d  ┐
-                                   └─ cnt      @ v_d  ┴── contested (cnt privileged)
+                                   └─ evt      @ v_d  ┴── contested (evt privileged)
 ```
 
-*Scenario 2 — Cnt on an already-divergent chain (joins divergent set at `v_d`).* A non-privileged divergent set exists at `v_d` (e.g., ixn-ixn race on KEL). The pre-existing branch may have extended past `v_d` before divergence was observed (KEL: ≤62 events per proactive-ROR; SEL: ≤63 per proactive-evaluation; IEL: never — divergence is contested-terminal at first observation). The new (divergence-causing) branch is always single-event at `v_d`. Cnt's `previous` points at the divergence ancestor (`v_{d-1}` — the unique parent at `Cnt.serial − 1`, shared cross-node by chain validity):
+*Scenario 2 — Non-archiving privileged event joins an already-divergent set.* A non-privileged divergent set exists at `v_d` (e.g., ixn-ixn race on KEL). The pre-existing branch may have extended past `v_d` before divergence was observed (KEL: ≤62 events per proactive-ROR; SEL: ≤63 per proactive-evaluation; IEL: never — divergence is contested-terminal at first observation). The new (divergence-causing) branch is always single-event at `v_d`. The submitter's event extends `v_{d-1}` (the unique parent at `serial − 1`, shared cross-node by chain validity):
 
 ```
   Pre-state:        ... → v_{d-1} ─┬─ ixn_a @ v_d → ixn_a' @ v_{d+1} → …  (pre-existing; may extend)
                                    └─ ixn_b @ v_d                         (new; frozen at single event)
 
-  Cnt construction: cnt.previous = v_{d-1}.said
-                    cnt.serial   = d
+  Construction:     evt.previous = v_{d-1}.said
+                    evt.serial   = d
 
   Post-state:       ... → v_{d-1} ─┬─ ixn_a @ v_d → ixn_a' @ v_{d+1} → …  ┐
                                    ├─ ixn_b @ v_d                         ├── contested
-                                   └─ cnt   @ v_d                         ┘
+                                   └─ evt   @ v_d                         ┘
 ```
 
-*Scenario 3 — Sequential post-event Cnt.* An `ixn_a` lands at `v_d` on Node A. Gossip propagates `ixn_a` to Node C; Node C's chain now has `ixn_a` at `v_d`. Node C constructs `cnt_c` with `previous = v_{d-1}.said` and `serial = d`; Cnt lands at `v_d` as sibling of `ixn_a`:
+*Scenario 3 — Sequential post-event contest.* An `ixn_a` lands at `v_d` on Node A. Gossip propagates `ixn_a` to Node C; Node C's chain now has `ixn_a` at `v_d`. Node C's submitter, whose local view of the tip was still at `v_{d-1}` (or who chooses to extend the divergence ancestor), constructs a non-archiving privileged event with `previous = v_{d-1}.said` and `serial = d`:
 
 ```
   Final state on Node C:
                     ... → v_{d-1} ─┬─ ixn_a @ v_d  ┐
-                                   └─ cnt_c @ v_d  ┴── contested
+                                   └─ evt   @ v_d  ┴── contested
 ```
 
-In every scenario: Cnt's `previous` is the divergence-ancestor `v_{d-1}` (the unique parent at `Cnt.serial − 1` — shared cross-node by chain validity), `Cnt.serial = d`, Cnt lands at `v_d`. Cross-node propagation works because `v_{d-1}` is structurally shared (it lands cleanly before any divergence). The bound (condition 2c) is satisfied so long as the divergence sits in the post-privileged-event window (which is enforced by KEL/SEL seal-caps and IEL's "every event privileged" structure). The same lands-at-`v_d` behavior holds for non-archiving privileged events whose parent happens to be `v_{d-1}.said` for other reasons (Ror/Dec on KEL, Sea/Dec on SEL, when the submitter's local tip is at `v_{d-1}`); they join the divergent set at `v_d` via the upgrade rule and trigger contested.
+In every scenario: the event's `previous` is the divergence-ancestor `v_{d-1}` (the unique parent at `serial − 1` — shared cross-node by chain validity), and the event lands at `v_d`. The repair-event bound (condition 2b) applies to `Rec`/`Rpr` and is enforced on KEL/SEL by the seal-cap; non-archiving privileged events reach the `v_{d-1}`-extending shape when the submitter's local tip is at `v_{d-1}` and they extend it directly with `previous = tip.said`.
 
 ##### Repair-event authorization
 
-Authorization for a repair event resolves through the commitments at the event's parent (`previous`).
+Authorization for a repair event (`Rec` on KEL, `Rpr` on SEL) resolves through the commitments at the event's parent (`previous`).
 
-- **KEL.** The dual signature is produced under the private signing and recovery keys whose public-key preimages are committed by the parent event's `rotationHash` and `recoveryHash`. For Cnt extending `v_{d-1}` to land at `v_d`, this is `v_{d-1}`'s commitments; for tip-extending `Ror`/`Dec`, the tip's commitments. Revealing the public-key preimage via a prior event landing at the parent's child serial does not yield the corresponding private key; signing capability remains operator-held.
-- **IEL.** The `governancePolicy` declared at the parent event. (IEL has no repair events under the new doctrine — see §IEL repair-event absence below; this resolution applies to the non-repair events `Evl`/`Sea`/`Dec`.)
-- **SEL.** The IEL-resolved governance policy at the SEL's `ielEvent` binding for the parent event (`Cnt.previous` or `Rpr.previous`).
+- **KEL.** The dual signature is produced under the private signing and recovery keys whose public-key preimages are committed by the parent event's `rotationHash` and `recoveryHash`. Revealing the public-key preimage via a prior event landing at the parent's child serial does not yield the corresponding private key; signing capability remains submitter-held.
+- **SEL.** The IEL-resolved governance policy at the SEL's `ielEvent` binding for the parent event (`Rpr.previous`).
+- **IEL.** No repair events on IEL — see §Repair-event absence below.
 
-Repair-event authorization is **HARD** at the merge layer per condition 2b. **General invariant: any event with failed auth is rejected.** A repair event (or `Dec`) whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the merge handler; the chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally.
+Repair-event authorization is **HARD** at the merge layer per condition 2a. **General invariant: any event with failed auth is rejected.** A repair event (or `Dec`) whose dual-signature, governance-anchor, or IEL-resolved-policy check fails is rejected by the merge handler; the chain stays at its prior state. The DB-cannot-be-trusted invariant requires this — an unauthorized terminal must not advance the chain locally.
 
-**Operator recourse against signing-tier Rot takeover (KEL specifically)**: an adversary holding the signing key plus the rotation-key preimage at `v_N` (revealing their `Rot` at `v_N`) does not hold the recovery-key preimage committed by the prior establishment's `recoveryHash`. The operator's `Cnt` with `previous` extending an earlier establishment whose `recoveryHash` the operator still holds — subject to the locked-portion bound (condition 2c) — resolves dual-sig against that parent's commitments; operator's recovery-key preimage satisfies, adversary's does not. See [primitives/data/event-logs/kel/event-log.md §Operator recourse against signing-tier Rot takeover](primitives/data/event-logs/kel/event-log.md#operator-recourse-against-signing-tier-rot-takeover) for the key-state walkthrough.
+**Recourse against signing-tier Rot takeover (KEL specifically)**: an adversary holding the signing key plus the rotation-key preimage at `v_N` (revealing their `Rot` at `v_N`) does not hold the recovery-key preimage committed by the prior establishment's `recoveryHash`. A `Rec` (branch-tip-extending on a divergent chain, or divergence-ancestor-extending where the divergence ancestor's commitments are still legitimate) — subject to the locked-portion bound (condition 2b) — resolves dual-sig against the parent's commitments; the legitimate party's recovery-key preimage satisfies, the adversary's does not. See [primitives/data/event-logs/kel/event-log.md §Operator recourse against signing-tier Rot takeover](primitives/data/event-logs/kel/event-log.md#operator-recourse-against-signing-tier-rot-takeover) for the key-state walkthrough.
 
-From the moment a contested transition occurs (Cnt lands or a privileged event upgrades a divergent set), no further events on this chain are accepted.
+From the moment a contested transition occurs (a non-archiving privileged event lands in a divergent set), no further events on this chain are accepted.
 
-##### IEL repair-event absence
+##### No dedicated termination-by-contest event
 
-`Cnt` does not exist as an IEL event kind. `Rec`/`Rpr` never existed on IEL. The IEL event taxonomy is `Icp`, `Evl`, `Sea`, `Dec`.
+No primitive has a dedicated termination-by-contest event distinct from the rest of the privileged set. The event taxonomies are:
 
-Reasoning: every IEL event is privileged. The locked-portion bound (condition 2c) means an IEL `Cnt`'s `previous` would have to be the immediate parent of `Cnt`'s position. For Cnt to "make sense," the chain would need to have been extended past the operator's authorization — but any such extension landed by satisfying threshold-many KEL anchors against the chain's tracked `governancePolicy`. The operator's authority under the new tracked policy is then stale; they can't auth a `Cnt` against it. And on a divergent IEL, the chain is already contested-terminal (any privileged event in a divergent set fires privileged-divergence-is-terminal — and every IEL event is privileged); landing a `Cnt` afterward adds no new state.
+- **KEL**: `Icp`, `Dip`, `Rot`, `Ixn`, `Rec`, `Ror`, `Dec`.
+- **SEL**: `Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`.
+- **IEL**: `Icp`, `Evl`, `Sea`, `Dec`.
 
-Consequently the contested chain state on IEL is equivalent to the divergent chain state — `is_contested ⇔ is_divergent`; any IEL divergence is contested-terminal by construction. The full structural argument lives in [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal).
+Structural reasoning: chain data alone cannot distinguish a legitimate submitter from an adversary with equivalent authority. A protocol primitive justified by reference to submitter intent ("the legitimate operator's terminate-with-prejudice signal") is structurally incoherent — chain layer has no identity concept, so identity framing cannot land in a primitive. The only structurally valid question is whether a dedicated termination event creates a chain-state effect that no other event produces. It does not: the contested-state transition (privileged divergence at `parent.serial + 1` → contested via privileged-divergence-is-terminal) is reachable by any non-archiving privileged event landing in a divergent set.
 
-Operator recourse on a compromised IEL is via competing `Evl` (cheapest anchor, tier-2): submit `Evl` under the still-current policy, creating divergence; privileged-divergence-is-terminal fires; the IEL is frozen at the divergent serial. Reincept under a new prefix.
+**Chain lifecycle paths:**
 
-**Pre-emptive-suspicion gap (acknowledged).** An operator who detects compromise pre-emptively (e.g., a contributing KEL was breached) and wants to mark the IEL as suspect without retiring it has no protocol-level "compromise signal" on IEL. Available paths: `Evl` rotating out the compromised key (chain stays alive, no compromise signal); `Dec` (clean retirement — semantically misleading when compromise is the actual cause); out-of-band attestation under the operator's KEL (requires a parallel discovery channel). Trade-off accepted as the cost of removing the structurally-inert IEL `Cnt` primitive — the protocol's freeze and recourse paths are intact.
+- **Termination via clean shutdown**: `Dec`.
+- **Termination via contested transition**: any non-archiving privileged event (`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL; `Evl`/`Sea`/`Dec` on IEL) landing in a divergent set fires privileged-divergence-is-terminal. See §Worked scenarios above.
+- **Recovery from non-privileged divergence**: `Rec` (KEL) or `Rpr` (SEL).
+- **Recovery from privileged divergence**: impossible per privileged-divergence-is-terminal; chain frozen.
+
+On IEL specifically, every event is privileged so the contested chain state is equivalent to the divergent chain state — `is_contested ⇔ is_divergent`; any IEL divergence is contested-terminal by construction. The full structural argument lives in [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal).
+
+**Pre-emptive-suspicion gap (acknowledged).** A submitter who detects compromise pre-emptively (e.g., a contributing KEL was breached) and wants to mark a chain as suspect without retiring it has no protocol-level "compromise signal." Available paths: rotate out the compromised key via `Rot` (KEL) or `Evl` (IEL) (chain stays alive, no compromise signal); `Dec` (clean retirement — semantically misleading when compromise is the actual cause); out-of-band attestation under a separate KEL (requires a parallel discovery channel). This trade-off is accepted; the protocol's freeze and recourse paths remain intact.
 
 #### One Divergent Generation at a Time
 
@@ -258,7 +263,7 @@ Two unresolved generations cannot coexist on the same chain. A second divergent 
 
 Three operation classes, three key-tier requirements. Privileged IEL and SEL events anchor in higher-tier KEL events, not in routine `Ixn`. The elevation closes the signing-key-only adversarial pathway to forging governance acts, binding establishments, and terminal events on the chains that root other chains' authority.
 
-KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier. The per-tier mapping:
+KEL closes this surface intrinsically: KEL `Rec`/`Ror`/`Dec` are dual-signed (signing + recovery), already requiring tier-3 key material to forge. IEL and SEL have no analogous intrinsic mechanism — they piggyback on KEL's tier hierarchy by requiring privileged IEL/SEL events to anchor in KEL events of the matching tier. The per-tier mapping:
 
 **Three-tier mapping.** Each operation class anchors in the KEL event kind that reveals the required key tier:
 
@@ -275,7 +280,6 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 | `Icp` | `Rot` | 2 |
 | `Evl` | `Rot` | 2 |
 | `Sea` | `Rot` | 2 |
-| `Cnt` | `Ror` | 3 |
 | `Dec` | `Ror` | 3 |
 
 | SEL Event | Anchor kind | Tier |
@@ -285,24 +289,23 @@ KEL closes this surface intrinsically: KEL `Cnt`/`Dec` are dual-signed (signing 
 | `Upd` | `Ixn` | 1 |
 | `Sea` | `Rot` | 2 |
 | `Rpr` | `Ror` | 3 |
-| `Cnt` | `Ror` | 3 |
 | `Dec` | `Ror` | 3 |
 
 **Policy satisfaction under elevation.** The policy DSL has leaf nodes (`Endorse(prefix)`, `Delegate(delegator)`) that test anchor presence and internal nodes (`Weighted`, nested `Policy`) that compose leaf results. Under anchor elevation, the leaf-level anchor check requires the hosting KEL event to be of the kind specified by the event's tier (`Ixn` for tier 1, `Rot` for tier 2, `Ror` for tier 3); a leaf that finds an anchor of the wrong kind evaluates as unsatisfied. DSL composition is unchanged — `Weighted` still sums satisfied-child weights against the minimum; `Policy` still recursively resolves and evaluates; `Delegate` still requires a delegate's anchor on the SAID, where the delegate is in turn delegated by the delegator named in the policy (the specific delegate is discovered at evaluation time, which is what allows operator-side fleet scaling). The verifier accepts the event when the top-level policy evaluates as satisfied, where satisfaction is computed against the tier-appropriate anchor check at every leaf.
 
-**Strict event-kind anchor.** The tables name a single anchor kind per tier (`Rot` for tier 2, `Ror` for tier 3), not a tier-membership set. `Rot` reveals only the rotation tier; `Ror` reveals both rotation and recovery in one event. Each is the minimum-burn anchor for its tier. Operators whose KEL is divergent must first submit `Rec` to return the chain to a linear state; anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery primitive (`Rec`) or terminal primitives (`Dec`/`Cnt`) — the protocol keeps event semantics explicit and non-conflated; see [primitives/data/event-logs/kel/events.md §Anchor on Rot and Ror](primitives/data/event-logs/kel/events.md#anchor-on-rot-and-ror). The extra `Rec` carries no security cost — pre-rotation makes each revealing event commit a fresh `recoveryHash`, so the v_{N-1} preimage revealed by `Rec` is dead authority once `Rec` lands.
+**Strict event-kind anchor.** The tables name a single anchor kind per tier (`Rot` for tier 2, `Ror` for tier 3), not a tier-membership set. `Rot` reveals only the rotation tier; `Ror` reveals both rotation and recovery in one event. Each is the minimum-burn anchor for its tier. Operators whose KEL is divergent must first submit `Rec` to return the chain to a linear state; anchor emission lives on forward-extension events (`Ixn`/`Rot`/`Ror`), not on the recovery primitive (`Rec`) or the terminal `Dec` — the protocol keeps event semantics explicit and non-conflated; see [primitives/data/event-logs/kel/events.md §Anchor on Rot and Ror](primitives/data/event-logs/kel/events.md#anchor-on-rot-and-ror). The extra `Rec` carries no security cost — pre-rotation makes each revealing event commit a fresh `recoveryHash`, so the v_{N-1} preimage revealed by `Rec` is dead authority once `Rec` lands.
 
 **SEL `Est` and camping defense.** SEL prefix derives from `(identity, topic)` — predictable and well-known. An adversary can race-incept SEL chains for any tuple an operator might use. SEL `Icp` is permissionless and dedup-equivalent: any party's `Icp` for the same tuple produces the same SAID and lands once regardless of who submits it. The actual binding and authorization happen at the next event — `Est` — which carries `ielEvent` (binding to an IEL policy state) and is authorized under the IEL-resolved `authPolicy`. Elevating `Est` to tier 2 raises the per-camp cost: each camping attempt requires the camper's policy members to each produce a KEL `Rot` anchor. Mass camping becomes economically expensive; single-target camping remains possible but at a real cost. The operator's legitimate `Est` and a camper's `Est` create a divergent set at v1 (different `ielEvent` or content → different SAIDs), resolved via `Rpr`.
 
 IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — policies are declared inline at inception, authorized by the founding governance threshold. IEL prefix derives from `(authPolicy, governancePolicy, nonce)` where `nonce` is opaque random bytes chosen by the inceptor; the resulting prefix is structurally unpredictable from outside, so the well-known-tuple camping surface doesn't exist. IEL `Icp` is tier-2 anchored: the founding governance act is the same kind of act as `Evl`/`Sea`, and tier-2 (rotation-key preimage per contributing member) prevents signing-only compromise from creating fake-but-validly-governed IELs under stolen policy membership.
 
-**Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotationHash` and `recoveryHash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Cnt`/`Dec` are unchanged by anchor elevation — they do not anchor in another chain.
+**Cross-chain anchor symmetry.** KEL achieves tier-3 intrinsically via dual-signature against `rotationHash` and `recoveryHash` preimages. IEL/SEL achieve it via anchor on KEL `Ror`. Both require the same cryptographic key material; the mechanism differs because IEL/SEL have no intrinsic key state to elevate against. KEL `Dec` is unchanged by anchor elevation — it does not anchor in another chain.
 
 **What anchor elevation defends.**
 
 - **Signing-key-only adversarial governance takeover.** Without elevation, an adversary with signing-only compromise of policy members could forge tier-1-anchored events. Under elevation, IEL `Icp`/`Evl`/`Sea` and SEL `Est` require `Rot` per contributing member; `Rot` requires the pre-committed rotation-key preimage, which signing-only compromise does not yield. Governance acts (declaration, evolution, seal advance), SEL binding camping, and fake-IEL creation via signing-only compromise are all closed.
-- **Adversarial terminal events without recovery-key compromise.** `Cnt`/`Dec` require `Ror` per contributing member; `Ror` requires the rotation-key preimage AND the recovery-key preimage (both committed by prior establishment events, neither yet revealed). An adversary lacking the recovery-key preimage for any contributing member cannot forge tier-3-anchored terminal events. Rotation-key compromise alone is insufficient.
-- **Operator-side rotated-out kill-switch.** A rotated-out party who could in principle `Cnt` under the parent-event policy (`Cnt.previous`'s `governancePolicy`) now needs `Ror` per contributing member — possession of both rotation-key and recovery-key preimages across the contributing policy members, not signing-key access. The structural authority of the parent's policy persists; the bar to exploit it is raised from tier 1 to tier 3.
+- **Adversarial terminal events without recovery-key compromise.** `Dec` requires `Ror` per contributing member; `Ror` requires the rotation-key preimage AND the recovery-key preimage (both committed by prior establishment events, neither yet revealed). An adversary lacking the recovery-key preimage for any contributing member cannot forge tier-3-anchored `Dec`. Rotation-key compromise alone is insufficient.
+- **Rotated-out kill-switch.** A rotated-out party who could in principle land `Dec` under the parent-event policy now needs `Ror` per contributing member — possession of both rotation-key and recovery-key preimages across the contributing policy members, not signing-key access. The structural authority of the parent's policy persists; the bar to exploit it is raised from tier 1 to tier 3.
 
 **What anchor elevation does not defend.**
 
@@ -311,6 +314,19 @@ IEL has no `Est` counterpart because IEL `Icp` is itself the binding event — p
 - **Custody-degraded members.** Elevation's marginal value scales with per-member key-tier custody separation. A reference implementation that holds all three tiers on a single device gets no marginal protection — full-device compromise yields all three. The protocol is custody-agnostic; trait implementations can provide stronger custody options (HSM separation, geographic split, ceremony-gated reveal). Custody hygiene is a trait/integration concern, not a protocol one.
 
 Anchor tier elevation is a **verifier-side rule**. The verifier walks each IEL/SEL event and checks anchor presence of the required kind in candidate policy members' KELs as part of computing threshold satisfaction. Submit handlers invoke the verifier; consumers reading gossip-received, replicated, or bootstrapped data enforce the same check. No submit-handler-only carve-out exists.
+
+##### Threshold Composition
+
+The anchor tier mapping (tier-1 `Ixn`, tier-2 `Rot`, tier-3 `Ror`) is structurally only as strong as the composition of contributing KELs. Locking events on IEL/SEL require anchors per contributing governance-policy member; an adversary landing a malicious locking event must compromise the relevant tier on **threshold-many distinct custody boundaries**.
+
+- **Tier-2-anchored locking events on IEL (`Evl`, `Sea`) require rotation-tier compromise on threshold-many KELs.** An adversary at rotation-tier on threshold-many KELs can land a policy-evolving `Evl`, effectively taking over the IEL.
+- **Tier-3-anchored locking events (`Rpr`, `Dec` on SEL; `Dec` on IEL) require recovery-tier compromise on threshold-many KELs.** Strictly harder; recovery preimages are by construction held separately from active signing keys.
+- **Threshold > 1 is the load-bearing structural mitigation.** A single-KEL governance policy collapses to "rotation-tier compromise = full IEL takeover" — structurally valid but operationally fragile. Node gossip identities are documented as `degenerate single-KEL identity` configurations per [../infrastructure/federation.md](../infrastructure/federation.md); they serve narrow bootstrap roles. The federation IEL itself uses N-of-M.
+- **Distinct custody boundaries matter.** Two KEL prefixes under the same operator's hardware compose to effective threshold 1 against an adversary who breaches that hardware. Policy composition must span genuine custody separation.
+- **Cross-chain anchor satisfaction redundancy.** Composing with anchor count above exact threshold (`M > N` for N-of-M) protects against single-KEL recovery invalidating IEL/SEL anchors. Without redundancy, any contributing KEL's `Rec` archiving the anchoring event drops the IEL/SEL anchor below threshold and flips `policy_satisfied = false` for consumers (see [§policy_satisfied](#policy_satisfied)).
+- **Federation IEL pattern is the canonical safe shape.** N-of-M across distinct federation members with redundancy ensures threshold-many rotation-tier compromises are infeasible without breaching multiple independent custody domains.
+
+This is operator guidance, not a verifier-enforced rule — the verifier accepts any threshold ≥ 1. The system's structural protections only bind when composition is correct.
 
 #### Sea-after-Upd ratchet (application pattern)
 
@@ -332,27 +348,27 @@ The exposure-window property is the load-bearing one and applies even to degener
 
 #### Trust Model on Contested Chains
 
-A chain on which Cnt has landed is **whole-suspect**. Pre-Cnt events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require operator reincept under a new prefix.
+A chain that has transitioned to contested (via privileged-divergence-is-terminal) is **whole-suspect**. Pre-contested events do not retain authorization grounding for new trust decisions. Dependent chains bound to a contested IEL/KEL lose their authorization basis and require reincept under a new prefix.
 
-The reasoning is structural, not statistical. When Cnt lands, both the legitimate operator and an adversary (if they hold current authority) can submit it — Cnt requires current-state authorization, and "who actually has current authority" is exactly what's in question when compromise is suspected. The signature on an adversarial Cnt satisfies the same policy a legitimate Cnt would; consumers have no protocol-observable way to determine which party submitted it.
+The reasoning is structural, not statistical. Contested transitions fire when a non-archiving privileged event lands in a divergent set. Both a legitimate submitter and an adversary (if they hold current authority) can produce events satisfying that authorization — "who actually has current authority" is exactly what's in question when compromise is suspected. The signatures and anchors on the events in the divergent set satisfy the same policy regardless of submitter; consumers have no protocol-observable way to determine which party submitted which event.
 
-After Cnt lands, the only way to identify which events on the chain were authored legitimately would be an out-of-band claim from the owner — "events 1 through N were mine; events N+1 onward were the adversary's." The protocol has no trusted way to bring such a claim into the chain. The chain is terminal: no further events can carry signed attestations from the owner. Verification tokens cannot be augmented with claims that originated outside the chain. Consumers relying on protocol-trusted information have nothing to distinguish "this event was authored legitimately" from "this event may have been adversarial."
+After the contested transition, the only way to identify which events on the chain were authored legitimately would be an out-of-band claim from the legitimate party — "events 1 through N were mine; events N+1 onward were the adversary's." The protocol has no trusted way to bring such a claim into the chain. The chain is terminal: no further events can carry signed attestations. Verification tokens cannot be augmented with claims that originated outside the chain. Consumers relying on protocol-trusted information have nothing to distinguish "this event was authored legitimately" from "this event may have been adversarial."
 
-The conservative — and only protocol-grounded — response is to treat the entire chain as suspect. Pre-Cnt events stay readable as forensic record but they cannot ground new trust decisions. Consumers may apply out-of-band judgment about specific events if they have it (their own observation history; an external attestation from the owner via a different channel) but the protocol cannot make those judgments for them.
+The conservative — and only protocol-grounded — response is to treat the entire chain as suspect. Pre-contested events stay readable as forensic record but cannot ground new trust decisions. Consumers may apply out-of-band judgment about specific events if they have it (their own observation history; an external attestation through a different channel) but the protocol cannot make those judgments for them.
 
-Contrast with **Decommission** (Dec): Dec is the operator's clean-retirement signal — no compromise, the operator intentionally ending the chain. Pre-Dec events retain trust under their original authorization. Once `Dec` lands the chain is locked at-and-before `v_{d-1}` and frozen at `v_d`; subsequent submissions (including any `Cnt`) are rejected — the repair-event bound (see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)) prevents targeting the locked portion. Past content keeps its meaning. The asymmetry exists because if Dec also wiped trust, it would just be Cnt by another name; the whole reason for two terminal kinds is that Dec means "clean stop" and Cnt means "compromised."
+Contrast with **Decommission** (Dec): when `Dec` lands cleanly on a linear chain (not in a divergent set), it is a clean-retirement signal — no compromise indicated. Pre-Dec events retain trust under their original authorization. Once `Dec` lands the chain is locked at-and-before `v_{d-1}` and frozen at `v_d`; subsequent submissions are rejected — the repair-event bound (see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)) prevents targeting the locked portion. Past content keeps its meaning. (Note: `Dec` is also a non-archiving privileged event, so when it lands in a divergent set it triggers the contested transition rather than clean decommission — see [§No dedicated termination-by-contest event](#no-dedicated-termination-by-contest-event) for the chain-state-effect distinction.)
 
-For a chain that is divergent but not yet contested — divergence has been observed but Cnt hasn't landed — events at serials before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at serials after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by Cnt (chain becomes whole-suspect) or, where applicable, by recovery / repair (KEL Rec, SEL Rpr — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
+For a chain that is divergent but not yet contested — non-privileged divergence (e.g., ixn-ixn on KEL or upd-upd on SEL) — events at serials before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at serials after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by a non-archiving privileged event upgrading the divergent set (chain becomes whole-suspect) or by recovery / repair (KEL `Rec`, SEL `Rpr` — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
 
 ##### Cases that all look identical to a consumer
 
 A worked enumeration to make the indistinguishability concrete. In each case the resulting chain shape is the same; the consumer can't tell which case actually happened from the chain alone.
 
-1. **Operator detects a second governance party's Evl, submits Cnt to terminate before further damage.** Cnt = legitimate operator action; some prior events may have been adversary-authored.
-2. **Adversary holds current governance, submits Cnt as denial-of-service.** Cnt = adversary action; prior chain may or may not have been tainted.
-3. **Adversary rotates governance away from operator via a legitimate-looking Evl, then submits Cnt under the new authority.** Cnt = adversary action under freshly-rotated authority; operator has no protocol recourse.
-4. **Two legitimate parties race-extend (no compromise), one submits Cnt to terminate the messy state.** Cnt = legitimate; no actual compromise; pre-Cnt events all legitimate.
-5. **Adversary acquires keys briefly, doesn't act, operator detects key exposure and Cnts as a precaution.** Cnt = legitimate; past events may or may not have been compromised during the exposure window.
+1. **A legitimate party detects a second governance party's `Evl`, submits `Dec` on their own attested tip; `Dec` lands in the divergent set; chain contested.** Legitimate action; some prior events may have been adversary-authored.
+2. **Adversary holds current governance, submits `Dec` (or `Ror` on KEL) as denial-of-service; lands in a divergent set; chain contested.** Adversary action; prior chain may or may not have been tainted.
+3. **Adversary rotates governance away from the legitimate party via a legitimate-looking `Evl`, then submits `Dec` under the new authority.** Adversary action under freshly-rotated authority; no protocol recourse remains.
+4. **Two legitimate parties race-extend (no compromise); one's submission is a non-archiving privileged event that lands in the resulting divergent set.** Legitimate; no actual compromise; pre-contested events all legitimate.
+5. **Adversary acquires keys briefly, submits a `Dec`/`Ror`/`Sea` that lands in a divergent set as a precautionary state-change.** Adversary action; past events may or may not have been compromised during the exposure window.
 
 Same chain shape in every case. The protocol cannot distinguish them. Treating the chain as suspect is the only response that fails secure across all five.
 
@@ -363,17 +379,17 @@ The doctrine closes attacks rooted in **past** state. It does NOT defend against
 If an adversary acquires sufficient currently-controlling authority — current KEL signing+recovery keys; current IEL `governancePolicy` threshold; current SEL identity binding's authorizing IEL event — they ARE the chain's current state by every protocol-observable measure. They can:
 
 - Submit governance-authorized events (KEL `Rot`/`Ror`, IEL `Evl`, SEL `Sea`) that legitimately rotate authority away from the prior operator.
-- Subsequently submit `Cnt` (or any other governance act) under the new authority.
+- Subsequently submit `Dec` (or any other governance act) under the new authority.
 - Lock the legitimate prior operator out of all protocol-level recourse.
 
-There is no protocol mechanism to distinguish "legitimately current" from "compromise-acquired-current." There is a narrow detect-and-respond window before the rotation lands: if the legitimate operator detects compromise and submits `Cnt` under the still-current pre-rotation authority before the adversary's rotation event lands, the legitimate `Cnt` wins. After the rotation, no protocol-level recourse remains.
+There is no protocol mechanism to distinguish "legitimately current" from "compromise-acquired-current." There is a narrow detect-and-respond window before the rotation lands: if the legitimate operator detects compromise and acts under the still-current pre-rotation authority before the adversary's rotation event lands, the legitimate event wins. After the rotation, no protocol-level recourse remains.
 
-**Defense for current-state compromise is operational**, not structural. Practices compose across both protocol layers (KEL's dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` blocks signing/rotation-key compromise regardless of recovery-key custody; IEL policy composition handles total device compromise via `Evl` rotation of the lost device):
+**Defense for current-state compromise is operational**, not structural. Practices compose across both protocol layers (KEL's dual-signature requirement on `Rec`/`Ror`/`Dec` blocks signing/rotation-key compromise regardless of recovery-key custody; IEL policy composition handles total device compromise via `Evl` rotation of the lost device):
 
 - **High thresholds** in IEL `governancePolicy` / `authPolicy` — raise the cost of accumulating sufficient policy-member authority.
 - **Custody separation** sized to threat model — KEL-internal (recovery key in different custody from the signing key, e.g., HSM or ceremony-gated) hardens against coerced signing or partial-device compromise; IEL-level (policy members on distinct devices/locations/custodians) hardens against total device compromise.
 - **Monitoring** for unexpected governance / rotation events — fire alerts before adversary completes rotation.
-- **Fast operator response** — cut the detect-to-Cnt latency to within the gossip window.
+- **Fast operator response** — cut the detect-to-respond latency to within the gossip window.
 - **Threshold redundancy** (`M > N`) — re-anchor via a different threshold-satisfying subset when one identity becomes contested (see [features/policy.md §Threshold Redundancy](features/policy.md#threshold-redundancy)).
 - **Abandon-and-reincept** under a new prefix when current-state compromise is suspected and no ratchet-out path exists — start fresh with new keys/policies; existing dependent chains rebind forward to the new identity.
 
@@ -393,7 +409,7 @@ The operational stakes for getting policy design wrong are concrete. A chain who
 
 Policies designed for ratchet-out — high thresholds, redundancy beyond the threshold, hierarchical scope partitioning — keep the prefix stable across compromise events. **Survivable compromise instead of catastrophic reincept.** Design policies to survive compromise without truck-roll; treat reincept as the option of last resort, not the routine response.
 
-The principle applies uniformly across KEL, IEL, and SEL. **KEL** uses the dual-signature requirement on `Rec`/`Ror`/`Cnt`/`Dec` to block signing/rotation-key compromise (exfiltration, brute force, coerced signing, side channels) regardless of where the recovery key is custodied — a single-device deployment is first-class for threat models where signing-tier compromise wouldn't also expose the recovery key. Custody separation (different device, HSM, ceremony-gated) is an optional deployment hardening for threat shapes where signing and recovery would otherwise fall together (coerced signing especially). **IEL** uses `M > N` thresholds across distinct custodians plus hierarchical scope partitioning (root IEL → subordinate IELs scoped narrowly) to handle total device compromise — surviving members rotate the contested device out via `Evl` without losing the identity. **SEL** inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience. The choice between KEL-internal custody separation and IEL multi-device composition depends on the application's threat shape and operational model; the protocol supports either, and both can be combined.
+The principle applies uniformly across KEL, IEL, and SEL. **KEL** uses the dual-signature requirement on `Rec`/`Ror`/`Dec` to block signing/rotation-key compromise (exfiltration, brute force, coerced signing, side channels) regardless of where the recovery key is custodied — a single-device deployment is first-class for threat models where signing-tier compromise wouldn't also expose the recovery key. Custody separation (different device, HSM, ceremony-gated) is an optional deployment hardening for threat shapes where signing and recovery would otherwise fall together (coerced signing especially). **IEL** uses `M > N` thresholds across distinct custodians plus hierarchical scope partitioning (root IEL → subordinate IELs scoped narrowly) to handle total device compromise — surviving members rotate the contested device out via `Evl` without losing the identity. **SEL** inherits both via its IEL binding — a well-designed IEL governance policy is the SEL's main defense against adversary patience. The choice between KEL-internal custody separation and IEL multi-device composition depends on the application's threat shape and operational model; the protocol supports either, and both can be combined.
 
 ##### Cascade-reincept honesty
 
@@ -403,9 +419,9 @@ The expensive case is contesting an **IEL at the root of a dependency tree**: th
 
 ##### Exclusion Evolutions and the Seal Advance
 
-An **exclusion evolution** is a governance `Evl` where the new policy `P_new` strictly removes parties who satisfied the old policy `P_old` — a removed member, a raised threshold past someone's contribution, a participant replacement. Pure additions or threshold-decreases that keep the prior membership are NOT exclusion evolutions — anyone who could `Cnt` under `P_old` can also `Cnt` under `P_new`, so no new "had authority, lost it" position opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
+An **exclusion evolution** is a governance `Evl` where the new policy `P_new` strictly removes parties who satisfied the old policy `P_old` — a removed member, a raised threshold past someone's contribution, a participant replacement. Pure additions or threshold-decreases that keep the prior membership are NOT exclusion evolutions — anyone who could submit governance acts under `P_old` can also submit under `P_new`, so no new "had authority, lost it" position opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
 
-That position matters because of how the seal-cap works. The kill-switch authority granted by the Cnt-parent's policy (`Cnt.previous`'s `governancePolicy`) is symmetric. It serves the operator against single-event adversarial takeover (the operator's `Cnt` against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy is the parent-policy for any `Cnt` landing at `v_N`, and remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` — including the rotated-out party — can `Cnt` the chain at `v_N` within that window, subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only). (On IEL, this scenario manifests as a competing `Evl` rather than a `Cnt` — see [§IEL repair-event absence](#iel-repair-event-absence).)
+That position matters because of how the seal-cap works. The kill-switch authority granted by the parent policy (`v_{N-1}`'s `governancePolicy`) is symmetric. It serves the operator against single-event adversarial takeover (the operator submits a non-archiving privileged event extending `v_{N-1}` to trigger contested against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy is the parent-policy for any non-archiving privileged event landing at `v_N` (per the parent-at-seal boundary case), and remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` — including the rotated-out party — can trigger contested at `v_N` within that window by submitting a non-archiving privileged event extending `v_{N-1}` (on KEL: `Ror` or `Dec`; on SEL/IEL: `Evl`/`Sea` or `Dec`), subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
 
 **`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `ielEvent` to a newer IEL state — pure seal advance when `ielEvent` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
 
@@ -416,11 +432,11 @@ That position matters because of how the seal-cap works. The kill-switch authori
 ##### Shape constraints on Sea
 
 - Parent cannot be `Icp` — `Sea` is meaningful only after a policy-evolution event has opened a window.
-- Parent cannot be `Cnt`/`Dec` — terminal events do not extend.
+- Parent cannot be `Dec` — terminal events do not extend.
 - **IEL Sea-Sea forbidden.** `Sea` carries no content or policy fields on IEL, so any back-to-back Sea is semantically redundant.
 - **SEL Sea-Sea allowed only with strict-advance.** The new `Sea` must strictly advance `ielEvent` to a newer IEL state — re-ratcheting the binding after the bound IEL evolves. Equal `ielEvent` between consecutive Seas is rejected.
 
-SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can `Cnt` any SEL whose `ielEvent` resolves to the pre-exclusion state. An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
+SEL inherits the concern via its IEL binding: an exclusion evolution on the bound IEL leaves a window during which `v_{N-1}`'s IEL-policy parties can trigger contested on any SEL whose `ielEvent` resolves to the pre-exclusion state (by submitting a non-archiving privileged event extending the SEL's `v_{d-1}`). An IEL `Sea` resolves the IEL-level exposure; an SEL `Sea` resolves the SEL-level exposure by re-anchoring the binding past the exclusion.
 
 ---
 
@@ -501,62 +517,35 @@ The protocol cannot — and does not — prevent any currently-authorized party 
 
 The operator's design discipline closes the implicit-endorsement gap. The discipline splits by event semantics:
 
-#### Endorsement events — extend only attested events
+#### Extend only attested events
 
-All chain events except `Cnt` and `Dec` are **endorsement-class**: signing an event with `previous = parent.said` is a structural attestation that the predecessor is acceptable as the parent state for further chain evolution. Extending an adversary's event with an endorsement-class event would be semantically equivalent to endorsing it — the operator's signed event chains from, and carries forward, the adversary's content. (`Cnt` and `Dec` are termination-class — see below.)
+Every chain event structurally attests to its parent — signing with `previous = parent.said` declares the predecessor acceptable as the parent state. Extending an adversary's event would be semantically equivalent to endorsing it: the new signed event chains from, and carries forward, the adversary's content.
 
-The operator extends only:
+A submitter extends only:
 
-- **Their own previously-signed events.** Any event the operator authored is theirs to extend.
+- **Their own previously-signed events.** Any event the submitter authored is theirs to extend.
 - **Attested-shared state.** Two structural shapes:
-  - **The divergence ancestor `v_{d-1}`.** On a fork-contest, `v_{d-1}` is the unique shared parent of all events at `v_d`. Every node accepts `v_{d-1}` as authentic; extending it (e.g., a divergence-ancestor-extending `Rec`/`Rpr`) carries no implicit endorsement of either `v_d` branch.
-  - **SEL `Icp` via dedup-equivalence.** SEL `Icp` is permissionless and deterministic — the prefix derives from `(identity, topic)` and `Icp.said` derives from the full event with `said`+`prefix` blanked. Any submitter's `Icp` for the same `(identity, topic)` produces the same SAID. The operator's own `Icp` is therefore structurally indistinguishable from any other submitter's `Icp`; extending it is extending the operator's own attested state, not the adversary's.
+  - **The divergence ancestor `v_{d-1}`.** On a fork, `v_{d-1}` is the unique shared parent of all events at `v_d`. Every node accepts `v_{d-1}` as authentic; extending it (e.g., a divergence-ancestor-extending `Rec`/`Rpr`, or a non-archiving privileged event that triggers contested via the upgrade rule) carries no implicit endorsement of either `v_d` branch.
+  - **SEL `Icp` via dedup-equivalence.** SEL `Icp` is permissionless and deterministic — the prefix derives from `(identity, topic)` and `Icp.said` derives from the full event with `said`+`prefix` blanked. Any submitter's `Icp` for the same `(identity, topic)` produces the same SAID. The submitter's own `Icp` is therefore structurally indistinguishable from any other submitter's `Icp`; extending it is extending attested state, not the adversary's.
 
-The operator never points an endorsement-class event's `previous` at an adversary event. This is an operator-side construction rule applied at the builder layer — the verifier accepts any structurally-valid parent reference; the discipline closes the gap that the verifier structurally cannot.
+The submitter never points an event's `previous` at an adversary event. This is a construction rule applied at the builder layer — the verifier accepts any structurally-valid parent reference; the discipline closes the gap that the verifier structurally cannot.
 
-#### Termination events — repudiation, not endorsement
+**Adversary-extended linear chains.** If an adversary captures KEL signing-key material (or SEL `authPolicy` material) and extends the chain linearly (`v_N`, `v_{N+1}`, …, `v_M`), the legitimate party's local chain after gossip has `v_M` as its highest-serial event. The legitimate party has no protocol move that targets `v_M` without endorsing the adversary's events — any submission extending `v_M.said` would attest to it. The structurally available moves all extend `v_{N-1}` (the legitimate party's last attested event):
 
-`Cnt` and `Dec` are **termination-class**. `previous = parent.said` on a termination event structurally means "I observe this chain state and terminate it," not "I accept the parent as a basis for further chain evolution." There is no further chain evolution to endorse; the chain ends with the terminal.
+- A non-archiving privileged event extending `v_{N-1}` lands at `v_N` as sibling of `v_N_adv` — creates a divergent set; privileged-divergence-is-terminal fires; chain contested.
+- The chain cannot be recovered via `Rec`/`Rpr` from this position because the bound (condition 2b) requires the repair event's `previous` to be at-or-after the most recent privileged event; if the adversary's extension included any privileged event, `Rec`/`Rpr` extending `v_{N-1}` would violate the bound.
 
-The implication is that **termination events follow Cnt's structural parent rule unconditionally** (parent at `Cnt.serial − 1`, subject to the locked-portion bound — see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)), including the rare case where that parent is an adversary event:
-
-- **Cnt on an adversary-extended linear chain.** If an adversary captures the operator's signing key (KEL) or `authPolicy` material (SEL) and submits one or more endorsement-class events `v_N`, `v_{N+1}`, …, `v_M` onto the operator's chain (linear extension; no divergence yet), the operator's local chain after gossip has `v_M` as its highest-serial event. The operator constructs `Cnt` with `previous = v_{M-1}_adv.said` and `serial = M`; on a multi-event-extended chain that parent is an adversary event. This is intentional. Cnt's repudiation semantic is what makes it coherent to point at an adversary event in this shape: the operator is observing the chain's tampered state and terminating it, not extending the adversary's chain.
-
-  ```
-  Pre-state (adversary-extended linear chain; operator's last attested
-  event is v_{N-1}; v_N..v_M are adversary events):
-
-    ... → v_{N-1} → v_N_adv → v_{N+1}_adv → ... → v_M_adv  (chain max-serial)
-            ↑                                          ↑
-            operator's last                            adversary-extended
-            attestation                                chain max-serial
-
-  Operator submits Cnt:
-    cnt.previous = v_{M-1}_adv.said
-    cnt.serial  = M
-
-  Post-state (fresh divergence at v_M; privileged-divergence fires):
-
-    ... → v_{N-1} → ... → v_{M-1}_adv ─┬─ v_M_adv ┐
-                                       └─ Cnt     ┴── contested-terminal
-
-  Cnt's previous points at an adversary event (v_{M-1}_adv). This is
-  the termination exception: Cnt is repudiation, not endorsement; the
-  operator is not attesting to v_{M-1}_adv's acceptability as a parent
-  for further evolution — there is no further evolution after Cnt.
-  ```
-
-- **Dec in practice extends only attested state.** `Dec` means clean retirement, which is not the operator's response to an adversary-extended chain. The operator's response to adversary extension is `Cnt`, not `Dec`. So while Dec is termination-class by semantics, in practice an operator's Dec only extends their own attested tip.
+Practically: when the legitimate party can act under the still-current `v_{N-1}`-anchored authority, they have a contested-termination path; once the adversary has rotated authority forward (privileged events extending past `v_{N-1}`), no protocol-level recourse remains and the response is reincept.
 
 #### Implications
 
-- **SEL pre-Icp camping response (endorsement-class).** When an adversary submits `[Icp, Est_stale]` first, the operator's response is `[Icp, Est_legit]` with `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Est_stale.said`. `Est_legit` is endorsement-class; pointing it at `Est_stale` would attest to `Est_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; the operator resolves via `Rpr` extending their `Est_legit` branch.
+- **SEL pre-Icp camping response.** When an adversary submits `[Icp, Est_stale]` first, the legitimate party's response is `[Icp, Est_legit]` with `Est_legit.previous = Icp.said` (extending `Icp` via dedup-equivalence), **not** `previous = Est_stale.said`. Pointing `Est_legit` at `Est_stale` would attest to `Est_stale`'s acceptability as a parent. The construction creates a non-privileged divergent set at `v_1`; resolution is via `Rpr` extending the `Est_legit` branch.
 
-- **KEL/SEL divergence resolution (endorsement-class).** The operator's `Rec` (KEL) or `Rpr` (SEL) extends either the divergence ancestor `v_{d-1}` (attested-shared; divergence-ancestor-extending shape, lands at `v_d`) or their own existing branch tip at `v_d` (own attestation; branch-tip-extending shape, lands at `v_{d+1}`). The operator never points an endorsement-class `Rec`/`Rpr` at the other branch's tip. The "whoever holds the recovery/governance key dictates which branch survives" language reduces to "the operator extends their own branch or `v_{d-1}`."
+- **KEL/SEL divergence resolution.** `Rec` (KEL) or `Rpr` (SEL) extends either the divergence ancestor `v_{d-1}` (attested-shared; divergence-ancestor-extending shape, lands at `v_d`) or the legitimate party's own branch tip at `v_d` (own attestation; branch-tip-extending shape, lands at `v_{d+1}`). The repair event never points at the other branch's tip. "Whoever holds the recovery/governance key dictates which branch survives" reduces to "the submitter extends their own branch or `v_{d-1}`."
 
-- **Cnt placement (termination-class; exception to the no-extend-adversary rule).** Cnt's parent at `Cnt.serial − 1` resolves uniformly across linear and divergent shapes. On a linear chain with no adversary extension, the parent is the unique event at `Cnt.serial − 1` (the operator's own attested event). On a divergent chain, the parent is `v_{d-1}` (the divergence ancestor; attested-shared by chain validity since it's the unique parent of every branch at `v_d`). On an adversary-extended linear chain, the parent may be an adversary event — Cnt's repudiation semantic makes this coherent, per the diagram above.
+- **Contested-state creation.** A non-archiving privileged event (KEL `Ror`/`Dec`; SEL `Sea`/`Dec`; IEL `Evl`/`Sea`/`Dec`) extends the submitter's own attested tip or `v_{d-1}`. If the local tip is at `v_{d-1}` (no divergence yet observed locally, or divergence at `v_d` with the legitimate party not recognizing either `v_d` branch), the event lands at `v_d` and creates or joins a divergent set; privileged-divergence-is-terminal fires.
 
-- **Endorsement-class events never extend adversary content.** This rule is structurally absolute. Termination-class events follow the protocol's structural parent rule unconditionally, with the only practical case where `previous` lands on an adversary event being `Cnt` on a multi-event adversary-extended linear chain. When prose anywhere in the design or analysis docs claims an operator's endorsement-class event linearly extends an adversary event, the prose is wrong by construction.
+- **No event extends adversary content.** This rule is structurally absolute. Where the legitimate party can act, the structurally valid construction always extends attested state (their own or `v_{d-1}`).
 
 #### Cross-primitive symmetry
 
@@ -588,6 +577,22 @@ When merging new events into an existing chain (submit handler), first verify th
 
 Each verifier supports registering SAIDs of interest before the walk so the walk records what it observed without separate DB queries. KEL registers anchor SAIDs (KEL ixns observed at IEL/SEL Icp time and similar binding points); IEL and SEL register caller-cared-about SAIDs for satisfaction tracking. Registration happens before the walk; results are available on the verification token. The pattern eliminates a second DB pass for SAID-presence questions.
 
+### policy_satisfied
+
+The verifier produces a `policy_satisfied: bool` on its verification token. Definition: `policy_satisfied = true` iff no walk-time pathology has been observed during the walk. The flag is **monotonic-falsy**: once flipped false, it stays false for the rest of the walk's reporting.
+
+On a non-divergent chain, the entire walk is the clean segment; all queried SAIDs observed-as-anchored are recorded in `satisfied_saids`. On a divergent chain, only SAIDs observed in the pre-divergence portion are recorded; once recorded, those entries are not retroactively invalidated by later pathology.
+
+Walk-time pathologies that flip `policy_satisfied = false`:
+- Divergence at or before the SAID's anchor observation (post-divergence anchoring).
+- Governance / anchor check failures (`Icp` self-governance soft-fail, `Dec` governance soft-fail, post-divergence `Evl` soft-fail).
+- Missing SAD-object dependencies in collect-mode walks.
+- Other structural anomalies observed during the walk.
+
+The locked-portion doctrine (see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)) means settled events — those whose anchors fell in a clean walk segment, in the locked portion — are immune to subsequent chain pathology. Once `policy_satisfied` is true for a SAID in the locked portion, it stays true regardless of subsequent chain events.
+
+**Merge-layer composition.** A submission whose `policy_satisfied` is false at the post-batch verifier walk is rejected with 403 Forbidden. The new events would not anchor under the agreed-upon (clean walk segment, locked portion) chain interpretation. This is the gate that hard-fails governance-failed `Dec` submissions: the merge layer applies the same `policy_satisfied` check across all event kinds (including `Dec`/`Rpr`/`Rec`), without per-kind carve-outs.
+
 ### Advisory Locking
 
 All verify-then-write paths hold PostgreSQL advisory locks for the duration of both verification and write. Per-primitive locked-transaction types implement the corresponding `PageLoader` trait by reading under the advisory lock; the same transaction is then used for the write. This eliminates time-of-check-to-time-of-use vulnerabilities. Applies uniformly across KEL, IEL, and SEL submit paths.
@@ -598,8 +603,8 @@ The effective SAID is the canonical chain-tip representation across KEL, IEL, an
 
 **Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — IEL only) carry the `Dec` event's real SAID. Two states have synthetic representations:
 
-- `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial.
-- `hash_effective_said("contested:{prefix}")` — chain has reached a `Cnt` event and is permanently frozen.
+- `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial (non-privileged divergent set; not yet contested).
+- `hash_effective_said("contested:{prefix}")` — chain's divergent set contains a non-archiving privileged event; privileged-divergence-is-terminal has fired; chain is permanently frozen.
 
 The synthetic depends only on `(state, prefix)` — no chain history, no fork point, no serial. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
 
@@ -607,14 +612,14 @@ The synthetic depends only on `(state, prefix)` — no chain history, no fork po
 
 **State-detection algorithm.** Given an observed effective SAID for prefix `P`, a node tests:
 
-1. `observed == hash_effective_said("divergent:{P}")` → chain is divergent.
-2. `observed == hash_effective_said("contested:{P}")` → chain is contested (`Cnt`'d, terminal).
-3. Otherwise → chain has a real tip event SAID; for IEL this may be a `Dec`-tip (use the chain's per-event lookup to disambiguate if needed); for KEL/SEL this is always a normal tip.
+1. `observed == hash_effective_said("divergent:{P}")` → chain is non-privileged divergent (recoverable via `Rec`/`Rpr`).
+2. `observed == hash_effective_said("contested:{P}")` → chain is contested (privileged-divergence-is-terminal has fired; terminal).
+3. Otherwise → chain has a real tip event SAID; the tip may be a normal extension event or a `Dec` (use per-event lookup to disambiguate).
 
-States are mutually exclusive at any instant — at most one synthetic-match holds. `Cnt` is terminal, so a contested chain cannot also be divergent at the same point in time; divergence is by definition pre-`Cnt`.
+States are mutually exclusive at any instant — at most one synthetic-match holds. Contested is terminal; divergent (non-privileged) is the recoverable intermediate.
 
 A node observing an effective SAID for a prefix it has no local state for can still compute the synthetics: the function is `(state, prefix) → SAID` with no chain-history input. This is what lets a peer recognize "your chain `P` is contested" purely from the observed SAID, even on first contact.
 
 The canonical helper is `hash_effective_said(input: &str)` in `lib/kels/src/types/sync.rs`. Inputs follow the `"<state>:{prefix-qb64}"` shape.
 
-**Why divergence resolution doesn't need fork-point detail.** Differently-divergent chains across nodes are resolved through local `Cnt` (chain becomes contested, terminal) or, on KEL specifically, local `Rec` (revealing event that locks the KEL alongside resolving). Cross-node sync of differently-divergent chains is intentionally not attempted — chains that can't be replayed deterministically must be resolved locally. The synthetic abstraction's prefix-only shape aligns with this design choice: a node receiving a divergent-effective-SAID from a peer learns "peer's chain is divergent" but cannot (and should not try to) reconcile against its own divergent state.
+**Why divergence resolution doesn't need fork-point detail.** Differently-divergent chains across nodes are resolved through local non-archiving privileged events (transitions to contested-terminal) or local `Rec`/`Rpr` (archiving repair). Cross-node sync of differently-divergent chains is intentionally not attempted — chains that can't be replayed deterministically must be resolved locally. The synthetic abstraction's prefix-only shape aligns with this design choice: a node receiving a divergent-effective-SAID from a peer learns "peer's chain is divergent" but cannot (and should not try to) reconcile against its own divergent state.
