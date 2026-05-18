@@ -6,7 +6,7 @@ Convenience constructor for SAD objects — content + optional authority / repli
 
 The wrapper shape per [../../../infrastructure/sadstore.md §Custody](../../../infrastructure/sadstore.md#custody-per-sad-object-authority) and §Availability:
 
-- `ownerIelEvent: Option<Digest256>` — IEL **event** SAID. Write attestation; pins the writer's identity + tracked `authPolicy` at write time. Dereferencable for both frozen-mode and identity-current verification. `None` for unsigned / anonymous writes.
+- `ownerIelEvent: Option<Digest256>` — IEL **event** SAID. Write attestation; pins the writer's identity + tracked `authPolicy` at write time. Dereferencable for both point-in-time and identity-current verification. `None` for unsigned / anonymous writes.
 - `readPolicy: Option<Digest256>` — policy SAID. Read enforcement at fetch time via `evaluate_signed_policy` against a verified prefix set. Composable (`identity(X)`, `threshold`, etc.). `None` for publicly readable content.
 - `availability: Option<Availability>` — nested struct `{ nodes: Option<Digest256>, ttl: Option<u64>, once: Option<bool> }`. Replication + lifecycle. Sibling of custody, not part of it.
 

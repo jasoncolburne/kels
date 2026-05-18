@@ -2,7 +2,7 @@
 
 **Canonical name:** `SelEventBuilder`
 
-Constructs structurally-valid SEL events (`Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Cnt`, `Dec`), wiring `previous`, `serial`, `identity` (on `Icp`), `ielEvent` (on every v1+ kind), and `content`. The `content` field is itself a SAD constructed via [`SadObjectBuilder`](sad-object-builder.md). Repair construction derives the boundary uniformly (`boundary = surviving_tip.serial`) per the SEL repair-workflow.
+Constructs structurally-valid SEL events (`Icp`, `Est`, `Upd`, `Sea`, `Rpr`, `Dec`), wiring `previous`, `serial`, `identity` (on `Icp`), `ielEvent` (on every v1+ kind), and `content`. The `content` field is itself a SAD constructed via [`SadObjectBuilder`](sad-object-builder.md). Repair construction derives the boundary uniformly (`boundary = surviving_tip.serial`) per the SEL repair-workflow.
 
 **Consumers:** CLI; per-peer address-SEL publishers; credential-issuance flows; any caller producing SEL events.
 

@@ -25,7 +25,7 @@ Fields:
 - `topic` — Event type (e.g., `kels/sel/v1/keys/mlkem`)
 - `content` — SAID of the content object in the object store (None for v0)
 - `identity` — IEL prefix the chain is bound to. Set on `Icp` only; participates in prefix derivation alongside `topic`. Forbidden on every other kind.
-- `ielEvent` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `authPolicy` for `Upd` and `governancePolicy` for `Sea` / `Rpr` / `Cnt` / `Dec`. See [sel/events.md](../primitives/data/event-logs/sel/events.md) for the full per-kind matrix.
+- `ielEvent` — SAID of the IEL event whose policy authorizes this SEL event. Forbidden on `Icp` (permissionless inception); required on every v1+ kind. Resolves to `authPolicy` for `Upd` and `governancePolicy` for `Sea` / `Rpr` / `Dec`. See [sel/events.md](../primitives/data/event-logs/sel/events.md) for the full per-kind matrix.
 
 #167: `custody` and `availability` are not part of the `SadEvent` struct, so any inline keys with those names get silently dropped during deserialization — chain events broadcast as a unit and can't carry differential authority/replication across links. The drop is structural (type-system), not an explicit submit-handler rejection: a chain-event JSON body containing those keys parses cleanly with the keys ignored. The `CustodyValidationError::CustodyNotAllowedOnEvent` / `AvailabilityNotAllowedOnEvent` variants exist for a future explicit-rejection path (e.g., `deny_unknown_fields` on `SadEvent` deserialization or boundary JSON-key inspection); they are not raised today.
 
@@ -86,11 +86,11 @@ A SEL transitions through states (Active → Divergent → Contested / Decommiss
 - Contested chain: `hash_effective_said("contested:{prefix}")` — terminal.
 - Decommissioned chain: the `Dec` event's SAID — terminal owner-initiated end.
 
-For the full chain lifecycle (divergence detection, repair via discriminator, contest, decommission, evaluation seal, anchor non-poisonability rule, server-observable case taxonomy), see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
+For the full chain lifecycle (divergence detection, repair via discriminator, decommission, evaluation seal, anchor non-poisonability rule, server-observable case taxonomy), see [sel/event-log.md](../primitives/data/event-logs/sel/event-log.md). Repair history and archived events are queryable via the `sad_event_archives`, `sad_event_repairs`, and `sel_repair_events` tables — exposed through the repair endpoints listed below.
 
 ### Repair Propagation
 
-When a repair, contest, or decommission succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects the lifecycle transition from the kinds present in the batch (`Rpr` / `Cnt` / `Dec`) and applies the matching path.
+When a repair or decommission succeeds, the SADStore publishes the new effective SAID to Redis. Peer gossip nodes fetch the full chain from origin and submit to their local SADStore; the receiving handler auto-detects the lifecycle transition from the kinds present in the batch (`Rpr` / `Dec`) and applies the matching path.
 
 If a node misses the gossip message (e.g., it was offline), the owner submits the events directly to that node.
 
