@@ -3,7 +3,7 @@
 The structural rules that govern KELS — security invariants, cross-cutting doctrines, and verification mechanics. Each part below is load-bearing for protocol correctness; per-primitive design docs cross-reference these as the upstream source rather than re-deriving them.
 
 **[Part 1 — Security Invariants](#part-1-security-invariants):**
-- [Terminology](#terminology) — Locked, Frozen, Cross-chain anchor satisfaction.
+- [Terminology](#terminology) — Locked, Chain states (Active/Divergent/Decommissioned/Contested), Cross-chain anchor satisfaction.
 - [Operation Categories](#operation-categories)
 - [Compromise is Permanent](#compromise-is-permanent) — the doctrine, and the structural mechanisms that enforce it:
   - [Forks are Seal-Bounded](#forks-are-seal-bounded)
@@ -35,11 +35,15 @@ The invariants below are load-bearing for KELS security. They are stated structu
 
 ### Terminology
 
-Three structural concepts referenced throughout the doctrine. Distinct senses; not interchangeable.
+Structural concepts referenced throughout the doctrine. Distinct senses; not interchangeable.
 
 - **Locked**: the portion of a chain before its most recent privileged event. **Within-chain rule.** Locked events are structurally immutable within their own chain — `Rec` (KEL) and `Rpr` (SEL) on this chain cannot target them, and within-chain historical authorizations are not retroactively unsatisfiable. The privileged event ratchets the lock forward. This subsumes the historical-immutability sense used elsewhere in the corpus (e.g., "the chain's history at that serial is locked") — both phrasings describe the same boundary from different angles.
-- **Frozen**: the chain can no longer accept new events. Caused by `Dec` (decommissioned) or privileged-divergence-is-terminal firing on any non-archiving privileged event in a divergent set (contested).
-- **Cross-chain anchor satisfaction**: an IEL/SEL event's policy satisfaction at consumer-query time is structurally checked against contributing KEL anchors. If a contributing KEL `Rec` lands and archives the event that carried the anchor, the KEL verifier reports the SAID as not-anchored on the canonical branch; the IEL/SEL's `policy_satisfied` flips false. **Distinct from locked/frozen** — locked IEL/SEL events remain structurally locked within their own chains; cross-chain anchor satisfaction is a structural verification concern handled by composition redundancy (anchor count above exact threshold). See [§Anchor Tier Elevation §Threshold Composition](#threshold-composition).
+- **Chain states**: a chain is in exactly one of four states. State names are used precisely throughout the doctrine.
+  - **Active** — linear chain; accepts linear extension.
+  - **Divergent** (non-privileged divergence only) — multiple branches at the same serial; the divergent set contains only non-archiving non-privileged events (Ixn-Ixn on KEL; Upd-Upd / Est-Est on SEL). Recoverable via `Rec` (KEL) / `Rpr` (SEL) — returns to Active. A joining non-archiving privileged event upgrades the chain to Contested.
+  - **Decommissioned** — linear `Dec` has landed. Accepts no linear extension. Can transition to Contested via a competing non-archiving privileged event creating a divergent set at `Dec`'s serial — see [§Order-independent divergent transitions](#order-independent-divergent-transitions).
+  - **Contested** — privileged-divergence-is-terminal has fired (a divergent set contains a non-archiving privileged event). Fully final — no event of any kind lands.
+- **Cross-chain anchor satisfaction**: an IEL/SEL event's policy satisfaction at consumer-query time is structurally checked against contributing KEL anchors. If a contributing KEL `Rec` lands and archives the event that carried the anchor, the KEL verifier reports the SAID as not-anchored on the canonical branch; the IEL/SEL's `policy_satisfied` flips false. **Distinct from within-chain state** — locked IEL/SEL events remain structurally locked within their own chains; cross-chain anchor satisfaction is a structural verification concern handled by composition redundancy (anchor count above exact threshold). See [§Anchor Tier Elevation §Threshold Composition](#threshold-composition).
 
 ### Operation Categories
 
@@ -196,7 +200,7 @@ A non-archiving privileged event (`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL) landin
 
 ```
   Pre-state:        ... → v_{d-1} ─┬─ ixn_a @ v_d → ixn_a' @ v_{d+1} → …  (pre-existing; may extend)
-                                   └─ ixn_b @ v_d                         (new; frozen at single event)
+                                   └─ ixn_b @ v_d                         (new; single event on the divergent branch)
 
   Construction:     evt.previous = v_{d-1}.said
                     evt.serial   = d
@@ -215,6 +219,30 @@ A non-archiving privileged event (`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL) landin
 ```
 
 In every scenario: the event's `previous` is the divergence-ancestor `v_{d-1}` (the unique parent at `serial − 1` — shared cross-node by chain validity), and the event lands at `v_d`. The repair-event bound (condition 2b) applies to `Rec`/`Rpr` and is enforced on KEL/SEL by the seal-cap; non-archiving privileged events reach the `v_{d-1}`-extending shape when the submitter's local tip is at `v_{d-1}` and they extend it directly with `previous = tip.said`.
+
+##### Order-independent divergent transitions
+
+Privileged-divergence-is-terminal is order-independent. A divergent set at the same serial containing a non-archiving privileged event transitions the chain to Contested regardless of which event landed first locally. The chain-state effect is determined by the divergent set's structural shape, not by arrival order.
+
+**Concrete consequence.** Decommissioned is final with respect to **linear extension** — no further events on a Decommissioned chain that extend it as a linear chain. Decommissioned is NOT final with respect to **divergent extension** — a non-archiving privileged event whose `previous` matches `Dec`'s parent (creating a divergent set at `Dec`'s serial) is accepted, and the chain transitions Decommissioned → Contested.
+
+**Federation-race convergence.** Two governance-authorized parties race competing privileged events extending the same `v_{d-1}`:
+
+- Node A receives `Dec` first → Decommissioned. Without order-independent treatment, the gossip-arriving competing event would be rejected → A stays Decommissioned.
+- Node B receives the competing event first → Active with that event as tip. Gossip-arriving `Dec` creates a divergent set at `v_d` → privileged-divergence-is-terminal fires → B is Contested.
+- `effective_tail_said(A) ≠ effective_tail_said(B)`; federation fails to converge; anti-entropy spins.
+
+Under the order-independent rule, A's gossip-arriving competing event is accepted as creating a divergent set at `v_d`. A transitions Decommissioned → Contested. Both nodes Contested; `effective_tail_said` matches; the federation converges.
+
+**Symmetry.** The rule applies regardless of which event lands first locally, and applies to any non-archiving privileged event:
+
+- KEL: `Ror`, `Dec`.
+- SEL: `Sea`, `Dec`.
+- IEL: `Evl`, `Sea`, `Dec`.
+
+Any of these landing in a divergent set with another non-archiving privileged event (or with a competing event of the same kind) produces Contested.
+
+This is a structural convergence property of the doctrine, not an operator recourse pattern. Recourse against compromise is the standard recovery primitives (`Rec`/`Rpr`) or higher-level policy rotation (IEL `Evl` to exclude a compromised member; rotating the IEL itself in parent policies if the IEL identity is compromised). The order-independent rule guarantees that federation races resolve consistently across nodes; it is not advice to deliberately diverge.
 
 ##### Repair-event authorization
 
@@ -245,7 +273,7 @@ Structural reasoning: chain data alone cannot distinguish a legitimate submitter
 - **Termination via clean shutdown**: `Dec`.
 - **Termination via contested transition**: any non-archiving privileged event (`Ror`/`Dec` on KEL; `Sea`/`Dec` on SEL; `Evl`/`Sea`/`Dec` on IEL) landing in a divergent set fires privileged-divergence-is-terminal. See §Worked scenarios above.
 - **Recovery from non-privileged divergence**: `Rec` (KEL) or `Rpr` (SEL).
-- **Recovery from privileged divergence**: impossible per privileged-divergence-is-terminal; chain frozen.
+- **Recovery from privileged divergence**: impossible per privileged-divergence-is-terminal; chain is Contested.
 
 On IEL specifically, every event is privileged so the contested chain state is equivalent to the divergent chain state — `is_contested ⇔ is_divergent`; any IEL divergence is contested-terminal by construction. The full structural argument lives in [primitives/data/event-logs/iel/event-log.md §Divergence is Contested-Terminal](primitives/data/event-logs/iel/event-log.md#divergence-is-contested-terminal).
 
@@ -356,7 +384,7 @@ After the contested transition, the only way to identify which events on the cha
 
 The conservative — and only protocol-grounded — response is to treat the entire chain as suspect. Pre-contested events stay readable as forensic record but cannot ground new trust decisions. Consumers may apply out-of-band judgment about specific events if they have it (their own observation history; an external attestation through a different channel) but the protocol cannot make those judgments for them.
 
-Contrast with **Decommission** (Dec): when `Dec` lands cleanly on a linear chain (not in a divergent set), it is a clean-retirement signal — no compromise indicated. Pre-Dec events retain trust under their original authorization. Once `Dec` lands the chain is locked at-and-before `v_{d-1}` and frozen at `v_d`; subsequent submissions are rejected — the repair-event bound (see [§Privileged Divergence is Terminal §Repair-event conditions](#privileged-divergence-is-terminal)) prevents targeting the locked portion. Past content keeps its meaning. (Note: `Dec` is also a non-archiving privileged event, so when it lands in a divergent set it triggers the contested transition rather than clean decommission — see [§No dedicated termination-by-contest event](#no-dedicated-termination-by-contest-event) for the chain-state-effect distinction.)
+Contrast with **Decommission** (Dec): when `Dec` lands cleanly on a linear chain (not in a divergent set), it is a clean-retirement signal — no compromise indicated. Pre-Dec events retain trust under their original authorization. Once `Dec` lands the chain is locked at-and-before `v_{d-1}`; linear extension is rejected, and the repair-event bound (see [§Repair-event conditions](#privileged-divergence-is-terminal)) prevents `Rec`/`Rpr` from targeting the locked portion. Past content keeps its meaning. A divergent extension at `Dec`'s serial — a competing non-archiving privileged event with `previous = v_{d-1}.said` — is accepted per [§Order-independent divergent transitions](#order-independent-divergent-transitions); the chain transitions Decommissioned → Contested. `Dec` is itself a non-archiving privileged event, so when `Dec` lands in a pre-existing divergent set (rather than on a linear chain) it triggers the contested transition directly — see [§No dedicated termination-by-contest event](#no-dedicated-termination-by-contest-event) for the chain-state-effect distinction.
 
 For a chain that is divergent but not yet contested — non-privileged divergence (e.g., ixn-ixn on KEL or upd-upd on SEL) — events at serials before the divergence point keep their trust grounding (the pre-divergence portion is structurally still linear and authorized). Events at serials after the divergence point are flagged as untrusted in the verifier's output but stay in storage. This intermediate state resolves either by a non-archiving privileged event upgrading the divergent set (chain becomes whole-suspect) or by recovery / repair (KEL `Rec`, SEL `Rpr` — chain returns to active trusted state with the discriminator-archived branch removed from live storage).
 
@@ -421,13 +449,13 @@ The expensive case is contesting an **IEL at the root of a dependency tree**: th
 
 An **exclusion evolution** is a governance `Evl` where the new policy `P_new` strictly removes parties who satisfied the old policy `P_old` — a removed member, a raised threshold past someone's contribution, a participant replacement. Pure additions or threshold-decreases that keep the prior membership are NOT exclusion evolutions — anyone who could submit governance acts under `P_old` can also submit under `P_new`, so no new "had authority, lost it" position opens. Only exclusion evolutions put a specific party in the structurally unique position of being able to satisfy `P_old` but not `P_new`.
 
-That position matters because of how the seal-cap works. The kill-switch authority granted by the parent policy (`v_{N-1}`'s `governancePolicy`) is symmetric. It serves the operator against single-event adversarial takeover (the operator submits a non-archiving privileged event extending `v_{N-1}` to trigger contested against an adversary's `Rot`/`Evl`/`Sea`); it also serves rotated-out parties against the operator's evolution event. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy is the parent-policy for any non-archiving privileged event landing at `v_N` (per the parent-at-seal boundary case), and remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Any party who satisfies `P_old` — including the rotated-out party — can trigger contested at `v_N` within that window by submitting a non-archiving privileged event extending `v_{N-1}` (on KEL: `Ror` or `Dec`; on SEL/IEL: `Evl`/`Sea` or `Dec`), subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only).
+That position matters because of how the seal-cap works. The authorization position granted by the parent policy (`v_{N-1}`'s `governancePolicy`) is symmetric — every party who satisfies `P_old` holds it. After a legitimate `Evl` at `v_N` rotates governance from `P_old` to `P_new`, `v_{N-1}`'s policy is the parent-policy for any non-archiving privileged event landing at `v_N` (per the parent-at-seal boundary case), and remains the parent-at-(seal − 1) authorization basis until the seal advances past `v_N`. Within that window, any party who satisfies `P_old` — including a rotated-out party — can submit a non-archiving privileged event extending `v_{N-1}` (on KEL: `Ror` or `Dec`; on SEL/IEL: `Evl`/`Sea` or `Dec`), subject to the [§Anchor Tier Elevation](#anchor-tier-elevation) bar (rotation- and recovery-tier per contributing member, not signing-only). Such an event lands at `v_N`, creates a divergent set with the existing `v_N`, and triggers contested via privileged-divergence-is-terminal. The structural consequence: the window between exclusion and seal advance is a window during which any `P_old`-satisfier can land a chain in Contested at `v_N`. Recourse against compromise is the standard recovery primitives (`Rec`/`Rpr`) or higher-level policy rotation, not deliberate divergence; the [§Order-independent divergent transitions](#order-independent-divergent-transitions) rule ensures that any such race converges consistently across nodes.
 
 **`Sea` advances the seal.** Both IEL and SEL provide a `Sea` event kind whose role is to advance the seal without changing governance. On IEL, `Sea` declares no policy evolution (companion to `Evl`, which requires evolution). On SEL, `Sea` re-evaluates the IEL binding and advances the seal, optionally updating `ielEvent` to a newer IEL state — pure seal advance when `ielEvent` is unchanged. A `Sea` at `v_{N+1}` advances the seal past `v_N`; once landed, `v_{N-1}`'s policy is no longer the parent-at-(seal − 1) basis. The excluded party loses the structural recourse the window provided.
 
 `Sea` is tier-2 anchored (KEL `Rot` per contributing member) — the same elevation as `Evl`. The cost to forge a `Sea` is exactly the cost to forge an `Evl`; an adversary who could prematurely advance the seal could already perform the original takeover. `Sea`'s value is shape correctness and audit clarity, not lowering the bar.
 
-**Operator-discipline recommendation: batch `[Evl, Sea]` on exclusion evolutions.** Submit the exclusion `Evl` and the seal-advancing `Sea` as a single batch. The `Sea` lands at `v_{N+1}` immediately after the `Evl` at `v_N`, advancing the seal past the exclusion point in the same submission. This closes the operator-side window where forgetting to follow up would leave `v_{N-1}`'s policy as the parent-at-(seal − 1) basis indefinitely. The `Sea` is authorized under the new (post-`Evl`) policy, which the operator now controls.
+**Pattern: batch `[Evl, Sea]` on exclusion evolutions.** Submitting the exclusion `Evl` and the seal-advancing `Sea` as a single batch lands the `Sea` at `v_{N+1}` immediately after the `Evl` at `v_N`, advancing the seal past the exclusion point in the same submission. Without the batched `Sea`, `v_{N-1}`'s policy remains the parent-at-(seal − 1) basis indefinitely — the window during which `P_old`-satisfiers can land the chain in Contested at `v_N` stays open. The batched `Sea` is authorized under the post-`Evl` policy.
 
 ##### Shape constraints on Sea
 
@@ -604,7 +632,7 @@ The effective SAID is the canonical chain-tip representation across KEL, IEL, an
 **Concrete vs synthetic representations.** Normal-tip chains carry the tip event's real SAID as the effective SAID; decommissioned chains (where `Dec` is the terminal tip — IEL only) carry the `Dec` event's real SAID. Two states have synthetic representations:
 
 - `hash_effective_said("divergent:{prefix}")` — chain has competing branches at some serial (non-privileged divergent set; not yet contested).
-- `hash_effective_said("contested:{prefix}")` — chain's divergent set contains a non-archiving privileged event; privileged-divergence-is-terminal has fired; chain is permanently frozen.
+- `hash_effective_said("contested:{prefix}")` — chain's divergent set contains a non-archiving privileged event; privileged-divergence-is-terminal has fired; chain is Contested. No event of any kind lands.
 
 The synthetic depends only on `(state, prefix)` — no chain history, no fork point, no serial. Any node observing or computing the effective SAID can recognize the state from the SAID alone.
 
