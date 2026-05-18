@@ -147,7 +147,7 @@ The cross-chain effect: an SEL event bound to `IEL_event_X.said` resolves throug
 
 ### Terminal states are fully terminal
 
-Once a `Dec` or a contested-state transition has landed, the chain accepts no further submissions of any kind. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Once a `Dec` or a contested-state transition has landed, the chain accepts no further submissions of any kind. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ## Typical Chain Shapes
 
@@ -188,7 +188,7 @@ v4'      Dec       previous=v_3.said, serial=4     ← party 2's Dec (on node B)
       Privileged-divergence-is-terminal fires; chain contested-terminal as of v_4. —
 ```
 
-The structural signature of "race" and "compromise" is identical from the chain's perspective. Both events satisfy the same `governancePolicy` at `v_3`; the chain layer cannot distinguish them. When `Dec` lands first on one node and a competing privileged event extends `Dec`'s parent on another, the seal-cap rejects each peer's gossip-arriving submission; federation-level convergence is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+The structural signature of "race" and "compromise" is identical from the chain's perspective. Both events satisfy the same `governancePolicy` at `v_3`; the chain layer cannot distinguish them. When `Dec` lands first on one node and a competing privileged event extends `Dec`'s parent on another, the seal-cap rejects each peer's gossip-arriving submission; federation-level convergence is handled at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 Operator recourse against compromise on a still-Active SEL is via IEL governance evolution: an `Evl` on the bound IEL that excludes the compromised governance member updates the SEL's resolved `governancePolicy` going forward. Subsequent SEL events bind to the new IEL state via a `Sea` ratchet — see [event-log.md §Authorization via IEL](event-log.md#authorization-via-iel).
 
@@ -199,7 +199,7 @@ v0..vN   normal chain
 vN+1     kind=dec   ielEvent=current_IEL_governance_event_said    ← clean chain end
 ```
 
-After `Dec`, the chain is fully terminal. The seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
+After `Dec`, the chain is fully terminal. The seal-cap rejects every subsequent submission whose parent sits at-or-before `v_{d-1}`. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)). See [event-log.md](event-log.md) for the lifecycle and merge-observable case taxonomy.
 
 ## References
 

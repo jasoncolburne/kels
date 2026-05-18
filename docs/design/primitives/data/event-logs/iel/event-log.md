@@ -69,7 +69,7 @@ If the chain has already transitioned to Contested (any divergent set on IEL fir
 
 Forensic 'this IEL was compromised' attribution lives out-of-band as a signed statement under the operator's KEL.
 
-Federation-race convergence — when two governance-authorized parties submit competing privileged events concurrently to different nodes — is handled at the infrastructure layer rather than the protocol layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Federation-race convergence — when two governance-authorized parties submit competing privileged events concurrently to different nodes — is handled at the infrastructure layer rather than the protocol layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### How divergence is detected and why it's terminal on IEL
 
@@ -88,7 +88,7 @@ Pairings that cannot form (byte-identical → dedup at submit):
 
 - `Dec`-`Dec` — `Dec` carries no content or policy fields, so two `Dec` events with the same `previous`, `serial`, `prefix`, and `kind` are byte-identical → identical SAID → dedup.
 
-Note: under the seal-cap rule (`parent_serial >= seal_serial`), once any IEL event lands at `v_d` on a node, that node's seal advances and gossip-arriving competing events extending `v_{d-1}` are rejected. Divergent sets therefore form only when both events arrive at the same node before either has advanced the seal — typically via simultaneous gossip-merge of independent submissions. Cross-node federation races resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Note: under the seal-cap rule (`parent_serial >= seal_serial`), once any IEL event lands at `v_d` on a node, that node's seal advances and gossip-arriving competing events extending `v_{d-1}` are rejected. Divergent sets therefore form only when both events arrive at the same node before either has advanced the seal — typically via simultaneous gossip-merge of independent submissions. Cross-node federation races resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 Every IEL divergent set at `v_d` transitions the chain to contested-terminal immediately by the privileged-divergence-is-terminal rule (every IEL event is privileged). The transition is Active → Contested. No third event lands at `v_d` — the contested-state gate rejects all subsequent submissions, including any further `Evl`/`Dec` arriving via gossip.
 
@@ -373,7 +373,7 @@ Decommission is the clean terminal state — `Dec` lands on a linear chain and e
 - Verify `Dec`'s structure and governance authorization.
 - Insert `Dec`. The chain transitions to Decommissioned.
 - Any `Dec` event in the chain → `is_decommissioned = true`. All submissions rejected with `IelDecommissioned` (Decommissioned is fully terminal under universal locking; the seal-cap rejects any submission whose parent sits at-or-before `v_{d-1}`).
-- Effective SAID for a decommissioned IEL: the `Dec` event's own SAID. Federation races between concurrent competing privileged submissions do not structurally converge at the protocol layer; convergence is provided at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+- Effective SAID for a decommissioned IEL: the `Dec` event's own SAID. Federation races between concurrent competing privileged submissions do not structurally converge at the protocol layer; convergence is provided at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### Cascading effect on dependent SELs
 

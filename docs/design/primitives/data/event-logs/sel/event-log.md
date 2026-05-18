@@ -210,7 +210,7 @@ A SEL transitions to Contested when a non-archiving privileged event (`Sea` or `
 
 - **On a linear chain**, a non-archiving privileged event extending `v_{d-1}` lands at `v_d` as a sibling of the existing event; the 2-event divergent set is contested by construction.
 - **On a non-privileged divergent chain** (e.g., Upd-Upd race), a non-archiving privileged event extending `v_{d-1}` joins the divergent set as the 3rd event via the upgrade rule; the chain transitions Divergent (non-privileged) → Contested.
-- **On a Decommissioned chain**, all submissions are rejected by the seal-cap (parent in locked portion). Federation races with concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+- **On a Decommissioned chain**, all submissions are rejected by the seal-cap (parent in locked portion). Federation races with concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 **Distinction from Rpr.** The archiving `Rpr` and a non-archiving privileged event with `previous = v_{d-1}.said` share parent shape but differ in effect. `Rpr` archives the other events at `v_d` via the discriminator (chain repairs, continues with `Rpr` as the new `v_d`). Non-archiving privileged events join the divergent set without archival (privileged-divergence fires; chain ends). The kind discriminator (archiving `Rpr` vs non-archiving `Sea`/`Dec`) determines the outcome.
 
@@ -234,7 +234,7 @@ Recourse on a compromised SEL depends on what has been compromised and on the ch
 
 If the chain has already transitioned to Contested (a non-archiving privileged event landed in a divergent set), the path forward is reincept under a new prefix bound to a different IEL. Forensic "this SEL was compromised" attribution lives out-of-band as a signed statement under the operator's KEL.
 
-Federation-race convergence — when two governance-authorized parties submit competing privileged events concurrently to different nodes — is handled at the infrastructure layer rather than the protocol layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Federation-race convergence — when two governance-authorized parties submit competing privileged events concurrently to different nodes — is handled at the infrastructure layer rather than the protocol layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ## Decommission (Dec)
 

@@ -105,7 +105,7 @@ if chain has any Dec event → reject DecommissionedSel
                               sits at-or-before Dec's parent.)
 ```
 
-Fires before all other routing. Contested and Decommissioned are both fully terminal; the seal-cap rejects every submission. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+Fires before all other routing. Contested and Decommissioned are both fully terminal; the seal-cap rejects every submission. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 
 ### 4. Deduplication
 
@@ -239,7 +239,7 @@ For unrecovered divergence (no terminal in either branch — possible on SEL dur
 2. **Only one divergent event added** — when divergence is detected, only the first conflicting event is stored.
 3. **Governance-evaluation events are bounded** — proactive evaluation (`MAX_NON_EVALUATION_EVENTS = 63`) caps non-evaluation runs; the next event after 63 must be `Sea`/`Rpr`/`Dec`.
 4. **Repair cannot truncate at or before the evaluation seal** — `truncate_and_replace` rejects fork-points at-or-before `lastSealAdvancingEvent` in chain order. A competing `Rpr` arriving against an existing seal-defining `Rpr` is rejected by the seal-cap (locked-portion bound); federation-level convergence for that race is handled at the infrastructure layer.
-5. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#privileged-divergence-is-terminal) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
+5. **Contested and Decommissioned are both fully terminal** — no submission of any kind is accepted. The seal-cap rejects every submission whose parent sits at-or-before the terminal's parent. Federation races between concurrent competing privileged submissions resolve at the infrastructure layer (see [../../../../protocol-doctrine.md §Limit of the doctrine — concurrent privileged event races](../../../../protocol-doctrine.md#concurrent-privileged-event-races) and [#205](https://github.com/jasoncolburne/kels/issues/205)).
 6. **Authorization is consumer-side** — the server does NOT verify anchor signatures on submit. Consumers verify the anchoring model when they use the data.
 7. **Inception is permissionless but bounded by batch rule** — Icp alone is rejected; `[Icp, Est, ...]` is the minimum legal inception batch.
 8. **Cross-chain bindings are path-agnostic** — same validation rules at submit, gossip, bootstrap, re-verification.
